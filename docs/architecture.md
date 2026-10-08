@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。当前没有具体模块。 |
+| `crates/core` | 包名 `lanwork-core`。不依赖 Slint，也不依赖 Win32 窗口 API。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。待办、便签、收纳、GitHub、搜索索引等服务尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `third_party/` | 第三方许可说明的目录。当前没有许可文件。 |
@@ -17,7 +17,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 数据目录、原子写入、待办、便签、收纳、GitHub 与搜索索引等服务 | `crates/core` |
+| 待办、便签、收纳、GitHub 与搜索索引等服务 | `crates/core` |
 | 命令层、Win32 集成、搜索条、面板和其他界面 | `crates/app` |
 | 各项技术验证的最小程序 | `spikes/<名称>` |
 | Unihan、Everything SDK 等许可说明 | `third_party/` |
@@ -59,7 +59,17 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 
 ## 数据
 
-默认目录：`%USERPROFILE%\Documents\Lanwork`。可用环境变量覆盖数据目录；设置中迁移后记住新位置。该目录与 `%USERPROFILE%\Documents\MayDolist` 互不读取。
+默认目录：`%USERPROFILE%\Documents\Lanwork`。该目录与 `%USERPROFILE%\Documents\MayDolist` 互不读取。存储层拒绝把数据目录或写入路径解析到 MayDolist 及其子目录，也不创建那个目录。
+
+数据目录按下面的顺序解析，命中即停止：
+
+1. 环境变量 `LANWORK_DATA_DIR`（去掉首尾空白后非空）。相对路径按当前工作目录补成绝对路径。
+2. 引导文件 `%LOCALAPPDATA%\Lanwork\bootstrap.json` 的 `dataDir`。引导文件在数据目录之外，迁移之后仍能找到。
+3. 默认 `%USERPROFILE%\Documents\Lanwork`。
+
+引导文件是 JSON，字段为 `schemaVersion`（当前为 1）和 `dataDir`（绝对路径）。缺少 `schemaVersion` 时按 1 读取。无法解析、`dataDir` 为空，或 `schemaVersion` 高于当前版本时，解析报错，不改回默认目录。设置里的迁移在校验新目录之后调用存储层写入该文件。写入之前若进程中断，下次启动仍用旧位置。缓存目录固定为 `%LOCALAPPDATA%\Lanwork\cache`，不随数据目录改变。
+
+模块在 `crates/core` 的 `storage`。不依赖 Slint，也不调用 Win32 窗口 API。变更消息在本进程内发布；投递到已打开窗口由后续的应用外壳订阅，不在这一层调用窗口 API。
 
 ```text
 Lanwork/
@@ -76,9 +86,13 @@ Lanwork/
 
 应用索引和图标缓存放在 `%LOCALAPPDATA%\Lanwork\cache`，可删除后重建，不进导出包。
 
-- 文件名是 id。
-- 写入：进程内互斥；临时文件写完后替换。替换失败保留原文件。数据目录位于 OneDrive 同步的「文档」下时，替换可能被同步进程占用，按同一规则报错。
-- 单个 JSON 损坏时隔离该文件，其他文件仍可读。
+- 文件名是 id。id 是单个路径分量，不允许分隔符、Windows 保留设备名和文件名非法字符。`github/cache/<repo>.json` 的 `<repo>` 也是单个分量；`owner/repo` 如何编码由 GitHub 服务决定，本层不规定。
+- 写入：进程内一把互斥锁。同目录写 `<name>.tmp`，调用 `FlushFileBuffers` 后，目标已存在时用 `ReplaceFileW`（`REPLACEFILE_WRITE_THROUGH`），否则用 `MoveFileExW`（`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`）。替换失败则删除临时文件、保留原文件，并返回带路径的错误。不自动重试。数据目录位于 OneDrive 同步的「文档」下时，同步进程占用按同一规则报错。
+- 单个 JSON 无法解析时，把该文件改名为 `<id>.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，其他文件仍可读。日志不含文件内容。不认识的 `schemaVersion` 不隔离，由调用方拒绝。
+- 每个 JSON 对象带数字字段 `schemaVersion`。当前版本是 1。新字段可选并有默认值；缺少 `schemaVersion` 的旧文件按 1 读取。示例模型是 `ExampleDocument`，不是待办或便签模型。
+- 写盘成功后发布 `EntityChanged { kind, id, revision }`。`revision` 只在便签保存时携带新的修订号，其他实体为 None。跨文件批次在提交成功后按写入顺序发布；写盘失败或批次未提交不发布。订阅回调在写锁释放之后执行。
+- 日志在 `logs/app.log`。单文件超过 1 MiB 时轮转，保留 `app.log`、`app.log.1`、`app.log.2`。不写文件内容，因此不写便签正文。落盘前去掉常见 GitHub token 形态，以及名称含 `TOKEN`、`SECRET`、`PASSWORD`、`CREDENTIAL`、或以 `_KEY` 结尾且值长度至少 8 的环境变量的值。错误里仍会写出文件路径。
+- `import.pending` 的内容是备份绝对路径的 UTF-8 文本，不是 JSON。它不进入导出包。
 - 收件箱是 `kind=inbox` 的待办清单，首次需要时创建一次。
 - 待办可带到期日、提醒、周期、GitHub 来源，以及至多一个当前标记。
 - 收纳分组保存名称、排序、可选的关联待办 id，以及引用列表。每条引用保存绝对路径、显示名、是否文件夹和加入时间，不保存文件内容和图标。
@@ -95,7 +109,7 @@ Lanwork/
 - **切换当前待办**：先给新条目写上当前标记和 `currentSince` 时间，再清除旧条目的标记。中断后出现多条时，加载阶段保留 `currentSince` 最新的一条，其余清除后写回。
 - **导入**：解压到临时目录并校验（白名单路径，拒绝 `..` 和绝对路径，每个 JSON 可解析，版本可识别）。通过后，先把当前数据完整备份到 `backups/`，再在数据目录写入 `import.pending`（内容是这份备份的路径），然后逐个替换文件、删除导入包中没有的数据文件，最后删除 `import.pending`。启动时发现 `import.pending`，就用其中记录的备份整体恢复，再删除该文件，并在界面显示导入未完成。
 
-加载修复和导入恢复在构建搜索索引、处理通知点击之前完成。变更消息只在整个操作完成后发出。永久删除待办后，收纳分组里残留的关联 id 在读取时视为无关联，并在下次写该分组时清除。
+加载修复和导入恢复在构建搜索索引、处理通知点击之前完成。`Store::boot` 的顺序是：若存在 `import.pending`，调用导入恢复钩子（备份与导入实现；未注册钩子则启动失败，不加载业务数据）；然后调用加载钩子；然后按注册顺序运行加载修复（`movedAt` 与 `currentSince` 由待办服务实现）。任一钩子返回错误则启动失败，不进入可建索引状态，也不写默认文档。成功之后 `build_index` 与 `handle_notification_click` 才执行调用方。恢复钩子成功且已删除 `import.pending` 时，`BootReport.import_recovered` 为真，界面据此显示「导入未完成」。变更消息只在整个操作完成后发出。永久删除待办后，收纳分组里残留的关联 id 在读取时视为无关联，并在下次写该分组时清除。永久删除通知是待办服务的领域事件，不是这一层的 `EntityChanged`。
 
 配置至少包括：数据目录、热角、搜索条热键、面板热键（可空）、安静时段、主题、开机启动、GitHub 刷新间隔、长期未更新天数、来源同步、自动完成关联待办、处理模式顺延天数。不包括玻璃透明度。
 
