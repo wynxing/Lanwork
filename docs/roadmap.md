@@ -27,20 +27,20 @@
 
 ## 通知（#7）
 
-这项没有通过。下面有任何一条不是「通过」，整项就不通过。自动检查只证明 API 返回值和注册表读回；屏幕上有没有通知、点下去有没有定位，都还空着，等所有者填「所有者观察」。
+这项没有通过。下面有任何一条不是「通过」，整项就不通过。2026-10-09 所有者在 `2758d18` 的 release、正常 `target` 上亲手做完步骤。安装版的显示和两种点击通过；便携版能显示，但运行中点击和退出后点击失败。因此整项仍不通过，#7 不关闭。便携版点击不可用要不要写进产品规格，由所有者决定，现为待定。本次没有改 [product.md](product.md)。
 
 ### 环境
 
 | 字段 | 值 |
 | --- | --- |
-| 日期 | 2026-10-08 的自动检查；2026-10-09 补了激活修复的自动检查 |
-| commit | spike 源码 rebase 之后是 `b598419`（rebase 前 `07888db93f9b90a8dee0a303783b57a5be3fbddb`，内容是同一棵 spike，哈希变了）。2026-10-08 的自动检查跑在 rebase 前的那棵源码上。2026-10-09 的激活修复是 `fa20baa2cf82952c4c0641bffe0e7431a90d42a3`。本行哈希是随后补上的，不改变程序 |
+| 日期 | 2026-10-08 的自动检查；2026-10-09 激活修复的自动检查，以及同日所有者的人工步骤 |
+| commit | 人工步骤跑在 `2758d1849ff4bd72ab1e1e7a5600c84376c481aa`，release，正常 `target`。该提交只补了记录里的哈希，程序与 `fa20baa2cf82952c4c0641bffe0e7431a90d42a3` 相同。spike 源码 rebase 之后是 `b598419`（rebase 前 `07888db93f9b90a8dee0a303783b57a5be3fbddb`）。2026-10-08 的自动检查跑在 rebase 前的那棵源码上 |
 | Slint 精确版本 | 1.18.1。本 spike 不链接 Slint |
 | 渲染器 | 不适用 |
 | 机器 | 13th Gen Intel Core i5-13420H |
 | Windows build | Windows 11 家庭中文版 64 位，DisplayVersion 26H2，10.0.26300.9550（CurrentBuild 26300，UBR 9550）。注册表 ProductName 仍写着 Windows 10 Home China |
 | GPU 与驱动 | Intel UHD Graphics，驱动 32.0.101.6733（2025-04-02）；另有 Virtual Display Driver 11.30.4.434（2024-12-24）、GameViewer Virtual Display Adapter 15.6.5.199（2026-02-28） |
-| 构建配置 | `cargo test` 为 debug。2026-10-08 的自动检查、未注册时的 `show` 回退为 release：`target\release\toast.exe`。2026-10-09 的 `activation-check` 和 `status` 用了另一个 `CARGO_TARGET_DIR`，避免覆盖所有者还在运行的 `target\release\toast.exe` |
+| 构建配置 | `cargo test` 为 debug。2026-10-08 的自动检查、未注册时的 `show` 回退为 release：`target\release\toast.exe`。2026-10-09 修复后的自动 `activation-check` 用了另一个 `CARGO_TARGET_DIR`。同日人工步骤用的是 `2758d18` 的 release、正常 `target` |
 
 标识只属于这个 spike：AUMID `Lanwork.Spike.Toast`，CLSID `{DEC1C43B-2AAC-400F-A0B1-C17A05F2B409}`，显示名「Lanwork 通知验证」。快捷方式是 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Lanwork Toast Spike.lnk`。日志是 `%TEMP%\lanwork-spike-toast.log`。只写 HKCU，不写 HKLM，不用管理员。
 
@@ -93,26 +93,30 @@
 
 ### 通过条件
 
+2026-10-09，所有者，`2758d18`，release，正常 `target`。安装版先 `register installed`，`status` 为「安装版」，`activation-check` 退出码 0。便携版是 `unregister` 之后 `register portable`，`status` 为「便携版」，没有 CustomActivator、LocalServer32、快捷方式。做完后已 `unregister`，`status` 为「未注册」。
+
 | 条件 | 结果 | 所有者观察 |
 | --- | --- | --- |
-| 安装版：通知能显示 | 未测 | |
-| 安装版：进程运行中点击，面板定位到该条，并收到待办 id | 未测 | |
-| 安装版：进程已退出后点击，重新打开并定位到该条，并收到待办 id | 未测 | |
-| 便携版：通知能显示 | 未测 | |
-| 便携版：进程运行中点击，面板定位到该条，并收到待办 id | 未测 | |
-| 便携版：进程已退出后点击，重新打开并定位到该条，并收到待办 id | 未测 | |
-| 同一待办多次提醒时，系统是否把通知叠放 | 未测 | |
-| 请勿打扰打开时，通知如何表现 | 未测 | |
-| 缺失注册时不崩溃，并退回托盘逾期徽标 | 未测 | 命令路径已退出码 0，且 API 返回 TRUE；徽标有没有出现在托盘上还没看 |
+| 安装版：通知能显示 | 通过 | 所有者看到通知 |
+| 安装版：进程运行中点击，面板定位到该条，并收到待办 id | 通过 | `serve` 运行中点击 `todo-001`。面板到前台，标题含「已定位 todo-001」，该行选中。日志 `02:40:12.576 COM Activate launch=todo-001` |
+| 安装版：进程已退出后点击，重新打开并定位到该条，并收到待办 id | 通过 | 点击 `todo-002`。日志 `02:40:46.356` 的 `serve` 参数含 `-Embedding`，`02:40:46.450 COM Activate launch=todo-002`。所有者看到拉起并定位 |
+| 便携版：通知能显示 | 通过 | 有横幅 |
+| 便携版：进程运行中点击，面板定位到该条，并收到待办 id | 失败 | 面板没有定位，没有选中。日志没有任何 `COM Activate` |
+| 便携版：进程已退出后点击，重新打开并定位到该条，并收到待办 id | 失败 | 点击 `todo-002` 没有拉起进程 |
+| 同一待办多次提醒时，系统是否把通知叠放 | 已观察 | 安装版：无 Tag 的 `--repeat 3` 在通知中心是 3 条；`--tag todo-001` 是 1 条。便携版：无 Tag 3 条；带 Tag 1 条 |
+| 请勿打扰打开时，通知如何表现 | 已观察 | 请勿打扰开启时，安装版 `show todo-003`：不弹横幅，通知中心里有这条 |
+| 缺失注册时不崩溃，并退回托盘逾期徽标 | 通过 | `show todo-001` 的日志是「注册缺失，不调用 ToastNotificationManager.Show，只显示托盘徽标」，约 15 秒后「托盘徽标已移除，进程正常退出」。截图里托盘有蓝底、写着「1」的小图标。文字「逾期 1」是否在提示里，没有确认 |
 | 托盘徽标代替到期通知 | 失败（不能代替） | 不把徽标算成通知通过 |
 
-模拟面板在单元测试里会按 id 选中对应行：`todo-003` 选中「交电费」，未知 id 不选中，空参数保持等待。这只说明函数行为。点击之后窗口里有没有选中那一行，仍以上表为准。正式待办页的定位不在本记录里，属于 #25。
+模拟面板在单元测试里会按 id 选中对应行：`todo-003` 选中「交电费」，未知 id 不选中，空参数保持等待。这只说明函数行为。安装版点击时，所有者看到了对应行被选中。便携版运行中点击没有选中。正式待办页的定位不在本记录里，属于 #25。
 
-便携版点击定位还没有观察结果，所以没有改 [product.md](product.md)。
+便携版运行中点击和退出后点击都失败。是否把「便携版不能点击定位」写进 [product.md](product.md)，由所有者决定，现为待定。这次没有改产品规格。
 
-### 所有者要亲手做的步骤
+### 重测时要先卸掉旧的本地服务器
 
-在本 PR 的目录里执行。命令都用 release，这样快捷方式里的程序路径和正在跑的程序是同一个。先自己关掉还在跑的旧 `toast.exe`（包括 `serve` 和 `-Embedding`）。这次看到的是 PID 19380 和 27064，以当时还在的为准。不要留着旧进程再注册。换过构建目录或重新编译后，先重新 `register installed`，否则 `LocalServer32` 仍指向旧 exe，`status` 会是「部分注册」。做完或中途停下，都执行文末的清理。屏幕上的显示、点击、叠放、请勿打扰和托盘图标仍要亲眼看，`activation-check` 不能代替。
+2026-10-09 第一次按新程序重编译时，一个旧的 `toast.exe -Embedding` 被 DcomLaunch 反复拉起，占住 exe，链接报 `os error 5`。先 `unregister`，再结束那个进程，然后才能编译。不要留着旧的 `-Embedding` 再 `register`。换过构建目录后也要重新 `register`，否则 `LocalServer32` 仍指向旧 exe。
+
+上面的人工步骤已经在 `2758d18` 做过，结果见「通过条件」。若再做一遍，命令仍用 release。`activation-check` 不能代替亲眼看到的显示、点击、叠放、请勿打扰和托盘图标。
 
 1. `cargo build -p toast --release`
 2. 安装版显示：`cargo run -p toast --release -- register installed`，然后 `status`，确认判定是「安装版」。再 `cargo run -p toast --release -- show todo-001`。看通知中心或右下角有没有「待办到期」，正文含 `todo-001` 和「买牛奶」。把看到的写进「安装版：通知能显示」。控制台里的 `S_OK` 不算。
@@ -127,14 +131,7 @@
 
 自动检查结束时，这台机器上的 spike 注册已经去掉。若通知中心还留着「Lanwork 自动检查」或「待办到期」，在通知中心里清掉，或运行 `cargo run -p toast --release -- clear-history`。
 
-所有者做完步骤后执行：
-
-```text
-cargo run -p toast --release -- unregister
-cargo run -p toast --release -- status
-```
-
-`status` 应为「未注册」。这会删除上面的快捷方式、AUMID 键和 CLSID 键，并尝试清除该 AUMID 的通知历史。不删除其他程序的通知。卸载产品时的清理属于 #31，不在这里做。
+2026-10-09 所有者做完步骤后已经 `unregister`，`status` 为「未注册」。这会删除上面的快捷方式、AUMID 键和 CLSID 键，并尝试清除该 AUMID 的通知历史。不删除其他程序的通知。卸载产品时的清理属于 #31，不在这里做。
 
 ## 界面
 

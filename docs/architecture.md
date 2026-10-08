@@ -84,7 +84,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 
 控制台子系统进程和 COM 拉起的本地服务器，启动信息里经常带 `SW_HIDE`。第一次 `ShowWindow` 会改用这个值。面板需要再调用一次 `ShowWindow(SW_SHOWNORMAL)`，并用 `SetWindowPos(SWP_SHOWWINDOW)` 确认 `IsWindowVisible`。读快捷方式属性之前要先 `CoInitializeEx`。
 
-便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。能否显示、运行中点击、退出后点击、收到 id、定位，以验证记录为准。记录里这些条件没有全部通过之前，不在产品规格里把便携版写成「不能点击定位」。
+便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。能否显示、运行中点击、退出后点击、收到 id、定位，以验证记录为准。2026-10-09 的记录里，便携版通知能显示；运行中点击没有定位，日志没有 `COM Activate`；退出后点击没有拉起进程。是否把「便携版不能点击定位」写进产品规格，由所有者决定，现为待定。在那之前不改产品规格。
 
 卸载要删掉上述快捷方式和 HKCU 键，由安装程序实现。验证程序自己的注销只清理它写过的 spike 标识，不清理将来产品用的标识。
 
