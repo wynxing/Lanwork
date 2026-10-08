@@ -1,6 +1,14 @@
 # 实现状态
 
-行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`）；星期、下周和月底的边界仍等产品规格写明。下表的技术验证和界面仍未实现：技术验证没有通过记录，搜索条界面和收集提交也还没有代码。
+行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`）；星期、下周和月底的边界仍等产品规格写明。测量工具的代码已在仓库中，协议记录仍空着。技术验证没有通过记录，搜索条界面和收集提交也还没有代码。界面表里的各项仍全部未实现。
+
+## 测量工具
+
+| 项 | 状态 |
+| --- | --- |
+| `tools/fixture`、`tools/sample`、[docs/measurements/TEMPLATE.md](measurements/TEMPLATE.md) | 代码已在仓库中 |
+| 符合架构「性能测量」协议的记录 | 无 |
+| Windows 11 桌面上对空 Slint 窗口采样 5 分钟 | 未测 |
 
 ## 技术验证
 

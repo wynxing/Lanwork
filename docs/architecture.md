@@ -11,6 +11,9 @@
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。待办、便签、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
+| `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读数据目录环境变量，也不写入正式数据目录。 |
+| `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
+| `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合协议的实测记录。 |
 | `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。 |
 
 ### 尚未接入
