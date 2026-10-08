@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/app",
+    "spikes/hello",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+rust-version = "1.99.0"
+
+[workspace.dependencies]
+lanwork-core = { path = "crates/core" }
+slint = "=1.18.1"
+slint-build = "=1.18.1"
