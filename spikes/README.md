@@ -1,4 +1,5 @@
 cargo run -p hello
+cargo run -p ime
 cargo run -p fileidx -- probe
 
 渲染器和背景的测量程序是 `lanwork-render-spike`。四个 feature 互斥，默认是 FemtoVG。换渲染器时要关掉默认 feature：
