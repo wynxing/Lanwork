@@ -14,6 +14,7 @@
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
 | `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合协议的实测记录。 |
+| `docs/measurements/2026-10-08-empty-window.md` | 空 Slint 窗口采样。采样器跑满 300 秒，272 行，首尾 298.962 秒。脚本因行数少于 290 拒绝。偏离协议，不算「已达到」。 |
 | `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。 |
 
 ### 尚未接入
@@ -193,7 +194,7 @@ Everything 未运行或未就绪时，退回 Windows Search 索引。查询只�
 
 ## 性能测量
 
-下面的数字是测量协议和目标，尚未在 Slint 实现上测过。在有一次符合协议的记录之前，文档和界面都不写「已达到」。禁止为了凑数字裁剪工作集。Everything 客户端、Everything 服务、Windows Search 索引服务和安装程序单独记录，不计入 Lanwork 进程。随包的 Everything SDK DLL 加载在 Lanwork 进程内，计入。
+下面的数字是测量协议和目标，还没有一次符合协议的记录。空 Slint 窗口的采样记在 [roadmap.md](roadmap.md)，那次没有加载固定数据，不填进下表。在有一次符合协议的记录之前，文档和界面都不写「已达到」。禁止为了凑数字裁剪工作集。Everything 客户端、Everything 服务、Windows Search 索引服务和安装程序单独记录，不计入 Lanwork 进程。随包的 Everything SDK DLL 加载在 Lanwork 进程内，计入。
 
 场景：固定数据为 5,000 个应用、10,000 条待办、1,000 篇约 2 KiB 的便签、20 个收纳分组共 1,000 条引用。预热搜索条和面板搜索，打开收纳标签，在搜索条里各提交一次待办和便签收集，并打开再关闭便签悬浮窗。然后收起全部窗口，连续采样 5 分钟。
 

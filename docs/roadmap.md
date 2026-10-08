@@ -8,7 +8,7 @@
 | --- | --- |
 | `tools/fixture`、`tools/sample`、[docs/measurements/TEMPLATE.md](measurements/TEMPLATE.md) | 代码已在仓库中 |
 | 符合架构「性能测量」协议的记录 | 无 |
-| Windows 11 桌面上对空 Slint 窗口采样 5 分钟 | 未测 |
+| Windows 11 桌面上对空 Slint 窗口采样 5 分钟 | 2026-10-08，commit `2b06db2`，release。采样器跑满 300 秒（272 行，首尾 298.962 秒）。Private Bytes 峰值 49,844,224 字节，工作集峰值 77,705,216 字节，平均 CPU 0.319%，唤醒平均 96.629/秒，句柄 325–339，USER 23–24，GDI 17。脚本因行数少于 290 拒绝；再跑一次是 267 行，同样拒绝。见 [measurements/2026-10-08-empty-window.md](measurements/2026-10-08-empty-window.md)。不是性能协议验收 |
 
 ## 技术验证
 
