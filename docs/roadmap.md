@@ -161,7 +161,7 @@
 
 - 日期：2026-10-08 首次自动化；2026-10-09 手测 `24b7624`，并修改长路径拖入的读取
 - 手测构建：`24b7624eb090d6f655c3ef144594d5a4206d61ad`，`cargo run -p dnd -- --ole`
-- commit：`COMMIT_HASH_HERE`。长路径读取修改之后，`cargo run -p dnd -- --self-test` 退出码 0。Shell `GetData(CF_HDROP)` 对 269 单元路径仍是 `0x8007007A`，随后用外壳项显示名读回同一路径
+- commit：`96355a285b6c948df12fe0ac210d359e7fbacb8b`。长路径读取修改之后，`cargo run -p dnd -- --self-test` 在这棵树上退出码 0。Shell `GetData(CF_HDROP)` 对 269 单元路径仍是 `0x8007007A`，随后用外壳项显示名读回同一路径
 - Slint：1.18.1（workspace 依赖 `=1.18.1`）。验证程序额外打开 feature `raw-window-handle-06`。默认 features 含 `backend-winit`、`renderer-femtovg`、`renderer-software`，不代表产品已选定渲染器
 - 渲染器：`GraphicsAPI::NativeOpenGL`（FemtoVG 的 OpenGL 路径被选中）。窗口缩放 1.5
 - 机器：DESKTOP-7C3P6OG，XIAOMI REDMI Book 14 2025 (FHD+)
