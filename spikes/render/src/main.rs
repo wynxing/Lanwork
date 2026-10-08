@@ -128,16 +128,20 @@ fn run(args: Args) -> Result<(), String> {
     let frames = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let api_slot = Arc::clone(&graphics_api);
     let frame_slot = Arc::clone(&frames);
-    ui.window()
-        .set_rendering_notifier(move |state, api| {
-            if matches!(state, slint::RenderingState::AfterRendering) {
-                frame_slot.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            if let Ok(mut slot) = api_slot.lock() {
-                *slot = format!("{api:?}");
-            }
-        })
-        .map_err(|err| format!("设置渲染回调失败：{err}"))?;
+    // 软件渲染器没有 rendering notifier。没有回调时不拿 GraphicsAPI，窗口句柄出现后就继续。
+    if let Err(err) = ui.window().set_rendering_notifier(move |state, api| {
+        if matches!(state, slint::RenderingState::AfterRendering) {
+            frame_slot.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Ok(mut slot) = api_slot.lock() {
+            *slot = format!("{api:?}");
+        }
+    }) {
+        frames.store(2, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut slot) = graphics_api.lock() {
+            *slot = format!("rendering notifier unsupported: {err}");
+        }
+    }
 
     let build = windows_build()?;
     let state = Arc::new(Mutex::new(State {
@@ -410,7 +414,10 @@ fn run_self_test(ui: &Panel, state: &Arc<Mutex<State>>, weak: &slint::Weak<Panel
         state.ready_for_shots = true;
     }
     refresh(ui, state, true);
-    let _ = slint::quit_event_loop();
+    // 截图在下一拍。先退出的话，纯色那张图不会写出来。
+    slint::Timer::single_shot(Duration::from_millis(500), || {
+        let _ = slint::quit_event_loop();
+    });
 }
 
 fn detection_failed(state: &Arc<Mutex<State>>) -> Option<bool> {
@@ -419,6 +426,10 @@ fn detection_failed(state: &Arc<Mutex<State>>) -> Option<bool> {
 }
 
 fn detection_failed_from(state: &State) -> bool {
+    // 纯色是我们自己铺的。这时快照不透明是预期结果，不能再记成透明渲染失败。
+    if !state.transparency_enabled || state.battery_saver || state.build < MIN_BACKDROP_BUILD {
+        return false;
+    }
     let snapshot_failed = state
         .snapshot
         .is_some_and(|pixel| framebuffer_transparency_failed(rgba_from_array(pixel)));
@@ -522,17 +533,35 @@ fn refresh(ui: &Panel, state: &Arc<Mutex<State>>, take_shot: bool) {
     let status = status_from(&guard, label);
     let status_path = guard.args.status_out.clone();
     drop(guard);
-    if let Some(path) = shot_path
-        && let Some(hwnd) = window_hwnd(ui)
-    {
-        match capture_window(hwnd).and_then(|capture| write_png(&capture, &path)) {
-            Ok(()) => {
-                if let Ok(mut state) = state.lock() {
-                    state.shots.push(path.display().to_string());
+    // 属性刚改完就 BitBlt 会拍到上一帧。等一拍再拍，纯色矩形才进屏幕缓冲。
+    if let Some(path) = shot_path {
+        let weak = ui.as_weak();
+        let state = Arc::clone(state);
+        slint::Timer::single_shot(Duration::from_millis(350), move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let _ = observe(&ui, &state);
+            let Some(hwnd) = window_hwnd(&ui) else {
+                return;
+            };
+            match capture_window(hwnd).and_then(|capture| write_png(&capture, &path)) {
+                Ok(()) => {
+                    if let Ok(mut guard) = state.lock() {
+                        guard.shots.push(path.display().to_string());
+                        if let Some(status_path) = guard.args.status_out.clone() {
+                            let label = guard.last_label.clone();
+                            let status = status_from(&guard, &label);
+                            drop(guard);
+                            if let Err(err) = write_status(&status_path, &status) {
+                                eprintln!("lanwork-render-spike: 状态文件：{err}");
+                            }
+                        }
+                    }
                 }
+                Err(err) => eprintln!("lanwork-render-spike: 截图失败：{err}"),
             }
-            Err(err) => eprintln!("lanwork-render-spike: 截图失败：{err}"),
-        }
+        });
     }
     if let Some(path) = status_path {
         if let Ok(state) = state.lock() {

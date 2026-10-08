@@ -1,0 +1,12 @@
+﻿powershell#4`t28548`t122
+MsMpEng`t5088`t74
+dwm`t1916`t21
+System`t4`t15
+Grok Bot#4`t21104`t10
+svchost#29`t3708`t5
+WmiPrvSE#1`t19880`t5
+Grok Bot#2`t20420`t5
+svchost#1`t1624`t5
+NisSrv`t11928`t5
+explorer`t9032`t5
+Cursor#2`t18828`t5

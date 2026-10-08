@@ -1,0 +1,20 @@
+﻿EnableTransparency original=1 at 2026-10-08T15:33:57.6904629+08:00
+AppsUseLightTheme was not modified.
+Battery saver was not modified by this script unless a later line says so.
+set EnableTransparency=0 at 2026-10-08T15:33:58.7195556+08:00
+observed transparency-off=True at 2026-10-08T15:33:59.1665634+08:00
+restored EnableTransparency=1 at 2026-10-08T15:33:59.1726686+08:00
+observed acrylic again=True at 2026-10-08T15:33:59.2533638+08:00
+final EnableTransparency=1 expected=1 at 2026-10-08T15:33:59.2968414+08:00
+rerun delayed-shot original EnableTransparency=1 at 2026-10-08T15:38:09.9335845+08:00
+set EnableTransparency=0 at 2026-10-08T15:38:11.3081765+08:00
+observed transparency-off=True at 2026-10-08T15:38:11.4591344+08:00
+restored EnableTransparency=1 at 2026-10-08T15:38:12.2787745+08:00
+observed acrylic again=False at 2026-10-08T15:38:18.3548270+08:00
+final EnableTransparency=1 expected=1 at 2026-10-08T15:38:19.1962090+08:00
+second rerun original EnableTransparency=1 at 2026-10-08T15:39:53.3266344+08:00
+set EnableTransparency=0 at 2026-10-08T15:39:55.0181565+08:00
+observed transparency-off=True at 2026-10-08T15:39:55.1292674+08:00
+restored EnableTransparency=1 at 2026-10-08T15:39:56.0333890+08:00
+observed acrylic again=True at 2026-10-08T15:39:56.0751782+08:00
+final EnableTransparency=1 expected=1 at 2026-10-08T15:39:57.0339669+08:00

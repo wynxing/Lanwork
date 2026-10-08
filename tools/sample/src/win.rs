@@ -391,12 +391,20 @@ fn counter_items(counter: PDH_HCOUNTER, format: PDH_FMT) -> Result<Vec<CounterIt
     ))
 }
 
+/// 速率计数器在线程实例消失时会算出负数。这不是内存读数坏了，下一拍再采即可。
+const PDH_CALC_NEGATIVE_DENOMINATOR: u32 = 0x8000_07D6;
+const PDH_CALC_NEGATIVE_TIMEBASE: u32 = 0x8000_07D7;
+const PDH_CALC_NEGATIVE_VALUE: u32 = 0x8000_07D8;
+
 fn status_not_ready(status: u32) -> bool {
     status == PDH_CSTATUS_INVALID_DATA
         || status == PDH_INVALID_DATA
         || status == PDH_NO_DATA
         || status == PDH_CSTATUS_NO_INSTANCE
         || status == PDH_CSTATUS_ITEM_NOT_VALIDATED
+        || status == PDH_CALC_NEGATIVE_DENOMINATOR
+        || status == PDH_CALC_NEGATIVE_TIMEBASE
+        || status == PDH_CALC_NEGATIVE_VALUE
 }
 
 fn counter_status_ok(status: u32) -> bool {
@@ -548,6 +556,14 @@ mod tests {
         let wakeups: f64 = fields[9].parse().unwrap();
         assert!(wakeups.is_finite() && wakeups >= 0.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn negative_rate_counter_is_retried_instead_of_aborting_the_sample() {
+        assert!(status_not_ready(PDH_CALC_NEGATIVE_VALUE));
+        assert!(status_not_ready(PDH_CALC_NEGATIVE_DENOMINATOR));
+        assert!(status_not_ready(PDH_CALC_NEGATIVE_TIMEBASE));
+        assert!(!status_not_ready(PDH_CSTATUS_VALID_DATA));
     }
 
     #[test]

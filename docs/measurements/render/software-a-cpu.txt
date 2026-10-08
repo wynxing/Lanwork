@@ -1,0 +1,12 @@
+﻿powershell#6`t22672`t196
+MsMpEng`t5088`t47
+System`t4`t21
+chrome#18`t20948`t10
+WmiPrvSE#1`t19880`t10
+dwm`t1916`t10
+Cursor#2`t18828`t10
+WUDFHost`t1524`t10
+node`t26200`t5
+msedgewebview2#23`t16632`t0
+mysqld`t4860`t0
+msedgewebview2#24`t2888`t0

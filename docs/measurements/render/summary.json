@@ -1,0 +1,66 @@
+﻿{
+    "femtovg-b":  {
+                      "rows":  57,
+                      "span_secs":  58.915,
+                      "peak_private":  58589184,
+                      "peak_working":  102285312,
+                      "median_private_after_10s":  57044992,
+                      "median_working_after_10s":  96833536
+                  },
+    "skia-software-a":  {
+                            "rows":  57,
+                            "span_secs":  58.991,
+                            "peak_private":  25997312,
+                            "peak_working":  77828096,
+                            "median_private_after_10s":  25935872,
+                            "median_working_after_10s":  77803520
+                        },
+    "femtovg-a":  {
+                      "rows":  58,
+                      "span_secs":  58.931,
+                      "peak_private":  59817984,
+                      "peak_working":  92282880,
+                      "median_private_after_10s":  59817984,
+                      "median_working_after_10s":  92282880
+                  },
+    "software-a":  {
+                       "rows":  57,
+                       "span_secs":  58.769999999999996,
+                       "peak_private":  5349376,
+                       "peak_working":  21598208,
+                       "median_private_after_10s":  5349376,
+                       "median_working_after_10s":  21598208
+                   },
+    "software-b":  {
+                       "rows":  57,
+                       "span_secs":  58.955999999999996,
+                       "peak_private":  6066176,
+                       "peak_working":  26181632,
+                       "median_private_after_10s":  6037504,
+                       "median_working_after_10s":  22306816
+                   },
+    "skia-opengl-b":  {
+                          "rows":  57,
+                          "span_secs":  58.891999999999996,
+                          "peak_private":  78671872,
+                          "peak_working":  138121216,
+                          "median_private_after_10s":  78082048,
+                          "median_working_after_10s":  137658368
+                      },
+    "skia-software-b":  {
+                            "rows":  57,
+                            "span_secs":  58.952,
+                            "peak_private":  27066368,
+                            "peak_working":  64774144,
+                            "median_private_after_10s":  27037696,
+                            "median_working_after_10s":  64770048
+                        },
+    "skia-opengl-a":  {
+                          "rows":  58,
+                          "span_secs":  58.955,
+                          "peak_private":  75816960,
+                          "peak_working":  149118976,
+                          "median_private_after_10s":  75812864,
+                          "median_working_after_10s":  149118976
+                      }
+}
