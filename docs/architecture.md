@@ -294,11 +294,11 @@ Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提�
 
 ### 拖放
 
-外部拖入和拖出用原生 OLE。Slint 1.18.1 的窗口内拖放不能代替它，原因见「运行时」。2026-10-09 在 `24b7624` 上的资源管理器手测见 [roadmap.md](roadmap.md)。长路径拖入当时失败，该项未通过。下面是 `spikes/dnd` 里已经观察到的做法。
+外部拖入和拖出用原生 OLE。Slint 1.18.1 的窗口内拖放不能代替它，原因见「运行时」。2026-10-09 的资源管理器手测见 [roadmap.md](roadmap.md)。`24b7624` 上长路径拖入失败；同日 10:56（UTC+8）在 `3311ecc` 上拖入通过。条件 7 未满 100 次，`--slint` 拖放没有路径，该项仍未通过。下面是 `spikes/dnd` 里已经观察到的做法。
 
 - 拖入：事件循环线程调用 `OleInitialize`。本机该线程是 `APTTYPE_MAINSTA`（主 STA），不是 MTA。`MainWindow::new` 之前 COM 尚未初始化；进入 winit 事件循环后由 winit 初始化。拿到 HWND 后 `RegisterDragDrop` 返回 `DRAGDROP_E_ALREADYREGISTERED`，于是 `RevokeDragDrop` 再注册自己的 `IDropTarget`。注册之后窗口属性 `OleDropTargetInterface` 的指针与自己的接口相同。只接受 `CF_HDROP`。指针在收纳区域外返回 `DROPEFFECT_NONE`；区域内只从源提供的效果里选复制，其次快捷方式，不返回移动。验证程序没有标签，用一个矩形代替收纳区域，区域外的判定有单元测试。产品里仍只在收纳标签显示时接受放下。
 - 拖出：按下后，物理像素位移严格超过 `SM_CXDRAG` 或 `SM_CYDRAG` 才调用 `DoDragDrop`。`IDataObject` 用 `IShellItemArray::BindToHandler(BHID_DataObject)`。允许的效果只有 `DROPEFFECT_COPY | DROPEFFECT_LINK`。取消由 `IDropSource::QueryContinueDrag` 返回 `DRAGDROP_S_CANCEL`。`DoDragDrop` 的模态循环会吃掉鼠标抬起，列表行的 `TouchArea` 会一直抓着鼠标，下一次按下仍落在刚才那一行。拖出结束（成功、取消或出错）后要向窗口补 `PointerReleased` 和 `PointerExited`。自动化没有调用 `DoDragDrop`：它要等键盘或鼠标状态变化才会第一次询问是否继续，调用会作用到光标下的窗口。自测用 `dispatch_event` 先拖长路径那一行，再拖文件夹那一行，第二次必须是文件夹。
-- 不解析 `.lnk`。合成的 `CF_HDROP` 能读回超过 260 个 UTF-16 单元的路径，`DragQueryFileW` 先问长度再分配。Shell 的 `IDataObject` 对 269 个 UTF-16 单元的路径调用 `GetData(CF_HDROP)` 仍返回 `0x8007007A`：外壳用固定 260 单元组 `CF_HDROP`，这时还没有 `HDROP`。失败后改用 `SHCreateShellItemArrayFromDataObject` 和 `IShellItem::GetDisplayName(SIGDN_FILESYSPATH)`，单元测试读回了原路径，快捷方式路径没有被解析成目标。资源管理器把这条长路径拖进红色矩形，还要重新手测。
+- 不解析 `.lnk`。合成的 `CF_HDROP` 能读回超过 260 个 UTF-16 单元的路径，`DragQueryFileW` 先问长度再分配。Shell 的 `IDataObject` 对 269 个 UTF-16 单元的路径调用 `GetData(CF_HDROP)` 仍返回 `0x8007007A`：外壳用固定 260 单元组 `CF_HDROP`，这时还没有 `HDROP`。失败后改用 `SHCreateShellItemArrayFromDataObject` 和 `IShellItem::GetDisplayName(SIGDN_FILESYSPATH)`，单元测试读回了原路径，快捷方式路径没有被解析成目标。2026-10-09 10:56（UTC+8）在 `3311ecc` 的 `--ole` 上，资源管理器把这条长路径拖进红色矩形，控制台给出完整 `paths=`，`effect=1`，没有再出现 `0x8007007A`。这次走的是上述外壳项退路。
 - 路径是否存在只对可见条目调用上面的 `check_exists`，结果回到界面线程更新。不监视文件系统。
 - 不实现物理文件夹同步、文件操作撤销栈和桌面嵌入。
 
