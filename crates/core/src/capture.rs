@@ -168,10 +168,9 @@ fn match_weekday(body: &str, today: CivilDate) -> Option<(&str, TodoDue)> {
         (true, rest)
     } else if let Some(rest) = body.strip_prefix("星期") {
         (false, rest)
-    } else if let Some(rest) = body.strip_prefix("周") {
-        (false, rest)
     } else {
-        return None;
+        let rest = body.strip_prefix("周")?;
+        (false, rest)
     };
     let ch = rest.chars().next()?;
     let target = weekday_index(ch)?;
@@ -604,8 +603,9 @@ mod tests {
         }
         let huge = format!("{}天后 x", "9".repeat(80));
         assert_absent(&huge, today);
+        // 很长的前导零不增加数值，也不该 panic。数值仍是 1，所以识别。
         let padded = format!("{}1天后 x", "0".repeat(40));
-        assert_absent(&padded, today);
+        assert_date(&padded, today, "x", ymd(2026, 10, 9));
 
         // 数值在 1 至 365 里时，前导零仍是这个前缀。规格约束的是 N，不是写法里能不能补零。
         assert_date("01天后 x", today, "x", ymd(2026, 10, 9));
