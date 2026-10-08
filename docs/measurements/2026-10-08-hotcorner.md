@@ -215,14 +215,14 @@ CSV：[2026-10-08-hotcorner-still-hook.csv](2026-10-08-hotcorner-still-hook.csv)
 
 这不是「性能测量」的空闲场景，也不能写成已经达到内存或 CPU 目标。光标移动的 5 分钟仍然没有。机制没有选定。
 
-要补移动 5 分钟：人在采样的 5 分钟里持续移动光标，不要只停在角上。检测先跑起来，采样 300 秒，检测用 360 秒自己退出。不要 `Stop-Process`。
+要补移动 5 分钟：人在采样的 5 分钟里持续移动光标，不要只停在角上。检测用 360 秒自己退出。不要 `Stop-Process`。下面两条分两个终端运行：先在一个终端启动检测，看到 `ready pid=` 之后，在另一个终端用那个 pid 采样。
 
 ```
 cargo run -p hotcorner --release -- run --scheme hook --monitor primary --corner top-right --corner-px 32 --dwell-ms 350 --duration-secs 360 --events events-hook.jsonl
 cargo run -p lanwork-sample --release -- sample --pid <上面打印的 pid> --duration-secs 300 --interval-ms 1000 --out hook-move.csv
 ```
 
-方案 B 把第一行换成：
+方案 B 只替换第一个终端里的检测命令。下面两行各跑一轮，不要同时跑。采样仍在第二个终端，命令和上面相同。
 
 ```
 cargo run -p hotcorner --release -- run --scheme poll --interval-ms 50 --monitor primary --corner top-right --corner-px 32 --dwell-ms 350 --duration-secs 360 --events events-poll50.jsonl
