@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: fmt, clippy, test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Require MSVC host
+        shell: pwsh
+        run: |
+          $hostLine = rustc -vV | Select-String -Pattern '^host: '
+          if ($hostLine -notmatch 'x86_64-pc-windows-msvc') {
+            Write-Error "expected host x86_64-pc-windows-msvc, got: $hostLine"
+            exit 1
+          }
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
+      - name: core does not depend on slint
+        shell: pwsh
+        run: |
+          $tree = cargo tree -p lanwork-core --prefix none --edges normal,build,dev
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($tree -match 'slint') {
+            Write-Error "lanwork-core dependency tree contains slint:`n$tree"
+            exit 1
+          }
+          Write-Output $tree

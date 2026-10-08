@@ -1,6 +1,27 @@
 # 架构
 
-本文规定实现机制。可见行为以 [product.md](product.md) 为准。仓库还没有代码，本文不是目录地图。有代码之后，再补模块路径，并分开写「已经接入」和「尚未接入」。
+本文规定实现机制。可见行为以 [product.md](product.md) 为准。模块路径如下，分成已经接入和尚未接入。
+
+## 模块路径
+
+### 已经接入
+
+| 路径 | 现状 |
+| --- | --- |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。当前没有具体模块。 |
+| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
+| `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
+| `third_party/` | 第三方许可说明的目录。当前没有许可文件。 |
+
+### 尚未接入
+
+| 内容 | 将落在 |
+| --- | --- |
+| 数据目录、原子写入、待办、便签、收纳、GitHub 与搜索索引等服务 | `crates/core` |
+| 命令层、Win32 集成、搜索条、面板和其他界面 | `crates/app` |
+| 各项技术验证的最小程序 | `spikes/<名称>` |
+| Unihan、Everything SDK 等许可说明 | `third_party/` |
+| 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
 
 ## 技术验证
 
@@ -23,6 +44,7 @@
 
 - 只支持 Windows 11 x64。
 - 界面用 Slint，渲染器由技术验证选定。窗口外观用 Desktop Window Manager：无边框、圆角、暗色、Acrylic（`DWMWA_SYSTEMBACKDROP_TYPE` 的 transient backdrop）。透明不可用时用纯色背景。不做 CSS `backdrop-filter`，也不提供按百分比调节的玻璃透明度。
+- Slint crate 固定为 1.18.1。升级单独提交，并重跑依赖该版本行为的技术验证。
 - `DWMWA_SYSTEMBACKDROP_TYPE` 从 Windows 11 Build 22621 起可用。运行时检查 build 和调用返回值，不可用时不设置该属性，按纯色处理。产品支持的最低 build 尚未确定。
 - 进程内没有 Vue、Tauri、WebView2。
 - Slint 按 Royalty-free 许可证使用。归属声明用 Release 下载页上的 Slint 徽标，界面里不放 `AboutSlint`。许可证要求徽标在公开网页上，因此仓库公开之前不对外分发二进制。

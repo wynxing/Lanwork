@@ -1,0 +1,6 @@
+# 当前 stable 的精确版本。主机是 Windows 时为 MSVC；
+# `targets` 只追加交叉编译标准库，不改变主机链接器，因此不在这里写 Windows target。
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
