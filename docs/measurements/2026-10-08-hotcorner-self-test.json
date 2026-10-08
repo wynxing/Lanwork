@@ -1,0 +1,697 @@
+{
+  "corner_px": 32,
+  "corner_px_note": "待定。产品规格没有写热角的像素边长。",
+  "dwell_ms": 350,
+  "env": {
+    "dpi": [
+      {
+        "dpi_x": 96,
+        "dpi_y": 96,
+        "primary": true,
+        "rect": [
+          0,
+          0,
+          1920,
+          1200
+        ],
+        "source": "GetDpiForMonitor"
+      }
+    ],
+    "foreground": {
+      "class": "CabinetWClass",
+      "covers_monitor": false,
+      "exe": {
+        "path": "C:\\Windows\\explorer.exe",
+        "pid": 9032
+      },
+      "note": "全屏时是否抑制热角，产品规格没有写。这里只探测，不改变触发。待定。",
+      "rect": [
+        120,
+        0,
+        1320,
+        752
+      ]
+    },
+    "low_level_hooks_timeout": {
+      "error": "ERROR_FILE_NOT_FOUND",
+      "found": false
+    },
+    "monitors": [
+      {
+        "bottom": 1200,
+        "left": 0,
+        "primary": true,
+        "right": 1920,
+        "top": 0
+      }
+    ],
+    "virtual_screen": {
+      "h": 1200,
+      "w": 1920,
+      "x": 0,
+      "y": 0
+    },
+    "windows": {
+      "CurrentBuild": {
+        "found": true,
+        "type": "REG_SZ",
+        "value": "26300"
+      },
+      "DisplayVersion": {
+        "found": true,
+        "type": "REG_SZ",
+        "value": "26H2"
+      },
+      "ProductName": {
+        "found": true,
+        "type": "REG_SZ",
+        "value": "Windows 10 Home China"
+      },
+      "UBR": {
+        "found": true,
+        "type": "REG_DWORD",
+        "value": 9550
+      }
+    }
+  },
+  "gap_note": "待定。点不在任何显示器内时，光标所在显示器模式退回主显示器。",
+  "hook": {
+    "body": {
+      "block": {
+        "baseline": {
+          "block_done_at_send_return": false,
+          "from": [
+            1764,
+            155
+          ],
+          "moved": true,
+          "send_error": null,
+          "send_ms": 0,
+          "to": [
+            1710,
+            155
+          ]
+        },
+        "hook_installed_after": true,
+        "hook_thread_blocked": {
+          "returned_before_sleep_finished": true,
+          "sample": {
+            "block_done_at_send_return": false,
+            "from": [
+              1764,
+              155
+            ],
+            "moved": true,
+            "send_error": null,
+            "send_ms": 303,
+            "to": [
+              1678,
+              155
+            ]
+          }
+        },
+        "main_thread_blocked": {
+          "returned_before_sleep_finished": true,
+          "sample": {
+            "block_done_at_send_return": false,
+            "from": [
+              1764,
+              155
+            ],
+            "moved": true,
+            "send_error": null,
+            "send_ms": 0,
+            "to": [
+              1678,
+              155
+            ]
+          }
+        },
+        "note": "returned_before_sleep_finished 表示 SendInput 返回时对方还在 Sleep。不另设卡顿阈值。"
+      },
+      "drag_fast": {
+        "after": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "before": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "elapsed_ms": 91,
+        "input_error": null,
+        "mode": "fast",
+        "reason": "窗口矩形没变，不能算拖动了窗口",
+        "result": "未测",
+        "title_error": null,
+        "triggers": 0,
+        "window_ex": "WS_EX_TOPMOST"
+      },
+      "drag_hold": {
+        "after": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "before": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "elapsed_ms": 562,
+        "input_error": null,
+        "mode": "hold",
+        "reason": "窗口矩形没变，不能算拖动了窗口",
+        "result": "未测",
+        "title_error": null,
+        "triggers": 1,
+        "window_ex": "WS_EX_TOPMOST"
+      },
+      "leave_340": {
+        "inside_ms": 340,
+        "note": "inside_ms 含移出角的时间。达到或超过 350 时，这次不能当作 340ms 边界。",
+        "result": "通过",
+        "triggers": 0
+      },
+      "off": {
+        "held_ms": 500,
+        "result": "通过",
+        "triggers": 0
+      },
+      "other_monitors": {
+        "monitor_count": 1,
+        "reason": "这次只枚举到一块显示器，看不到两种模式的行为差。实现都在。待定。",
+        "result": "未测"
+      },
+      "rearm": {
+        "extra_while_held": 0,
+        "first_trigger_us": 369651,
+        "result": "通过",
+        "second_trigger_us": 355863
+      },
+      "removal": {
+        "detected_removal": true,
+        "fallback_poll": {
+          "interval_ms": 50,
+          "stay": {
+            "arrived_to_trigger_us": 362035,
+            "index": 0,
+            "move_to_trigger_us": 363297,
+            "result": "通过",
+            "target": [
+              1904,
+              15
+            ],
+            "triggers_us_from_move": [
+              363297
+            ]
+          }
+        },
+        "hits_after_slow": 55,
+        "hits_before": 54,
+        "hook_called_after_rehook": true,
+        "hook_called_after_slow": false,
+        "hook_installed_at_start": true,
+        "rehook_finished": true,
+        "rehook_posted": null,
+        "rehook_result": "ok",
+        "restored_before_slow": null,
+        "slow_ms_requested": 1000,
+        "slow_send_error": null,
+        "slow_send_ms": 311,
+        "stay_after_rehook": {
+          "arrived_to_trigger_us": 357270,
+          "index": 0,
+          "move_to_trigger_us": 358610,
+          "result": "通过",
+          "target": [
+            1904,
+            15
+          ],
+          "triggers_us_from_move": [
+            358610
+          ]
+        },
+        "unhooked": true
+      },
+      "stay": [
+        {
+          "corner": "TopRight",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 354710,
+              "index": 0,
+              "move_to_trigger_us": 361022,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                361022
+              ]
+            },
+            {
+              "arrived_to_trigger_us": 361281,
+              "index": 1,
+              "move_to_trigger_us": 363375,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                363375
+              ]
+            },
+            {
+              "arrived_to_trigger_us": 363620,
+              "index": 2,
+              "move_to_trigger_us": 365189,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                365189
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "TopLeft",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 362582,
+              "index": 0,
+              "move_to_trigger_us": 363701,
+              "result": "通过",
+              "target": [
+                15,
+                15
+              ],
+              "triggers_us_from_move": [
+                363701
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "BottomLeft",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 360479,
+              "index": 0,
+              "move_to_trigger_us": 361825,
+              "result": "通过",
+              "target": [
+                15,
+                1184
+              ],
+              "triggers_us_from_move": [
+                361825
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "BottomRight",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 350069,
+              "index": 0,
+              "move_to_trigger_us": 350928,
+              "result": "通过",
+              "target": [
+                1904,
+                1184
+              ],
+              "triggers_us_from_move": [
+                350928
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "disagree": 0,
+    "hook_hits": 60,
+    "post_fail": 0,
+    "scheme": "hook",
+    "timer_fail": 0,
+    "worker_panicked": false
+  },
+  "off_note": "待定。关闭时检测仍在跑，但角测试恒为假，所以不触发。规格只要求不打开面板。",
+  "poll_100": {
+    "body": {
+      "drag_fast": {
+        "after": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "before": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "elapsed_ms": 95,
+        "input_error": null,
+        "mode": "fast",
+        "reason": "窗口矩形没变，不能算拖动了窗口",
+        "result": "未测",
+        "title_error": null,
+        "triggers": 0,
+        "window_ex": "WS_EX_TOPMOST"
+      },
+      "drag_hold": {
+        "after": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "before": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "elapsed_ms": 555,
+        "input_error": null,
+        "mode": "hold",
+        "reason": "窗口矩形没变，不能算拖动了窗口",
+        "result": "未测",
+        "title_error": null,
+        "triggers": 1,
+        "window_ex": "WS_EX_TOPMOST"
+      },
+      "leave_340": {
+        "inside_ms": 340,
+        "note": "inside_ms 含移出角的时间。达到或超过 350 时，这次不能当作 340ms 边界。",
+        "result": "通过",
+        "triggers": 0
+      },
+      "off": {
+        "held_ms": 500,
+        "result": "通过",
+        "triggers": 0
+      },
+      "other_monitors": {
+        "monitor_count": 1,
+        "reason": "这次只枚举到一块显示器，看不到两种模式的行为差。实现都在。待定。",
+        "result": "未测"
+      },
+      "rearm": {
+        "extra_while_held": 0,
+        "first_trigger_us": 409667,
+        "result": "通过",
+        "second_trigger_us": 449600
+      },
+      "stay": [
+        {
+          "corner": "TopRight",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 499781,
+              "index": 0,
+              "move_to_trigger_us": 502367,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                502367
+              ]
+            },
+            {
+              "arrived_to_trigger_us": 492286,
+              "index": 1,
+              "move_to_trigger_us": 493416,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                493416
+              ]
+            },
+            {
+              "arrived_to_trigger_us": 494199,
+              "index": 2,
+              "move_to_trigger_us": 495849,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                495849
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "TopLeft",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 496480,
+              "index": 0,
+              "move_to_trigger_us": 498128,
+              "result": "通过",
+              "target": [
+                15,
+                15
+              ],
+              "triggers_us_from_move": [
+                498128
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "BottomLeft",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 499572,
+              "index": 0,
+              "move_to_trigger_us": 499886,
+              "result": "通过",
+              "target": [
+                15,
+                1184
+              ],
+              "triggers_us_from_move": [
+                499886
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "BottomRight",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 497879,
+              "index": 0,
+              "move_to_trigger_us": 498184,
+              "result": "通过",
+              "target": [
+                1904,
+                1184
+              ],
+              "triggers_us_from_move": [
+                498184
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "interval_ms": 100,
+    "scheme": "poll"
+  },
+  "poll_50": {
+    "body": {
+      "drag_fast": {
+        "after": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "before": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "elapsed_ms": 100,
+        "input_error": null,
+        "mode": "fast",
+        "reason": "窗口矩形没变，不能算拖动了窗口",
+        "result": "未测",
+        "title_error": null,
+        "triggers": 0,
+        "window_ex": "WS_EX_TOPMOST"
+      },
+      "drag_hold": {
+        "after": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "before": [
+          840,
+          530,
+          1080,
+          670
+        ],
+        "elapsed_ms": 561,
+        "input_error": null,
+        "mode": "hold",
+        "reason": "窗口矩形没变，不能算拖动了窗口",
+        "result": "未测",
+        "title_error": null,
+        "triggers": 1,
+        "window_ex": "WS_EX_TOPMOST"
+      },
+      "leave_340": {
+        "inside_ms": 342,
+        "note": "inside_ms 含移出角的时间。达到或超过 350 时，这次不能当作 340ms 边界。",
+        "result": "通过",
+        "triggers": 0
+      },
+      "off": {
+        "held_ms": 500,
+        "result": "通过",
+        "triggers": 0
+      },
+      "other_monitors": {
+        "monitor_count": 1,
+        "reason": "这次只枚举到一块显示器，看不到两种模式的行为差。实现都在。待定。",
+        "result": "未测"
+      },
+      "rearm": {
+        "extra_while_held": 0,
+        "first_trigger_us": 362716,
+        "result": "通过",
+        "second_trigger_us": 355864
+      },
+      "stay": [
+        {
+          "corner": "TopRight",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 352768,
+              "index": 0,
+              "move_to_trigger_us": 354167,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                354167
+              ]
+            },
+            {
+              "arrived_to_trigger_us": 396569,
+              "index": 1,
+              "move_to_trigger_us": 399288,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                399288
+              ]
+            },
+            {
+              "arrived_to_trigger_us": 395443,
+              "index": 2,
+              "move_to_trigger_us": 397405,
+              "result": "通过",
+              "target": [
+                1904,
+                15
+              ],
+              "triggers_us_from_move": [
+                397405
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "TopLeft",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 394202,
+              "index": 0,
+              "move_to_trigger_us": 395788,
+              "result": "通过",
+              "target": [
+                15,
+                15
+              ],
+              "triggers_us_from_move": [
+                395788
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "BottomLeft",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 401120,
+              "index": 0,
+              "move_to_trigger_us": 401539,
+              "result": "通过",
+              "target": [
+                15,
+                1184
+              ],
+              "triggers_us_from_move": [
+                401539
+              ]
+            }
+          ]
+        },
+        {
+          "corner": "BottomRight",
+          "trials": [
+            {
+              "arrived_to_trigger_us": 400087,
+              "index": 0,
+              "move_to_trigger_us": 400751,
+              "result": "通过",
+              "target": [
+                1904,
+                1184
+              ],
+              "triggers_us_from_move": [
+                400751
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "interval_ms": 50,
+    "scheme": "poll"
+  },
+  "startup_note": "待定。开始时视为在角外。第一拍已经在角内会开始计时。"
+}
