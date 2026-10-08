@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。待办、便签、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
@@ -20,7 +20,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 待办、便签、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析和存储已接入，这些还没有 |
+| 待办、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储和便签服务已接入，这些还没有 |
 | 命令层、Win32 集成、搜索条、面板和其他界面 | `crates/app` |
 | 各项技术验证的最小程序 | `spikes/<名称>` |
 | Everything SDK 的许可说明 | `third_party/`。Unihan 的许可说明已经放入 |
@@ -100,6 +100,7 @@ Lanwork/
 - 待办可带到期日、提醒、周期、GitHub 来源，以及至多一个当前标记。
 - 收纳分组保存名称、排序、可选的关联待办 id，以及引用列表。每条引用保存绝对路径、显示名、是否文件夹和加入时间，不保存文件内容和图标。
 - 便签带递增的 `revision`。保存时带上加载时的 revision，与磁盘不一致则返回冲突错误，调用方保留正文。冲突之后的可见行为以产品规格为准。
+- 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。服务不做覆盖；冲突后的版本选择、关闭和退出时的未保存正文，以及便签删除的界面入口，仍以产品规格为准。
 - GitHub 通过本机 `gh` 读取。token 不进入配置、日志或导出包。
 - 导出包包含配置、待办、便签、收纳分组和 GitHub watchlist，缓存可选。不含日志、备份目录和 token。
 - 不实现 Focus 的聚合服务，也不实现从 MayDolist schema 的一次性迁移。
