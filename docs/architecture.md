@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
@@ -20,8 +20,8 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 待办、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储和便签服务已接入，这些还没有 |
-| 命令层、Win32 集成、搜索条、面板和其他界面 | `crates/app` |
+| 收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务和待办服务已接入，这些还没有 |
+| 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands` 与便签薄命令 `NoteCommands` 已在 `crates/core` |
 | 各项技术验证的最小程序 | `spikes/<名称>` |
 | Everything SDK 的许可说明 | `third_party/`。Unihan 的许可说明已经放入 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
@@ -109,11 +109,15 @@ Lanwork/
 
 单文件替换是原子的，跨文件的操作不是。下面三类操作各自保证进程在任意时刻中断后都能恢复到一致状态，不引入通用事务日志。
 
-- **跨清单移动待办**：先写入目标清单（条目带新的 `movedAt` 时间），再从源清单移除。中断后同一 id 出现在两个清单时，加载阶段保留 `movedAt` 较新的一条，并把另一份移除后写回。
-- **切换当前待办**：先给新条目写上当前标记和 `currentSince` 时间，再清除旧条目的标记。中断后出现多条时，加载阶段保留 `currentSince` 最新的一条，其余清除后写回。
+- **跨清单移动待办**：先写入目标清单（条目带新的 `movedAt` 时间），再从源清单移除。中断后同一 id 出现在两个清单时，加载阶段保留 `movedAt` 较新的一条，并把另一份移除后写回。`movedAt` 相等时保留清单 id 较小的一条；清单也相同则保留靠前的那一行。没有 `movedAt` 的视为更旧。
+- **切换当前待办**：先给新条目写上当前标记和 `currentSince` 时间，再清除旧条目的标记。中断后出现多条时，加载阶段保留 `currentSince` 最新的一条，其余清除后写回。`currentSince` 相等时保留清单 id 较小的一条；清单也相同则保留条目 id 较小的一条。没有 `currentSince` 的视为更旧。只有一条当前标记时不改写。
+
+进程仍在、同一批次里后面的写入失败时，先把本批次已经替换的文件写回内存里的操作前内容，然后返回错误。内存保持操作前状态，不发布 `EntityChanged`。这次回滚再失败时，重新读入清单，按上面的 `movedAt` 与 `currentSince` 规则修好后再返回，避免留下重复的条目 id 或两条当前标记。修复成功时返回的仍是原来的写入错误。重新读入失败则返回该读取错误。
 - **导入**：解压到临时目录并校验（白名单路径，拒绝 `..` 和绝对路径，每个 JSON 可解析，版本可识别）。通过后，先把当前数据完整备份到 `backups/`，再在数据目录写入 `import.pending`（内容是这份备份的路径），然后逐个替换文件、删除导入包中没有的数据文件，最后删除 `import.pending`。启动时发现 `import.pending`，就用其中记录的备份整体恢复，再删除该文件，并在界面显示导入未完成。
 
 加载修复和导入恢复在构建搜索索引、处理通知点击之前完成。`Store::boot` 的顺序是：若存在 `import.pending`，调用导入恢复钩子（备份与导入实现；未注册钩子则启动失败，不加载业务数据）；然后调用加载钩子；然后按注册顺序运行加载修复（`movedAt` 与 `currentSince` 由待办服务实现）。任一钩子返回错误则启动失败，不进入可建索引状态，也不写默认文档。成功之后 `build_index` 与 `handle_notification_click` 才执行调用方。恢复钩子成功且已删除 `import.pending` 时，`BootReport.import_recovered` 为真，界面据此显示「导入未完成」。变更消息只在整个操作完成后发出。永久删除待办后，收纳分组里残留的关联 id 在读取时视为无关联，并在下次写该分组时清除。永久删除通知是待办服务的领域事件，不是这一层的 `EntityChanged`。
+
+待办服务把加载钩子和名为 `movedAt`、`currentSince` 的两条加载修复注册到 `Store::boot`。修复写回使用同一批次，`EntityChanged` 只在该批次提交后发出。永久删除的领域事件是 `TodoNotice::Purged`。产品规格写明永久删除之前，服务不删除条目，也不发出这条事件。
 
 配置至少包括：数据目录、热角、搜索条热键、面板热键（可空）、安静时段、主题、开机启动、GitHub 刷新间隔、长期未更新天数、来源同步、自动完成关联待办、处理模式顺延天数。不包括玻璃透明度。
 
