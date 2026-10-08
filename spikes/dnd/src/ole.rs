@@ -11,8 +11,8 @@ use windows::Win32::Foundation::{
     DRAGDROP_S_USEDEFAULTCURSORS, HWND, POINT, POINTL, S_OK,
 };
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, CoCreateInstance, DVASPECT_CONTENT, FORMATETC, IDataObject, IPersistFile,
-    TYMED_HGLOBAL,
+    CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree, DVASPECT_CONTENT, FORMATETC,
+    IDataObject, IPersistFile, TYMED_HGLOBAL,
 };
 use windows::Win32::System::DataExchange::GlobalFindAtomW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
@@ -24,7 +24,8 @@ use windows::Win32::System::SystemServices::MK_LBUTTON;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     BHID_DataObject, DragQueryFileW, HDROP, ILFree, IShellItemArray, IShellLinkW,
-    SHCreateShellItemArrayFromIDLists, SHParseDisplayName, ShellLink,
+    SHCreateShellItemArrayFromDataObject, SHCreateShellItemArrayFromIDLists, SHParseDisplayName,
+    SIGDN_FILESYSPATH, ShellLink,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetPropW, GetSystemMetrics, SM_CXDRAG, SM_CYDRAG};
 use windows::core::BOOL;
@@ -194,12 +195,62 @@ fn hdrop_format() -> FORMATETC {
 
 pub fn paths_from_data_object(data: &IDataObject) -> Result<Vec<PathBuf>, String> {
     let format = hdrop_format();
-    let mut medium =
-        unsafe { data.GetData(&format) }.map_err(|error| format!("GetData CF_HDROP: {error}"))?;
-    let hdrop = HDROP(unsafe { medium.u.hGlobal }.0);
-    let paths = paths_from_hdrop(hdrop);
-    unsafe { ReleaseStgMedium(&mut medium) };
+    match unsafe { data.GetData(&format) } {
+        Ok(mut medium) => {
+            let hdrop = HDROP(unsafe { medium.u.hGlobal }.0);
+            let paths = paths_from_hdrop(hdrop);
+            unsafe { ReleaseStgMedium(&mut medium) };
+            Ok(paths)
+        }
+        // The shell builds CF_HDROP with SHGetPathFromIDListW, whose binding is a
+        // fixed 260 UTF-16 units. A longer path fails here, before any HDROP exists,
+        // so DragQueryFileW never gets a chance to size its own buffer.
+        Err(error) if error.code().0 == 0x8007_007A_u32 as i32 => paths_from_shell_items(data)
+            .map_err(|fallback| {
+                format!("GetData CF_HDROP: {error}; shell-item fallback: {fallback}")
+            }),
+        Err(error) => Err(format!("GetData CF_HDROP: {error}")),
+    }
+}
+
+fn paths_from_shell_items(data: &IDataObject) -> Result<Vec<PathBuf>, String> {
+    let items: IShellItemArray = unsafe { SHCreateShellItemArrayFromDataObject(data) }
+        .map_err(|error| format!("SHCreateShellItemArrayFromDataObject: {error}"))?;
+    let count = unsafe { items.GetCount() }.map_err(|error| format!("GetCount: {error}"))?;
+    let mut paths = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let item =
+            unsafe { items.GetItemAt(index) }.map_err(|error| format!("GetItemAt: {error}"))?;
+        let name = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }
+            .map_err(|error| format!("GetDisplayName: {error}"))?;
+        let path = path_from_pwstr(name);
+        unsafe { CoTaskMemFree(Some(name.0.cast())) };
+        if path.as_os_str().is_empty() {
+            return Err(format!("shell item {index} had an empty path"));
+        }
+        paths.push(path);
+    }
     Ok(paths)
+}
+
+fn path_from_pwstr(name: windows::core::PWSTR) -> PathBuf {
+    let wide = unsafe {
+        if name.0.is_null() {
+            return PathBuf::new();
+        }
+        let mut len = 0usize;
+        while *name.0.add(len) != 0 {
+            len += 1;
+        }
+        std::slice::from_raw_parts(name.0, len)
+    };
+    let mut path = PathBuf::from(OsString::from_wide(wide));
+    let encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+    const VERBATIM: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    if encoded.starts_with(&VERBATIM) {
+        path = PathBuf::from(OsString::from_wide(&encoded[VERBATIM.len()..]));
+    }
+    path
 }
 
 pub fn paths_from_hdrop(hdrop: HDROP) -> Vec<PathBuf> {
@@ -523,5 +574,54 @@ mod tests {
         assert_eq!(paths, vec![lnk, file, folder]);
         assert!(paths[0].extension().is_some_and(|ext| ext == "lnk"));
         assert!(wide_len(&paths[1]) > 260);
+    }
+
+    #[test]
+    fn shell_data_object_keeps_long_path_and_lnk() {
+        ensure_ole().expect("ole");
+        let root =
+            std::env::temp_dir().join(format!("lanwork-dnd-longread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let readme = root.join("readme.txt");
+        std::fs::write(&readme, b"readme").expect("readme");
+        let shortcut = root.join("shortcut.lnk");
+        create_shortcut(&shortcut, &readme).expect("shortcut");
+
+        let mut nested = root.clone();
+        let piece = "d".repeat(40);
+        loop {
+            if wide_len(&nested) > 230 {
+                break;
+            }
+            nested.push(&piece);
+        }
+        std::fs::create_dir_all(&nested).expect("long dir");
+        let long_file = nested.join("long.txt");
+        std::fs::write(&long_file, b"long").expect("long file");
+        assert!(wide_len(&long_file) > 260, "{}", wide_len(&long_file));
+
+        let direct = data_object_for_paths(std::slice::from_ref(&long_file)).expect("data");
+        let hdrop_code = match unsafe { direct.GetData(&hdrop_format()) } {
+            Ok(mut medium) => {
+                unsafe { ReleaseStgMedium(&mut medium) };
+                None
+            }
+            Err(error) => Some(error.code().0),
+        };
+        assert_eq!(
+            hdrop_code,
+            Some(0x8007_007A_u32 as i32),
+            "CF_HDROP GetData did not return 0x8007007A"
+        );
+        let paths = paths_from_data_object(&direct).expect("long read");
+        assert_eq!(paths, vec![long_file.clone()]);
+        assert!(wide_len(&paths[0]) > 260);
+
+        let link_data = data_object_for_paths(std::slice::from_ref(&shortcut)).expect("link data");
+        let link_paths = paths_from_shell_items(&link_data).expect("link names");
+        assert_eq!(link_paths, vec![shortcut]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

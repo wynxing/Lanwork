@@ -235,19 +235,21 @@ fn check_shell_roundtrip(samples: &Samples) -> Result<(), String> {
         }
         Err(error) => return Err(format!("short shell roundtrip: {error}")),
     }
-    match data_object_for_paths(std::slice::from_ref(&samples.long_file))
-        .and_then(|data| paths_from_data_object(&data))
-    {
-        Ok(paths) => line(&format!(
-            "shell-roundtrip-long wide={} same={} path={}",
-            paths.first().map(|path| wide_len(path)).unwrap_or(0),
-            paths.first().is_some_and(|path| path == &samples.long_file),
-            paths
-                .first()
-                .map(|path| path.display().to_string())
-                .unwrap_or_default()
-        )),
-        Err(error) => line(&format!("shell-roundtrip-long-error {error}")),
+    let paths = data_object_for_paths(std::slice::from_ref(&samples.long_file))
+        .and_then(|data| paths_from_data_object(&data))?;
+    let same = paths.first().is_some_and(|path| path == &samples.long_file);
+    let wide = paths.first().map(|path| wide_len(path)).unwrap_or(0);
+    line(&format!(
+        "shell-roundtrip-long wide={wide} same={same} path={}",
+        paths
+            .first()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default()
+    ));
+    if !same || wide <= 260 {
+        return Err(format!(
+            "shell long path was not preserved: wide={wide} paths={paths:?}"
+        ));
     }
     Ok(())
 }
