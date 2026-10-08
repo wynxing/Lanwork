@@ -25,14 +25,31 @@ fn start_menu_finds_an_app() {
 }
 
 #[test]
-fn store_finds_calculator_by_aumid() {
+fn store_entries_are_aumids_and_include_calculator_when_installed() {
     let entries = read_store().expect("store");
-    assert!(
-        entries.iter().any(|entry| {
-            matches!(&entry.target, LaunchTarget::Aumid { aumid } if aumid.to_lowercase().contains("windowscalculator"))
-        }),
-        "商店应用里应该有计算器的 AUMID"
-    );
+    for entry in &entries {
+        assert_eq!(entry.source, AppSource::Store);
+        assert!(!entry.name.is_empty(), "商店应用应该有显示名");
+        match &entry.target {
+            LaunchTarget::Aumid { aumid } => assert!(!aumid.is_empty(), "商店应用应该有 AUMID"),
+            LaunchTarget::Path { .. } => panic!("商店应用不应该用路径目标"),
+        }
+    }
+    // GitHub 托管的 Windows 镜像通常没有计算器。本机装了才要求命中 AUMID。
+    let installed = std::env::var_os("LOCALAPPDATA").is_some_and(|dir| {
+        PathBuf::from(dir)
+            .join("Packages")
+            .join("Microsoft.WindowsCalculator_8wekyb3d8bbwe")
+            .is_dir()
+    });
+    if installed {
+        assert!(
+            entries.iter().any(|entry| {
+                matches!(&entry.target, LaunchTarget::Aumid { aumid } if aumid.to_lowercase().contains("windowscalculator"))
+            }),
+            "已安装的计算器应该以 AUMID 进入商店索引"
+        );
+    }
 }
 
 #[test]
