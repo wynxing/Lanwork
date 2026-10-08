@@ -4,6 +4,8 @@ members = [
     "crates/core",
     "crates/app",
     "spikes/hello",
+    "tools/fixture",
+    "tools/sample",
 ]
 
 [workspace.package]
