@@ -159,8 +159,8 @@
 
 结论：**未通过**。七条通过条件都要人工用鼠标对资源管理器操作，结果栏留空。自动化观察到的内容写在后面，不充当这七条的「通过」。按 [#33](https://github.com/wynxing/Lanwork/issues/33)，不是每一条都通过就不算该项通过，因此不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
 
-- 日期：2026-10-08
-- commit：`1c5ced530325a51641a45dcc1eafce2a26142ae7`。`cargo run -p dnd -- --self-test` 在这棵树上退出码 0。变基到当前 main 之后又跑了一次，退出码仍是 0
+- 日期：2026-10-08 首次自动化；2026-10-09 修验证程序拖错文件
+- commit：`COMMIT_HASH_HERE`。修过抓取之后，`cargo run -p dnd -- --self-test` 退出码 0。2026-10-09 之前的手测结果不算数
 - Slint：1.18.1（workspace 依赖 `=1.18.1`）。验证程序额外打开 feature `raw-window-handle-06`。默认 features 含 `backend-winit`、`renderer-femtovg`、`renderer-software`，不代表产品已选定渲染器
 - 渲染器：`GraphicsAPI::NativeOpenGL`（FemtoVG 的 OpenGL 路径被选中）。窗口缩放 1.5
 - 机器：DESKTOP-7C3P6OG，XIAOMI REDMI Book 14 2025 (FHD+)
@@ -184,11 +184,22 @@
 
 另有一条不在上面七条里，同样留空：从资源管理器把文件拖到 Slint 的「Slint 放下」区域，Slint 是否拿到路径。源码上 winit 后端不把外部放下交给 `DropArea`，但没有用鼠标确认。
 
+### 2026-10-09 手测发现验证程序拖错文件
+
+旧版验证程序先从列表拖出嵌套的 `long.txt` 之后，再按住 `folder` 那一行拖到样本目录的 `folder`，拷出来的是 `long.txt`。本地 `%TEMP%\lanwork-dnd-spike\folder\long.txt` 在 08:27 被创建，4 字节。窗口「记录」也不再出现新行。进程仍在，窗口仍响应。
+
+根因：`DoDragDrop` 的模态循环吃掉鼠标抬起，Slint 没收到 release。第 4 行（`long.txt`，下标 3）的 `TouchArea` 一直处于 pressed 并抓着鼠标，下一次在任何行按下都被派给这一行。拖出结束时也没有清掉这份抓取。窗口「记录」以前只由定时器拷贝放下日志，拖出只写控制台；文本从顶部排，新行落在 140px 下面被裁掉，所以看起来停了。
+
+已修：拖出成功、取消或出错之后都派发 `PointerReleased` 和 `PointerExited`。`ole-drag-start` 带行号和路径。拖入和拖出都写进窗口记录，只保留最后 12 行并贴在底部。修之前的手测不要填进通过条件。
+
+自测覆盖的是同一条清理：`dispatch_event` 先在第 4 行按下并移动，再在第 2 行（`folder`，下标 1）按下并移动，中间不另发抬起。第二次必须是 `index=1`，路径以 `\folder` 结尾。这条自测不调用 `DoDragDrop`，不能代替下面的资源管理器手测。
+
 ### 人工步骤
 
-在仓库根目录执行。样本由程序写到 `%TEMP%\lanwork-dnd-spike`，不要改用户文档目录。控制台每一行以 `dnd:` 开头。本机 `SM_CXDRAG=4`、`SM_CYDRAG=4`，缩放 1.5，所以要拖过大约 4 个物理像素才开始 OLE 拖出。
+先关掉已经打开的「拖放验证」窗口，再在仓库根目录执行下面的命令。旧进程占着 `dnd.exe` 时，新的 `cargo run` 覆盖不了它。样本由程序写到 `%TEMP%\lanwork-dnd-spike`，不要改用户文档目录。控制台每一行以 `dnd:` 开头。窗口「记录」应在每次拖入和拖出后出现新行。本机 `SM_CXDRAG=4`、`SM_CYDRAG=4`，缩放 1.5，所以要拖过大约 4 个物理像素才开始 OLE 拖出。
 
-1. `cargo run -p dnd -- --ole`。等窗口「拖放验证」出现，并看到 `registration-how=RevokeDragDrop then RegisterDragDrop`，且 `our-pointer` 与 `prop` 相同。
+0. `cargo run -p dnd -- --ole`。先把列表里的 `long.txt` 拖到样本目录的 `folder` 里（复制即可）。再按住列表里的 `folder` 拖进同一个 `folder`。第二次控制台必须是 `ole-drag-start index=1 path=...\folder`，不能再是 `long.txt`。窗口「记录」里这两次都要出现。`folder` 里如果又多出一个 `long.txt`，这次修复失败，通过条件不要填。这一步只确认拖的是哪一行，不代替下面七条。
+1. 同一个窗口里应看到 `registration-how=RevokeDragDrop then RegisterDragDrop`，且 `our-pointer` 与 `prop` 相同。
 2. 打开 `%TEMP%\lanwork-dnd-spike`。同时选中 `readme.txt` 和 `folder`，拖进红色「OLE 拖入」矩形。控制台应有一行 `drop effect=1 paths=...`，两个路径都在，顺序不限。矩形外松手应没有这条 drop，光标不是复制。把看到的写入第一条。
 3. 在窗口下方列表按住 `readme.txt`，拖到同一磁盘的一个文件夹，松手时选择复制。原文件还在样本目录，目标里有副本。再拖一次，松手时选择创建快捷方式。目标里出现快捷方式，原文件仍在。不要选移动；如果资源管理器只给出移动，记失败。写入第二、三条。
 4. 把 `shortcut.lnk` 拖进红色矩形。`paths=` 里必须是 `shortcut.lnk` 自己的路径，不能变成 `readme.txt`。写入第四条。
@@ -204,14 +215,15 @@
 - 调用 `OleInitialize` 之前，以及 `--probe-no-ole` 在 `MainWindow::new` 之后、进入事件循环之前：`CoGetApartmentType` 为 `0x800401F0`（尚未 `CoInitialize`）。
 - 进入 winit 事件循环后，以及本进程调用 `OleInitialize` 之后：`APTTYPE(3)` 即 `APTTYPE_MAINSTA`，qualifier 0。这是主 STA，不是 MTA。
 - 未替换目标时，`RegisterDragDrop` 返回 already-registered。winit 0.30.13 的 `create_window_data` 在 `drag_and_drop` 为真时 `OleInitialize` 并注册 `FileDropHandler`。
-- 替换后：`registration-how=RevokeDragDrop then RegisterDragDrop`，`our-pointer` 与 `prop` 同为 `0x276d8e0f108`，再次注册仍是 already-registered。这个地址每次进程不同，两次自测里两边都相等。
+- 替换后：`registration-how=RevokeDragDrop then RegisterDragDrop`，`our-pointer` 与 `prop` 同为 `0x20b49c4aab8`，再次注册仍是 already-registered。这个地址每次进程不同，几次自测里两边都相等。
 - `SM_CXDRAG=4`，`SM_CYDRAG=4`。判定是物理像素位移严格大于这两个值。Slint 窗口内阈值是另一套：`DISTANCE_THRESHOLD` 为 8 逻辑像素。
 - Shell `IDataObject` 往返：`readme.txt`、`folder`、`shortcut.lnk` 三个路径原样返回，快捷方式没有被解析成目标。
 - 同一接口对 269 个 UTF-16 单元的 `long.txt` 调用 `GetData(CF_HDROP)` 失败：`0x8007007A`（数据区域太小）。
 - 自己组的 `CF_HDROP` 能读回该长路径和 `shortcut.lnk`，长路径未被截断。
-- 连续 100 次创建 Shell `IDataObject` 并读回 `CF_HDROP`：`handles=299` 前后相同，`gdi=0`，`user=2`。这不是资源管理器拖放 100 次。
+- 连续 100 次创建 Shell `IDataObject` 并读回 `CF_HDROP`：这次 `handles=305` 前后相同，`gdi=0`，`user=2`。这不是资源管理器拖放 100 次。
 - `IDropSource::QueryContinueDrag` 在强制取消时返回 `0x40101`（`DRAGDROP_S_CANCEL`）。没有调用 `DoDragDrop`。
 - 窗口内 `dispatch_event`：从「Slint 拖出」拖到「Slint 放下」得到 `got=true`、`action=Copy`、文本为 `readme.txt`。目标改要移动后 `got=false`、`action=None`。这不是拖到资源管理器。
+- 同一窗口里 `dispatch_event` 先拖列表第 4 行再拖第 2 行，中间不发送抬起：`ole-drag-start index=3` 的路径是 `long.txt`，接着 `index=1` 的路径是 `...\folder`。窗口记录里同时有 `index=3` 和 `index=1`。这条不调用 `DoDragDrop`。
 
 ### 和 #27 的选择
 

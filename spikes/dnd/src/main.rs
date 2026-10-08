@@ -6,6 +6,8 @@ mod logic;
 mod ole;
 mod samples;
 
+use std::cell::RefCell;
+use std::io::Write;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,6 +90,26 @@ fn parse_mode() -> Result<Mode, String> {
 
 fn line(message: &str) {
     println!("dnd: {message}");
+    let _ = std::io::stdout().flush();
+}
+
+/// The window log is a fixed-height text block. Keep the tail so a new drag
+/// line is visible instead of staying clipped under the first lines.
+fn visible_log(full: &str) -> String {
+    const MAX_LINES: usize = 12;
+    let lines: Vec<&str> = full.lines().collect();
+    if lines.len() <= MAX_LINES {
+        full.to_string()
+    } else {
+        lines[lines.len() - MAX_LINES..].join("\n")
+    }
+}
+
+fn show_log(shared: &SharedDrop, ui: &MainWindow, message: &str) {
+    line(message);
+    shared.append_log(message);
+    let full = shared.log.lock().expect("log").clone();
+    ui.set_log(visible_log(&full).into());
 }
 
 fn run_self_test() -> Result<(), String> {
@@ -334,7 +356,8 @@ fn run_window(mode: Mode, samples: Samples) -> Result<(), String> {
     let target: windows::Win32::System::Ole::IDropTarget = ShelfDrop::new(shared.clone()).into();
     let installed = Arc::new(AtomicBool::new(false));
     let press = Rc::new(std::cell::Cell::new(None::<Press>));
-    wire_ole_drag(&ui, &rows, press, mode);
+    let drag_starts = Rc::new(RefCell::new(Vec::<(i32, String)>::new()));
+    wire_ole_drag(&ui, &rows, press, mode, shared.clone(), drag_starts.clone());
 
     let weak = ui.as_weak();
     let shared_timer = shared.clone();
@@ -345,6 +368,7 @@ fn run_window(mode: Mode, samples: Samples) -> Result<(), String> {
         readme: samples.readme.clone(),
         shortcut: samples.shortcut.clone(),
     };
+    let starts_timer = drag_starts.clone();
     let mode_timer = mode;
     let attempts = Rc::new(std::cell::Cell::new(0u32));
     let failed = Arc::new(AtomicBool::new(false));
@@ -359,9 +383,10 @@ fn run_window(mode: Mode, samples: Samples) -> Result<(), String> {
                 return;
             };
             publish_zone(&ui, &shared_timer);
-            if ui.get_log().as_str() != shared_timer.log.lock().expect("log").as_str() {
-                let text = shared_timer.log.lock().expect("log").clone();
-                ui.set_log(text.into());
+            let full = shared_timer.log.lock().expect("log").clone();
+            let visible = visible_log(&full);
+            if ui.get_log().as_str() != visible {
+                ui.set_log(visible.into());
             }
             if mode_timer != Mode::Slint && !installed_timer.load(Ordering::Acquire) {
                 match hwnd_of(ui.window()) {
@@ -386,7 +411,13 @@ fn run_window(mode: Mode, samples: Samples) -> Result<(), String> {
                 }
                 return;
             }
-            match self_test_window(&ui, &shared_timer, &graphics_timer, &samples_timer) {
+            match self_test_window(
+                &ui,
+                &shared_timer,
+                &graphics_timer,
+                &samples_timer,
+                &starts_timer,
+            ) {
                 Ok(()) => {
                     let _ = slint::quit_event_loop();
                 }
@@ -394,7 +425,10 @@ fn run_window(mode: Mode, samples: Samples) -> Result<(), String> {
                     let attempt = attempts_timer.get() + 1;
                     attempts_timer.set(attempt);
                     line(&format!("window-self-test-retry={attempt} {error}"));
-                    if error.contains("did not receive") || attempt > 25 {
+                    if error.contains("did not receive")
+                        || error.contains("ole-row")
+                        || attempt > 25
+                    {
                         failed_timer.store(true, Ordering::Release);
                         let _ = slint::quit_event_loop();
                     }
@@ -427,6 +461,8 @@ fn wire_ole_drag(
     rows: &[std::path::PathBuf],
     press: Rc<std::cell::Cell<Option<Press>>>,
     mode: Mode,
+    shared: Arc<SharedDrop>,
+    drag_starts: Rc<RefCell<Vec<(i32, String)>>>,
 ) {
     let api = ui.global::<Api>();
     let rows_press: Vec<_> = rows.to_vec();
@@ -441,6 +477,7 @@ fn wire_ole_drag(
     let press_move = press.clone();
     let rows_move = rows_press.clone();
     let ui_move = ui.as_weak();
+    let shared_move = shared;
     api.on_ole_move(move |index, x, y| {
         if mode == Mode::Slint {
             return;
@@ -464,26 +501,58 @@ fn wire_ole_drag(
             return;
         }
         let Some(path) = rows_move.get(index as usize) else {
+            // The row is gone, but the TouchArea may still own the grab.
+            release_pointer_grab(&ui, x, y);
             return;
         };
-        line(&format!("ole-drag-start {}", path.display()));
-        line(&handle_snapshot());
-        match drag_out(std::slice::from_ref(path), false) {
-            Ok(outcome) => {
-                line(&format!(
-                    "ole-drag-end code={:#x} effect={} {}",
-                    outcome.code,
-                    effect_name(outcome.effect),
-                    handle_snapshot()
-                ));
+        let path_text = path.display().to_string();
+        show_log(
+            &shared_move,
+            &ui,
+            &format!("ole-drag-start index={index} path={path_text}"),
+        );
+        show_log(&shared_move, &ui, &handle_snapshot());
+        if mode == Mode::SelfTest {
+            drag_starts.borrow_mut().push((index, path_text));
+            show_log(&shared_move, &ui, "ole-drag-end code=self-test effect=none");
+        } else {
+            match drag_out(std::slice::from_ref(path), false) {
+                Ok(outcome) => {
+                    show_log(
+                        &shared_move,
+                        &ui,
+                        &format!(
+                            "ole-drag-end code={:#x} effect={} {}",
+                            outcome.code,
+                            effect_name(outcome.effect),
+                            handle_snapshot()
+                        ),
+                    );
+                }
+                Err(error) => {
+                    show_log(&shared_move, &ui, &format!("ole-drag-error={error}"));
+                }
             }
-            Err(error) => line(&format!("ole-drag-error={error}")),
         }
+        // DoDragDrop runs a modal loop and consumes the mouse-up, so this
+        // TouchArea would stay pressed and grab the next press. Release after
+        // every outcome, including the self-test path that does not call it.
+        release_pointer_grab(&ui, x, y);
     });
     let press_up = press;
     api.on_ole_release(move || {
         press_up.set(None);
     });
+}
+
+fn release_pointer_grab(ui: &MainWindow, x: f32, y: f32) {
+    let window = ui.window();
+    let position = LogicalPosition::new(x, y);
+    window.dispatch_event(slint::platform::WindowEvent::PointerReleased {
+        position,
+        button: slint::platform::PointerEventButton::Left,
+    });
+    window.dispatch_event(slint::platform::WindowEvent::PointerExited);
 }
 
 fn publish_zone(ui: &MainWindow, shared: &SharedDrop) {
@@ -551,6 +620,7 @@ fn self_test_window(
     shared: &SharedDrop,
     graphics: &Mutex<String>,
     samples: &SamplesHold,
+    drag_starts: &RefCell<Vec<(i32, String)>>,
 ) -> Result<(), String> {
     let renderer = graphics.lock().expect("graphics").clone();
     if renderer == "not-yet" {
@@ -567,12 +637,62 @@ fn self_test_window(
         return Err("ole zone has no size".to_string());
     }
     exercise_slint_drag(ui)?;
+    exercise_ole_row_grab(ui, drag_starts)?;
     line(&format!(
         "sample-readme={} sample-shortcut={}",
         samples.readme.display(),
         samples.shortcut.display()
     ));
     Ok(())
+}
+
+fn exercise_ole_row_grab(
+    ui: &MainWindow,
+    drag_starts: &RefCell<Vec<(i32, String)>>,
+) -> Result<(), String> {
+    let row_h = ui.get_ole_row_h();
+    if ui.get_ole_list_y() <= 0.0 || row_h <= 0.0 {
+        return Err("ole-row list has no geometry".to_string());
+    }
+    drag_starts.borrow_mut().clear();
+    let x = ui.get_ole_list_x() + 24.0;
+    let row_y = |index: f32| ui.get_ole_list_y() + row_h * index + row_h / 2.0;
+    // Row 3 is long.txt. A drag from it used to leave the TouchArea grabbed,
+    // so the next press on row 1 (folder) still dragged long.txt.
+    dispatch_press_move(ui, x, row_y(3.0));
+    dispatch_press_move(ui, x, row_y(1.0));
+    let starts = drag_starts.borrow().clone();
+    line(&format!("ole-row-grab {starts:?}"));
+    let log = ui.get_log().to_string();
+    if starts.len() != 2 {
+        return Err(format!(
+            "ole-row expected two drags, got {starts:?} log={log}"
+        ));
+    }
+    let first_ok = starts[0].0 == 3 && starts[0].1.contains("long.txt");
+    let second_ok = starts[1].0 == 1
+        && (starts[1].1.ends_with("\\folder") || starts[1].1.ends_with("/folder"))
+        && !starts[1].1.contains("long.txt");
+    if !first_ok || !second_ok {
+        return Err(format!(
+            "ole-row second drag did not follow the pressed row: {starts:?}"
+        ));
+    }
+    if !log.contains("index=3") || !log.contains("index=1") || !log.contains("\\folder") {
+        return Err(format!("ole-row window log was not refreshed: {log}"));
+    }
+    Ok(())
+}
+
+fn dispatch_press_move(ui: &MainWindow, x: f32, y: f32) {
+    let window = ui.window();
+    window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
+        position: LogicalPosition::new(x, y),
+        button: slint::platform::PointerEventButton::Left,
+    });
+    window.dispatch_event(slint::platform::WindowEvent::PointerMoved {
+        position: LogicalPosition::new(x + 24.0, y),
+    });
 }
 
 fn exercise_slint_drag(ui: &MainWindow) -> Result<(), String> {

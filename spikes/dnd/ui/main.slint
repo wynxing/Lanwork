@@ -23,6 +23,10 @@ export component MainWindow inherits Window {
     out property <length> ole-w: ole-zone.width;
     out property <length> ole-h: ole-zone.height;
 
+    out property <length> ole-list-x: ole-list.absolute-position.x;
+    out property <length> ole-list-y: ole-list.absolute-position.y;
+    out property <length> ole-row-h: 28px;
+
     out property <length> slint-drag-x: slint-source.absolute-position.x;
     out property <length> slint-drag-y: slint-source.absolute-position.y;
     out property <length> slint-drag-w: slint-source.width;
@@ -122,19 +126,19 @@ export component MainWindow inherits Window {
             color: #dddddd;
         }
 
-        Flickable {
+        ole-list := Flickable {
             height: 150px;
             VerticalLayout {
                 for path[i] in root.rows: Rectangle {
-                    height: 28px;
+                    height: root.ole-row-h;
                     background: ta.has-hover ? #333333 : #2a2a2a;
                     ta := TouchArea {
                         pointer-event(event) => {
                             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
-                                Api.ole-press(i, ta.mouse-x, ta.mouse-y);
+                                Api.ole-press(i, ta.absolute-position.x + ta.mouse-x, ta.absolute-position.y + ta.mouse-y);
                             }
                             if (event.kind == PointerEventKind.move && ta.pressed) {
-                                Api.ole-move(i, ta.mouse-x, ta.mouse-y);
+                                Api.ole-move(i, ta.absolute-position.x + ta.mouse-x, ta.absolute-position.y + ta.mouse-y);
                             }
                             if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
                                 Api.ole-release();
@@ -163,6 +167,7 @@ export component MainWindow inherits Window {
             color: #f1faee;
             wrap: word-wrap;
             height: 140px;
+            vertical-alignment: bottom;
         }
     }
 }
