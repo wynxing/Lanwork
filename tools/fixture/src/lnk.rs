@@ -1,10 +1,12 @@
 //! 按 MS-SHLLINK 写 `.lnk`。
 //!
-//! 只写 LinkInfo 里的本地路径，以及 Unicode 的工作目录和参数。不写 IDList。
+//! 写本机路径的 IDList，再写 LinkInfo 里的本地路径，以及 Unicode 的工作目录和参数。
+//! `IShellLinkW::GetPath` 读的是 IDList；只有 LinkInfo 时它返回空路径。
 //! 文件末尾是 4 字节的 ExtraData 结束块。Windows 上由测试用 `IShellLinkW` 读回。
 
 use crate::ToolError;
 
+const HAS_LINK_TARGET_ID_LIST: u32 = 0x0000_0001;
 const HAS_LINK_INFO: u32 = 0x0000_0002;
 const HAS_WORKING_DIR: u32 = 0x0000_0010;
 const HAS_ARGUMENTS: u32 = 0x0000_0020;
@@ -38,10 +40,12 @@ pub(crate) fn write_shell_link(link: &ShellLink) -> Result<Vec<u8>, ToolError> {
         0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x46,
     ]);
-    push_u32(
-        &mut buf,
-        HAS_LINK_INFO | HAS_WORKING_DIR | HAS_ARGUMENTS | IS_UNICODE,
-    );
+    let drive_target = is_drive_path(&link.target);
+    let mut flags = HAS_LINK_INFO | HAS_WORKING_DIR | HAS_ARGUMENTS | IS_UNICODE;
+    if drive_target {
+        flags |= HAS_LINK_TARGET_ID_LIST;
+    }
+    push_u32(&mut buf, flags);
     push_u32(&mut buf, 0x20);
     push_u64(&mut buf, FIXED_FILETIME);
     push_u64(&mut buf, FIXED_FILETIME);
@@ -55,6 +59,9 @@ pub(crate) fn write_shell_link(link: &ShellLink) -> Result<Vec<u8>, ToolError> {
     push_u32(&mut buf, 0);
     debug_assert_eq!(buf.len(), HEADER_SIZE);
 
+    if drive_target {
+        buf.extend(id_list(&link.target)?);
+    }
     buf.extend(link_info(&link.target)?);
     push_counted_utf16(&mut buf, &link.working_dir)?;
     push_counted_utf16(&mut buf, &link.arguments)?;
@@ -94,6 +101,171 @@ pub(crate) fn parse_shell_link(bytes: &[u8]) -> Result<ShellLink, ToolError> {
         working_dir,
         arguments,
     })
+}
+
+fn id_list(target: &str) -> Result<Vec<u8>, ToolError> {
+    let (drive, components) = split_drive_path(target)?;
+    let mut items = root_item();
+    items.extend(drive_item(&drive));
+    for (index, name) in components.iter().enumerate() {
+        let directory = index + 1 != components.len();
+        items.extend(fs_item(name, directory)?);
+    }
+    let mut out = Vec::with_capacity(items.len() + 4);
+    let size =
+        u16::try_from(items.len() + 2).map_err(|_| ToolError::new("快捷方式 IDList 过长"))?;
+    push_u16(&mut out, size);
+    out.extend(items);
+    push_u16(&mut out, 0);
+    Ok(out)
+}
+
+fn is_drive_path(target: &str) -> bool {
+    let bytes = target.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+}
+
+fn split_drive_path(target: &str) -> Result<(String, Vec<String>), ToolError> {
+    if !is_drive_path(target) {
+        return Err(ToolError::new(format!(
+            "快捷方式目标不是本机盘符路径：{target}"
+        )));
+    }
+    let drive = target[..3].to_string();
+    let components = target[3..]
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if components.is_empty() {
+        return Err(ToolError::new(format!("快捷方式目标没有文件名：{target}")));
+    }
+    Ok((drive, components))
+}
+
+fn root_item() -> Vec<u8> {
+    // 本机「此电脑」。类型 0x1F，排序 0x50，CLSID 20D04FE0-3AEA-1069-A2D8-08002B30309D。
+    let mut item = Vec::new();
+    push_u16(&mut item, 0x14);
+    item.extend_from_slice(&[
+        0x1F, 0x50, 0xE0, 0x4F, 0xD0, 0x20, 0xEA, 0x3A, 0x69, 0x10, 0xA2, 0xD8, 0x08, 0x00, 0x2B,
+        0x30, 0x30, 0x9D,
+    ]);
+    item
+}
+
+fn drive_item(drive: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(23);
+    body.push(0x2F);
+    body.extend_from_slice(drive.as_bytes());
+    body.push(0);
+    body.extend_from_slice(&[0u8; 18]);
+    let mut item = Vec::with_capacity(body.len() + 2);
+    push_u16(
+        &mut item,
+        u16::try_from(body.len() + 2).expect("drive item fits"),
+    );
+    item.extend(body);
+    item
+}
+
+fn fs_item(name: &str, directory: bool) -> Result<Vec<u8>, ToolError> {
+    if name.is_empty() || name.contains('\0') {
+        return Err(ToolError::new("快捷方式路径组件为空"));
+    }
+    let long = is_long_filename(name);
+    let mut type_flags = if directory { 0x31 } else { 0x32 };
+    let short = if long {
+        type_flags |= 0x04;
+        short_filename(name)
+    } else {
+        name.to_string()
+    };
+    let mut body = vec![type_flags, 0];
+    push_u32(&mut body, 0);
+    push_u16(&mut body, 0);
+    push_u16(&mut body, 0);
+    push_u16(&mut body, if directory { 0x10 } else { 0x20 });
+    if long {
+        for unit in name.encode_utf16() {
+            push_u16(&mut body, unit);
+        }
+        push_u16(&mut body, 0);
+        body.extend(short.as_bytes());
+        body.push(0);
+    } else {
+        body.extend(name.as_bytes());
+        body.push(0);
+        body.push(0);
+    }
+    let mut item = Vec::with_capacity(body.len() + 2);
+    let size = u16::try_from(body.len() + 2).map_err(|_| ToolError::new("快捷方式路径组件过长"))?;
+    push_u16(&mut item, size);
+    item.extend(body);
+    Ok(item)
+}
+
+fn is_long_filename(name: &str) -> bool {
+    let Some(first) = name.chars().next() else {
+        return true;
+    };
+    if first == '.' || name.ends_with('.') || !name.is_ascii() {
+        return true;
+    }
+    let (base, ext) = split_filename(name);
+    let awkward =
+        |part: &str| part.contains(['.', '"', '/', '\\', '[', ']', ':', ';', '=', ',', ' ']);
+    (name.contains('.') && (base.chars().count() > 8 || ext.chars().count() > 3))
+        || (!name.contains('.') && name.chars().count() > 12)
+        || awkward(&base)
+        || awkward(&ext)
+}
+
+fn short_filename(name: &str) -> String {
+    let trimmed = name.trim_matches('.');
+    let (base, ext) = split_filename(trimmed);
+    let fold = |part: &str, limit: usize| {
+        let mut folded = String::new();
+        for ch in part.chars() {
+            if ch == ' ' {
+                continue;
+            }
+            let mapped = if matches!(
+                ch,
+                '.' | '"' | '/' | '\\' | '[' | ']' | ':' | ';' | '=' | ',' | '+'
+            ) {
+                '_'
+            } else {
+                ch
+            };
+            folded.push(mapped);
+        }
+        folded.chars().take(limit).collect::<String>()
+    };
+    let mut short = fold(&base, 6);
+    short.push_str("~1");
+    let ext = fold(&ext, 3);
+    if !ext.is_empty() {
+        short.push('.');
+        short.push_str(&ext);
+    }
+    short
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn split_filename(name: &str) -> (String, String) {
+    match name.rfind('.') {
+        Some(index) if index > 0 => (name[..index].to_string(), name[index + 1..].to_string()),
+        _ => (name.to_string(), String::new()),
+    }
 }
 
 fn link_info(target: &str) -> Result<Vec<u8>, ToolError> {
@@ -292,13 +464,10 @@ fn load_with_ishelllink(path: &std::path::Path) -> Result<ShellLink, ToolError> 
         persist
             .Load(PCWSTR(wide.as_ptr()), STGM_READ)
             .map_err(|err| ToolError::new(format!("读取快捷方式：{err}")))?;
-        // 只有 LinkInfo、没有 IDList 时，GetPath 会返回空字符串。
-        // Resolve 按 LinkInfo 找到已经生成的目标文件，再填回路径。
-        link.Resolve(
+        let _ = link.Resolve(
             HWND(std::ptr::null_mut()),
             (SLR_NO_UI.0 | SLR_NOUPDATE.0) as u32,
-        )
-        .map_err(|err| ToolError::new(format!("Resolve：{err}")))?;
+        );
         let mut target = vec![0u16; 32_768];
         let mut working_dir = vec![0u16; 32_768];
         let mut arguments = vec![0u16; 32_768];
@@ -323,6 +492,18 @@ fn utf16_buf(buf: &[u16]) -> String {
 }
 
 #[cfg(test)]
+fn link_info_offset(raw: &[u8]) -> usize {
+    let flags = u32::from_le_bytes(raw[0x14..0x18].try_into().expect("flags"));
+    assert_ne!(flags & HAS_LINK_TARGET_ID_LIST, 0, "快捷方式没有 IDList");
+    let list_size = u16::from_le_bytes(
+        raw[HEADER_SIZE..HEADER_SIZE + 2]
+            .try_into()
+            .expect("idlist"),
+    ) as usize;
+    HEADER_SIZE + 2 + list_size
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -342,10 +523,10 @@ mod tests {
                 0x00, 0x46
             ]
         );
-        let info_size = u32::from_le_bytes(raw[HEADER_SIZE..HEADER_SIZE + 4].try_into().unwrap());
+        let info_at = link_info_offset(&raw);
+        let info_size = u32::from_le_bytes(raw[info_at..info_at + 4].try_into().unwrap());
         assert_eq!(info_size, 0x3C);
-        let local_off =
-            u32::from_le_bytes(raw[HEADER_SIZE + 16..HEADER_SIZE + 20].try_into().unwrap());
+        let local_off = u32::from_le_bytes(raw[info_at + 16..info_at + 20].try_into().unwrap());
         assert_eq!(local_off, 0x2D);
         let parsed = parse_shell_link(&raw).unwrap();
         assert_eq!(parsed.target, r"C:\test\a.txt");
@@ -361,8 +542,8 @@ mod tests {
             arguments: "参数".to_string(),
         })
         .unwrap();
-        let header_size =
-            u32::from_le_bytes(raw[HEADER_SIZE + 4..HEADER_SIZE + 8].try_into().unwrap());
+        let info_at = link_info_offset(&raw);
+        let header_size = u32::from_le_bytes(raw[info_at + 4..info_at + 8].try_into().unwrap());
         assert_eq!(header_size, 0x24);
         let parsed = parse_shell_link(&raw).unwrap();
         assert_eq!(parsed.target, r"C:\测量\应用.exe");
