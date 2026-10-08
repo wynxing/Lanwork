@@ -11,6 +11,7 @@
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
+| `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。测量记录还不能当作渲染器已经选定。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
 | `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合协议的实测记录。 |
@@ -22,7 +23,7 @@
 | --- | --- |
 | 待办、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储和便签服务已接入，这些还没有 |
 | 命令层、Win32 集成、搜索条、面板和其他界面 | `crates/app` |
-| 各项技术验证的最小程序 | `spikes/<名称>` |
+| 除 `spikes/render` 以外的技术验证最小程序 | `spikes/<名称>` |
 | Everything SDK 的许可说明 | `third_party/`。Unihan 的许可说明已经放入 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
 

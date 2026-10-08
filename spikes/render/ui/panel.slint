@@ -1,0 +1,155 @@
+export struct Row {
+    name: string,
+    icon: color,
+}
+
+export component Panel inherits Window {
+    title: "Lanwork";
+    width: 480px;
+    height: 640px;
+    no-frame: true;
+    background: transparent;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+
+    in property <bool> show-list: false;
+    in property <bool> use-solid: false;
+    in property <bool> dark: false;
+    in property <bool> inject-black: false;
+    in property <color> solid-color: #f3f3f3;
+    in-out property <length> scroll-y: 0px;
+    in property <[Row]> rows;
+    callback request-close();
+
+    property <color> fg: root.dark ? #f3f3f3 : #1a1a1a;
+    property <color> muted: root.dark ? #b8b8b8 : #5c5c5c;
+
+    if root.use-solid: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: root.solid-color;
+    }
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            height: 32px;
+            alignment: space-between;
+            Text {
+                text: "Lanwork";
+                color: root.fg;
+                font-size: 16px;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                width: 32px;
+                height: 32px;
+                clicked => {
+                    root.request-close();
+                }
+                Text {
+                    text: "×";
+                    color: root.fg;
+                    font-size: 18px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            height: 32px;
+            spacing: 18px;
+            alignment: start;
+            Text {
+                text: "待办";
+                color: root.fg;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "便签";
+                color: root.muted;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "收纳";
+                color: root.muted;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "GitHub";
+                color: root.muted;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "设置";
+                color: root.muted;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            height: 2px;
+            background: root.fg;
+        }
+
+        Rectangle {
+            height: 36px;
+            border-width: 1px;
+            border-color: root.muted;
+            border-radius: 6px;
+            background: transparent;
+            Text {
+                text: "搜索";
+                color: root.muted;
+                x: 12px;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            if !root.show-list: Text {
+                text: "中文字形：测量亚克力渲染器 繁體簡体 ggyy 0OIl1";
+                color: root.fg;
+                wrap: word-wrap;
+                width: 100%;
+            }
+            if root.show-list: Flickable {
+                width: 100%;
+                height: 100%;
+                content-y: -root.scroll-y;
+                VerticalLayout {
+                    width: parent.width;
+                    for row in root.rows: HorizontalLayout {
+                        height: 36px;
+                        spacing: 8px;
+                        padding-left: 4px;
+                        alignment: start;
+                        Rectangle {
+                            width: 16px;
+                            height: 16px;
+                            y: 10px;
+                            background: row.icon;
+                            border-radius: 3px;
+                        }
+                        Text {
+                            text: row.name;
+                            color: root.fg;
+                            vertical-alignment: center;
+                            height: 36px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.inject-black: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000;
+    }
+}
