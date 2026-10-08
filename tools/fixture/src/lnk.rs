@@ -264,11 +264,14 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, ToolError> {
 #[cfg(all(test, windows))]
 fn load_with_ishelllink(path: &std::path::Path) -> Result<ShellLink, ToolError> {
     use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
         IPersistFile, STGM_READ,
     };
-    use windows::Win32::UI::Shell::{IShellLinkW, SLGP_RAWPATH, ShellLink as ShellLinkClsid};
+    use windows::Win32::UI::Shell::{
+        IShellLinkW, SLGP_RAWPATH, SLR_NO_UI, SLR_NOUPDATE, ShellLink as ShellLinkClsid,
+    };
     use windows::core::{Interface, PCWSTR};
 
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
@@ -289,6 +292,13 @@ fn load_with_ishelllink(path: &std::path::Path) -> Result<ShellLink, ToolError> 
         persist
             .Load(PCWSTR(wide.as_ptr()), STGM_READ)
             .map_err(|err| ToolError::new(format!("读取快捷方式：{err}")))?;
+        // 只有 LinkInfo、没有 IDList 时，GetPath 会返回空字符串。
+        // Resolve 按 LinkInfo 找到已经生成的目标文件，再填回路径。
+        link.Resolve(
+            HWND(std::ptr::null_mut()),
+            (SLR_NO_UI.0 | SLR_NOUPDATE.0) as u32,
+        )
+        .map_err(|err| ToolError::new(format!("Resolve：{err}")))?;
         let mut target = vec![0u16; 32_768];
         let mut working_dir = vec![0u16; 32_768];
         let mut arguments = vec![0u16; 32_768];
@@ -367,6 +377,23 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn assert_same_path(actual: &str, expected: &std::path::Path) {
+        assert!(!actual.is_empty(), "IShellLink 没有返回路径：{expected:?}");
+        let expected_text = shell_path(expected);
+        if actual.eq_ignore_ascii_case(&expected_text) {
+            return;
+        }
+        let left = std::fs::canonicalize(actual)
+            .unwrap_or_else(|err| panic!("无法解析 IShellLink 路径 {actual}：{err}"));
+        let right = std::fs::canonicalize(expected)
+            .unwrap_or_else(|err| panic!("无法解析期望路径 {expected:?}：{err}"));
+        assert_eq!(
+            left, right,
+            "IShellLink 返回 {actual}，写入的是 {expected_text}"
+        );
+    }
+
+    #[cfg(windows)]
     #[test]
     fn ishelllink_reads_fixture_and_unicode_shortcuts() {
         let root = std::env::temp_dir().join(format!(
@@ -393,16 +420,12 @@ mod tests {
         })
         .unwrap();
         let loaded = load_with_ishelllink(&report.shortcuts_dir.join("App 0001.lnk")).unwrap();
-        assert_eq!(
-            loaded.target.to_ascii_lowercase(),
-            shell_path(&report.shortcuts_dir.join("targets").join("App 0001.exe"))
-                .to_ascii_lowercase()
+        assert_same_path(
+            &loaded.target,
+            &report.shortcuts_dir.join("targets").join("App 0001.exe"),
         );
         assert_eq!(loaded.arguments, "fixture");
-        assert_eq!(
-            loaded.working_dir.to_ascii_lowercase(),
-            shell_path(&report.shortcuts_dir.join("targets")).to_ascii_lowercase()
-        );
+        assert_same_path(&loaded.working_dir, &report.shortcuts_dir.join("targets"));
 
         let folder = root.join("测量");
         std::fs::create_dir_all(&folder).unwrap();
@@ -417,14 +440,8 @@ mod tests {
         .unwrap();
         std::fs::write(&link_path, bytes).unwrap();
         let loaded = load_with_ishelllink(&link_path).unwrap();
-        assert_eq!(
-            loaded.target.to_ascii_lowercase(),
-            shell_path(&target).to_ascii_lowercase()
-        );
-        assert_eq!(
-            loaded.working_dir.to_ascii_lowercase(),
-            shell_path(&folder).to_ascii_lowercase()
-        );
+        assert_same_path(&loaded.target, &target);
+        assert_same_path(&loaded.working_dir, &folder);
         assert_eq!(loaded.arguments, "参数");
         let _ = std::fs::remove_dir_all(root);
     }
