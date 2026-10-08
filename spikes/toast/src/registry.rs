@@ -97,6 +97,7 @@ pub fn inspect() -> SpikeResult<RegistrationFacts> {
 }
 
 pub fn print_status() -> SpikeResult<()> {
+    let _com = crate::util::ComApartment::new()?;
     let facts = inspect()?;
     println!("{}", format_facts(&facts));
     println!("当前程序：{}", facts.exe_path);

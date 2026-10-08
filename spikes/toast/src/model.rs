@@ -110,7 +110,7 @@ pub fn status_line(launch: Option<&str>) -> String {
         Locate::Waiting => "尚未收到 launch 参数。关闭窗口即退出。".to_string(),
         Locate::Selected(index) => {
             let item = &SAMPLE_TODOS[index];
-            format!("launch={0}　已定位：{0} {1}", item.id, item.title)
+            format!("已定位 {}　{}", item.id, item.title)
         }
         Locate::Missing => {
             let launch = launch.unwrap_or("").trim();
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(locate_result(Some("  ")), Locate::Waiting);
         assert_eq!(locate_result(Some("todo-003")), Locate::Selected(2));
         assert_eq!(locate_result(Some("missing")), Locate::Missing);
-        assert!(status_line(Some("todo-001")).contains("已定位"));
+        assert!(status_line(Some("todo-001")).contains("已定位 todo-001"));
         assert!(status_line(Some("missing")).contains("未选中任何行"));
         assert_eq!(sample_title("todo-005"), Some("整理桌面"));
     }

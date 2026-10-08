@@ -80,6 +80,10 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 - 在 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 写入 `DisplayName` 和 `CustomActivator`（同一个 CLSID）。
 - 在 `HKCU\Software\Classes\CLSID\<CLSID>\LocalServer32` 写入本程序路径。进程运行时另外 `CoRegisterClassObject`，让点击落到已经打开的进程；进程已退出时由 `LocalServer32` 再启动。
 
+类工厂和 `INotificationActivationCallback` 放在 STA，并且不能实现 `IAgileObject`，也不能用自由线程封送。通知平台在另一个进程里 `CoCreateInstance`。自由线程封送的数据包是进程内指针，跨进程解封送失败后，SCM 会再按 `LocalServer32` 启动带 `-Embedding` 的进程，`Activate` 仍然到不了回调。`CoRegisterClassObject` 使用 `REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED`。窗口已经创建、线程准备进入消息循环之后调用 `CoResumeClassObjects`。`Activate` 由这个消息循环派发。回调里要 `ShowWindow` 并 `SetForegroundWindow`，面板上显示已定位的待办 id。
+
+控制台子系统进程和 COM 拉起的本地服务器，启动信息里经常带 `SW_HIDE`。第一次 `ShowWindow` 会改用这个值。面板需要再调用一次 `ShowWindow(SW_SHOWNORMAL)`，并用 `SetWindowPos(SWP_SHOWWINDOW)` 确认 `IsWindowVisible`。读快捷方式属性之前要先 `CoInitializeEx`。
+
 便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。能否显示、运行中点击、退出后点击、收到 id、定位，以验证记录为准。记录里这些条件没有全部通过之前，不在产品规格里把便携版写成「不能点击定位」。
 
 卸载要删掉上述快捷方式和 HKCU 键，由安装程序实现。验证程序自己的注销只清理它写过的 spike 标识，不清理将来产品用的标识。

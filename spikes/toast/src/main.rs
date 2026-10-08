@@ -1,4 +1,5 @@
 mod activator;
+mod check;
 mod model;
 mod notify;
 mod panel;
@@ -55,6 +56,8 @@ fn run() -> SpikeResult<()> {
             log_line("已清除该 AUMID 的通知历史。");
             Ok(())
         }
+        "activation-check" => check::activation_check(),
+        "activation-client" => check::activation_client(&args),
         "self-check" => self_check(),
         other => Err(SpikeError::new(format!(
             "未知命令：{other}\n{}",
@@ -64,14 +67,29 @@ fn run() -> SpikeResult<()> {
 }
 
 fn serve() -> SpikeResult<()> {
+    check::log_process("serve");
     log_line(&format!("日志：{}", log_path().display()));
     let _com = ComApartment::new()?;
     set_process_aumid()?;
     set_dpi();
+    match inspect() {
+        Ok(facts) => log_line(&format!("启动时注册读回：{}", format_facts(&facts))),
+        Err(err) => log_line(&format!("启动时读取注册失败: {err}")),
+    }
     activator::register_class()?;
-    let result = panel::run();
-    activator::revoke_class();
-    result
+    let _guard = ServeGuard;
+    panel::startup()?;
+    activator::resume_class()?;
+    panel::message_loop()
+}
+
+struct ServeGuard;
+
+impl Drop for ServeGuard {
+    fn drop(&mut self) {
+        panel::destroy_main();
+        activator::revoke_class();
+    }
 }
 
 fn register_command(args: &[String]) -> SpikeResult<()> {
@@ -130,6 +148,8 @@ fn self_check() -> SpikeResult<()> {
     set_process_aumid()?;
     let _cleanup = Cleanup;
     println!("=== 通知 spike 自动检查 ===");
+    check::activation_check()?;
+    println!("--- 激活链路自检已完成，开始注册表往返 ---");
     println!("程序：{}", util::exe_path()?.display());
     match notify::notification_state_line() {
         Ok(line) => println!("SHQueryUserNotificationState = {line}"),
@@ -300,7 +320,7 @@ fn parse_show(args: &[String]) -> SpikeResult<ShowRequest> {
     })
 }
 
-fn set_dpi() {
+pub(crate) fn set_dpi() {
     use windows::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
@@ -332,10 +352,13 @@ AUMID：{aumid}
   cargo run -p toast --release -- show todo-001 --repeat 3
   cargo run -p toast --release -- show todo-001 --repeat 3 --tag todo-001
   cargo run -p toast --release -- clear-history
+  cargo run -p toast --release -- activation-check
   cargo run -p toast --release -- self-check
 
 无参数或 -Embedding 会打开模拟面板。注册只写当前用户的 HKCU 和开始菜单快捷方式。
-注销会删掉这些项。不要用管理员权限运行。",
+注销会删掉这些项。不要用管理员权限运行。
+activation-check 不点击通知，也不写 HKCU：它自己 CoCreateInstance 激活器并调用 Activate。
+若已有其他 toast.exe，它不会注册产品 CLSID。",
         aumid = model::AUMID,
     )
 }

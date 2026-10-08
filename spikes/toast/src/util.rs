@@ -1,11 +1,14 @@
 use std::ffi::c_void;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Write, stdout};
 use std::path::Path;
 
-use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR};
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, S_OK, WIN32_ERROR};
+use windows::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize,
+};
 use windows::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::core::{Error, PCWSTR};
 
 #[derive(Debug)]
@@ -89,22 +92,35 @@ pub fn write_utf16_field(dest: &mut [u16], text: &str) {
 }
 
 pub struct ComApartment {
-    active: bool,
+    // S_OK 才是这次调用初始化的。S_FALSE 表示线程上已经有套间，不能再 CoUninitialize。
+    uninit: bool,
 }
 
 impl ComApartment {
     pub fn new() -> SpikeResult<Self> {
-        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
-            .ok()
-            .map_err(|err| win_err("CoInitializeEx", err))?;
-        Ok(Self { active: true })
+        Self::enter(COINIT_APARTMENTTHREADED, "STA")
+    }
+
+    pub fn mta() -> SpikeResult<Self> {
+        Self::enter(COINIT_MULTITHREADED, "MTA")
+    }
+
+    fn enter(model: windows::Win32::System::Com::COINIT, label: &str) -> SpikeResult<Self> {
+        let hr = unsafe { CoInitializeEx(None, model) };
+        log_line(&format!("CoInitializeEx {label} hr=0x{:08X}", hr.0 as u32));
+        if hr.is_ok() {
+            Ok(Self { uninit: hr == S_OK })
+        } else {
+            Err(win_err("CoInitializeEx", Error::from(hr)))
+        }
     }
 }
 
 impl Drop for ComApartment {
     fn drop(&mut self) {
-        if self.active {
+        if self.uninit {
             unsafe { CoUninitialize() };
+            log_line("CoUninitialize");
         }
     }
 }
@@ -121,11 +137,22 @@ pub fn log_path() -> std::path::PathBuf {
 }
 
 pub fn log_line(message: &str) {
-    println!("{message}");
+    let stamp = local_stamp();
+    let line = format!("{stamp} {message}");
+    println!("{line}");
+    let _ = stdout().flush();
     let path = log_path();
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{message}");
+        let _ = writeln!(file, "{line}");
     }
+}
+
+fn local_stamp() -> String {
+    let time = unsafe { GetLocalTime() };
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        time.wHour, time.wMinute, time.wSecond, time.wMilliseconds
+    )
 }
 
 pub fn exe_path() -> SpikeResult<std::path::PathBuf> {

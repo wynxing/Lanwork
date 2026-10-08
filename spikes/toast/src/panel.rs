@@ -10,11 +10,12 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FLASHW_ALL, FLASHW_TIMERNOFG,
-    FLASHWINFO, FlashWindowEx, GetMessageW, GetSystemMetrics, HMENU, IDC_ARROW, LoadCursorW, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, SendMessageW, SetForegroundWindow, SetWindowPos, SetWindowTextW,
-    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW, WS_BORDER, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    FLASHWINFO, FlashWindowEx, GWL_STYLE, GetMessageW, GetSystemMetrics, GetWindowLongW, HMENU,
+    IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNORMAL, SWP_FRAMECHANGED,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SendMessageW, SetForegroundWindow,
+    SetWindowLongW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 use windows::core::PCWSTR;
 
@@ -25,7 +26,9 @@ const WM_CREATE: u32 = 0x0001;
 const WM_DESTROY: u32 = 0x0002;
 const WM_SIZE: u32 = 0x0005;
 const WM_CLOSE: u32 = 0x0010;
+const WM_QUIT: u32 = 0x0012;
 const WM_LOCATE: u32 = 0x8000 + 20;
+const WM_FORCE_SHOW: u32 = 0x8000 + 21;
 const WM_SETFONT: u32 = 0x0030;
 const LB_ADDSTRING: u32 = 0x0180;
 const LB_SETCURSEL: u32 = 0x0186;
@@ -39,6 +42,8 @@ struct Ui {
     status: isize,
     font: isize,
     launch: Option<String>,
+    title: String,
+    status_text: String,
 }
 
 static UI: Mutex<Ui> = Mutex::new(Ui {
@@ -47,29 +52,136 @@ static UI: Mutex<Ui> = Mutex::new(Ui {
     status: 0,
     font: 0,
     launch: None,
+    title: String::new(),
+    status_text: String::new(),
 });
 
 pub fn note_activation(launch: &str) {
+    log_line(&format!("note_activation launch={launch}"));
     let hwnd = {
         let mut ui = lock_ui();
         ui.launch = Some(launch.to_string());
         ui.hwnd
     };
-    if hwnd != 0 {
-        let window = HWND(hwnd_bits(hwnd));
-        unsafe {
-            let _ = SetForegroundWindow(window);
-            let _ = PostMessageW(Some(window), WM_LOCATE, WPARAM(0), LPARAM(0));
-        }
+    if hwnd == 0 {
+        log_line("note_activation 时面板尚未创建，先记下 launch");
+        return;
+    }
+    let window = HWND(hwnd_bits(hwnd));
+    let visible = force_show(window);
+    log_line(&format!(
+        "note_activation 已 ShowWindow+SetForegroundWindow IsWindowVisible={visible}"
+    ));
+    unsafe {
+        let posted = PostMessageW(Some(window), WM_LOCATE, WPARAM(0), LPARAM(0));
+        log_line(&format!("PostMessage WM_LOCATE ret={posted:?}"));
     }
 }
 
-pub fn run() -> SpikeResult<()> {
-    log_line("模拟面板启动。关闭窗口即退出进程。");
-    unsafe { run_window() }
+pub fn current_launch() -> Option<String> {
+    lock_ui().launch.clone()
 }
 
-unsafe fn run_window() -> SpikeResult<()> {
+pub fn current_title() -> String {
+    lock_ui().title.clone()
+}
+
+pub fn current_status() -> String {
+    lock_ui().status_text.clone()
+}
+
+pub fn is_main_visible() -> bool {
+    let hwnd = main_hwnd();
+    if hwnd.0.is_null() {
+        return false;
+    }
+    unsafe { IsWindowVisible(hwnd).as_bool() }
+}
+
+pub fn startup() -> SpikeResult<HWND> {
+    log_line("模拟面板启动。关闭窗口即退出进程。");
+    let hwnd = unsafe { create_window() }?;
+    let visible = force_show(hwnd);
+    log_line(&format!(
+        "模拟面板创建完成 hwnd={} IsWindowVisible={visible}",
+        hwnd.0 as isize
+    ));
+    unsafe {
+        let posted = PostMessageW(Some(hwnd), WM_FORCE_SHOW, WPARAM(0), LPARAM(0));
+        log_line(&format!("已投递 WM_FORCE_SHOW ret={posted:?}"));
+    }
+    Ok(hwnd)
+}
+
+pub fn message_loop() -> SpikeResult<()> {
+    log_line("进入 STA 消息循环");
+    let mut message = MSG::default();
+    loop {
+        let status = unsafe { GetMessageW(&mut message, None, 0, 0) };
+        if status.0 == 0 {
+            log_line("GetMessageW 返回 0，消息循环结束");
+            break;
+        }
+        if status.0 < 0 {
+            return Err(crate::util::SpikeError::new("GetMessageW 失败"));
+        }
+        unsafe {
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    Ok(())
+}
+
+pub fn pump_until(
+    timeout: std::time::Duration,
+    mut done: impl FnMut() -> bool,
+) -> SpikeResult<bool> {
+    let start = std::time::Instant::now();
+    loop {
+        drain_messages()?;
+        if done() {
+            return Ok(true);
+        }
+        if start.elapsed() >= timeout {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+}
+
+pub fn destroy_main() {
+    let hwnd = main_hwnd();
+    if hwnd.0.is_null() || !unsafe { IsWindow(Some(hwnd)).as_bool() } {
+        return;
+    }
+    log_line("销毁模拟面板");
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+    }
+    let _ = drain_messages();
+}
+
+fn main_hwnd() -> HWND {
+    HWND(hwnd_bits(lock_ui().hwnd))
+}
+
+fn drain_messages() -> SpikeResult<()> {
+    unsafe {
+        let mut message = MSG::default();
+        while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            if message.message == WM_QUIT {
+                log_line("PeekMessage 取到 WM_QUIT");
+                continue;
+            }
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    Ok(())
+}
+
+unsafe fn create_window() -> SpikeResult<HWND> {
     let module = unsafe { GetModuleHandleW(None) }
         .map_err(|err| crate::util::win_err("GetModuleHandleW", err))?;
     let instance = HINSTANCE(module.0);
@@ -102,7 +214,7 @@ unsafe fn run_window() -> SpikeResult<()> {
             WINDOW_EX_STYLE(0),
             pcwstr(&class_name),
             pcwstr(&title),
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            WS_OVERLAPPEDWINDOW,
             x,
             y,
             width,
@@ -114,30 +226,14 @@ unsafe fn run_window() -> SpikeResult<()> {
         )
     }
     .map_err(|err| crate::util::win_err("CreateWindowExW", err))?;
-
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
-    }
-    reveal(hwnd);
+    log_line(&format!(
+        "CreateWindowExW hwnd={} 未带 WS_VISIBLE，改由 force_show 显示",
+        hwnd.0 as isize
+    ));
     if let Some(launch) = bind_main(hwnd) {
         apply_launch(Some(&launch));
     }
-
-    let mut message = MSG::default();
-    loop {
-        let status = unsafe { GetMessageW(&mut message, None, 0, 0) };
-        if status.0 == 0 {
-            break;
-        }
-        if status.0 < 0 {
-            return Err(crate::util::SpikeError::new("GetMessageW 失败"));
-        }
-        unsafe {
-            let _ = TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-    Ok(())
+    Ok(hwnd)
 }
 
 fn bind_main(hwnd: HWND) -> Option<String> {
@@ -167,8 +263,14 @@ unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_LOCATE => {
+            log_line("窗口过程收到 WM_LOCATE");
             let launch = lock_ui().launch.clone();
             apply_launch(launch.as_deref());
+            LRESULT(0)
+        }
+        WM_FORCE_SHOW => {
+            log_line("窗口过程收到 WM_FORCE_SHOW");
+            force_show(hwnd);
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -259,7 +361,6 @@ unsafe fn create_children(parent: HWND) {
             ui.font = font.0 as isize;
         }
     }
-    apply_launch(lock_ui().launch.clone().as_deref());
     unsafe {
         let mut rect = windows::Win32::Foundation::RECT::default();
         let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(parent, &mut rect);
@@ -327,18 +428,25 @@ fn layout(width: i32, height: i32) {
 }
 
 fn apply_launch(launch: Option<&str>) {
-    let ui = lock_ui();
-    if ui.hwnd == 0 {
-        return;
-    }
-    let window = HWND(hwnd_bits(ui.hwnd));
-    let list = HWND(hwnd_bits(ui.list));
-    let status = HWND(hwnd_bits(ui.status));
-    let title = wide(&window_title(launch));
-    let status_text = wide(&status_line(launch));
+    let title_text = window_title(launch);
+    let status_text = status_line(launch);
+    let ui = {
+        let mut ui = lock_ui();
+        ui.title = title_text.clone();
+        ui.status_text = status_text.clone();
+        if ui.hwnd == 0 {
+            return;
+        }
+        (ui.hwnd, ui.list, ui.status)
+    };
+    let window = HWND(hwnd_bits(ui.0));
+    let list = HWND(hwnd_bits(ui.1));
+    let status = HWND(hwnd_bits(ui.2));
+    let title = wide(&title_text);
+    let status_wide = wide(&status_text);
     unsafe {
         let _ = SetWindowTextW(window, pcwstr(&title));
-        let _ = SetWindowTextW(status, pcwstr(&status_text));
+        let _ = SetWindowTextW(status, pcwstr(&status_wide));
         match locate_result(launch) {
             Locate::Selected(index) => {
                 send(list, LB_SETCURSEL, index, 0);
@@ -354,12 +462,26 @@ fn apply_launch(launch: Option<&str>) {
             }
         }
     }
-    reveal(window);
+    force_show(window);
 }
 
-fn reveal(hwnd: HWND) {
+pub fn force_show(hwnd: HWND) -> bool {
+    if hwnd.0.is_null() {
+        log_line("force_show: hwnd 为空");
+        return false;
+    }
     unsafe {
-        let _ = SetWindowPos(
+        let first = ShowWindow(hwnd, SW_SHOWNORMAL);
+        let second = ShowWindow(hwnd, SW_SHOWNORMAL);
+        let style_after_show = GetWindowLongW(hwnd, GWL_STYLE);
+        log_line(&format!(
+            "ShowWindow SW_SHOWNORMAL 两次 ret={},{} style=0x{:X} IsWindowVisible={}",
+            first.0,
+            second.0,
+            style_after_show as u32,
+            IsWindowVisible(hwnd).as_bool()
+        ));
+        let top = SetWindowPos(
             hwnd,
             Some(HWND(hwnd_bits(HWND_TOPMOST_VALUE))),
             0,
@@ -368,7 +490,7 @@ fn reveal(hwnd: HWND) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
         );
-        let _ = SetWindowPos(
+        let drop = SetWindowPos(
             hwnd,
             Some(HWND(hwnd_bits(HWND_NOTOPMOST_VALUE))),
             0,
@@ -377,7 +499,32 @@ fn reveal(hwnd: HWND) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
         );
-        let _ = SetForegroundWindow(hwnd);
+        log_line(&format!(
+            "SetWindowPos SWP_SHOWWINDOW topmost={top:?} notopmost={drop:?} IsWindowVisible={}",
+            IsWindowVisible(hwnd).as_bool()
+        ));
+        if !IsWindowVisible(hwnd).as_bool() {
+            let style = GetWindowLongW(hwnd, GWL_STYLE);
+            let updated = style | WS_VISIBLE.0 as i32;
+            let previous = SetWindowLongW(hwnd, GWL_STYLE, updated);
+            let again = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+            );
+            log_line(&format!(
+                "补 WS_VISIBLE style=0x{:X}->0x{:X} SetWindowLong 原值=0x{:X} SetWindowPos={again:?} IsWindowVisible={}",
+                style as u32,
+                updated as u32,
+                previous as u32,
+                IsWindowVisible(hwnd).as_bool()
+            ));
+        }
+        let foreground = SetForegroundWindow(hwnd);
         let info = FLASHWINFO {
             cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
             hwnd,
@@ -385,7 +532,13 @@ fn reveal(hwnd: HWND) {
             uCount: 3,
             dwTimeout: 0,
         };
-        let _ = FlashWindowEx(&info);
+        let flashed = FlashWindowEx(&info);
+        let visible = IsWindowVisible(hwnd).as_bool();
+        log_line(&format!(
+            "SetForegroundWindow ret={} FlashWindowEx={flashed:?} IsWindowVisible={visible}",
+            foreground.as_bool()
+        ));
+        visible
     }
 }
 

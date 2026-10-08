@@ -33,14 +33,14 @@
 
 | 字段 | 值 |
 | --- | --- |
-| 日期 | 2026-10-08 |
-| commit | `07888db93f9b90a8dee0a303783b57a5be3fbddb`。自动检查跑在这一笔的 spike 源码上；本行哈希是随后补上的，不改变程序 |
+| 日期 | 2026-10-08 的自动检查；2026-10-09 补了激活修复的自动检查 |
+| commit | spike 源码 rebase 之后是 `b598419`（rebase 前 `07888db93f9b90a8dee0a303783b57a5be3fbddb`，内容是同一棵 spike，哈希变了）。2026-10-08 的自动检查跑在 rebase 前的那棵源码上。2026-10-09 的激活修复与下面「激活修复」一节在同一提交，精确哈希由紧接着的下一笔写入 |
 | Slint 精确版本 | 1.18.1。本 spike 不链接 Slint |
 | 渲染器 | 不适用 |
 | 机器 | 13th Gen Intel Core i5-13420H |
 | Windows build | Windows 11 家庭中文版 64 位，DisplayVersion 26H2，10.0.26300.9550（CurrentBuild 26300，UBR 9550）。注册表 ProductName 仍写着 Windows 10 Home China |
 | GPU 与驱动 | Intel UHD Graphics，驱动 32.0.101.6733（2025-04-02）；另有 Virtual Display Driver 11.30.4.434（2024-12-24）、GameViewer Virtual Display Adapter 15.6.5.199（2026-02-28） |
-| 构建配置 | `cargo test` 为 debug。自动检查、未注册时的 `show` 回退为 release：`target\release\toast.exe` |
+| 构建配置 | `cargo test` 为 debug。2026-10-08 的自动检查、未注册时的 `show` 回退为 release：`target\release\toast.exe`。2026-10-09 的 `activation-check` 和 `status` 用了另一个 `CARGO_TARGET_DIR`，避免覆盖所有者还在运行的 `target\release\toast.exe` |
 
 标识只属于这个 spike：AUMID `Lanwork.Spike.Toast`，CLSID `{DEC1C43B-2AAC-400F-A0B1-C17A05F2B409}`，显示名「Lanwork 通知验证」。快捷方式是 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Lanwork Toast Spike.lnk`。日志是 `%TEMP%\lanwork-spike-toast.log`。只写 HKCU，不写 HKLM，不用管理员。
 
@@ -68,6 +68,29 @@
 
 历史条数是 `GetHistoryWithId` 的返回，不是通知中心里肉眼看到的叠放。`S_OK` 也不等于通知出现在屏幕上。
 
+### 2026-10-09 人工点击时暴露的 spike 缺陷
+
+所有者在安装版注册下开着 `serve`，`show todo-001` 的通知能显示。点击之后面板没有出现。`%TEMP%\lanwork-spike-toast.log` 没有 `COM Activate` 行。DcomLaunch 另外拉起了 `toast.exe -Embedding`。那个进程也只记了注册和「模拟面板启动」，没有 `Activate`。两个 `LanworkToastSpikePanel` 的 `IsWindowVisible` 都是 false，窗口样式是 `0x04CF0000`，没有 `WS_VISIBLE`。`status` 读快捷方式时报 `CoCreateInstance: 尚未调用 CoInitialize (0x800401F0)`。这些是 spike 自己的缺陷。下面的通过条件表没有因此改成通过。
+
+根因有两处。类工厂和回调用了 `#[implement]` 的默认 agile，也就是 `IAgileObject` 加自由线程封送。通知平台在另一个进程里 `CoCreateInstance`。自由线程封送的数据包是进程内指针，跨进程解封送失败，所以正在运行的 `serve` 进不了 `CreateInstance` / `Activate`。SCM 再按 `LocalServer32` 启动 `-Embedding`，新进程是同一套工厂，`Activate` 还是到不了。`-Embedding` 确实进了 `serve`。AUMID、CLSID 和快捷方式里的 `ToastActivatorCLSID` 当时是一致的。另外，注册只用了 `REGCLS_MULTIPLEUSE`，发生在窗口和消息循环之前；STA 上的调用要等消息泵。面板只调用了一次 `ShowWindow`。控制台程序和 COM 拉起的本地服务器经常带 `STARTF_USESHOWWINDOW` 且 `wShowWindow = SW_HIDE`，第一次 `ShowWindow` 会改用这个值，窗口就一直没有 `WS_VISIBLE`。`status` 则是在没有 `CoInitializeEx` 的线程上 `CoCreateInstance`。
+
+修复之后，激活器不再 agile。`CoRegisterClassObject` 使用 `REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED`，窗口显示后 `CoResumeClassObjects`，再进入消息循环。`Activate` 里先写 `COM Activate launch=...`，再 `ShowWindow` 两次、`SetWindowPos(SWP_SHOWWINDOW)` 和 `SetForegroundWindow`。面板标题和状态含「已定位 todo-00N」。`status` 读快捷方式前初始化 COM；线程上已经有套间时不再多调用一次 `CoUninitialize`。
+
+### 激活修复的自动观察
+
+2026-10-09 在独立构建目录的 release `toast.exe` 上运行 `activation-check`，退出码 0。当时所有者的 `toast.exe` 仍在运行（`serve` 和 `-Embedding`），所以这条自检没有向 SCM 注册产品 CLSID，也没有改 HKCU。它注册的是只活在该进程里的探测 CLSID `B7E3A1C2-4D55-4E18-9A60-2F6C8D0E11A7`。
+
+同一程序再用 `STARTF_USESHOWWINDOW`、`wShowWindow = 0`（`SW_HIDE`）启动一次，退出码仍是 0。日志里第一次 `ShowWindow` 之前窗口是隐藏的（两次 `ShowWindow` 的返回值都是 0），调用之后 `IsWindowVisible=true`，样式为 `0x14CF0000`。
+
+| 观察 | 结果 |
+| --- | --- |
+| 进程内 `CreateInstance` + `Activate("todo-001")` | 日志有 `COM Activate launch=todo-001`。标题含「已定位 todo-001」，状态是「已定位 todo-001　买牛奶」。`IsWindowVisible=true`。这不是点击通知 |
+| 另一个进程 `CoCreateInstance` 探测 CLSID，再 `Activate("todo-003")` | 日志有 `COM Activate launch=todo-003`。标题含「已定位 todo-003」，状态是「已定位 todo-003　交电费」。`IsWindowVisible=true`。产品 CLSID 这次没有注册，因为已有 `toast.exe` |
+| `SW_HIDE` 启动后的窗口 | `activation-check` 退出码 0，创建后 `IsWindowVisible=true` |
+| `status` | 退出码 0。日志有 `CoInitializeEx STA hr=0x00000000`，没有 `0x800401F0`。快捷方式的 AUMID 和 CLSID 能读回。判定是「部分注册」：`LocalServer32` 仍指向所有者正在运行的那个 exe，当前程序在另一个构建目录，路径对不上。没有改注册表 |
+
+这次没有跑完整的 `self-check`，因为它会注销并重写 HKCU。所有者机器上的安装版注册保持原样。
+
 ### 通过条件
 
 | 条件 | 结果 | 所有者观察 |
@@ -89,11 +112,11 @@
 
 ### 所有者要亲手做的步骤
 
-在本 PR 的目录里执行。命令都用 release，这样快捷方式里的程序路径和正在跑的程序是同一个。换过构建目录或重新编译后，先重新 `register`。做完或中途停下，都执行文末的清理。
+在本 PR 的目录里执行。命令都用 release，这样快捷方式里的程序路径和正在跑的程序是同一个。先自己关掉还在跑的旧 `toast.exe`（包括 `serve` 和 `-Embedding`）。这次看到的是 PID 19380 和 27064，以当时还在的为准。不要留着旧进程再注册。换过构建目录或重新编译后，先重新 `register installed`，否则 `LocalServer32` 仍指向旧 exe，`status` 会是「部分注册」。做完或中途停下，都执行文末的清理。屏幕上的显示、点击、叠放、请勿打扰和托盘图标仍要亲眼看，`activation-check` 不能代替。
 
 1. `cargo build -p toast --release`
 2. 安装版显示：`cargo run -p toast --release -- register installed`，然后 `status`，确认判定是「安装版」。再 `cargo run -p toast --release -- show todo-001`。看通知中心或右下角有没有「待办到期」，正文含 `todo-001` 和「买牛奶」。把看到的写进「安装版：通知能显示」。控制台里的 `S_OK` 不算。
-3. 安装版、进程还在时点击：另开一个终端，`cargo run -p toast --release -- serve`，让模拟面板保持打开。再 `cargo run -p toast --release -- show todo-003`。点击那条通知。要同时看到：面板到前台；标题含「已定位 todo-003」；列表选中「todo-003 交电费」；运行 `serve` 的终端有 `COM Activate launch=todo-003`。只收到这串字、列表没有选中该行，定位不通过。
+3. 安装版、进程还在时点击：另开一个终端，`cargo run -p toast --release -- serve`，让模拟面板保持打开。再 `cargo run -p toast --release -- show todo-003`。点击那条通知。要同时看到：面板可见并到前台；标题含「已定位 todo-003」；列表选中「todo-003 交电费」；`%TEMP%\lanwork-spike-toast.log` 有 `COM Activate launch=todo-003`。只收到这串字、列表没有选中该行，定位不通过。不要再出现第二个没有 `Activate` 日志的 `-Embedding` 进程。
 4. 安装版、进程退出后点击：关掉模拟面板，确认 `serve` 已经退出。上一条通知会被点击消掉，所以再 `cargo run -p toast --release -- show todo-002`。点击它。应重新出现面板，并选中「todo-002 写周报」，终端有 `launch=todo-002`。冷启动时先有控制台窗口，这是 spike 用了控制台子系统，单独记一笔，不因此改判定。
 5. 便携版不要沿用安装版的结果。先 `cargo run -p toast --release -- unregister`，再 `register portable`，`status` 必须是「便携版」，且没有快捷方式、CustomActivator、LocalServer32。然后按第 2、3、4 步各做一次，分别填便携版的显示、运行中点击、退出后点击。退出后点击如果拉不起进程，就记失败，不要补快捷方式再试。
 6. 叠放：在安装版注册下执行 `cargo run -p toast --release -- show todo-001 --repeat 3`，看通知中心是三条还是被收成一条。再执行 `show todo-001 --repeat 3 --tag todo-001`，再看一次。便携版再各做一遍。历史条数已经写在自动观察里，这里只填眼睛看到的。
