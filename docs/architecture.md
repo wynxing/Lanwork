@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除等 #9 第 17 项，以及除长期未更新和 Draft 以外的信号与筛选等 #9 第 18 项。应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
@@ -21,8 +21,8 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| GitHub、应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务和收纳服务已接入，这些还没有 |
-| 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 与收纳薄命令 `ShelfCommands` 已在 `crates/core` |
+| 应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务和 GitHub 服务已接入，这些还没有 |
+| 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
 | 各项技术验证的最小程序 | `spikes/<名称>` |
 | Everything SDK 的许可说明 | `third_party/`。Unihan 的许可说明已经放入 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
@@ -90,12 +90,12 @@ Lanwork/
 
 应用索引和图标缓存放在 `%LOCALAPPDATA%\Lanwork\cache`，可删除后重建，不进导出包。
 
-- 文件名是 id。id 是单个路径分量，不允许分隔符、Windows 保留设备名和文件名非法字符。`github/cache/<repo>.json` 的 `<repo>` 也是单个分量；`owner/repo` 如何编码由 GitHub 服务决定，本层不规定。
+- 文件名是 id。id 是单个路径分量，不允许分隔符、Windows 保留设备名和文件名非法字符。`github/cache/<repo>.json` 的 `<repo>` 也是单个分量。`owner/repo` 的编码由 GitHub 服务决定：每个 `/` 换成 `%2F`，见「GitHub 服务」。
 - 写入：进程内一把互斥锁。同目录写 `<name>.tmp`，调用 `FlushFileBuffers` 后，目标已存在时用 `ReplaceFileW`（`REPLACEFILE_WRITE_THROUGH`），否则用 `MoveFileExW`（`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`）。替换失败则删除临时文件、保留原文件，并返回带路径的错误。不自动重试。数据目录位于 OneDrive 同步的「文档」下时，同步进程占用按同一规则报错。
 - 单个 JSON 无法解析时，把该文件改名为 `<id>.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，其他文件仍可读。日志不含文件内容。不认识的 `schemaVersion` 不隔离，由调用方拒绝。
 - 每个 JSON 对象带数字字段 `schemaVersion`。当前版本是 1。新字段可选并有默认值；缺少 `schemaVersion` 的旧文件按 1 读取。示例模型是 `ExampleDocument`，不是待办或便签模型。
 - 写盘成功后发布 `EntityChanged { kind, id, revision }`。`revision` 只在便签保存时携带新的修订号，其他实体为 None。跨文件批次在提交成功后按写入顺序发布；写盘失败或批次未提交不发布。订阅回调在写锁释放之后执行。
-- 日志在 `logs/app.log`。单文件超过 1 MiB 时轮转，保留 `app.log`、`app.log.1`、`app.log.2`。不写文件内容，因此不写便签正文。落盘前去掉常见 GitHub token 形态，以及名称含 `TOKEN`、`SECRET`、`PASSWORD`、`CREDENTIAL`、或以 `_KEY` 结尾且值长度至少 8 的环境变量的值。错误里仍会写出文件路径。
+- 日志在 `logs/app.log`。单文件超过 1 MiB 时轮转，保留 `app.log`、`app.log.1`、`app.log.2`。不写文件内容，因此不写便签正文。落盘前去掉常见 GitHub token 形态，以及名称含 `TOKEN`、`SECRET`、`PASSWORD`、`CREDENTIAL`、或以 `_KEY` 结尾且值长度至少 8 的环境变量的值。错误里仍会写出文件路径。GitHub 服务通过这里记 `gh version <版本>`、`gh not installed` 或 `gh unavailable`。版本号只保留有限的版本字符，无法识别时记 `unknown`。不写环境变量，也不写 `gh` 的标准输出和标准错误。
 - `import.pending` 的内容是备份绝对路径的 UTF-8 文本，不是 JSON。它不进入导出包。
 - 收件箱是 `kind=inbox` 的待办清单，首次需要时创建一次。
 - 待办可带到期日、提醒、周期、GitHub 来源，以及至多一个当前标记。
@@ -105,6 +105,29 @@ Lanwork/
 - GitHub 通过本机 `gh` 读取。token 不进入配置、日志或导出包。
 - 导出包包含配置、待办、便签、收纳分组和 GitHub watchlist，缓存可选。不含日志、备份目录和 token。
 - 不实现 Focus 的聚合服务，也不实现从 MayDolist schema 的一次性迁移。
+
+### GitHub 服务
+
+模块在 `lanwork_core::github`。薄命令是 `GithubCommands`。规则在服务里。`crates/core` 不依赖 Slint，也不打开浏览器；`open_url` 只返回 `http` / `https`。测试用可替换的 `GhClient`，不访问网络，也不要求本机已登录。
+
+生产调用是 `ProcessGh`。它只启动本机 `gh`，参数是独立的 argv，不经过 shell。Windows 上 `CreateProcess` 带 `CREATE_NO_WINDOW`（`0x08000000`）。子进程继承当前环境，以便本机 `gh` 使用已有登录；Lanwork 不读取、不保存、不记录这些变量。仓库名以 `-` 开头或含控制字符时不传给 `gh`。
+
+`gh version` 的版本写入日志，规则见上面的日志一条。`gh auth status` 退出码为 0 视为已登录。非 0 且不是网络失败或速率限制时视为未登录。不把登录名写入日志或快照。
+
+- `github/watchlist.json` 的字段是 `schemaVersion`、`repos`（字符串数组）、`ignored` 和 `pinned`。后两者的元素是 `repo`、`kind`（`github-pr` 或 `github-issue`）和 `number`。忽略和钉住只被记住，并出现在列表模型上。是否因此隐藏或提前，产品规格没有写。同一仓库字符串出现多次时，刷新和列表只保留第一次。这是避免重复请求的机制，产品规格没有写重复项。
+- 读取追踪仓库走这份文件。`add_tracked` 和 `remove_tracked` 在 #9 第 17 项写入产品规格之前返回未定错误，不校验输入，不改 watchlist、快照或待办。
+- 快照文件名是仓库名中每个 `/` 换成 `%2F`。结果必须仍是存储层允许的 id，否则该仓库记为失败，不调用 `gh`。名字里本来就有 `%2F` 时会和带斜线的名字共用一个文件；产品规格没有写这种输入。
+- 快照字段是 `schemaVersion`、`repo`、`fetchedAt`（UTC 毫秒）和 `items`。条目只保存这次读到、状态明确为 open、并且有非空白标题和 `http` / `https` 地址的 PR 与 Issue。Draft 只来自 PR 的 `isDraft` 或 `draft`。可选字段缺失或类型不对时，该项用默认值：不是 Draft，也不标长期未更新。顶层不是 JSON 数组才让这个仓库失败。不认识的 `schemaVersion` 不使用该文件，也不隔离。
+- 刷新一个或全部已追踪仓库。某个仓库失败时不写它的快照，其他仓库照常写入。失败后若已有快照，列表仍用它，并标「离线缓存」。这个标记不写进快照文件。成功的刷新清掉它。进程从磁盘载入后、尚未在本次进程里成功刷新时，已有快照也标「离线缓存」。没有快照的失败不标这四个字，只带失败原因。
+- 已实现的信号只有长期未更新和 Draft。天数是 0 时不标长期未更新。没有更新时间，或更新时间晚于调用方给出的当前时间时，也不标。否则当 `now - updatedAt >= 天数 × 86400000` 毫秒时标上。一天按 86400000 毫秒，不按日历。需要处理、需要 Review、CI 失败不计算。`SignalExtension` 可以观察已经决定显示的条目，服务不读取它的结果。
+- `list` 没有筛选。「命中当前筛选」等 #9 第 18 项。`list_filtered` 在任一筛选项为真时返回未定错误，不默认交集或并集，也不改数据。筛选项包括我的、被提及、被分配、参与、需要处理、需要 Review、CI 失败、长期未更新和 Draft。
+- 列表在读取时跳过「来源类型、仓库字符串、编号都相同，且未完成、`deletedAt` 为空」的待办所关联的条目。完成后或软删除后，快照里仍是 open 就再次出现。永久删除尚未实现；条目不存在时不再隐藏。隐藏不写 watchlist，也不写快照。
+- 转为待办调用待办服务：没有收件箱时先创建，再一次写入条目和来源。标题是 `仓库#编号 原标题`。找不到快照条目，或待办写入失败时，不留下这条待办。收件箱文件若已在同一次调用里创建成功，空的收件箱可以留下。
+- 来源同步在该仓库快照提交成功之后进行。只在调用方传入的「关闭来源时自动完成待办」为允许时，把状态明确是 `closed` 或 `merged` 的来源所关联的未完成、未软删除待办标为完成。`mergedAt` 非空且状态是 `closed` 时视为 `merged`，两者都会完成待办。状态缺失、无法识别、条目不在这次响应里、解析失败、网络失败、速率限制、未安装、未登录、仓库不存在、快照没有写成功，都不标完成，也不把待办改回未完成。来源再次变为 open 时也不改回。
+- 自动完成逐条调用待办服务的完成。某一条失败时该条保持原状态，错误进入刷新结果；已经完成的其他条不回滚，已经写好的快照也不回滚。设置里的「来源同步」原样出现在刷新结果里。它和「关闭来源时自动完成待办」如何组合，产品规格没有写，因此不单独作为完成条件。
+- 刷新间隔由调用方传入，服务不读 `config.json`，也不自建定时器，也不解释 0。
+- 单次 `gh pr list` 与 `gh issue list` 使用 `--state all --limit 200`，字段是编号、标题、地址、状态、Draft、更新时间，PR 另加 `mergedAt`。超过 200 条如何分页，产品规格没有写。
+- 内存只在对应文件写成功后更新。变更消息由存储层在提交后发布。写盘失败不发布，也不改这份内存。变更回调里可以读列表，不要再调用刷新、转为待办或忽略、钉住。
 
 ### 跨文件操作
 
@@ -120,7 +143,7 @@ Lanwork/
 
 待办服务把加载钩子和名为 `movedAt`、`currentSince` 的两条加载修复注册到 `Store::boot`。修复写回使用同一批次，`EntityChanged` 只在该批次提交后发出。永久删除的领域事件是 `TodoNotice::Purged`。产品规格写明永久删除之前，服务不删除条目，也不发出这条事件。
 
-配置至少包括：数据目录、热角、搜索条热键、面板热键（可空）、安静时段、主题、开机启动、GitHub 刷新间隔、长期未更新天数、来源同步、自动完成关联待办、处理模式顺延天数。不包括玻璃透明度。
+配置至少包括：数据目录、热角、搜索条热键、面板热键（可空）、安静时段、主题、开机启动、GitHub 刷新间隔、长期未更新天数、来源同步、自动完成关联待办、处理模式顺延天数。不包括玻璃透明度。GitHub 服务不读 `config.json`。刷新间隔、长期未更新天数和关闭来源时自动完成待办由调用方传入。
 
 ## 搜索
 

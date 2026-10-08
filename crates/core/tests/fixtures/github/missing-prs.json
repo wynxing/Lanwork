@@ -1,0 +1,23 @@
+[
+  {
+    "number": 21,
+    "title": "Partial fields",
+    "url": "https://github.com/example/widget/pull/21",
+    "state": "OPEN",
+    "reviewDecision": "REVIEW_REQUIRED"
+  },
+  {
+    "number": 22,
+    "title": "No state",
+    "url": "https://github.com/example/widget/pull/22",
+    "updatedAt": "2026-01-02T03:04:05Z"
+  },
+  {
+    "number": 23,
+    "state": "CLOSED"
+  },
+  {
+    "title": "missing number",
+    "state": "CLOSED"
+  }
+]

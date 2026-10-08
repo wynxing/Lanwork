@@ -1,0 +1,26 @@
+[
+  {
+    "number": 12,
+    "title": "Fix the latch",
+    "url": "https://github.com/example/widget/pull/12",
+    "state": "OPEN",
+    "isDraft": false,
+    "updatedAt": "2026-01-02T03:04:05Z"
+  },
+  {
+    "number": 13,
+    "title": "Draft notes",
+    "url": "https://github.com/example/widget/pull/13",
+    "state": "OPEN",
+    "isDraft": true,
+    "updatedAt": "2026-01-02T03:04:05Z"
+  },
+  {
+    "number": 3,
+    "title": "Landed",
+    "url": "https://github.com/example/widget/pull/3",
+    "state": "MERGED",
+    "isDraft": false,
+    "updatedAt": "2026-01-01T00:00:00Z"
+  }
+]
