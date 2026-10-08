@@ -109,7 +109,9 @@ impl Clock for ManualClock {
     }
 }
 
-/// 先读一次作为基线，不写入 CSV。之后每个间隔写一行。
+/// 先读一次作为基线，不写入 CSV。之后按固定节拍写一行。
+/// 节拍从进入本函数的时刻对齐：`origin + k * interval`。读完计数器后只睡到下一个节拍。
+/// 某次读取超过一个间隔时，跳到其后的下一个节拍，不补采落下的拍，也不把后续间隔越拉越长。
 /// 目标进程退出时停止，已经写出的行保留在 `out` 里。
 pub fn sample_to_writer<P, C, W>(
     probe: &mut P,
@@ -132,6 +134,8 @@ where
     writeln!(out, "{CSV_HEADER}")?;
     out.flush()?;
 
+    let origin = clock.elapsed();
+    let end = origin.saturating_add(duration);
     let Some(baseline) = probe.read()? else {
         return Ok(StopReason::ProcessExited { samples: 0 });
     };
@@ -140,12 +144,19 @@ where
     let mut samples = 0usize;
 
     loop {
-        let elapsed = clock.elapsed();
-        if elapsed >= duration {
+        let now = clock.elapsed();
+        if now >= end {
             return Ok(StopReason::DurationReached { samples });
         }
-        clock.sleep(interval.min(duration - elapsed));
-        let now = clock.elapsed();
+        let deadline = next_deadline(origin, interval, now);
+        if deadline > end {
+            return Ok(StopReason::DurationReached { samples });
+        }
+        while clock.elapsed() < deadline {
+            let remain = deadline.saturating_sub(clock.elapsed());
+            clock.sleep(remain);
+        }
+        let sampled_at = clock.elapsed();
         let Some(reading) = probe.read()? else {
             return Ok(StopReason::ProcessExited { samples });
         };
@@ -160,19 +171,32 @@ where
             cpu_time_100ns: reading.cpu_time_100ns,
             cpu_percent: cpu_percent(
                 reading.cpu_time_100ns.saturating_sub(previous_cpu),
-                now.saturating_sub(previous_at),
+                sampled_at.saturating_sub(previous_at),
             ),
             wakeups_per_sec: reading.wakeups_per_sec,
         };
         previous_cpu = reading.cpu_time_100ns;
-        previous_at = now;
+        previous_at = sampled_at;
         write_sample(out, &sample)?;
         out.flush()?;
         samples += 1;
-        if clock.elapsed() >= duration {
-            return Ok(StopReason::DurationReached { samples });
-        }
     }
+}
+
+/// 严格晚于 `now` 的下一个节拍：`origin + k * interval`，k 从 1 起。
+/// 落在节拍上时取再下一拍。读取超过一个间隔时，落下的拍直接跳过，网格仍相对 `origin`。
+pub fn next_deadline(origin: Duration, interval: Duration, now: Duration) -> Duration {
+    let elapsed = now.saturating_sub(origin);
+    let step = interval.as_nanos();
+    let k = (elapsed.as_nanos() / step).saturating_add(1);
+    origin.saturating_add(mul_duration(interval, k))
+}
+
+fn mul_duration(interval: Duration, k: u128) -> Duration {
+    let Ok(factor) = u32::try_from(k) else {
+        return Duration::MAX;
+    };
+    interval.saturating_mul(factor)
 }
 
 pub fn p95_index_1based(n: usize) -> Option<usize> {
@@ -321,6 +345,141 @@ mod tests {
         assert_eq!(fields[7], "5001000");
         assert_eq!(fields[8], "50.000000");
         assert_eq!(fields[9], "12.500000");
+    }
+
+    #[test]
+    fn deadlines_stay_on_the_origin_grid() {
+        let origin = Duration::from_secs(10);
+        let interval = Duration::from_secs(1);
+        assert_eq!(
+            next_deadline(origin, interval, origin),
+            origin + Duration::from_secs(1)
+        );
+        assert_eq!(
+            next_deadline(origin, interval, Duration::from_secs(9)),
+            origin + Duration::from_secs(1)
+        );
+        assert_eq!(
+            next_deadline(origin, interval, origin + Duration::from_secs(1)),
+            origin + Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_deadline(origin, interval, origin + Duration::from_millis(1_100)),
+            origin + Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_deadline(origin, interval, origin + Duration::from_millis(2_400)),
+            origin + Duration::from_secs(3)
+        );
+        assert_eq!(
+            next_deadline(origin, interval, origin + Duration::from_millis(100_050)),
+            origin + Duration::from_secs(101)
+        );
+        assert_eq!(
+            next_deadline(
+                Duration::ZERO,
+                Duration::from_millis(250),
+                Duration::from_millis(250)
+            ),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            next_deadline(
+                Duration::ZERO,
+                Duration::from_millis(250),
+                Duration::from_millis(260)
+            ),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn three_hundred_seconds_writes_three_hundred_rows_on_the_grid() {
+        let mut steps = VecDeque::new();
+        steps.push_back(Ok(Some(reading(0, 0.0))));
+        for i in 1..=300 {
+            steps.push_back(Ok(Some(reading(0, i as f64))));
+        }
+        let mut probe = Scripted { steps };
+        let mut clock = ManualClock::new(UNIX_EPOCH);
+        let mut csv = Vec::new();
+        let stop = sample_to_writer(
+            &mut probe,
+            &mut clock,
+            Duration::from_secs(300),
+            Duration::from_secs(1),
+            &mut csv,
+        )
+        .unwrap();
+        assert_eq!(stop, StopReason::DurationReached { samples: 300 });
+        let text = String::from_utf8(csv).unwrap();
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some(CSV_HEADER));
+        let rows: Vec<_> = lines.collect();
+        assert_eq!(rows.len(), 300);
+        assert!(rows[0].starts_with("1970-01-01T00:00:01.000Z,"));
+        assert!(rows[299].starts_with("1970-01-01T00:05:00.000Z,"));
+        assert!(rows[1].starts_with("1970-01-01T00:00:02.000Z,"));
+    }
+
+    #[test]
+    fn a_read_longer_than_the_interval_skips_to_the_next_beat() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct Shared {
+            at: Rc<Cell<Duration>>,
+        }
+
+        impl Clock for Shared {
+            fn elapsed(&mut self) -> Duration {
+                self.at.get()
+            }
+
+            fn sleep(&mut self, duration: Duration) {
+                self.at.set(self.at.get().saturating_add(duration));
+            }
+
+            fn now(&mut self) -> SystemTime {
+                UNIX_EPOCH + self.at.get()
+            }
+        }
+
+        struct Slow {
+            at: Rc<Cell<Duration>>,
+            left: usize,
+        }
+
+        impl Probe for Slow {
+            fn read(&mut self) -> Result<Option<Reading>, ToolError> {
+                self.at
+                    .set(self.at.get().saturating_add(Duration::from_millis(1_200)));
+                if self.left == 0 {
+                    return Ok(None);
+                }
+                self.left -= 1;
+                Ok(Some(reading(0, 0.0)))
+            }
+        }
+
+        let at = Rc::new(Cell::new(Duration::ZERO));
+        let mut clock = Shared { at: Rc::clone(&at) };
+        let mut probe = Slow { at, left: 8 };
+        let mut csv = Vec::new();
+        let stop = sample_to_writer(
+            &mut probe,
+            &mut clock,
+            Duration::from_secs(5),
+            Duration::from_secs(1),
+            &mut csv,
+        )
+        .unwrap();
+        assert_eq!(stop, StopReason::DurationReached { samples: 2 });
+        let text = String::from_utf8(csv).unwrap();
+        let rows: Vec<_> = text.lines().skip(1).collect();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].starts_with("1970-01-01T00:00:03.200Z,"));
+        assert!(rows[1].starts_with("1970-01-01T00:00:05.200Z,"));
     }
 
     #[test]

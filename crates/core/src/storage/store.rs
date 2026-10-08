@@ -211,6 +211,13 @@ impl Store {
         self.inner.log.path()
     }
 
+    /// 记一条信息日志。落盘前仍按存储层规则去掉密钥形态。
+    ///
+    /// 调用方不要把环境变量、token 或子进程的原始输出放进 `message`。
+    pub fn log_info(&self, message: &str) {
+        self.inner.log.info(message);
+    }
+
     pub fn import_pending_path(&self) -> PathBuf {
         self.inner.data_dir.join("import.pending")
     }

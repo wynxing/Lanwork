@@ -1,12 +1,14 @@
-//! 匹配引擎的验收样例。组内排序不在这里定。
+//! 匹配引擎的验收样例，以及组内排序和 20 条名额。
 
 use std::cmp::Ordering;
 use std::path::Path;
 
 use lanwork_core::search::{
-    CHARACTER_COUNT, FieldInput, FieldRole, GroupOrder, Hit, HitKind, MatchIndex,
-    PendingGroupOrder, READINGS_SHA256, SYLLABLE_COUNT, TABLE_RESIDENT_BYTES, UNICODE_VERSION,
-    benchmark_corpus, prepare, query_prepared, readings, resident_bytes, sort_hits, table_info,
+    CHARACTER_COUNT, DISPLAY_LIMIT, FieldInput, FieldRole, GROUP_FIRST_TAKE, GroupOrder, Hit,
+    HitKind, MatchIndex, READINGS_SHA256, RankedGroup, SYLLABLE_COUNT, SearchGroup,
+    TABLE_RESIDENT_BYTES, UNICODE_VERSION, ZeroFrequency, allocate_display, benchmark_corpus,
+    hit_kind_rank, prepare, query_prepared, rank_hits, readings, resident_bytes, sort_hits,
+    table_info,
 };
 use sha2::{Digest, Sha256};
 
@@ -301,26 +303,11 @@ fn fuzzy_scores_reward_consecutive_hits_and_word_starts() {
 }
 
 #[test]
-fn pending_group_order_keeps_input_order() {
-    let mut index = MatchIndex::new();
-    index.insert(10, &[name("catcher")]);
-    index.insert(11, &[name("chrome")]);
-    let mut hits = index.query("chr");
-    let fuzzy: Vec<_> = hits
-        .iter()
-        .filter(|hit| hit.kind == HitKind::Fuzzy)
-        .copied()
-        .collect();
-    assert_eq!(fuzzy[0].id, 10);
-    assert_eq!(fuzzy[1].id, 11);
-    assert!(fuzzy[0].score < fuzzy[1].score);
-    sort_hits(&mut hits, &PendingGroupOrder);
-    let after: Vec<_> = hits
-        .iter()
-        .filter(|hit| hit.kind == HitKind::Fuzzy)
-        .map(|hit| hit.id)
-        .collect();
-    assert_eq!(after, vec![10, 11]);
+fn same_kind_keeps_input_order_when_frequency_ties_and_ignores_score() {
+    let hits = vec![hit(10, HitKind::Fuzzy, 1), hit(11, HitKind::Fuzzy, 100)];
+    let ranked = rank_hits(&hits, ZeroFrequency);
+    assert_eq!(ids(&ranked), vec![10, 11]);
+    assert!(ranked[0].score < ranked[1].score);
 }
 
 struct ScoreOrder;
@@ -406,6 +393,267 @@ fn benchmark_corpus_covers_the_acceptance_names_and_stays_small() {
     let heap = index.heap_bytes();
     assert!(heap < 16 * 1024 * 1024, "corpus heap bytes {heap}");
     assert!(heap > 0);
+}
+
+fn hit(id: u64, kind: HitKind, score: u32) -> Hit {
+    Hit {
+        id,
+        role: FieldRole::Name,
+        field_index: 0,
+        kind,
+        score,
+    }
+}
+
+fn ids(hits: &[Hit]) -> Vec<u64> {
+    hits.iter().map(|hit| hit.id).collect()
+}
+
+#[test]
+fn hit_kind_rank_follows_the_product_order() {
+    let order = [
+        HitKind::Exact,
+        HitKind::Prefix,
+        HitKind::Pinyin,
+        HitKind::Initial,
+        HitKind::Substring,
+        HitKind::Fuzzy,
+    ];
+    let mut ranks: Vec<_> = order.iter().copied().map(hit_kind_rank).collect();
+    let sorted = ranks.clone();
+    ranks.sort_unstable();
+    assert_eq!(ranks, sorted);
+    assert!(ranks.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn rank_hits_orders_kinds_then_frequency_and_keeps_one_row() {
+    let hits = vec![
+        hit(6, HitKind::Fuzzy, 1),
+        hit(5, HitKind::Substring, 1),
+        hit(4, HitKind::Initial, 1),
+        hit(3, HitKind::Pinyin, 1),
+        hit(2, HitKind::Prefix, 1),
+        hit(1, HitKind::Exact, 1),
+        hit(6, HitKind::Exact, 50),
+        Hit {
+            id: 1,
+            role: FieldRole::Alias,
+            field_index: 1,
+            kind: HitKind::Exact,
+            score: 9,
+        },
+    ];
+    let ranked = rank_hits(&hits, |id| if id == 5 { 100 } else { 0 });
+    assert_eq!(ids(&ranked), vec![6, 1, 2, 3, 4, 5]);
+    assert_eq!(
+        ranked.iter().find(|hit| hit.id == 1).unwrap().field_index,
+        0
+    );
+    assert_eq!(
+        ranked.iter().find(|hit| hit.id == 6).unwrap().kind,
+        HitKind::Exact
+    );
+
+    let tied = vec![hit(1, HitKind::Prefix, 1), hit(2, HitKind::Prefix, 99)];
+    let by_frequency = rank_hits(&tied, |id| if id == 2 { 3 } else { 9 });
+    assert_eq!(ids(&by_frequency), vec![1, 2]);
+
+    let exact_beats_frequent_fuzzy = rank_hits(
+        &[hit(1, HitKind::Fuzzy, 99), hit(2, HitKind::Exact, 1)],
+        |id| if id == 1 { 1_000 } else { 0 },
+    );
+    assert_eq!(ids(&exact_beats_frequent_fuzzy), vec![2, 1]);
+}
+
+#[test]
+fn prepared_matches_rank_by_kind_ahead_of_frequency() {
+    let mut index = MatchIndex::new();
+    index.insert(1, &[name("weixin")]);
+    index.insert(2, &[name("weixin-extra")]);
+    index.insert(3, &[name("微信")]);
+    index.insert(4, &[name("wild eager item xylophone")]);
+    index.insert(5, &[name("xvsc")]);
+    index.insert(6, &[name("Visual Studio Code")]);
+
+    let exact_first = rank_hits(&index.query("weixin"), |id| if id == 2 { 50 } else { 0 });
+    assert_eq!(ids(&exact_first), vec![1, 2, 3]);
+    assert_eq!(
+        exact_first.iter().map(|hit| hit.kind).collect::<Vec<_>>(),
+        vec![HitKind::Exact, HitKind::Prefix, HitKind::Pinyin]
+    );
+
+    let prefix_before_pinyin = rank_hits(&index.query("wei"), |id| if id == 3 { 80 } else { 0 });
+    assert_eq!(prefix_before_pinyin[0].id, 1);
+    assert_eq!(prefix_before_pinyin[0].kind, HitKind::Prefix);
+    assert!(
+        prefix_before_pinyin
+            .iter()
+            .any(|hit| hit.id == 3 && hit.kind == HitKind::Pinyin)
+    );
+
+    let pinyin_before_initial = rank_hits(&index.query("weix"), |id| if id == 4 { 40 } else { 0 });
+    assert_eq!(ids(&pinyin_before_initial), vec![1, 2, 3, 4]);
+    assert_eq!(
+        pinyin_before_initial
+            .iter()
+            .map(|hit| hit.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            HitKind::Prefix,
+            HitKind::Prefix,
+            HitKind::Pinyin,
+            HitKind::Initial,
+        ]
+    );
+
+    let initial_before_substring =
+        rank_hits(&index.query("vsc"), |id| if id == 5 { 70 } else { 0 });
+    assert_eq!(initial_before_substring[0].id, 6);
+    assert_eq!(initial_before_substring[0].kind, HitKind::Initial);
+    assert!(
+        initial_before_substring
+            .iter()
+            .any(|hit| hit.id == 5 && hit.kind == HitKind::Substring)
+    );
+
+    let mut letters = MatchIndex::new();
+    letters.insert(7, &[name("zac")]);
+    letters.insert(8, &[name("abc")]);
+    let substring_before_fuzzy = rank_hits(&letters.query("ac"), ZeroFrequency);
+    assert_eq!(ids(&substring_before_fuzzy), vec![7, 8]);
+    assert_eq!(substring_before_fuzzy[0].kind, HitKind::Substring);
+    assert_eq!(substring_before_fuzzy[1].kind, HitKind::Fuzzy);
+}
+
+#[test]
+fn display_slots_fill_eight_per_group_then_the_remainder_in_group_order() {
+    assert_eq!(DISPLAY_LIMIT, 20);
+    assert_eq!(GROUP_FIRST_TAKE, 8);
+
+    let groups = [
+        group(SearchGroup::Application, 10),
+        group(SearchGroup::Todo, 10),
+        group(SearchGroup::Note, 10),
+    ];
+    let shown = allocate_display(&groups);
+    assert_eq!(
+        counts(&shown),
+        vec![
+            (SearchGroup::Application, 8),
+            (SearchGroup::Todo, 8),
+            (SearchGroup::Note, 4)
+        ]
+    );
+
+    let two = [
+        group(SearchGroup::Application, 30),
+        group(SearchGroup::Todo, 30),
+    ];
+    assert_eq!(
+        counts(&allocate_display(&two)),
+        vec![(SearchGroup::Application, 12), (SearchGroup::Todo, 8)]
+    );
+
+    let short_then_long = [
+        group(SearchGroup::Application, 3),
+        group(SearchGroup::Todo, 100),
+    ];
+    assert_eq!(
+        counts(&allocate_display(&short_then_long)),
+        vec![(SearchGroup::Application, 3), (SearchGroup::Todo, 17)]
+    );
+
+    let only = [group(SearchGroup::File, 25)];
+    let file_ids: Vec<_> = allocate_display(&only)
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+    assert_eq!(file_ids, (0..20).collect::<Vec<_>>());
+
+    let reversed = [
+        group(SearchGroup::Folder, 10),
+        group(SearchGroup::Browser, 2),
+        group(SearchGroup::Application, 10),
+    ];
+    let reversed_shown = allocate_display(&reversed);
+    assert_eq!(
+        counts(&reversed_shown),
+        vec![
+            (SearchGroup::Browser, 2),
+            (SearchGroup::Application, 10),
+            (SearchGroup::Folder, 8),
+        ]
+    );
+    let app_ids: Vec<_> = reversed_shown
+        .iter()
+        .filter(|(group, _)| *group == SearchGroup::Application)
+        .map(|(_, id)| *id)
+        .collect();
+    assert_eq!(app_ids, (0..10).collect::<Vec<_>>());
+
+    let six = [
+        group(SearchGroup::Browser, 100),
+        group(SearchGroup::Application, 100),
+        group(SearchGroup::Todo, 100),
+        group(SearchGroup::Note, 100),
+        group(SearchGroup::File, 100),
+        group(SearchGroup::Folder, 100),
+    ];
+    assert_eq!(
+        counts(&allocate_display(&six)),
+        vec![
+            (SearchGroup::Browser, 8),
+            (SearchGroup::Application, 8),
+            (SearchGroup::Todo, 4),
+        ]
+    );
+
+    let sparse = [
+        group(SearchGroup::Browser, 1),
+        group(SearchGroup::Application, 1),
+        group(SearchGroup::Todo, 1),
+        group(SearchGroup::Note, 1),
+        group(SearchGroup::File, 1),
+        group(SearchGroup::Folder, 1),
+    ];
+    assert_eq!(allocate_display(&sparse).len(), 6);
+    assert!(allocate_display::<u64>(&[]).is_empty());
+
+    let with_gap = [
+        RankedGroup {
+            group: SearchGroup::Application,
+            items: vec![7u64, 8, 9],
+        },
+        RankedGroup {
+            group: SearchGroup::Todo,
+            items: Vec::new(),
+        },
+        group(SearchGroup::Note, 30),
+    ];
+    assert_eq!(
+        counts(&allocate_display(&with_gap)),
+        vec![(SearchGroup::Application, 3), (SearchGroup::Note, 17)]
+    );
+}
+
+fn group(group: SearchGroup, count: u64) -> RankedGroup<u64> {
+    RankedGroup {
+        group,
+        items: (0..count).collect(),
+    }
+}
+
+fn counts(shown: &[(SearchGroup, u64)]) -> Vec<(SearchGroup, usize)> {
+    let mut out = Vec::new();
+    for (group, _) in shown {
+        if out.last().is_some_and(|(last, _)| last == group) {
+            out.last_mut().unwrap().1 += 1;
+        } else {
+            out.push((*group, 1));
+        }
+    }
+    out
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
