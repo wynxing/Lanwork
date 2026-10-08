@@ -91,7 +91,9 @@ pub enum TodoDue {
 
 /// 解析待办收集的剩余文本。
 ///
-/// `today` 由调用方传入。前缀必须是忽略前导空白后的第一个词，并且后面是空白或结束。
+/// `text` 是 [`crate::search::classify_prefix`] 判定为待办收集之后的剩余文本
+/// （[`crate::search::Capture::remainder`]）。本函数不识别 `+` / `＋`，也不改变前缀分类。
+/// `today` 由调用方传入。日期前缀必须是忽略前导空白后的第一个词，并且后面是空白或结束。
 /// 认不出时整句作为标题。`下周` 后面不是星期字时，整句作为标题。
 ///
 /// # Examples
@@ -769,6 +771,71 @@ mod tests {
             assert_unresolved("月底 收工", today, "收工");
             assert_unresolved("月末", today, "");
         }
+    }
+
+    #[test]
+    fn todo_capture_remainder_is_parsed_without_changing_prefix_classification() {
+        use crate::search::{PrefixClass, classify_prefix};
+
+        let today = ymd(2026, 10, 8);
+
+        let PrefixClass::TodoCapture(capture) = classify_prefix("+ 明天 提交周报") else {
+            panic!("expected todo capture");
+        };
+        assert!(capture.submittable());
+        assert_eq!(capture.remainder(), "明天 提交周报");
+        assert_date(capture.remainder(), today, "提交周报", ymd(2026, 10, 9));
+
+        let PrefixClass::TodoCapture(capture) = classify_prefix("＋ 3天后 交房租") else {
+            panic!("expected todo capture");
+        };
+        assert_eq!(capture.remainder(), "3天后 交房租");
+        assert_date(capture.remainder(), today, "交房租", ymd(2026, 10, 11));
+
+        let PrefixClass::TodoCapture(capture) = classify_prefix("+ 明天性计划") else {
+            panic!("expected todo capture");
+        };
+        assert_eq!(capture.remainder(), "明天性计划");
+        assert_absent(capture.remainder(), today);
+
+        let PrefixClass::TodoCapture(capture) = classify_prefix("+ 下周 开会") else {
+            panic!("expected todo capture");
+        };
+        assert_eq!(capture.remainder(), "下周 开会");
+        assert_absent(capture.remainder(), today);
+
+        let PrefixClass::TodoCapture(capture) = classify_prefix("+ 明天  提交 周报 ") else {
+            panic!("expected todo capture");
+        };
+        assert_eq!(capture.remainder(), "明天  提交 周报 ");
+        assert_date(capture.remainder(), today, "提交 周报 ", ymd(2026, 10, 9));
+
+        // 只有日期词时，前缀分类仍可提交；标题为空由调用方决定能不能创建。
+        let PrefixClass::TodoCapture(capture) = classify_prefix("+明天") else {
+            panic!("expected todo capture");
+        };
+        assert!(capture.submittable());
+        assert_eq!(capture.remainder(), "明天");
+        assert_date(capture.remainder(), today, "", ymd(2026, 10, 9));
+
+        let PrefixClass::TodoCapture(capture) = classify_prefix("+") else {
+            panic!("expected todo capture");
+        };
+        assert!(!capture.submittable());
+        assert_eq!(capture.remainder(), "");
+        assert_absent(capture.remainder(), today);
+
+        let PrefixClass::TodoCapture(capture) = classify_prefix("+ 周四 例会") else {
+            panic!("expected todo capture");
+        };
+        assert_unresolved(capture.remainder(), today, "例会");
+
+        assert!(matches!(
+            classify_prefix("/note 明天 开会"),
+            PrefixClass::NoteCapture(_)
+        ));
+        assert!(matches!(classify_prefix("微信"), PrefixClass::Search));
+        assert!(matches!(classify_prefix(""), PrefixClass::Empty));
     }
 
     #[test]
