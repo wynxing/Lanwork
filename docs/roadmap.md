@@ -160,7 +160,7 @@
 结论：**未通过**。七条通过条件都要人工用鼠标对资源管理器操作，结果栏留空。自动化观察到的内容写在后面，不充当这七条的「通过」。按 [#33](https://github.com/wynxing/Lanwork/issues/33)，不是每一条都通过就不算该项通过，因此不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
 
 - 日期：2026-10-08
-- commit：`59aa86c08906887d51016026e8790398733ba37b`。`cargo run -p dnd -- --self-test` 在这棵树上退出码 0。本文件后来只补上这个哈希
+- commit：`1c5ced530325a51641a45dcc1eafce2a26142ae7`。`cargo run -p dnd -- --self-test` 在这棵树上退出码 0。变基到当前 main 之后又跑了一次，退出码仍是 0
 - Slint：1.18.1（workspace 依赖 `=1.18.1`）。验证程序额外打开 feature `raw-window-handle-06`。默认 features 含 `backend-winit`、`renderer-femtovg`、`renderer-software`，不代表产品已选定渲染器
 - 渲染器：`GraphicsAPI::NativeOpenGL`（FemtoVG 的 OpenGL 路径被选中）。窗口缩放 1.5
 - 机器：DESKTOP-7C3P6OG，XIAOMI REDMI Book 14 2025 (FHD+)
@@ -204,7 +204,7 @@
 - 调用 `OleInitialize` 之前，以及 `--probe-no-ole` 在 `MainWindow::new` 之后、进入事件循环之前：`CoGetApartmentType` 为 `0x800401F0`（尚未 `CoInitialize`）。
 - 进入 winit 事件循环后，以及本进程调用 `OleInitialize` 之后：`APTTYPE(3)` 即 `APTTYPE_MAINSTA`，qualifier 0。这是主 STA，不是 MTA。
 - 未替换目标时，`RegisterDragDrop` 返回 already-registered。winit 0.30.13 的 `create_window_data` 在 `drag_and_drop` 为真时 `OleInitialize` 并注册 `FileDropHandler`。
-- 替换后：`registration-how=RevokeDragDrop then RegisterDragDrop`，`our-pointer` 与 `prop` 同为 `0x2b94b473a58`，再次注册仍是 already-registered。
+- 替换后：`registration-how=RevokeDragDrop then RegisterDragDrop`，`our-pointer` 与 `prop` 同为 `0x276d8e0f108`，再次注册仍是 already-registered。这个地址每次进程不同，两次自测里两边都相等。
 - `SM_CXDRAG=4`，`SM_CYDRAG=4`。判定是物理像素位移严格大于这两个值。Slint 窗口内阈值是另一套：`DISTANCE_THRESHOLD` 为 8 逻辑像素。
 - Shell `IDataObject` 往返：`readme.txt`、`folder`、`shortcut.lnk` 三个路径原样返回，快捷方式没有被解析成目标。
 - 同一接口对 269 个 UTF-16 单元的 `long.txt` 调用 `GetData(CF_HDROP)` 失败：`0x8007007A`（数据区域太小）。
