@@ -11,12 +11,13 @@
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除等 #9 第 17 项，以及除长期未更新和 Draft 以外的信号与筛选等 #9 第 18 项。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
+| `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。测量记录还不能当作渲染器已经选定。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
-| `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合协议的实测记录。 |
+| `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合「性能测量」协议的实测记录。`docs/measurements/fileidx.md` 只说明 fileidx 那次场景。 |
 | `docs/measurements/2026-10-08-empty-window.md` | 空 Slint 窗口采样。脚本通过：300 行，首尾 298.989 秒。偏离协议，不算「已达到」。 |
-| `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。 |
+| `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。已放入 Everything SDK 与 SDK3 的 x64 DLL 及许可，见 `third_party/everything/`。 |
 
 ### 尚未接入
 
@@ -24,8 +25,7 @@
 | --- | --- |
 | 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务和应用索引已接入，这些还没有 |
 | 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
-| 除 `spikes/render` 以外的技术验证最小程序 | `spikes/<名称>` |
-| Everything SDK 的许可说明 | `third_party/`。Unihan 的许可说明已经放入 |
+| 各项技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx` 与 `spikes/render` 已经在 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
 
 ## 技术验证
@@ -209,6 +209,8 @@ Lanwork/
 文件和文件夹优先使用 Everything，支持 1.4 和 1.5。随包附带 voidtools 的 Everything SDK x64 DLL：1.4 用 SDK 的 DLL，1.5 用 SDK3 的 DLL。两者固定版本，放在程序目录，并附许可说明。启动时按 1.5、1.4 的顺序探测，不为每次查询启动命令行。
 
 Everything 未运行或未就绪时，退回 Windows Search 索引。查询只匹配文件名，不匹配正文和属性，范围是 Windows 已建立索引的位置。Windows Search 服务不可用时报告文件索引不可用。Everything 恢复就绪后，下一次查询改回 Everything。两种来源都不复制全盘索引。有效 `http` / `https` 成为浏览器动作，无效地址丢弃。打开交给 Windows Shell。
+
+Windows Search 的调用方式由 `spikes/fileidx` 选定：进程内 ADO `ADODB.Connection`，提供程序 `Search.CollatorDSO.1`，SQL 为 `SELECT TOP 50 ... FROM SystemIndex WHERE SCOPE='file:' AND System.FileName LIKE ...`。查询词里的 `*`、`?` 映射成 `LIKE` 的 `%`、`_`，没有通配符时按文件名子串。`ISearchQueryHelper::GenerateSQLFromUserQuery` 的默认语句是 `CONTAINS(*)`，会返回正文命中，不作为产品查询。`ISearchManager` 在本机服务进程里，要用 `CLSCTX_ALL` 创建，只用来对照 SQL 和列出索引根。这次选择只说明技术验证里测通的调用方式，不表示「性能测量」的 P95 已经达到。
 
 搜索条的输入先经 `lanwork_core::search::classify_prefix` 判断收集前缀。该函数只区分空输入、搜索、待办收集和便签收集，并给出前缀之后的剩余文本与是否可提交；不解析日期、不创建记录、不入查询队列。面板搜索框不调用它。待办收集的剩余文本再交给 `parse_todo_due_prefix`，今天的日期由调用方传入。命中前缀时不进入查询队列，尚未返回的查询结果丢弃，只做日期前缀解析和预览；未提交的收集文本保存在内存里，退出进程时不保留。
 

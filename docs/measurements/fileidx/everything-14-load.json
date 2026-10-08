@@ -1,0 +1,10 @@
+{
+  "interval_ms": 1000,
+  "busy_percent": 23.398692810457515,
+  "rustc": 0,
+  "link": 0,
+  "cl": 0,
+  "cargo": 0,
+  "skewed": false,
+  "reason": "未发现明显干扰"
+}

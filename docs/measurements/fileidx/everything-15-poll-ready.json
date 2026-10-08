@@ -1,0 +1,15 @@
+{
+  "sdk": "sdk3",
+  "instance": "1.5a",
+  "samples": [
+    {
+      "t_ms": 1,
+      "is_db_loaded": true,
+      "last_error": 0,
+      "kind": "ready"
+    }
+  ],
+  "saw_not_ready": false,
+  "saw_ready": true,
+  "saw_not_running": false
+}

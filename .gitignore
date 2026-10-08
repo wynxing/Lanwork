@@ -1,3 +1,5 @@
 /target/
 **/*.rs.bk
 *.pdb
+spikes/fileidx/.vendor-in/
+spikes/fileidx/.portable/

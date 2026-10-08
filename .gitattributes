@@ -2,3 +2,7 @@
 third_party/unihan/kMandarin_kHanyuPinyin.txt binary
 third_party/unihan/LICENSE.txt text eol=lf
 third_party/unihan/extract.py text eol=lf
+third_party/everything/sdk/Everything64.dll binary
+third_party/everything/sdk3/Everything3_x64.dll binary
+third_party/everything/**/*.txt text eol=lf
+third_party/everything/**/*.md text eol=lf

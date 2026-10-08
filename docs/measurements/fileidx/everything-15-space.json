@@ -1,0 +1,19 @@
+{
+  "sdk": "sdk3",
+  "instance": "1.5a",
+  "kind": "ready",
+  "state": "ready",
+  "elapsed_ns": 505700,
+  "returned": 1,
+  "total": null,
+  "limit": 50,
+  "expect_hit": true,
+  "reject_hit": null,
+  "names": [
+    "Lanwork Fileidx Space.txt"
+  ],
+  "matching_names": [
+    "Lanwork Fileidx Space.txt"
+  ],
+  "last_error": null
+}
