@@ -23,7 +23,7 @@
 | Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
 | Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。`WSearch` 停止时的错误码未测 |
 | 通知 | 无 |
-| 热角 | 无 |
+| 热角 | 2026-10-08，`spikes/hotcorner`，release。停留一次、离开约 340ms、离开后再进入，以及静止 5 分钟的三种采样，在这块屏幕上有记录。移动 5 分钟、拖动窗口、多显示器没有实测。没有选定机制，不算通过。见 [measurements/2026-10-08-hotcorner.md](measurements/2026-10-08-hotcorner.md) |
 
 ## 界面
 

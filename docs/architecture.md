@@ -13,6 +13,8 @@
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。测量记录还不能当作渲染器已经选定。 |
+| `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。两种方案都在，机制没有选定。记录见 `docs/measurements/2026-10-08-hotcorner.md`。 |
+| `docs/measurements/2026-10-08-hotcorner.md` | 热角 spike 的实机记录。不是「性能测量」协议的验收。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
 | `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合「性能测量」协议的实测记录。`docs/measurements/fileidx.md` 只说明 fileidx 那次场景。 |
@@ -25,7 +27,7 @@
 | --- | --- |
 | 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务和应用索引已接入，这些还没有 |
 | 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
-| 各项技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx` 与 `spikes/render` 已经在 |
+| 各项技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render` 与 `spikes/hotcorner` 已经在 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
 
 ## 技术验证
@@ -59,6 +61,7 @@
 - Slint 1.17 的 `DragArea` / `DropArea` 只在应用内部生效。固定版本是否支持与资源管理器之间的拖放，由技术验证确定；不支持时，收纳的外部拖入和拖出由原生适配层实现，见「收纳」。
 - 托盘先用 Slint 自带的托盘图标；菜单或逾期徽标做不到时改用 Win32 `Shell_NotifyIcon`。
 - 热角检测机制由技术验证在低级鼠标钩子和定时读取光标位置之间选定。用钩子时，回调只投递消息，不做计算。
+- `spikes/hotcorner` 把上面两种方案都做了出来。方案 A 的回调只比较已经发布的角矩形并 `PostMessageW`，停留计时在窗口线程的 `SetTimer` 上。方案 B 在采样线程里读 `GetCursorPos`。角的像素边长、多显示器认哪一块、全屏时是否抑制、启动时光标已经在角内、关闭时检测是否还在跑，产品规格没有写，记录里标为待定。这次没有选定机制。
 
 Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜索索引不写进界面回调里。
 

@@ -1,0 +1,72 @@
+{
+  "dpi": [
+    {
+      "dpi_x": 96,
+      "dpi_y": 96,
+      "primary": true,
+      "rect": [
+        0,
+        0,
+        1920,
+        1200
+      ],
+      "source": "GetDpiForMonitor"
+    }
+  ],
+  "foreground": {
+    "class": "CabinetWClass",
+    "covers_monitor": false,
+    "exe": {
+      "path": "C:\\Windows\\explorer.exe",
+      "pid": 9032
+    },
+    "note": "全屏时是否抑制热角，产品规格没有写。这里只探测，不改变触发。待定。",
+    "rect": [
+      120,
+      0,
+      1320,
+      752
+    ]
+  },
+  "low_level_hooks_timeout": {
+    "error": "ERROR_FILE_NOT_FOUND",
+    "found": false
+  },
+  "monitors": [
+    {
+      "bottom": 1200,
+      "left": 0,
+      "primary": true,
+      "right": 1920,
+      "top": 0
+    }
+  ],
+  "virtual_screen": {
+    "h": 1200,
+    "w": 1920,
+    "x": 0,
+    "y": 0
+  },
+  "windows": {
+    "CurrentBuild": {
+      "found": true,
+      "type": "REG_SZ",
+      "value": "26300"
+    },
+    "DisplayVersion": {
+      "found": true,
+      "type": "REG_SZ",
+      "value": "26H2"
+    },
+    "ProductName": {
+      "found": true,
+      "type": "REG_SZ",
+      "value": "Windows 10 Home China"
+    },
+    "UBR": {
+      "found": true,
+      "type": "REG_DWORD",
+      "value": 9550
+    }
+  }
+}

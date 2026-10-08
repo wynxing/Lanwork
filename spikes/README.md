@@ -11,3 +11,19 @@ cargo run -p lanwork-render-spike --no-default-features --features software -- -
 ```
 
 `--scene a` 是空面板，`--scene b` 是 200 行列表。`--shot-dir` 写截图，`--status-out` 写 JSON。`--exit-after-secs` 到时退出。`--self-test-black` 先铺一块不透明黑，用来看检测能不能发现，再退回纯色；这不是渲染器自己画黑。`--theme dark` 只改这个窗口的暗色属性和纯色，不改系统主题。`--reference` 在窗口紧后面放一块品红，方便看透不透；内存采样不要加它。程序只读「透明效果」和节电状态，不改系统设置。
+
+热角技术验证在 `spikes/hotcorner`，不进 `lanwork` 的依赖。`--corner-px` 和 `--monitor` 是待定参数，产品规格没有写。`--dwell-ms` 的默认值 350 来自产品规格。进程到 `--duration-secs` 后退出；方案 A 会卸下钩子。
+
+```
+cargo run -p hotcorner -- probe --out probe.json
+cargo run -p hotcorner -- self-test --out self-test.json --corner-px 32
+cargo run -p hotcorner --release -- run --scheme hook --monitor primary --corner top-right --corner-px 32 --dwell-ms 350 --duration-secs 360 --events events.jsonl
+cargo run -p hotcorner --release -- run --scheme poll --interval-ms 50 --monitor primary --corner top-right --corner-px 32 --dwell-ms 350 --duration-secs 360
+cargo run -p hotcorner --release -- run --scheme poll --interval-ms 100 --monitor primary --corner top-right --corner-px 32 --dwell-ms 350 --duration-secs 360
+```
+
+采样用 `lanwork-sample`，按上面打印的 `pid`。进程名是 `hotcorner.exe`，计数器是 `\Thread(hotcorner*)\Context Switches/sec`。
+
+```
+cargo run -p lanwork-sample --release -- sample --pid <pid> --duration-secs 300 --interval-ms 1000 --out sample.csv
+```
