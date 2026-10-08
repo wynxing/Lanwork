@@ -17,7 +17,7 @@ mod schema;
 mod store;
 
 #[cfg(test)]
-mod test_temp;
+pub(crate) mod test_temp;
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -37,6 +37,8 @@ pub use store::{
     Batch, CollectionKind, DocumentId, LoadCollection, LoadedFile, QuarantineInfo, Store,
     StorePaths, WriteReceipt,
 };
+
+pub(crate) use atomic::atomic_write;
 
 pub(crate) fn lock_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
