@@ -1,0 +1,17 @@
+{
+  "mode": "content_contains",
+  "ok": true,
+  "hresult": null,
+  "message": "",
+  "sql": "SELECT TOP 50 System.ItemPathDisplay, System.FileName, System.ItemNameDisplay, System.ItemType FROM SystemIndex WHERE SCOPE='file:' AND CONTAINS('LWXCONTENT9F3A2C')",
+  "filename_only": false,
+  "elapsed_ns": 23960200,
+  "returned": 1,
+  "limit": 50,
+  "expect_hit": true,
+  "reject_hit": false,
+  "matching_names": [
+    "LanworkFileidxBodyOnly.txt"
+  ],
+  "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\""
+}

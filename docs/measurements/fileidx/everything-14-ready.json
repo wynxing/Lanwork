@@ -1,0 +1,26 @@
+{
+  "install": {
+    "registry_hklm": false,
+    "registry_hkcu": false,
+    "service": null,
+    "program_files_exe": [],
+    "system_installed": false
+  },
+  "client_present": false,
+  "attempts": [
+    {
+      "sdk": "sdk14",
+      "instance": null,
+      "dll_path": "third_party/everything/sdk/Everything64.dll",
+      "connect_ok": true,
+      "is_db_loaded": true,
+      "last_error": 0,
+      "last_error_hex": "0x0",
+      "kind": "ready",
+      "server_version": null
+    }
+  ],
+  "selected": "sdk14",
+  "kind": "ready",
+  "state": "ready"
+}

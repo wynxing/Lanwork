@@ -1,0 +1,88 @@
+[
+  {
+    "mode": "filename_like",
+    "ok": true,
+    "hresult": null,
+    "message": "",
+    "sql": "SELECT TOP 50 System.ItemPathDisplay, System.FileName, System.ItemNameDisplay, System.ItemType FROM SystemIndex WHERE SCOPE='file:' AND System.FileName LIKE '%LWXCONTENT9F3A2C%' ORDER BY System.FileName",
+    "filename_only": true,
+    "elapsed_ns": 2853182300,
+    "returned": 1,
+    "limit": 50,
+    "expect_hit": true,
+    "reject_hit": false,
+    "matching_names": [
+      "LWXCONTENT9F3A2C-name.txt"
+    ],
+    "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\""
+  },
+  {
+    "mode": "helper_filename",
+    "ok": true,
+    "hresult": null,
+    "message": "",
+    "sql": "SELECT TOP 50 \"System.ItemPathDisplay\", \"System.FileName\", \"System.ItemNameDisplay\", \"System.ItemType\" FROM \"SystemIndex\" WHERE CONTAINS(System.FileName,'\"LWXCONTENT9F3A2C\"',2052)",
+    "filename_only": false,
+    "elapsed_ns": 8802900,
+    "returned": 1,
+    "limit": 50,
+    "expect_hit": true,
+    "reject_hit": false,
+    "matching_names": [
+      "LWXCONTENT9F3A2C-name.txt"
+    ],
+    "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\""
+  },
+  {
+    "mode": "helper_content_properties",
+    "ok": true,
+    "hresult": null,
+    "message": "",
+    "sql": "SELECT TOP 50 \"System.ItemPathDisplay\", \"System.FileName\", \"System.ItemNameDisplay\", \"System.ItemType\" FROM \"SystemIndex\" WHERE CONTAINS(System.FileName,'\"LWXCONTENT9F3A2C\"',2052)",
+    "filename_only": false,
+    "elapsed_ns": 8606600,
+    "returned": 1,
+    "limit": 50,
+    "expect_hit": true,
+    "reject_hit": false,
+    "matching_names": [
+      "LWXCONTENT9F3A2C-name.txt"
+    ],
+    "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\""
+  },
+  {
+    "mode": "helper_default",
+    "ok": true,
+    "hresult": null,
+    "message": "",
+    "sql": "SELECT TOP 50 \"System.ItemPathDisplay\", \"System.FileName\", \"System.ItemNameDisplay\", \"System.ItemType\" FROM \"SystemIndex\" WHERE CONTAINS(*,'\"LWXCONTENT9F3A2C\"',2052)",
+    "filename_only": false,
+    "elapsed_ns": 8536000,
+    "returned": 2,
+    "limit": 50,
+    "expect_hit": true,
+    "reject_hit": true,
+    "matching_names": [
+      "LWXCONTENT9F3A2C-name.txt",
+      "LanworkFileidxBodyOnly.txt"
+    ],
+    "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\""
+  },
+  {
+    "mode": "content_contains",
+    "ok": true,
+    "hresult": null,
+    "message": "",
+    "sql": "SELECT TOP 50 System.ItemPathDisplay, System.FileName, System.ItemNameDisplay, System.ItemType FROM SystemIndex WHERE SCOPE='file:' AND CONTAINS('LWXCONTENT9F3A2C')",
+    "filename_only": false,
+    "elapsed_ns": 12743300,
+    "returned": 1,
+    "limit": 50,
+    "expect_hit": false,
+    "reject_hit": true,
+    "matching_names": [
+      "LanworkFileidxBodyOnly.txt"
+    ],
+    "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\""
+  }
+]

@@ -1352,6 +1352,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fileidx"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"

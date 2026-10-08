@@ -1,0 +1,48 @@
+{
+  "install": {
+    "registry_hklm": false,
+    "registry_hkcu": false,
+    "service": null,
+    "program_files_exe": [],
+    "system_installed": false
+  },
+  "client_present": false,
+  "attempts": [
+    {
+      "sdk": "sdk3",
+      "instance": null,
+      "dll_path": "third_party/everything/sdk3/Everything3_x64.dll",
+      "connect_ok": false,
+      "is_db_loaded": null,
+      "last_error": 3758096386,
+      "last_error_hex": "0xE0000002",
+      "kind": "not_running",
+      "server_version": null
+    },
+    {
+      "sdk": "sdk3",
+      "instance": "1.5a",
+      "dll_path": "third_party/everything/sdk3/Everything3_x64.dll",
+      "connect_ok": false,
+      "is_db_loaded": null,
+      "last_error": 3758096386,
+      "last_error_hex": "0xE0000002",
+      "kind": "not_running",
+      "server_version": null
+    },
+    {
+      "sdk": "sdk14",
+      "instance": null,
+      "dll_path": "third_party/everything/sdk/Everything64.dll",
+      "connect_ok": false,
+      "is_db_loaded": false,
+      "last_error": 2,
+      "last_error_hex": "0x2",
+      "kind": "not_running",
+      "server_version": null
+    }
+  ],
+  "selected": null,
+  "kind": "not_running",
+  "state": "not_installed"
+}

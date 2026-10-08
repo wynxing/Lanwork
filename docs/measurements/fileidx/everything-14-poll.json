@@ -1,0 +1,27 @@
+{
+  "sdk": "sdk14",
+  "instance": null,
+  "samples": [
+    {
+      "t_ms": 0,
+      "is_db_loaded": false,
+      "last_error": 2,
+      "kind": "not_running"
+    },
+    {
+      "t_ms": 68,
+      "is_db_loaded": false,
+      "last_error": 0,
+      "kind": "not_ready"
+    },
+    {
+      "t_ms": 75,
+      "is_db_loaded": true,
+      "last_error": 0,
+      "kind": "ready"
+    }
+  ],
+  "saw_not_ready": true,
+  "saw_ready": true,
+  "saw_not_running": true
+}

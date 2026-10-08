@@ -1,0 +1,621 @@
+{
+  "p95_rule": "升序第 ceil(0.95 × N) 个，从 1 起计",
+  "min_valid_samples": 100,
+  "groups": [
+    {
+      "metric": "result",
+      "source": "windows_search",
+      "valid_count": 100,
+      "superseded_count": 0,
+      "warmup_excluded": 6,
+      "incomplete_count": 0,
+      "invalid_count": 0,
+      "sufficient": true,
+      "sample_status": "足够",
+      "p95_index": 95,
+      "p95_ns": 52705000,
+      "valid_samples": [
+        {
+          "seq": 35,
+          "start_ns": 1383499200,
+          "end_ns": 1417505000,
+          "duration_ns": 34005800
+        },
+        {
+          "seq": 34,
+          "start_ns": 1348297500,
+          "end_ns": 1383409400,
+          "duration_ns": 35111900
+        },
+        {
+          "seq": 43,
+          "start_ns": 1684916300,
+          "end_ns": 1720706600,
+          "duration_ns": 35790300
+        },
+        {
+          "seq": 36,
+          "start_ns": 1417597100,
+          "end_ns": 1453414900,
+          "duration_ns": 35817800
+        },
+        {
+          "seq": 106,
+          "start_ns": 4500505900,
+          "end_ns": 4536513500,
+          "duration_ns": 36007600
+        },
+        {
+          "seq": 33,
+          "start_ns": 1312096400,
+          "end_ns": 1348208500,
+          "duration_ns": 36112100
+        },
+        {
+          "seq": 37,
+          "start_ns": 1453510300,
+          "end_ns": 1490120200,
+          "duration_ns": 36609900
+        },
+        {
+          "seq": 85,
+          "start_ns": 3652877100,
+          "end_ns": 3689511300,
+          "duration_ns": 36634200
+        },
+        {
+          "seq": 77,
+          "start_ns": 3338195300,
+          "end_ns": 3375102600,
+          "duration_ns": 36907300
+        },
+        {
+          "seq": 32,
+          "start_ns": 1274981900,
+          "end_ns": 1311949200,
+          "duration_ns": 36967300
+        },
+        {
+          "seq": 86,
+          "start_ns": 3689602600,
+          "end_ns": 3726814400,
+          "duration_ns": 37211800
+        },
+        {
+          "seq": 42,
+          "start_ns": 1647512000,
+          "end_ns": 1684792900,
+          "duration_ns": 37280900
+        },
+        {
+          "seq": 12,
+          "start_ns": 472012400,
+          "end_ns": 509330500,
+          "duration_ns": 37318100
+        },
+        {
+          "seq": 84,
+          "start_ns": 3615260400,
+          "end_ns": 3652784900,
+          "duration_ns": 37524500
+        },
+        {
+          "seq": 102,
+          "start_ns": 4345812300,
+          "end_ns": 4383366800,
+          "duration_ns": 37554500
+        },
+        {
+          "seq": 31,
+          "start_ns": 1237295300,
+          "end_ns": 1274890500,
+          "duration_ns": 37595200
+        },
+        {
+          "seq": 83,
+          "start_ns": 3577549100,
+          "end_ns": 3615164700,
+          "duration_ns": 37615600
+        },
+        {
+          "seq": 105,
+          "start_ns": 4462657400,
+          "end_ns": 4500410900,
+          "duration_ns": 37753500
+        },
+        {
+          "seq": 78,
+          "start_ns": 3375252900,
+          "end_ns": 3413085200,
+          "duration_ns": 37832300
+        },
+        {
+          "seq": 13,
+          "start_ns": 509456900,
+          "end_ns": 547325600,
+          "duration_ns": 37868700
+        },
+        {
+          "seq": 39,
+          "start_ns": 1530782700,
+          "end_ns": 1568745700,
+          "duration_ns": 37963000
+        },
+        {
+          "seq": 10,
+          "start_ns": 395143600,
+          "end_ns": 433128000,
+          "duration_ns": 37984400
+        },
+        {
+          "seq": 95,
+          "start_ns": 4066474200,
+          "end_ns": 4104551600,
+          "duration_ns": 38077400
+        },
+        {
+          "seq": 14,
+          "start_ns": 547423700,
+          "end_ns": 585527000,
+          "duration_ns": 38103300
+        },
+        {
+          "seq": 101,
+          "start_ns": 4307397700,
+          "end_ns": 4345718500,
+          "duration_ns": 38320800
+        },
+        {
+          "seq": 28,
+          "start_ns": 1116749600,
+          "end_ns": 1155274300,
+          "duration_ns": 38524700
+        },
+        {
+          "seq": 22,
+          "start_ns": 876819200,
+          "end_ns": 915463800,
+          "duration_ns": 38644600
+        },
+        {
+          "seq": 97,
+          "start_ns": 4145620700,
+          "end_ns": 4184298300,
+          "duration_ns": 38677600
+        },
+        {
+          "seq": 41,
+          "start_ns": 1608734500,
+          "end_ns": 1647419700,
+          "duration_ns": 38685200
+        },
+        {
+          "seq": 11,
+          "start_ns": 433219600,
+          "end_ns": 471920900,
+          "duration_ns": 38701300
+        },
+        {
+          "seq": 104,
+          "start_ns": 4423756400,
+          "end_ns": 4462565300,
+          "duration_ns": 38808900
+        },
+        {
+          "seq": 79,
+          "start_ns": 3413237000,
+          "end_ns": 3452059200,
+          "duration_ns": 38822200
+        },
+        {
+          "seq": 88,
+          "start_ns": 3768661300,
+          "end_ns": 3807540800,
+          "duration_ns": 38879500
+        },
+        {
+          "seq": 9,
+          "start_ns": 356000000,
+          "end_ns": 395046700,
+          "duration_ns": 39046700
+        },
+        {
+          "seq": 27,
+          "start_ns": 1077562500,
+          "end_ns": 1116655600,
+          "duration_ns": 39093100
+        },
+        {
+          "seq": 20,
+          "start_ns": 797792200,
+          "end_ns": 837090600,
+          "duration_ns": 39298400
+        },
+        {
+          "seq": 94,
+          "start_ns": 4026987100,
+          "end_ns": 4066313200,
+          "duration_ns": 39326100
+        },
+        {
+          "seq": 21,
+          "start_ns": 837185400,
+          "end_ns": 876721400,
+          "duration_ns": 39536000
+        },
+        {
+          "seq": 99,
+          "start_ns": 4226112800,
+          "end_ns": 4265679000,
+          "duration_ns": 39566200
+        },
+        {
+          "seq": 18,
+          "start_ns": 717984400,
+          "end_ns": 757579300,
+          "duration_ns": 39594900
+        },
+        {
+          "seq": 40,
+          "start_ns": 1568836700,
+          "end_ns": 1608482600,
+          "duration_ns": 39645900
+        },
+        {
+          "seq": 23,
+          "start_ns": 915557500,
+          "end_ns": 955286400,
+          "duration_ns": 39728900
+        },
+        {
+          "seq": 25,
+          "start_ns": 996805600,
+          "end_ns": 1036718300,
+          "duration_ns": 39912700
+        },
+        {
+          "seq": 19,
+          "start_ns": 757683400,
+          "end_ns": 797696700,
+          "duration_ns": 40013300
+        },
+        {
+          "seq": 82,
+          "start_ns": 3537320800,
+          "end_ns": 3577450900,
+          "duration_ns": 40130100
+        },
+        {
+          "seq": 103,
+          "start_ns": 4383463100,
+          "end_ns": 4423663300,
+          "duration_ns": 40200200
+        },
+        {
+          "seq": 29,
+          "start_ns": 1155370300,
+          "end_ns": 1195594200,
+          "duration_ns": 40223900
+        },
+        {
+          "seq": 76,
+          "start_ns": 3297585400,
+          "end_ns": 3338034200,
+          "duration_ns": 40448800
+        },
+        {
+          "seq": 38,
+          "start_ns": 1490212300,
+          "end_ns": 1530687600,
+          "duration_ns": 40475300
+        },
+        {
+          "seq": 26,
+          "start_ns": 1036813800,
+          "end_ns": 1077454800,
+          "duration_ns": 40641000
+        },
+        {
+          "seq": 96,
+          "start_ns": 4104654100,
+          "end_ns": 4145459500,
+          "duration_ns": 40805400
+        },
+        {
+          "seq": 8,
+          "start_ns": 314895700,
+          "end_ns": 355899600,
+          "duration_ns": 41003900
+        },
+        {
+          "seq": 24,
+          "start_ns": 955380600,
+          "end_ns": 996679600,
+          "duration_ns": 41299000
+        },
+        {
+          "seq": 87,
+          "start_ns": 3726994700,
+          "end_ns": 3768499900,
+          "duration_ns": 41505200
+        },
+        {
+          "seq": 30,
+          "start_ns": 1195690400,
+          "end_ns": 1237201600,
+          "duration_ns": 41511200
+        },
+        {
+          "seq": 100,
+          "start_ns": 4265777400,
+          "end_ns": 4307302400,
+          "duration_ns": 41525000
+        },
+        {
+          "seq": 98,
+          "start_ns": 4184398100,
+          "end_ns": 4225962800,
+          "duration_ns": 41564700
+        },
+        {
+          "seq": 50,
+          "start_ns": 2012472500,
+          "end_ns": 2054334000,
+          "duration_ns": 41861500
+        },
+        {
+          "seq": 93,
+          "start_ns": 3984825900,
+          "end_ns": 4026816200,
+          "duration_ns": 41990300
+        },
+        {
+          "seq": 80,
+          "start_ns": 3452232200,
+          "end_ns": 3494469700,
+          "duration_ns": 42237500
+        },
+        {
+          "seq": 44,
+          "start_ns": 1720799900,
+          "end_ns": 1763240000,
+          "duration_ns": 42440100
+        },
+        {
+          "seq": 90,
+          "start_ns": 3852690800,
+          "end_ns": 3895158800,
+          "duration_ns": 42468000
+        },
+        {
+          "seq": 81,
+          "start_ns": 3494654300,
+          "end_ns": 3537182000,
+          "duration_ns": 42527700
+        },
+        {
+          "seq": 16,
+          "start_ns": 631274500,
+          "end_ns": 673852600,
+          "duration_ns": 42578100
+        },
+        {
+          "seq": 91,
+          "start_ns": 3895278300,
+          "end_ns": 3938273900,
+          "duration_ns": 42995600
+        },
+        {
+          "seq": 45,
+          "start_ns": 1763340200,
+          "end_ns": 1806715500,
+          "duration_ns": 43375300
+        },
+        {
+          "seq": 17,
+          "start_ns": 674034900,
+          "end_ns": 717822700,
+          "duration_ns": 43787800
+        },
+        {
+          "seq": 69,
+          "start_ns": 2973394700,
+          "end_ns": 3017341600,
+          "duration_ns": 43946900
+        },
+        {
+          "seq": 72,
+          "start_ns": 3110144800,
+          "end_ns": 3154692400,
+          "duration_ns": 44547600
+        },
+        {
+          "seq": 51,
+          "start_ns": 2054506700,
+          "end_ns": 2099225700,
+          "duration_ns": 44719000
+        },
+        {
+          "seq": 49,
+          "start_ns": 1967499600,
+          "end_ns": 2012303300,
+          "duration_ns": 44803700
+        },
+        {
+          "seq": 89,
+          "start_ns": 3807720700,
+          "end_ns": 3852542300,
+          "duration_ns": 44821600
+        },
+        {
+          "seq": 70,
+          "start_ns": 3017515800,
+          "end_ns": 3062855500,
+          "duration_ns": 45339700
+        },
+        {
+          "seq": 73,
+          "start_ns": 3154890700,
+          "end_ns": 3200233400,
+          "duration_ns": 45342700
+        },
+        {
+          "seq": 15,
+          "start_ns": 585703400,
+          "end_ns": 631087700,
+          "duration_ns": 45384300
+        },
+        {
+          "seq": 68,
+          "start_ns": 2927580200,
+          "end_ns": 2973216600,
+          "duration_ns": 45636400
+        },
+        {
+          "seq": 92,
+          "start_ns": 3938465800,
+          "end_ns": 3984715200,
+          "duration_ns": 46249400
+        },
+        {
+          "seq": 59,
+          "start_ns": 2476518300,
+          "end_ns": 2522961900,
+          "duration_ns": 46443600
+        },
+        {
+          "seq": 53,
+          "start_ns": 2146651500,
+          "end_ns": 2193200000,
+          "duration_ns": 46548500
+        },
+        {
+          "seq": 75,
+          "start_ns": 3250686800,
+          "end_ns": 3297424200,
+          "duration_ns": 46737400
+        },
+        {
+          "seq": 71,
+          "start_ns": 3063043400,
+          "end_ns": 3110011900,
+          "duration_ns": 46968500
+        },
+        {
+          "seq": 52,
+          "start_ns": 2099422200,
+          "end_ns": 2146457200,
+          "duration_ns": 47035000
+        },
+        {
+          "seq": 7,
+          "start_ns": 267364100,
+          "end_ns": 314795800,
+          "duration_ns": 47431700
+        },
+        {
+          "seq": 65,
+          "start_ns": 2779902500,
+          "end_ns": 2827803200,
+          "duration_ns": 47900700
+        },
+        {
+          "seq": 57,
+          "start_ns": 2373230300,
+          "end_ns": 2421559800,
+          "duration_ns": 48329500
+        },
+        {
+          "seq": 67,
+          "start_ns": 2878218400,
+          "end_ns": 2927379500,
+          "duration_ns": 49161100
+        },
+        {
+          "seq": 62,
+          "start_ns": 2625273000,
+          "end_ns": 2674456200,
+          "duration_ns": 49183200
+        },
+        {
+          "seq": 60,
+          "start_ns": 2523153500,
+          "end_ns": 2572965600,
+          "duration_ns": 49812100
+        },
+        {
+          "seq": 66,
+          "start_ns": 2828010800,
+          "end_ns": 2878008300,
+          "duration_ns": 49997500
+        },
+        {
+          "seq": 48,
+          "start_ns": 1917262400,
+          "end_ns": 1967394700,
+          "duration_ns": 50132300
+        },
+        {
+          "seq": 74,
+          "start_ns": 3200410200,
+          "end_ns": 3250547800,
+          "duration_ns": 50137600
+        },
+        {
+          "seq": 46,
+          "start_ns": 1806890700,
+          "end_ns": 1857764800,
+          "duration_ns": 50874100
+        },
+        {
+          "seq": 61,
+          "start_ns": 2573178400,
+          "end_ns": 2625054900,
+          "duration_ns": 51876500
+        },
+        {
+          "seq": 64,
+          "start_ns": 2727561500,
+          "end_ns": 2779690300,
+          "duration_ns": 52128800
+        },
+        {
+          "seq": 63,
+          "start_ns": 2674643800,
+          "end_ns": 2727348800,
+          "duration_ns": 52705000
+        },
+        {
+          "seq": 56,
+          "start_ns": 2319430500,
+          "end_ns": 2373026300,
+          "duration_ns": 53595800
+        },
+        {
+          "seq": 58,
+          "start_ns": 2421772700,
+          "end_ns": 2476324200,
+          "duration_ns": 54551500
+        },
+        {
+          "seq": 55,
+          "start_ns": 2262179900,
+          "end_ns": 2319243500,
+          "duration_ns": 57063600
+        },
+        {
+          "seq": 47,
+          "start_ns": 1857970800,
+          "end_ns": 1917158000,
+          "duration_ns": 59187200
+        },
+        {
+          "seq": 54,
+          "start_ns": 2193397800,
+          "end_ns": 2261961100,
+          "duration_ns": 68563300
+        }
+      ]
+    }
+  ]
+}

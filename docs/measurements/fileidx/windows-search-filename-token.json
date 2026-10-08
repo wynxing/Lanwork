@@ -1,0 +1,17 @@
+{
+  "mode": "filename_like",
+  "ok": true,
+  "hresult": null,
+  "message": "",
+  "sql": "SELECT TOP 50 System.ItemPathDisplay, System.FileName, System.ItemNameDisplay, System.ItemType FROM SystemIndex WHERE SCOPE='file:' AND System.FileName LIKE '%LWXCONTENT9F3A2C%' ORDER BY System.FileName",
+  "filename_only": true,
+  "elapsed_ns": 2532954800,
+  "returned": 1,
+  "limit": 50,
+  "expect_hit": true,
+  "reject_hit": false,
+  "matching_names": [
+    "LWXCONTENT9F3A2C-name.txt"
+  ],
+  "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\""
+}
