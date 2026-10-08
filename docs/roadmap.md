@@ -1,6 +1,6 @@
 # 实现状态
 
-行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`）；星期、下周和月底的边界仍等产品规格写明。测量工具的代码已在仓库中，协议记录仍空着。技术验证没有通过记录，搜索条界面和收集提交也还没有代码。界面表里的各项仍全部未实现。
+行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`）；星期、下周和月底的边界仍等产品规格写明。便签服务在 `crates/core`（`lanwork_core::notes`）。测量工具的代码已在仓库中，协议记录仍空着。技术验证没有通过记录，搜索条界面和收集提交也还没有代码。界面表里的各项仍全部未实现。
 
 ## 测量工具
 
@@ -39,3 +39,4 @@
 | 模块 | 代码 |
 | --- | --- |
 | 匹配引擎 | 有。`crates/core` 的 `search`：拼音表、预计算、命中类型和分数。组内排序和 20 条的分组配额等 [product.md](product.md) 写入规格缺口 #9 第 7 项 |
+| 便签服务 | 有。`lanwork_core::notes`：模型、保存、标签、置顶、`revision` 冲突和软删除恢复。删除的界面入口和冲突后的选择等 [product.md](product.md) 写入 #9 第 10、16 项。测试 `one_mib_body_roundtrip_records_write_time` 打印 `note_write_1mib_ms`，只记录 1 MiB 正文的写盘耗时，不是性能测量验收 |
