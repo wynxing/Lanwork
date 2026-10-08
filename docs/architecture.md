@@ -14,6 +14,7 @@
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。测量记录还不能当作渲染器已经选定。 |
 | `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。两种方案都在，机制没有选定。记录见 `docs/measurements/2026-10-08-hotcorner.md`。 |
+| `spikes/toast` | 通知技术验证的最小程序。只验证注册、显示、点击参数和模拟面板定位，不进发布包，也不被 `lanwork` 依赖。运行命令写在 `spikes/README.md`。验证记录没有全部通过之前，待办界面不调用它。 |
 | `docs/measurements/2026-10-08-hotcorner.md` | 热角 spike 的实机记录。不是「性能测量」协议的验收。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
@@ -27,7 +28,7 @@
 | --- | --- |
 | 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务和应用索引已接入，这些还没有 |
 | 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
-| 各项技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render` 与 `spikes/hotcorner` 已经在 |
+| 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner` 与 `spikes/toast` 已经在 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
 
 ## 技术验证
@@ -64,6 +65,24 @@
 - `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。这次没有选定机制。
 
 Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜索索引不写进界面回调里。
+
+## 通知
+
+到期通知使用操作系统自带的 WinRT `ToastNotificationManager`，由 `windows` crate 调用。不使用 Windows App SDK 的 `AppNotificationManager`：后者要求随包或在机器上部署 Windows App Runtime，解包后的程序还要先调用引导程序。这份运行时不进入本项目。`ToastNotificationManager` 在 Windows 11 上由系统提供。微软目前把该 API 标为维护状态，并推荐 `AppNotificationManager`；若下面的验证失败，先改本节，再决定是否更换 API。
+
+最小程序在 `spikes/toast`。正式的提醒调度、安静时段和待办页定位仍不在这里实现。
+
+注册只写当前用户（HKCU），不写 HKLM，也不要求管理员权限。进程调用 `SetCurrentProcessExplicitAppUserModelID` 设置 AppUserModelID。通知 XML 的 `launch` 属性是待办 id。点击后，`INotificationActivationCallback::Activate` 的参数带回这个 id。仅拿到该参数还不算定位；定位是打开面板、切到待办并选中该条。验证程序用一个模拟列表面板演示这件事。注册缺失时不崩溃，改为只显示托盘逾期徽标。托盘徽标不能代替通知通过。
+
+安装版同时做三件事：
+
+- 在当前用户的开始菜单程序目录放置快捷方式。属性 `System.AppUserModel.ID` 为 AUMID，`System.AppUserModel.ToastActivatorCLSID` 为激活器 CLSID。
+- 在 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 写入 `DisplayName` 和 `CustomActivator`（同一个 CLSID）。
+- 在 `HKCU\Software\Classes\CLSID\<CLSID>\LocalServer32` 写入本程序路径。进程运行时另外 `CoRegisterClassObject`，让点击落到已经打开的进程；进程已退出时由 `LocalServer32` 再启动。
+
+便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。能否显示、运行中点击、退出后点击、收到 id、定位，以验证记录为准。记录里这些条件没有全部通过之前，不在产品规格里把便携版写成「不能点击定位」。
+
+卸载要删掉上述快捷方式和 HKCU 键，由安装程序实现。验证程序自己的注销只清理它写过的 spike 标识，不清理将来产品用的标识。
 
 ## 数据
 
@@ -281,7 +300,7 @@ Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提�
 
 安装版使用 minisign 签名和 `latest.json`。WinHTTP 分块下载到临时文件，流式验签成功后才启动安装程序。签名错误或下载失败不启动安装。界面提供检查、进度、安装和重启。
 
-便携版不在运行中替换自身，只打开对应的 Release。安装程序不安装 WebView2。签名私钥不进入仓库。没有从旧安装目录完成的一次升级记录时，测试通过不算升级验收。
+便携版不在运行中替换自身，只打开对应的 Release。安装程序不安装 WebView2，也不安装 Windows App Runtime。安装版的开始菜单快捷方式和通知激活器按「通知」注册。签名私钥不进入仓库。没有从旧安装目录完成的一次升级记录时，测试通过不算升级验收。
 
 ## 性能测量
 

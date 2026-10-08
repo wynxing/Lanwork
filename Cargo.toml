@@ -7,6 +7,7 @@ members = [
     "spikes/fileidx",
     "spikes/render",
     "spikes/hotcorner",
+    "spikes/toast",
     "tools/fixture",
     "tools/sample",
 ]

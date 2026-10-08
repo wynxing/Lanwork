@@ -27,3 +27,14 @@ cargo run -p hotcorner --release -- run --scheme poll --interval-ms 100 --monito
 ```
 cargo run -p lanwork-sample --release -- sample --pid <pid> --duration-secs 300 --interval-ms 1000 --out sample.csv
 ```
+
+cargo run -p toast --release -- help
+cargo run -p toast --release -- register installed
+cargo run -p toast --release -- register portable
+cargo run -p toast --release -- unregister
+cargo run -p toast --release -- status
+cargo run -p toast --release -- serve
+cargo run -p toast --release -- show todo-001
+cargo run -p toast --release -- show todo-001 --repeat 3
+cargo run -p toast --release -- clear-history
+cargo run -p toast --release -- self-check

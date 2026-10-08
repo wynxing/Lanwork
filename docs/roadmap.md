@@ -22,8 +22,96 @@
 | 外部拖放 | 无 |
 | Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
 | Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。`WSearch` 停止时的错误码未测 |
-| 通知 | 无 |
+| 通知 | 有记录，未通过。见下方「通知（#7）」 |
 | 热角 | 2026-10-08，`spikes/hotcorner`，release。停留一次、离开约 340ms、离开后再进入，以及静止 5 分钟的三种采样，在 1920×1200 的屏幕上有记录。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，钩子和 50ms 轮询各做了 5 分钟鼠标正常移动的采样（各 300 行）；100ms 轮询未测。拖动窗口、多显示器、全屏未测。没有选定机制，不算通过。见 [measurements/2026-10-08-hotcorner.md](measurements/2026-10-08-hotcorner.md) |
+
+## 通知（#7）
+
+这项没有通过。下面有任何一条不是「通过」，整项就不通过。自动检查只证明 API 返回值和注册表读回；屏幕上有没有通知、点下去有没有定位，都还空着，等所有者填「所有者观察」。
+
+### 环境
+
+| 字段 | 值 |
+| --- | --- |
+| 日期 | 2026-10-08 |
+| commit | 与 spike 同一提交。精确哈希见紧接着的下一笔提交；自动检查跑在写入本记录之前的同一棵源码上 |
+| Slint 精确版本 | 1.18.1。本 spike 不链接 Slint |
+| 渲染器 | 不适用 |
+| 机器 | 13th Gen Intel Core i5-13420H |
+| Windows build | Windows 11 家庭中文版 64 位，DisplayVersion 26H2，10.0.26300.9550（CurrentBuild 26300，UBR 9550）。注册表 ProductName 仍写着 Windows 10 Home China |
+| GPU 与驱动 | Intel UHD Graphics，驱动 32.0.101.6733（2025-04-02）；另有 Virtual Display Driver 11.30.4.434（2024-12-24）、GameViewer Virtual Display Adapter 15.6.5.199（2026-02-28） |
+| 构建配置 | `cargo test` 为 debug。自动检查、未注册时的 `show` 回退为 release：`target\release\toast.exe` |
+
+标识只属于这个 spike：AUMID `Lanwork.Spike.Toast`，CLSID `{DEC1C43B-2AAC-400F-A0B1-C17A05F2B409}`，显示名「Lanwork 通知验证」。快捷方式是 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Lanwork Toast Spike.lnk`。日志是 `%TEMP%\lanwork-spike-toast.log`。只写 HKCU，不写 HKLM，不用管理员。
+
+### 自动观察
+
+2026-10-08 在上述 release 程序上运行 `cargo run -p toast --release -- self-check`，进程退出码 0。随后 `status` 为「未注册」，快捷方式文件不存在，`HKCU\Software\Classes\AppUserModelId\Lanwork.Spike.Toast` 和 `HKCU\Software\Classes\CLSID\{DEC1C43B-2AAC-400F-A0B1-C17A05F2B409}` 都不存在。`clear-history` 再执行一次，打印「已清除该 AUMID 的通知历史」。这些都不是屏幕上看到通知。
+
+| 观察 | 结果 |
+| --- | --- |
+| `SHQueryUserNotificationState` | 5（`QUNS_ACCEPTS_NOTIFICATIONS`）。这不是 Windows 11「请勿打扰」的测试，也没有改请勿打扰 |
+| 清理后的判定 | 未注册 |
+| 未注册时直接调用 `Show`（只在 self-check 里探测，不是 `show` 命令的路径） | `Show[0] = S_OK`，约 400ms 后 `GetHistoryWithId` 条数 = 1。没有看屏幕 |
+| 未注册时 `Shell_NotifyIcon` ADD / MODIFY / DELETE | 三次都返回 TRUE。徽标只做了往返，没有停留，没有看托盘 |
+| 安装版读回 | 判定为安装版。DisplayName、CustomActivator、LocalServer32（带引号的当前 exe）、快捷方式 AUMID 和快捷方式 CLSID 都与写入一致 |
+| 安装版单次 `Show`，无 Tag | `S_OK`，历史条数 = 1 |
+| 安装版同一 id 连续 3 次，无 Tag | 三次 `S_OK`，历史条数 = 3 |
+| 安装版同一 id 连续 3 次，Tag=`todo-001`，Group=`lanwork-spike` | 三次 `S_OK`，历史条数 = 1 |
+| 安装版 `unregister` 之后 | 未注册 |
+| 便携版读回 | 判定为便携版。有 DisplayName。没有 CustomActivator、LocalServer32、快捷方式 |
+| 便携版单次 `Show`，无 Tag | `S_OK`，历史条数 = 1 |
+| 便携版同一 id 连续 3 次，无 Tag | 三次 `S_OK`，历史条数 = 3 |
+| 便携版同一 id 连续 3 次，带上述 Tag/Group | 三次 `S_OK`，历史条数 = 1 |
+| 便携版 `unregister` 之后 | 未注册 |
+| 未注册时运行 `show todo-001` | 退出码 0。打印「注册缺失，不调用 ToastNotificationManager.Show，只显示托盘徽标」，约 15 秒后打印「托盘徽标已移除」。没有看托盘 |
+
+历史条数是 `GetHistoryWithId` 的返回，不是通知中心里肉眼看到的叠放。`S_OK` 也不等于通知出现在屏幕上。
+
+### 通过条件
+
+| 条件 | 结果 | 所有者观察 |
+| --- | --- | --- |
+| 安装版：通知能显示 | 未测 | |
+| 安装版：进程运行中点击，面板定位到该条，并收到待办 id | 未测 | |
+| 安装版：进程已退出后点击，重新打开并定位到该条，并收到待办 id | 未测 | |
+| 便携版：通知能显示 | 未测 | |
+| 便携版：进程运行中点击，面板定位到该条，并收到待办 id | 未测 | |
+| 便携版：进程已退出后点击，重新打开并定位到该条，并收到待办 id | 未测 | |
+| 同一待办多次提醒时，系统是否把通知叠放 | 未测 | |
+| 请勿打扰打开时，通知如何表现 | 未测 | |
+| 缺失注册时不崩溃，并退回托盘逾期徽标 | 未测 | 命令路径已退出码 0，且 API 返回 TRUE；徽标有没有出现在托盘上还没看 |
+| 托盘徽标代替到期通知 | 失败（不能代替） | 不把徽标算成通知通过 |
+
+模拟面板在单元测试里会按 id 选中对应行：`todo-003` 选中「交电费」，未知 id 不选中，空参数保持等待。这只说明函数行为。点击之后窗口里有没有选中那一行，仍以上表为准。正式待办页的定位不在本记录里，属于 #25。
+
+便携版点击定位还没有观察结果，所以没有改 [product.md](product.md)。
+
+### 所有者要亲手做的步骤
+
+在本 PR 的目录里执行。命令都用 release，这样快捷方式里的程序路径和正在跑的程序是同一个。换过构建目录或重新编译后，先重新 `register`。做完或中途停下，都执行文末的清理。
+
+1. `cargo build -p toast --release`
+2. 安装版显示：`cargo run -p toast --release -- register installed`，然后 `status`，确认判定是「安装版」。再 `cargo run -p toast --release -- show todo-001`。看通知中心或右下角有没有「待办到期」，正文含 `todo-001` 和「买牛奶」。把看到的写进「安装版：通知能显示」。控制台里的 `S_OK` 不算。
+3. 安装版、进程还在时点击：另开一个终端，`cargo run -p toast --release -- serve`，让模拟面板保持打开。再 `cargo run -p toast --release -- show todo-003`。点击那条通知。要同时看到：面板到前台；标题含「已定位 todo-003」；列表选中「todo-003 交电费」；运行 `serve` 的终端有 `COM Activate launch=todo-003`。只收到这串字、列表没有选中该行，定位不通过。
+4. 安装版、进程退出后点击：关掉模拟面板，确认 `serve` 已经退出。上一条通知会被点击消掉，所以再 `cargo run -p toast --release -- show todo-002`。点击它。应重新出现面板，并选中「todo-002 写周报」，终端有 `launch=todo-002`。冷启动时先有控制台窗口，这是 spike 用了控制台子系统，单独记一笔，不因此改判定。
+5. 便携版不要沿用安装版的结果。先 `cargo run -p toast --release -- unregister`，再 `register portable`，`status` 必须是「便携版」，且没有快捷方式、CustomActivator、LocalServer32。然后按第 2、3、4 步各做一次，分别填便携版的显示、运行中点击、退出后点击。退出后点击如果拉不起进程，就记失败，不要补快捷方式再试。
+6. 叠放：在安装版注册下执行 `cargo run -p toast --release -- show todo-001 --repeat 3`，看通知中心是三条还是被收成一条。再执行 `show todo-001 --repeat 3 --tag todo-001`，再看一次。便携版再各做一遍。历史条数已经写在自动观察里，这里只填眼睛看到的。
+7. 请勿打扰：打开「设置 → 系统 → 通知」，打开「请勿打扰」。在安装版注册下 `show todo-001`。写下通知有没有出现、有没有进通知中心。然后关掉请勿打扰。不要改 Focus Assist 的注册表。
+8. 缺失注册的托盘：`unregister` 之后 `show todo-001`。确认进程退出码是 0，没有弹出到期通知，托盘上出现带「1」的图标，提示「逾期 1」，大约 15 秒后消失。看到图标后再把这一行改成通过或失败。没看到就保持未测。
+
+### 清理
+
+自动检查结束时，这台机器上的 spike 注册已经去掉。若通知中心还留着「Lanwork 自动检查」或「待办到期」，在通知中心里清掉，或运行 `cargo run -p toast --release -- clear-history`。
+
+所有者做完步骤后执行：
+
+```text
+cargo run -p toast --release -- unregister
+cargo run -p toast --release -- status
+```
+
+`status` 应为「未注册」。这会删除上面的快捷方式、AUMID 键和 CLSID 键，并尝试清除该 AUMID 的通知历史。不删除其他程序的通知。卸载产品时的清理属于 #31，不在这里做。
 
 ## 界面
 
