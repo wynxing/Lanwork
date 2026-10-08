@@ -1315,9 +1315,11 @@ mod tests {
             .create_item(&second_list, draft("新当前"))
             .unwrap();
         ready.service.set_current(&first).unwrap();
+        let rx = ready.store.subscribe();
         ready.service.set_write_fault(Some(1), true, None);
         let err = ready.service.set_current(&second).unwrap_err();
         assert!(err.to_string().contains("写入失败"), "{err}");
+        assert!(rx.try_recv().is_err());
         assert!(!ready.service.item(&first).unwrap().item.current);
         assert!(ready.service.item(&second).unwrap().item.current);
         let currents = ready

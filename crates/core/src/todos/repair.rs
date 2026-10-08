@@ -169,6 +169,20 @@ mod tests {
     }
 
     #[test]
+    fn equal_moved_at_in_one_list_keeps_the_earlier_row() {
+        let mut earlier = item("same");
+        earlier.moved_at = Some(5);
+        earlier.title = "前".into();
+        let mut later = item("same");
+        later.moved_at = Some(5);
+        later.title = "后".into();
+        let mut lists = vec![list("l", vec![earlier, later])];
+        repair_moved_at(&mut lists);
+        assert_eq!(lists[0].items.len(), 1);
+        assert_eq!(lists[0].items[0].title, "前");
+    }
+
+    #[test]
     fn newest_current_since_wins_and_a_single_flag_is_kept() {
         let mut older = item("a");
         older.current = true;
