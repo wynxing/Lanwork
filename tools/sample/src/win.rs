@@ -13,6 +13,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Performance::{
+    PDH_CALC_NEGATIVE_DENOMINATOR, PDH_CALC_NEGATIVE_TIMEBASE, PDH_CALC_NEGATIVE_VALUE,
     PDH_CSTATUS_INVALID_DATA, PDH_CSTATUS_ITEM_NOT_VALIDATED, PDH_CSTATUS_NEW_DATA,
     PDH_CSTATUS_NO_INSTANCE, PDH_CSTATUS_VALID_DATA, PDH_FMT, PDH_FMT_COUNTERVALUE_ITEM_W,
     PDH_FMT_DOUBLE, PDH_FMT_LARGE, PDH_HCOUNTER, PDH_HQUERY, PDH_INVALID_DATA, PDH_MORE_DATA,
@@ -356,7 +357,9 @@ fn counter_items(counter: PDH_HCOUNTER, format: PDH_FMT) -> Result<Vec<CounterIt
         if status_not_ready(status) {
             return Err(ToolError::new(INVALID_MARKER.to_string()));
         }
-        if status != PDH_CSTATUS_VALID_DATA && status != PDH_CSTATUS_NEW_DATA {
+        // 线程退出或实例刚出现时，速率计数器的数组调用返回 PDH_CALC_NEGATIVE_*，
+        // 缓冲区里仍有各实例的值。坏实例的 CStatus 下面会丢掉，不能因此停掉整个采样。
+        if !formatted_array_has_items(status) {
             return Err(ToolError::new(format!(
                 "读取计数器数组失败：0x{status:08X}"
             )));
@@ -389,6 +392,15 @@ fn counter_items(counter: PDH_HCOUNTER, format: PDH_FMT) -> Result<Vec<CounterIt
     Err(ToolError::new(
         "读取计数器数组失败：缓冲区始终不足".to_string(),
     ))
+}
+
+/// `PdhGetFormattedCounterArrayW` 在这些状态下仍写出了实例数组。
+fn formatted_array_has_items(status: u32) -> bool {
+    status == PDH_CSTATUS_VALID_DATA
+        || status == PDH_CSTATUS_NEW_DATA
+        || status == PDH_CALC_NEGATIVE_VALUE
+        || status == PDH_CALC_NEGATIVE_DENOMINATOR
+        || status == PDH_CALC_NEGATIVE_TIMEBASE
 }
 
 fn status_not_ready(status: u32) -> bool {
@@ -548,6 +560,18 @@ mod tests {
         let wakeups: f64 = fields[9].parse().unwrap();
         assert!(wakeups.is_finite() && wakeups >= 0.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn negative_rate_status_still_returns_the_counter_array() {
+        assert!(formatted_array_has_items(PDH_CSTATUS_VALID_DATA));
+        assert!(formatted_array_has_items(PDH_CSTATUS_NEW_DATA));
+        assert!(formatted_array_has_items(PDH_CALC_NEGATIVE_VALUE));
+        assert!(formatted_array_has_items(PDH_CALC_NEGATIVE_DENOMINATOR));
+        assert!(formatted_array_has_items(PDH_CALC_NEGATIVE_TIMEBASE));
+        assert!(!formatted_array_has_items(PDH_MORE_DATA));
+        assert!(!formatted_array_has_items(0x8000_07D0));
+        assert!(!counter_status_ok(PDH_CALC_NEGATIVE_VALUE));
     }
 
     #[test]
