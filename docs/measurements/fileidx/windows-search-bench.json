@@ -1,37 +1,37 @@
 {
   "load": {
     "interval_ms": 1000,
-    "busy_percent": 60.64935064935065,
+    "busy_percent": 41.02228047182176,
     "rustc": 0,
     "link": 0,
     "cl": 0,
-    "cargo": 2,
+    "cargo": 0,
     "skewed": false,
     "reason": "未发现明显干扰"
   },
   "load_after": {
     "interval_ms": 1000,
-    "busy_percent": 16.753246753246753,
+    "busy_percent": 13.648293963254593,
     "rustc": 0,
     "link": 0,
     "cl": 0,
-    "cargo": 2,
+    "cargo": 0,
     "skewed": false,
     "reason": "未发现明显干扰"
   },
   "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\"",
   "sql": "SELECT TOP 50 System.ItemPathDisplay, System.FileName, System.ItemNameDisplay, System.ItemType FROM SystemIndex WHERE SCOPE='file:' AND System.FileName LIKE '%notepad%' ORDER BY System.FileName",
   "filename_only": true,
-  "private_bytes_before_open": 1286144,
-  "private_bytes_after_open": 2400256,
-  "private_bytes_after_first": 3018752,
-  "private_bytes_delta_execute": 618496,
-  "private_bytes_delta_including_open": 1732608,
+  "private_bytes_before_open": 1277952,
+  "private_bytes_after_open": 2330624,
+  "private_bytes_after_first": 2785280,
+  "private_bytes_delta_execute": 454656,
+  "private_bytes_delta_including_open": 1507328,
   "first_ok": true,
-  "first_elapsed_ns": 62606900,
+  "first_elapsed_ns": 45442000,
   "first_returned": 5,
   "first_hresult": null,
   "warmup": 5,
   "samples": 100,
-  "jsonl": "docs\\measurements\\fileidx\\windows-search.jsonl"
+  "jsonl": "windows-search.jsonl"
 }

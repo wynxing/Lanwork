@@ -13,8 +13,7 @@ use windows::core::s;
 
 use crate::host::{FileIdxError, mono_ns, pcwstr, string_from_wide_buf, wide_null, wide_path};
 use crate::state::{
-    EVERYTHING3_ERROR_IPC_PIPE_NOT_FOUND, MachineState, ProbeKind, clamp_limit, classify_sdk3,
-    classify_sdk14, machine_state,
+    MachineState, ProbeKind, clamp_limit, classify_sdk3, classify_sdk14, machine_state,
 };
 
 const ALPHA_INSTANCE: &str = "1.5a";
@@ -101,6 +100,14 @@ pub struct PollReport {
     pub saw_not_ready: bool,
     pub saw_ready: bool,
     pub saw_not_running: bool,
+}
+
+/// 写进 JSON 的路径。不带本机盘符。
+pub fn dll_label(sdk: SdkChoice) -> &'static str {
+    match sdk {
+        SdkChoice::Sdk14 => "third_party/everything/sdk/Everything64.dll",
+        SdkChoice::Sdk3 | SdkChoice::Auto => "third_party/everything/sdk3/Everything3_x64.dll",
+    }
 }
 
 pub fn dll_path(sdk: SdkChoice) -> PathBuf {
@@ -386,7 +393,7 @@ impl Sdk14 {
         attempt(
             "sdk14",
             None,
-            &dll_path(SdkChoice::Sdk14),
+            dll_label(SdkChoice::Sdk14),
             !(!loaded && err == crate::state::EVERYTHING_ERROR_IPC),
             Some(loaded),
             err,
@@ -598,17 +605,11 @@ impl Sdk3 {
             std::ptr::null()
         };
         // SAFETY: 实例名要么是空指针，要么以 0 结尾。失败后立刻读 GetLastError。
+        // 原样返回，包括 0。不把 0 改写成管道不存在。
         let client = unsafe { (self.connect)(ptr) };
         let err = unsafe { (self.last_error)() };
         if client.is_null() {
-            (
-                false,
-                if err == 0 {
-                    EVERYTHING3_ERROR_IPC_PIPE_NOT_FOUND
-                } else {
-                    err
-                },
-            )
+            (false, err)
         } else {
             self.client = client;
             (true, err)
@@ -621,7 +622,7 @@ impl Sdk3 {
             return attempt(
                 "sdk3",
                 instance.map(str::to_string),
-                &dll_path(SdkChoice::Sdk3),
+                dll_label(SdkChoice::Sdk3),
                 false,
                 None,
                 err,
@@ -644,7 +645,7 @@ impl Sdk3 {
         attempt(
             "sdk3",
             instance.map(str::to_string),
-            &dll_path(SdkChoice::Sdk3),
+            dll_label(SdkChoice::Sdk3),
             true,
             Some(loaded),
             err,
@@ -820,7 +821,7 @@ unsafe fn wide_slice<'a>(ptr: *const u16) -> &'a [u16] {
 fn attempt(
     sdk: &str,
     instance: Option<String>,
-    path: &Path,
+    path: &str,
     connect_ok: bool,
     is_db_loaded: Option<bool>,
     last_error: u32,
@@ -830,7 +831,7 @@ fn attempt(
     SdkAttempt {
         sdk: sdk.to_string(),
         instance,
-        dll_path: path.display().to_string(),
+        dll_path: path.to_string(),
         connect_ok,
         is_db_loaded,
         last_error: Some(last_error),

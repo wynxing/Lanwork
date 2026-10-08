@@ -1,0 +1,15 @@
+{
+  "mode": "filename_like",
+  "ok": true,
+  "hresult": null,
+  "message": "",
+  "sql": "SELECT TOP 50 System.ItemPathDisplay, System.FileName, System.ItemNameDisplay, System.ItemType FROM SystemIndex WHERE SCOPE='file:' AND System.FileName LIKE '%' ORDER BY System.FileName",
+  "filename_only": true,
+  "elapsed_ns": 2520445600,
+  "returned": 50,
+  "limit": 50,
+  "expect_hit": null,
+  "reject_hit": null,
+  "matching_names": [],
+  "connection_string": "provider=Search.CollatorDSO.1;EXTENDED PROPERTIES=\"Application=Windows\""
+}

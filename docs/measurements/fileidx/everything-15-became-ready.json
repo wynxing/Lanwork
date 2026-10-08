@@ -11,7 +11,7 @@
     {
       "sdk": "sdk3",
       "instance": "1.5a",
-      "dll_path": "E:\\My_project\\Lanwork-wt\\issue-6\\spikes\\fileidx\\../..\\third_party\\everything\\sdk3\\Everything3_x64.dll",
+      "dll_path": "third_party/everything/sdk3/Everything3_x64.dll",
       "connect_ok": true,
       "is_db_loaded": true,
       "last_error": 0,

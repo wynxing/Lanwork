@@ -34,7 +34,8 @@ pub use host::{FileIdxError, mono_ns, private_bytes};
 pub use loadmon::{LoadSnapshot, sample_load};
 #[cfg(windows)]
 pub use wsearch::{
-    WsearchHitReport, WsearchMode, WsearchSession, compare_modes, indexed_roots, query_windows,
+    ManagerContextReport, WsearchHitReport, WsearchMode, WsearchSession, compare_modes,
+    indexed_roots, probe_search_manager, query_windows,
 };
 
 #[cfg(not(windows))]

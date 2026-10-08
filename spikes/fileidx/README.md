@@ -19,11 +19,12 @@ cargo run -p fileidx -- cap --sdk sdk14
 cargo run -p fileidx -- wsearch --text "名称" --expect 名称.txt --reject 正文.txt
 cargo run -p fileidx -- compare --text "标记" --expect 标记.txt --reject 正文.txt
 cargo run -p fileidx -- scopes
+cargo run -p fileidx -- manager
 cargo run -p fileidx -- load
 cargo run -p fileidx -- bench --text "名称" --samples 100 --warmup 5 --out docs/measurements/fileidx
 ```
 
-`bench` 先采样 1 秒系统 CPU。CPU 不低于 70%，或者同时有 `rustc.exe`、`link.exe`、`cl.exe` 时退出码 3，不写样本。确认可以照常记时再加 `--allow-skew`。
+`bench` 先采样 1 秒系统 CPU。CPU 不低于 70%，或者同时有 `rustc.exe`、`link.exe`、`cl.exe` 时退出码 3，不写样本。确认可以照常记时再加 `--allow-skew`。70% 和编译进程这两条是 spike 自己的筛选，不是架构「性能测量」协议里的门槛。
 
 Private Bytes 用 `PROCESS_MEMORY_COUNTERS_EX.PrivateUsage`，和 `lanwork-sample` 的 `private_bytes` 相同。`private_bytes_delta_including_open` 含第一次打开搜索连接。`private_bytes_delta_execute` 只含第一次 `Execute`。
 
@@ -31,7 +32,7 @@ P95 用 `lanwork-sample latency` 读 `windows-search.jsonl`。这里的时间是
 
 ## 四种状态
 
-本机没有安装 Everything 时，`probe` 的 `state` 是 `not_installed`。SDK3 的 `last_error` 是 `0xE0000002`，SDK 1.4 的 `last_error` 是 `2`。
+本机没有安装 Everything 时，`probe` 的 `state` 是 `not_installed`。JSON 里的 `last_error` 是 `GetLastError` 的原始值。SDK3 连接失败且返回 0 时，不改写成 `0xE0000002`。1.4 未运行时的原始值是 `2`。
 
 便携版放在 `spikes/fileidx/.portable/`，这个目录被 git 忽略。不要用安装包，也不要启动或停止 Windows 服务。
 

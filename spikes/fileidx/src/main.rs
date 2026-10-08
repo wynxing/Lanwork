@@ -13,7 +13,8 @@ use std::fmt;
 
 use fileidx::{
     FileIdxError, LoadSnapshot, SdkChoice, WsearchMode, cap_check, compare_modes, indexed_roots,
-    mono_ns, poll, private_bytes, probe, probe_one, query_everything, query_windows, sample_load,
+    mono_ns, poll, private_bytes, probe, probe_one, probe_search_manager, query_everything,
+    query_windows, sample_load,
 };
 
 #[derive(Parser)]
@@ -44,6 +45,8 @@ enum Command {
     Load(LoadArgs),
     /// 列出 Windows Search 已索引的根。
     Scopes,
+    /// `CSearchManager` 用进程内和 CLSCTX_ALL 各创建一次。
+    Manager,
     /// 文件名查询的 P95 样本。负载明显偏高时退出码 3。
     Bench(BenchArgs),
 }
@@ -273,6 +276,9 @@ fn run() -> Result<ExitCode, FileIdxError> {
             let roots = indexed_roots()?;
             print_json(&roots)?;
         }
+        Command::Manager => {
+            print_json(&probe_search_manager()?)?;
+        }
         Command::Bench(args) => return bench(args),
     }
     Ok(ExitCode::SUCCESS)
@@ -293,6 +299,7 @@ fn bench(args: BenchArgs) -> Result<ExitCode, FileIdxError> {
     let jsonl_path = args.out.join("windows-search.jsonl");
     let mut jsonl = fs::File::create(&jsonl_path)?;
     let mut seq = 1u64;
+    // 第一次 Execute 单独记成 warmup。加上 `--warmup N`，jsonl 里 warmup 行数是 N+1。
     if let Some(elapsed) = first.elapsed_ns {
         let end = mono_ns();
         let start = end.saturating_sub(elapsed);
@@ -344,7 +351,7 @@ fn bench(args: BenchArgs) -> Result<ExitCode, FileIdxError> {
         first_hresult: first.hresult,
         warmup: args.warmup,
         samples: args.samples,
-        jsonl: jsonl_path.display().to_string(),
+        jsonl: "windows-search.jsonl".to_string(),
     };
     let summary_path = args.out.join("windows-search-bench.json");
     fs::write(

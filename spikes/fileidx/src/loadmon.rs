@@ -1,4 +1,7 @@
-//! 计时前后记一笔机器负载。CPU 高或者有别的编译进程时，调用方应重跑计时。
+//! 计时前后记一笔机器负载。
+//!
+//! 70% 以及「同时有 rustc、link 或 cl」是这个 spike 自己的筛选，用来决定这次计时要不要重跑。
+//! 不是 architecture.md「性能测量」协议里的门槛。
 
 use serde::Serialize;
 
@@ -10,6 +13,7 @@ use windows::Win32::System::Threading::GetSystemTimes;
 
 use crate::host::{FileIdxError, filetime_u64};
 
+/// spike 自选。架构的性能测量协议没有这条 CPU 门槛。
 const SKEW_BUSY_PERCENT: f64 = 70.0;
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,9 +1,10 @@
 //! Windows Search 文件名查询。
 //!
-//! 产品查询走 ADO + `Search.CollatorDSO`，SQL 只含 `System.FileName LIKE`。
-//! `ISearchQueryHelper::GenerateSQLFromUserQuery` 和正文 `CONTAINS` 只用于对照，不作为选定路径。
+//! spike 当前用 ADO + `Search.CollatorDSO`，SQL 含 `System.FileName LIKE`。
+//! 子串、前缀或整名，以及两套通配符是否同义，产品规格还没定。
+//! `ISearchQueryHelper::GenerateSQLFromUserQuery` 和正文 `CONTAINS` 只用于对照。
 
-use std::mem::ManuallyDrop;
+use std::mem::{self, ManuallyDrop};
 
 use serde::Serialize;
 use windows::Win32::System::Com::{
@@ -16,7 +17,7 @@ use windows::Win32::System::Search::{
     SEARCH_ADVANCED_QUERY_SYNTAX, SEARCH_TERM_NO_EXPANSION,
 };
 use windows::Win32::System::Variant::{
-    VARIANT, VT_BOOL, VT_BSTR, VT_DISPATCH, VT_EMPTY, VT_ERROR, VT_I4, VT_NULL, VariantClear,
+    VARIANT, VT_BOOL, VT_BSTR, VT_DISPATCH, VT_EMPTY, VT_ERROR, VT_I4, VT_NULL,
 };
 use windows::core::{BSTR, GUID, PCWSTR, w};
 
@@ -58,9 +59,10 @@ pub struct WsearchHitReport {
 }
 
 pub struct WsearchSession {
-    _com: ComInit,
     conn: IDispatch,
     connection_string: String,
+    /// 字段按声明顺序析构。放在最后，连接先 `Release`，然后才 `CoUninitialize`。
+    _com: ComInit,
 }
 
 impl WsearchSession {
@@ -81,9 +83,9 @@ impl WsearchSession {
         ];
         call(&conn, "Open", DISPATCH_METHOD, &mut args)?;
         Ok(Self {
-            _com: com,
             conn,
             connection_string,
+            _com: com,
         })
     }
 
@@ -243,6 +245,46 @@ pub fn indexed_roots() -> Result<Vec<String>, FileIdxError> {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ManagerContextReport {
+    pub context: &'static str,
+    pub ok: bool,
+    pub hresult: Option<u32>,
+    pub message: String,
+}
+
+/// 对照 `CSearchManager` 在两种上下文里能否创建。结果原样记下，不改写 HRESULT。
+pub fn probe_search_manager() -> Result<Vec<ManagerContextReport>, FileIdxError> {
+    let _com = ComInit::new()?;
+    Ok(vec![
+        create_manager("inproc_server", CLSCTX_INPROC_SERVER),
+        create_manager("all", CLSCTX_ALL),
+    ])
+}
+
+fn create_manager(
+    context: &'static str,
+    ctx: windows::Win32::System::Com::CLSCTX,
+) -> ManagerContextReport {
+    match unsafe { CoCreateInstance::<_, ISearchManager>(&CSearchManager, None, ctx) } {
+        Ok(manager) => {
+            drop(manager);
+            ManagerContextReport {
+                context,
+                ok: true,
+                hresult: None,
+                message: String::new(),
+            }
+        }
+        Err(err) => ManagerContextReport {
+            context,
+            ok: false,
+            hresult: Some(err.code().0 as u32),
+            message: err.message().to_string(),
+        },
+    }
+}
+
 pub fn query_windows(
     mode: WsearchMode,
     text: &str,
@@ -338,15 +380,8 @@ fn fail_report(
     }
 }
 
+/// `VARIANT` 自己的 `Drop` 会 `VariantClear`。这里不再清第二次。
 struct VariantBox(VARIANT);
-
-impl Drop for VariantBox {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = VariantClear(&mut self.0);
-        }
-    }
-}
 
 fn variant_bstr(text: &str) -> VariantBox {
     let mut value = VARIANT::default();
@@ -386,10 +421,9 @@ fn call(
 ) -> Result<VariantBox, FileIdxError> {
     let id = dispid(disp, name)?;
     // 调用方按 IDispatch 的顺序放入参数：rgvarg[0] 是最右边的参数。
-    let mut owned: Vec<VARIANT> = args
-        .iter_mut()
-        .map(|item| unsafe { std::ptr::read(&item.0) })
-        .collect();
+    // `mem::take` 把所有权交给这次调用。`ptr::read` 会留下第二份 `VARIANT`，
+    // 两边的 `Drop` 都会 `VariantClear`，BSTR 会被释放两次。
+    let mut owned: Vec<VARIANT> = args.iter_mut().map(|item| mem::take(&mut item.0)).collect();
     let mut params = DISPPARAMS {
         rgvarg: if owned.is_empty() {
             std::ptr::null_mut()
@@ -446,9 +480,7 @@ fn invoke(
     match outcome {
         Ok(()) => Ok(VariantBox(result)),
         Err(err) => {
-            unsafe {
-                let _ = VariantClear(&mut result);
-            }
+            drop(result);
             let mut message = err.message().to_string();
             if !description.is_empty() {
                 message.push_str(": ");
@@ -580,5 +612,39 @@ mod tests {
                 assert!(!err.to_string().is_empty());
             }
         }
+    }
+
+    #[test]
+    fn variant_take_clears_a_bstr_once() {
+        let mut boxed = variant_bstr("lanwork-fileidx");
+        let taken = mem::take(&mut boxed.0);
+        drop(boxed);
+        drop(taken);
+    }
+
+    #[test]
+    fn session_releases_the_connection_before_uninitializing_com() {
+        // 连接字段在 COM 守卫前面。连续打开再丢掉，Release 发生在 CoUninitialize 之前。
+        let mut opened = 0;
+        for _ in 0..4 {
+            match WsearchSession::open() {
+                Ok(session) => {
+                    let _ = session.query(
+                        WsearchMode::FilenameLike,
+                        "lanwork-fileidx-unit-absent-token",
+                        1,
+                        None,
+                        None,
+                    );
+                    drop(session);
+                    opened += 1;
+                }
+                Err(err) => {
+                    assert!(!err.to_string().is_empty());
+                    return;
+                }
+            }
+        }
+        assert!(opened >= 1);
     }
 }

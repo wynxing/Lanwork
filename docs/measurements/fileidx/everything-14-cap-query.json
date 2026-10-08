@@ -3,11 +3,11 @@
   "instance": null,
   "kind": "ready",
   "state": "ready",
-  "elapsed_ns": 7330900,
+  "elapsed_ns": 8782200,
   "returned": 50,
   "total": 60,
   "limit": 50,
-  "expect_hit": null,
+  "expect_hit": true,
   "reject_hit": null,
   "names": [
     "capfile-01.txt",
@@ -61,6 +61,8 @@
     "capfile-49.txt",
     "capfile-50.txt"
   ],
-  "matching_names": [],
+  "matching_names": [
+    "capfile-01.txt"
+  ],
   "last_error": null
 }

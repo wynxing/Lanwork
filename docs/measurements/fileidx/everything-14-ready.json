@@ -9,18 +9,18 @@
   "client_present": false,
   "attempts": [
     {
-      "sdk": "sdk3",
-      "instance": "1.5a",
-      "dll_path": "E:\\My_project\\Lanwork-wt\\issue-6\\spikes\\fileidx\\../..\\third_party\\everything\\sdk3\\Everything3_x64.dll",
+      "sdk": "sdk14",
+      "instance": null,
+      "dll_path": "third_party/everything/sdk/Everything64.dll",
       "connect_ok": true,
       "is_db_loaded": true,
       "last_error": 0,
       "last_error_hex": "0x0",
       "kind": "ready",
-      "server_version": "1.5.0.1423"
+      "server_version": null
     }
   ],
-  "selected": "sdk3",
+  "selected": "sdk14",
   "kind": "ready",
   "state": "ready"
 }

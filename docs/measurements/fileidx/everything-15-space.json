@@ -3,7 +3,7 @@
   "instance": "1.5a",
   "kind": "ready",
   "state": "ready",
-  "elapsed_ns": 505700,
+  "elapsed_ns": 395000,
   "returned": 1,
   "total": null,
   "limit": 50,

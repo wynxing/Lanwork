@@ -100,6 +100,10 @@ mod tests {
         );
         assert_eq!(classify_sdk3(false, false, 1), ProbeKind::Failed);
         assert_eq!(
+            classify_sdk3(false, false, EVERYTHING3_OK),
+            ProbeKind::Failed
+        );
+        assert_eq!(
             classify_sdk3(true, false, EVERYTHING3_OK),
             ProbeKind::NotReady
         );

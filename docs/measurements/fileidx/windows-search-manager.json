@@ -1,0 +1,14 @@
+[
+  {
+    "context": "inproc_server",
+    "ok": false,
+    "hresult": 2147746132,
+    "message": "没有注册类"
+  },
+  {
+    "context": "all",
+    "ok": true,
+    "hresult": null,
+    "message": ""
+  }
+]
