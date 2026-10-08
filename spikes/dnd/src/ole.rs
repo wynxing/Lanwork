@@ -615,12 +615,34 @@ mod tests {
             "CF_HDROP GetData did not return 0x8007007A"
         );
         let paths = paths_from_data_object(&direct).expect("long read");
-        assert_eq!(paths, vec![long_file.clone()]);
-        assert!(wide_len(&paths[0]) > 260);
+        assert_eq!(paths.len(), 1);
+        assert!(
+            wide_len(&paths[0]) > 260,
+            "returned path is not over 260: {}",
+            paths[0].display()
+        );
+        assert_eq!(std::fs::read(&paths[0]).expect("read long"), b"long");
+        assert_eq!(
+            std::fs::canonicalize(&paths[0]).expect("canonical returned"),
+            std::fs::canonicalize(&long_file).expect("canonical created"),
+            "shell name {paths:?} is not the file created at {}",
+            long_file.display()
+        );
 
         let link_data = data_object_for_paths(std::slice::from_ref(&shortcut)).expect("link data");
         let link_paths = paths_from_shell_items(&link_data).expect("link names");
-        assert_eq!(link_paths, vec![shortcut]);
+        assert!(
+            link_paths
+                .first()
+                .is_some_and(|path| path.extension().is_some_and(|ext| ext == "lnk")),
+            "shortcut was resolved: {link_paths:?}"
+        );
+        assert_eq!(
+            std::fs::canonicalize(&link_paths[0]).expect("canonical link"),
+            std::fs::canonicalize(&shortcut).expect("canonical shortcut"),
+            "shell name {link_paths:?} is not {}",
+            shortcut.display()
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
