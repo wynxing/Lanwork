@@ -2,7 +2,7 @@
 
 日期：2026-10-08。
 
-被测代码 commit：（第一次提交的完整哈希，见下一笔提交补上）。
+被测代码 commit：`93b01dba5a0bc64524d49ed45c6c07fd7d286c8e`。
 
 Slint 版本：1.18.1（工作区 `slint = "=1.18.1"`，`cargo tree -p ime` 解析到 `slint v1.18.1`）。
 
