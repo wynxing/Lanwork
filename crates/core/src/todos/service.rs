@@ -2,7 +2,9 @@
 //!
 //! 内存只在对应写入成功后换成新状态。跨清单移动和切换当前标记按架构的顺序写：
 //! 先写目标（带新的 `movedAt` 或 `currentSince`），再写源。两次都成功后才提交批次，
-//! 变更消息在提交时发出。任一次失败则不提交，内存按磁盘重新对齐。
+//! 变更消息在提交时发出。后面的写入失败时，把本批次已经替换的文件写回内存里的原内容，
+//! 不提交、不发布 `EntityChanged`，内存保持操作前状态。回滚写入再失败时，重新读入并按
+//! `movedAt`、`currentSince` 修好，避免留下重复 id 或两条当前标记；重新读入失败则返回该错误。
 //!
 //! 同一清单里的当前标记切换也分两次写入同一文件，这样中断落在清除旧标记之前时，
 //! 加载修复仍能留下 `currentSince` 更新的那条。
@@ -66,6 +68,26 @@ struct NoticeBus {
     senders: Mutex<Vec<Sender<TodoNotice>>>,
 }
 
+/// 测试里让批次的某一次写入或回滚失败，而不改存储层。
+#[cfg(test)]
+struct WriteFault {
+    /// 批次里 0 起始的那一次写入在落盘前失败。
+    fail_at: Option<usize>,
+    fail_rollback: bool,
+    before_reread: Option<Box<dyn FnOnce() + Send>>,
+}
+
+#[cfg(test)]
+impl WriteFault {
+    fn none() -> Self {
+        Self {
+            fail_at: None,
+            fail_rollback: false,
+            before_reread: None,
+        }
+    }
+}
+
 impl NoticeBus {
     fn subscribe(&self) -> Receiver<TodoNotice> {
         let (sender, receiver) = mpsc::channel();
@@ -86,6 +108,8 @@ pub(crate) struct Service {
     op: Mutex<()>,
     state: Mutex<State>,
     notices: NoticeBus,
+    #[cfg(test)]
+    fault: Mutex<WriteFault>,
 }
 
 impl Service {
@@ -100,7 +124,23 @@ impl Service {
             notices: NoticeBus {
                 senders: Mutex::new(Vec::new()),
             },
+            #[cfg(test)]
+            fault: Mutex::new(WriteFault::none()),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_write_fault(
+        &self,
+        fail_at: Option<usize>,
+        fail_rollback: bool,
+        before_reread: Option<Box<dyn FnOnce() + Send>>,
+    ) {
+        *lock_mutex(&self.fault) = WriteFault {
+            fail_at,
+            fail_rollback,
+            before_reread,
+        };
     }
 
     pub(crate) fn store(&self) -> Store {
@@ -785,12 +825,20 @@ impl Service {
             self.set_lists(next);
             return Ok(());
         }
+        let previous = self.lists_vec()?;
         let mut batch = self.store.begin_batch()?;
-        for list in &writes {
-            if let Err(err) = batch.write_json(&DocumentId::Todo(list.id.clone()), list) {
+        let mut replaced = Vec::new();
+        for (index, list) in writes.iter().enumerate() {
+            if let Some(err) = self.injected_batch_failure(index) {
                 drop(batch);
-                self.realign_after_failed_write();
-                return Err(err.into());
+                return self.finish_failed_write(&previous, &replaced, err);
+            }
+            match batch.write_json(&DocumentId::Todo(list.id.clone()), list) {
+                Ok(_) => replaced.push(list.id.clone()),
+                Err(err) => {
+                    drop(batch);
+                    return self.finish_failed_write(&previous, &replaced, err.into());
+                }
             }
         }
         self.set_lists(next);
@@ -798,9 +846,128 @@ impl Service {
         Ok(())
     }
 
-    fn realign_after_failed_write(&self) {
-        if let Ok(lists) = self.read_disk() {
+    /// 已经替换过的文件写回操作前内容。回滚批次不提交，因此没有 `EntityChanged`。
+    fn finish_failed_write(
+        &self,
+        previous: &[TodoList],
+        replaced: &[String],
+        err: TodoError,
+    ) -> Result<(), TodoError> {
+        if replaced.is_empty() {
+            return Err(err);
+        }
+        match self.write_preimage(previous, replaced) {
+            Ok(()) => Err(err),
+            Err(_) => self.repair_partial(err),
+        }
+    }
+
+    fn write_preimage(&self, previous: &[TodoList], replaced: &[String]) -> Result<(), TodoError> {
+        if let Some(err) = self.injected_rollback_failure() {
+            return Err(err);
+        }
+        let mut batch = self.store.begin_batch()?;
+        for id in replaced {
+            let write = if let Some(list) = previous.iter().find(|list| list.id == *id) {
+                batch
+                    .write_json(&DocumentId::Todo(id.clone()), list)
+                    .map(|_| ())
+            } else {
+                batch.remove(&DocumentId::Todo(id.clone())).map(|_| ())
+            };
+            if let Err(write_err) = write {
+                drop(batch);
+                return Err(write_err.into());
+            }
+        }
+        drop(batch);
+        Ok(())
+    }
+
+    /// 回滚没有写回去。读盘后按启动时的两条规则修到没有重复 id、也没有两条当前标记。
+    ///
+    /// 修复写回不提交批次：这条命令仍要返回错误，不发布 `EntityChanged`。
+    /// 读盘或修复写回再失败时返回那个错误，并卸下内存，避免接着用和磁盘不一致的原内容。
+    fn repair_partial(&self, original: TodoError) -> Result<(), TodoError> {
+        if let Some(hook) = self.take_before_reread() {
+            hook();
+        }
+        let mut lists = match self.read_disk() {
+            Ok(lists) => lists,
+            Err(err) => {
+                self.mark_unloaded();
+                return Err(err);
+            }
+        };
+        let mut changed = repair_moved_at(&mut lists);
+        changed.extend(repair_current_since(&mut lists));
+        if changed.is_empty() {
             self.set_lists(lists);
+            return Err(original);
+        }
+        let mut batch = match self.store.begin_batch() {
+            Ok(batch) => batch,
+            Err(err) => {
+                self.mark_unloaded();
+                return Err(err.into());
+            }
+        };
+        for list in lists.iter().filter(|list| changed.contains(&list.id)) {
+            if let Err(err) = batch.write_json(&DocumentId::Todo(list.id.clone()), list) {
+                drop(batch);
+                self.mark_unloaded();
+                return Err(err.into());
+            }
+        }
+        drop(batch);
+        self.set_lists(lists);
+        Err(original)
+    }
+
+    fn mark_unloaded(&self) {
+        let mut state = lock_mutex(&self.state);
+        state.loaded = false;
+        state.lists.clear();
+    }
+
+    fn injected_batch_failure(&self, index: usize) -> Option<TodoError> {
+        #[cfg(test)]
+        {
+            if lock_mutex(&self.fault).fail_at == Some(index) {
+                return Some(injected_replace_error());
+            }
+            None
+        }
+        #[cfg(not(test))]
+        {
+            let _ = index;
+            None
+        }
+    }
+
+    fn injected_rollback_failure(&self) -> Option<TodoError> {
+        #[cfg(test)]
+        {
+            if lock_mutex(&self.fault).fail_rollback {
+                return Some(injected_replace_error());
+            }
+        }
+        #[cfg(not(test))]
+        {
+            let _ = self;
+        }
+        None
+    }
+
+    fn take_before_reread(&self) -> Option<Box<dyn FnOnce() + Send>> {
+        #[cfg(test)]
+        {
+            return lock_mutex(&self.fault).before_reread.take();
+        }
+        #[cfg(not(test))]
+        {
+            let _ = self;
+            None
         }
     }
 
@@ -966,6 +1133,15 @@ fn fresh_id(prefix: char) -> String {
     format!("{prefix}{:x}-{:x}", now_ms(), seq)
 }
 
+#[cfg(test)]
+fn injected_replace_error() -> TodoError {
+    TodoError::Storage(crate::storage::Error::io(
+        crate::storage::IoAction::Replace,
+        "fault",
+        std::io::Error::other("injected"),
+    ))
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -975,7 +1151,96 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::TodoNotice;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::storage::{BootHooks, DocumentId, Store, StorePaths};
+    use crate::todos::{NewTodo, TodoList};
+
+    use super::{Service, TodoNotice};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("lanwork-todo-rollback-{nanos}-{seq}"));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    struct Ready {
+        _temp: TempDir,
+        store: Store,
+        service: Arc<Service>,
+    }
+
+    impl Ready {
+        fn new() -> Self {
+            let temp = TempDir::new();
+            let paths = StorePaths {
+                data_dir: temp.path.join("data"),
+                cache_dir: temp.path.join("cache"),
+                user_profile: temp.path.join("profile"),
+                local_app_data: temp.path.join("local"),
+            };
+            let store = Store::open(paths).unwrap();
+            let service = Service::open(store.clone());
+            let loading = Arc::clone(&service);
+            let mut hooks = BootHooks::new();
+            hooks.load = Some(Box::new(move |_| {
+                loading.load().map_err(|err| err.to_string())
+            }));
+            store.boot(hooks).unwrap();
+            Self {
+                _temp: temp,
+                store,
+                service,
+            }
+        }
+    }
+
+    fn draft(title: &str) -> NewTodo {
+        NewTodo {
+            title: title.into(),
+            due: None,
+            remind_at: None,
+            recurrence: None,
+            source: None,
+        }
+    }
+
+    fn file_bytes(store: &Store, id: &str) -> Vec<u8> {
+        let path = store.document_path(&DocumentId::Todo(id.into())).unwrap();
+        std::fs::read(path).unwrap()
+    }
+
+    fn disk_list(store: &Store, id: &str) -> TodoList {
+        store
+            .read_json(&DocumentId::Todo(id.into()))
+            .unwrap()
+            .unwrap()
+    }
+
+    fn parent_dir(path: &Path) -> PathBuf {
+        path.parent().unwrap().to_path_buf()
+    }
 
     #[test]
     fn purged_notice_names_the_item() {
@@ -988,5 +1253,108 @@ mod tests {
                 item_id: "a".into()
             }
         );
+    }
+
+    #[test]
+    fn same_list_second_write_rolls_back_to_the_preimage() {
+        let ready = Ready::new();
+        let list_id = ready.service.create_list("工作").unwrap();
+        let first = ready.service.create_item(&list_id, draft("一")).unwrap();
+        let second = ready.service.create_item(&list_id, draft("二")).unwrap();
+        ready.service.set_current(&first).unwrap();
+        let before = file_bytes(&ready.store, &list_id);
+        let rx = ready.store.subscribe();
+        ready.service.set_write_fault(Some(1), false, None);
+        let err = ready.service.set_current(&second).unwrap_err();
+        assert!(err.to_string().contains("写入失败"), "{err}");
+        assert!(ready.service.item(&first).unwrap().item.current);
+        assert!(!ready.service.item(&second).unwrap().item.current);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(file_bytes(&ready.store, &list_id), before);
+    }
+
+    #[test]
+    fn failed_rollback_repairs_a_duplicated_move() {
+        let ready = Ready::new();
+        let inbox = ready.service.ensure_inbox().unwrap();
+        let target = ready.service.create_list("工作").unwrap();
+        let item_id = ready.service.create_item(&inbox, draft("搬走")).unwrap();
+        let rx = ready.store.subscribe();
+        ready.service.set_write_fault(Some(1), true, None);
+        let err = ready.service.process_move(&item_id, &target).unwrap_err();
+        assert!(err.to_string().contains("写入失败"), "{err}");
+        let stored = ready.service.item(&item_id).unwrap();
+        assert_eq!(stored.list_id, target);
+        let lists = ready.service.lists().unwrap();
+        let copies = lists
+            .iter()
+            .filter(|list| list.items.iter().any(|item| item.id == item_id))
+            .count();
+        assert_eq!(copies, 1);
+        assert!(
+            disk_list(&ready.store, &inbox)
+                .items
+                .iter()
+                .all(|item| item.id != item_id)
+        );
+        assert_eq!(disk_list(&ready.store, &target).items[0].id, item_id);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn failed_rollback_repairs_two_current_flags() {
+        let ready = Ready::new();
+        let first_list = ready.service.create_list("甲").unwrap();
+        let second_list = ready.service.create_list("乙").unwrap();
+        let first = ready
+            .service
+            .create_item(&first_list, draft("旧当前"))
+            .unwrap();
+        let second = ready
+            .service
+            .create_item(&second_list, draft("新当前"))
+            .unwrap();
+        ready.service.set_current(&first).unwrap();
+        ready.service.set_write_fault(Some(1), true, None);
+        let err = ready.service.set_current(&second).unwrap_err();
+        assert!(err.to_string().contains("写入失败"), "{err}");
+        assert!(!ready.service.item(&first).unwrap().item.current);
+        assert!(ready.service.item(&second).unwrap().item.current);
+        let currents = ready
+            .service
+            .lists()
+            .unwrap()
+            .iter()
+            .flat_map(|list| list.items.iter())
+            .filter(|item| item.current)
+            .count();
+        assert_eq!(currents, 1);
+        assert!(!disk_list(&ready.store, &first_list).items[0].current);
+        assert!(disk_list(&ready.store, &second_list).items[0].current);
+    }
+
+    #[test]
+    fn failed_reread_after_rollback_is_not_ignored() {
+        let ready = Ready::new();
+        let inbox = ready.service.ensure_inbox().unwrap();
+        let target = ready.service.create_list("工作").unwrap();
+        let item_id = ready.service.create_item(&inbox, draft("搬走")).unwrap();
+        let dir = parent_dir(
+            &ready
+                .store
+                .document_path(&DocumentId::Todo(inbox.clone()))
+                .unwrap(),
+        );
+        ready.service.set_write_fault(
+            Some(1),
+            true,
+            Some(Box::new(move || {
+                std::fs::remove_dir_all(&dir).unwrap();
+                std::fs::write(&dir, b"not-a-directory").unwrap();
+            })),
+        );
+        let err = ready.service.process_move(&item_id, &target).unwrap_err();
+        assert!(err.to_string().contains("读取失败"), "{err}");
+        assert!(ready.service.lists().is_err());
     }
 }

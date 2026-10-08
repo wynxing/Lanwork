@@ -1116,6 +1116,117 @@ fn mismatched_id_and_unsupported_schema_fail_boot() {
     assert!(store.build_index(|_| Ok(())).is_err());
 }
 
+/// 挡住第二次替换。Windows 上锁住目标文件；其他系统把旁边的 `.json.tmp` 做成目录，
+/// 让这次替换在打开临时文件时失败，原文件保持不动。
+struct BlockReplace {
+    #[cfg(not(windows))]
+    tmp: PathBuf,
+    #[cfg(windows)]
+    _file: std::fs::File,
+}
+
+impl BlockReplace {
+    fn on(path: &Path) -> Self {
+        #[cfg(windows)]
+        {
+            use std::fs::OpenOptions;
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_SHARE_READ = 1。不带 FILE_SHARE_DELETE，替换必须失败。
+            let _file = OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .open(path)
+                .unwrap();
+            Self { _file }
+        }
+        #[cfg(not(windows))]
+        {
+            let mut tmp = path.as_os_str().to_owned();
+            tmp.push(".tmp");
+            let tmp = PathBuf::from(tmp);
+            std::fs::create_dir(&tmp).unwrap();
+            Self { tmp }
+        }
+    }
+}
+
+impl Drop for BlockReplace {
+    fn drop(&mut self) {
+        #[cfg(not(windows))]
+        {
+            let _ = std::fs::remove_dir(&self.tmp);
+        }
+    }
+}
+
+#[test]
+fn later_write_failure_rolls_back_a_cross_list_move() {
+    let fixture = Fixture::new();
+    let inbox = fixture.todos.ensure_inbox().unwrap();
+    let target = fixture.todos.create_list("工作").unwrap();
+    let item_id = fixture.todos.create_item(&inbox, new_todo("搬走")).unwrap();
+    let inbox_path = fixture
+        .store
+        .document_path(&DocumentId::Todo(inbox.clone()))
+        .unwrap();
+    let target_path = fixture
+        .store
+        .document_path(&DocumentId::Todo(target.clone()))
+        .unwrap();
+    let inbox_before = std::fs::read(&inbox_path).unwrap();
+    let target_before = std::fs::read(&target_path).unwrap();
+    let rx = fixture.store.subscribe();
+    let _block = BlockReplace::on(&inbox_path);
+    let err = fixture.todos.process_move(&item_id, &target).unwrap_err();
+    assert!(err.to_string().contains("写入失败"), "{err}");
+    assert_eq!(fixture.todos.item(&item_id).unwrap().list_id, inbox);
+    assert!(
+        list(&fixture.todos.lists().unwrap(), &target)
+            .items
+            .is_empty()
+    );
+    assert!(rx.try_recv().is_err());
+    assert_eq!(std::fs::read(&inbox_path).unwrap(), inbox_before);
+    assert_eq!(std::fs::read(&target_path).unwrap(), target_before);
+}
+
+#[test]
+fn later_write_failure_rolls_back_a_current_switch_across_lists() {
+    let fixture = Fixture::new();
+    let first_list = fixture.todos.create_list("甲").unwrap();
+    let second_list = fixture.todos.create_list("乙").unwrap();
+    let first = fixture
+        .todos
+        .create_item(&first_list, new_todo("旧当前"))
+        .unwrap();
+    let second = fixture
+        .todos
+        .create_item(&second_list, new_todo("新当前"))
+        .unwrap();
+    fixture.todos.set_current(&first).unwrap();
+    let first_path = fixture
+        .store
+        .document_path(&DocumentId::Todo(first_list.clone()))
+        .unwrap();
+    let second_path = fixture
+        .store
+        .document_path(&DocumentId::Todo(second_list.clone()))
+        .unwrap();
+    let first_before = std::fs::read(&first_path).unwrap();
+    let second_before = std::fs::read(&second_path).unwrap();
+    let rx = fixture.store.subscribe();
+    let _block = BlockReplace::on(&first_path);
+    let err = fixture.todos.set_current(&second).unwrap_err();
+    assert!(err.to_string().contains("写入失败"), "{err}");
+    let stored_first = fixture.todos.item(&first).unwrap();
+    let stored_second = fixture.todos.item(&second).unwrap();
+    assert!(stored_first.item.current);
+    assert!(!stored_second.item.current);
+    assert!(rx.try_recv().is_err());
+    assert_eq!(std::fs::read(&first_path).unwrap(), first_before);
+    assert_eq!(std::fs::read(&second_path).unwrap(), second_before);
+}
+
 #[cfg(unix)]
 #[test]
 fn write_failure_keeps_memory_and_original_file() {

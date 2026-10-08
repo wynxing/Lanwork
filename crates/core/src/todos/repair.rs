@@ -194,4 +194,32 @@ mod tests {
         assert!(lists[0].items[0].current);
         assert!(lists[0].items[0].current_since.is_none());
     }
+
+    #[test]
+    fn equal_current_since_keeps_the_smaller_list_id_then_the_smaller_item_id() {
+        let mut on_a = item("m");
+        on_a.current = true;
+        on_a.current_since = Some(4);
+        let mut on_b = item("a");
+        on_b.current = true;
+        on_b.current_since = Some(4);
+        let mut lists = vec![list("b", vec![on_b]), list("a", vec![on_a])];
+        repair_current_since(&mut lists);
+        assert!(lists[1].items[0].current);
+        assert_eq!(lists[1].id, "a");
+        assert!(!lists[0].items[0].current);
+        assert!(lists[0].items[0].current_since.is_none());
+
+        let mut later_id = item("b");
+        later_id.current = true;
+        later_id.current_since = Some(4);
+        let mut earlier_id = item("a");
+        earlier_id.current = true;
+        earlier_id.current_since = Some(4);
+        let mut lists = vec![list("l", vec![later_id, earlier_id])];
+        repair_current_since(&mut lists);
+        assert!(!lists[0].items[0].current);
+        assert!(lists[0].items[1].current);
+        assert_eq!(lists[0].items[1].id, "a");
+    }
 }
