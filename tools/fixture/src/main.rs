@@ -15,7 +15,7 @@ use lanwork_fixture::{
     about = "在隔离目录生成性能测量用的固定数据。默认规模等于协议。"
 )]
 struct Cli {
-    /// 夹具根目录。数据在其子目录 data，不会读取数据目录环境变量。
+    /// 夹具根目录。数据在其子目录 data，不会读取 `LANWORK_DATA_DIR`。
     #[arg(long)]
     out: PathBuf,
     #[arg(long, default_value_t = PROTOCOL_TODOS)]

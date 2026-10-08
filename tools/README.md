@@ -10,14 +10,14 @@ cargo run -p lanwork-fixture -- --out <目录>
 
 默认规模是协议规模：10,000 条待办、1,000 篇正文恰好 2,048 字节的便签、20 个收纳分组共 1,000 条引用、5,000 个快捷方式。`--todos`、`--lists`、`--notes`、`--note-bytes`、`--shelves`、`--refs`、`--shortcuts` 可以改规模。协议没有规定清单个数，`--lists` 默认 20，这是夹具参数，不是存储布局。
 
-`--out` 必填。夹具不读数据目录环境变量。它拒绝写入 `%USERPROFILE%\Documents\Lanwork` 和 `%USERPROFILE%\Documents\MayDolist`。
+`--out` 必填。夹具不读 `LANWORK_DATA_DIR`。它拒绝写入 `%USERPROFILE%\Documents\Lanwork` 和 `%USERPROFILE%\Documents\MayDolist`。
 
 输出：
 
 ```text
 <目录>/
 ├── manifest.json
-├── data/                 测量时用环境变量指到这里
+├── data/                 测量时把 LANWORK_DATA_DIR 指到这里
 │   ├── todos/
 │   ├── notes/
 │   └── shelves/
@@ -29,7 +29,7 @@ cargo run -p lanwork-fixture -- --out <目录>
 
 引用放在夹具目录里，不放进系统 Temp，这样测量期间路径一直有效。快捷方式按 MS-SHLLINK 写成 `.lnk`，目标是同目录下生成的空文件，参数是 `fixture`，工作目录是 `targets`。盘符路径会带上 IDList，`IShellLinkW::GetPath` 才能读回目标。#18 规定指向不存在目标的快捷方式不进索引，所以这些目标文件要留着。
 
-`data` 里的 JSON 还没有写入 architecture.md。字段按 #11、#12、#13、#14 已经列出的模型来写，并带 `schemaVersion`。那些 issue 落地时如果改了字段，夹具要跟着改。不生成 `config.json`，也不生成 GitHub 快照。待办都未完成，便签都不在回收站，这样后续索引能看见协议里的全部条数。时间戳固定为 `2026-01-01T00:00:00Z`，同一组参数会写出同一批字节。
+`data` 里的 JSON 带 `schemaVersion` 1。字段按 #11、#12、#13、#14 已经列出的模型来写。architecture.md 要求每个 JSON 对象带 `schemaVersion`，示例模型是 `ExampleDocument`，不是待办、便签或收纳。那些 issue 落地时如果改了字段，夹具要跟着改。不生成 `config.json`，也不生成 GitHub 快照。待办都未完成，便签都不在回收站，这样后续索引能看见协议里的全部条数。时间戳固定为 `2026-01-01T00:00:00Z`，同一组参数会写出同一批字节。
 
 ## 采样
 
@@ -154,7 +154,7 @@ $note = @"
 - 工作集峰值：$peakWorking 字节
 - 平均 CPU：（最后一行 cpu_time_100ns − 第一行）÷ 墙钟 = $cpuPercent%
 - wakeups_per_sec 平均：$wakeAvg
-- 本次没有设置数据目录环境变量。空窗口也不读它。
+- 本次没有设置 LANWORK_DATA_DIR。空窗口也不读它。
 
 "@
 $text = $text.Replace("（没有就写「无」。有的话，这份记录不能作为「已达到」的依据。）", $note.TrimEnd())
@@ -165,7 +165,7 @@ Write-Output "CSV: $csv"
 Write-Output "记录: $record"
 ```
 
-填写副本是 `measurements-out\empty-window.md`。环境、空窗口勾选和上面算出的 Private Bytes、工作集、平均 CPU、唤醒次数会写进去。技术验证和「性能测量」协议表填「未测」。数据目录环境变量这次不设置：空窗口还没有读取它。
+填写副本是 `measurements-out\empty-window.md`。环境、空窗口勾选和上面算出的 Private Bytes、工作集、平均 CPU、唤醒次数会写进去。技术验证和「性能测量」协议表填「未测」。这次不设置 `LANWORK_DATA_DIR`：空窗口不读它，这次也不加载夹具数据。
 
 ## 延迟汇总
 

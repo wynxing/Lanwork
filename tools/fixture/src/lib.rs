@@ -1,7 +1,7 @@
 //! 在隔离目录生成性能测量用的固定数据。
 //!
 //! 规模默认值来自 architecture.md「性能测量」。清单个数协议没有写，默认 20 是夹具参数。
-//! JSON 字段还没有写入 architecture.md，按 #11、#12、#13、#14 已经列出的模型来写。
+//! JSON 带 `schemaVersion` 1。待办、便签和收纳的字段还不是 architecture.md 的 `ExampleDocument`，按 #11、#12、#13、#14 已经列出的模型来写。
 //! 那些 issue 落地后如果改了字段，夹具要跟着改。
 
 mod lnk;

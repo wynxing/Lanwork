@@ -22,9 +22,9 @@
 | GPU 与驱动 | |
 | 数据规模 | 协议规模，或写明哪里偏离了 |
 
-测量用数据目录通过环境变量覆盖，指向 `lanwork-fixture --out <目录>` 打印的 `data_dir`。这个目录必须和正式数据目录隔开，不能是 `%USERPROFILE%\Documents\Lanwork`，也不读取 `%USERPROFILE%\Documents\MayDolist`。
+测量用数据目录通过环境变量 `LANWORK_DATA_DIR` 覆盖（见 architecture.md「数据」），指向 `lanwork-fixture --out <目录>` 打印的 `data_dir`。相对路径按当前工作目录补成绝对路径。这个目录必须和正式数据目录隔开，不能是 `%USERPROFILE%\Documents\Lanwork`，也不读取 `%USERPROFILE%\Documents\MayDolist`。
 
-架构只写了「可用环境变量覆盖数据目录」，变量名还没有写进 architecture.md。#11 打算用 `LANWORK_DATA_DIR`，落地并写进架构之后，那个名字才算数。这里填写这次实际使用的变量名。夹具不读这个变量，输出位置只由 `--out` 决定。
+夹具不读 `LANWORK_DATA_DIR`，输出位置只由 `--out` 决定。空 Slint 窗口的 5 分钟采样也不设置这个变量。`data` 里的待办、便签和收纳 JSON 带 `schemaVersion` 1，字段仍按 #11、#12、#13、#14 已经列出的模型来写。architecture.md 里的示例模型是 `ExampleDocument`，不是这批测量数据的模型。
 
 应用索引要读的 5,000 个快捷方式在夹具打印的 `shortcuts_dir`。追加这个目录的环境变量名由 #18 决定，本模板不另起一个名字。
 
