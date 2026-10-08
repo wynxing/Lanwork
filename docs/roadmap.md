@@ -1,6 +1,6 @@
 # 实现状态
 
-行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`）；星期、下周和月底的边界仍等产品规格写明。下表各项仍全部未实现：技术验证没有通过记录，搜索条界面和收集提交也还没有代码。
+行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`）；星期、下周和月底的边界仍等产品规格写明。下表的技术验证和界面仍未实现：技术验证没有通过记录，搜索条界面和收集提交也还没有代码。
 
 ## 技术验证
 
@@ -25,3 +25,9 @@
 | 番茄钟 | [product.md](product.md)「番茄钟」 | 无。未定参数补进产品规格之前不写 |
 
 不存在第二份产品范围。新增界面时先改产品规格，再改本表。
+
+## 无界面模块
+
+| 模块 | 代码 |
+| --- | --- |
+| 匹配引擎 | 有。`crates/core` 的 `search`：拼音表、预计算、命中类型和分数。组内排序和 20 条的分组配额等 [product.md](product.md) 写入规格缺口 #9 第 7 项 |

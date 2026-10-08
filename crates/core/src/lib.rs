@@ -1,8 +1,9 @@
 //! 模型、服务与存储。
 //!
 //! 不依赖 Slint，也不依赖 Win32 窗口 API，以便在 CI 上直接测试。
-//! 存储规则在 [`storage`] 模块。搜索条前缀分类见 [`search::classify_prefix`]，
-//! 待办收集的日期前缀解析见 [`parse_todo_due_prefix`]。
+//!
+//! 已接入的模块：[`search`]（搜索条前缀分类，以及应用、待办、便签共用的匹配引擎），待办收集的日期前缀解析（[`parse_todo_due_prefix`]），以及 [`storage`]（数据目录、原子写入、损坏隔离与变更消息）。
+//! 应用枚举、文件索引和查询调度还没有。
 
 pub mod search;
 pub mod storage;
