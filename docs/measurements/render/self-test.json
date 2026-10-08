@@ -1,0 +1,49 @@
+{
+  "renderer": "femtovg",
+  "scene": "a",
+  "pid": 27764,
+  "os_major": 10,
+  "os_minor": 0,
+  "build": 26300,
+  "label": "render-failed",
+  "transparency_enabled": true,
+  "battery_saver": false,
+  "apps_use_light_theme": true,
+  "theme_override": "system",
+  "use_acrylic": false,
+  "api_unavailable": false,
+  "transparency_off": false,
+  "render_failed": true,
+  "render_failure_inconclusive": false,
+  "backdrop_hresult": 0,
+  "backdrop_readback": 1,
+  "corner_hresult": 0,
+  "dark_hresult": 0,
+  "extend_frame_hresult": 0,
+  "subclass_installed": true,
+  "graphics_api": "GraphicsAPI::NativeOpenGL",
+  "snapshot_rgba": [
+    243,
+    243,
+    243,
+    255
+  ],
+  "screen_rgb": [
+    243,
+    243,
+    243
+  ],
+  "outside_rgb": [
+    218,
+    224,
+    226
+  ],
+  "self_test_black": true,
+  "self_test_detected": true,
+  "self_test_solid": true,
+  "personalize_error": null,
+  "battery_error": null,
+  "shots": [
+    "docs/measurements/render/shots/self-test/01-render-failed.png"
+  ]
+}

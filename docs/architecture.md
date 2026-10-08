@@ -11,6 +11,7 @@
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除等 #9 第 17 项，以及除长期未更新和 Draft 以外的信号与筛选等 #9 第 18 项。应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
+| `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。测量记录还不能当作渲染器已经选定。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
 | `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合协议的实测记录。 |
@@ -23,7 +24,7 @@
 | --- | --- |
 | 应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务和 GitHub 服务已接入，这些还没有 |
 | 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
-| 各项技术验证的最小程序 | `spikes/<名称>` |
+| 除 `spikes/render` 以外的技术验证最小程序 | `spikes/<名称>` |
 | Everything SDK 的许可说明 | `third_party/`。Unihan 的许可说明已经放入 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
 

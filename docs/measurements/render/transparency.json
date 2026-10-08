@@ -1,0 +1,51 @@
+{
+  "renderer": "femtovg",
+  "scene": "a",
+  "pid": 29636,
+  "os_major": 10,
+  "os_minor": 0,
+  "build": 26300,
+  "label": "acrylic",
+  "transparency_enabled": true,
+  "battery_saver": false,
+  "apps_use_light_theme": true,
+  "theme_override": "system",
+  "use_acrylic": true,
+  "api_unavailable": false,
+  "transparency_off": false,
+  "render_failed": false,
+  "render_failure_inconclusive": false,
+  "backdrop_hresult": 0,
+  "backdrop_readback": 3,
+  "corner_hresult": 0,
+  "dark_hresult": 0,
+  "extend_frame_hresult": 0,
+  "subclass_installed": true,
+  "graphics_api": "GraphicsAPI::NativeOpenGL",
+  "snapshot_rgba": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "screen_rgb": [
+    139,
+    139,
+    139
+  ],
+  "outside_rgb": [
+    218,
+    224,
+    226
+  ],
+  "self_test_black": false,
+  "self_test_detected": null,
+  "self_test_solid": null,
+  "personalize_error": null,
+  "battery_error": null,
+  "shots": [
+    "docs/measurements/render/shots/transparency/01-acrylic.png",
+    "docs/measurements/render/shots/transparency/02-transparency-off.png",
+    "docs/measurements/render/shots/transparency/03-acrylic.png"
+  ]
+}

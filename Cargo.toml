@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/app",
     "spikes/hello",
+    "spikes/render",
     "tools/fixture",
     "tools/sample",
 ]

@@ -572,6 +572,7 @@ mod tests {
         assert!(!formatted_array_has_items(PDH_MORE_DATA));
         assert!(!formatted_array_has_items(0x8000_07D0));
         assert!(!counter_status_ok(PDH_CALC_NEGATIVE_VALUE));
+        assert!(!status_not_ready(PDH_CALC_NEGATIVE_VALUE));
     }
 
     #[test]

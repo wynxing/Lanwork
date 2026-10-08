@@ -1,0 +1,12 @@
+powershell#7`t4636`t194
+powershell#6`t18224`t173
+powershell#4`t3472`t168
+powershell#5`t19708`t168
+powershell#3`t12404`t163
+MsMpEng`t5088`t40
+System`t4`t20
+Cursor#5`t25388`t15
+Taskmgr`t19136`t15
+dwm`t1916`t15
+WmiPrvSE#2`t28920`t10
+msedgewebview2#11`t14564`t5

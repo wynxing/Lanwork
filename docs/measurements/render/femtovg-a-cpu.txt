@@ -1,0 +1,12 @@
+powershell#4`t28128`t260
+WmiPrvSE#2`t28064`t16
+MsMpEng`t5088`t10
+verge-mihomo`t14228`t10
+node`t26200`t10
+maydolist`t1828`t5
+svchost#23`t3428`t5
+Weixin`t4456`t5
+chrome`t7164`t5
+msedgewebview2#18`t10020`t5
+msedgewebview2#8`t8216`t5
+msedgewebview2#14`t16200`t5
