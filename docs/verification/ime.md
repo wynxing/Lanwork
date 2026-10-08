@@ -132,7 +132,7 @@ cargo run -p ime
 | `cargo fmt --all -- --check` | 退出码 0。spike commit 上一次，并入 `origin/main` 的 merge commit `5c873138ddd9062db0a68802d90712a656e6f833` 上又一次 |
 | `cargo clippy --all-targets -- -D warnings` | 退出码 0。同上，两次 |
 | `cargo test`（spike commit `93b01db`） | 退出码 0。`ime` 4 项通过，当时的 `lanwork-core` 1 项通过 |
-| `cargo test`（merge commit 之后的工作区） | `ime` 4 项通过。其余测试通过。`crates/core/tests/disk_full.rs` 未跑完：本机会话不是管理员，`diskpart` 返回错误 740（请求的操作需要提升），测试进程以 `0xc0000409` 退出。该测试来自 main，要提升权限才能创建 VHD。Windows CI 的 runner 有管理员权限，以那次结果为准 |
+| `cargo test`（merge commit 之后的工作区） | 本机：`ime` 4 项通过，其余测试通过。`crates/core/tests/disk_full.rs` 未在本机跑完：这次会话不是管理员，`diskpart` 返回错误 740（请求的操作需要提升），测试进程以 `0xc0000409` 退出。该测试来自 main，要提升权限才能创建 VHD。Windows CI 作业 `fmt, clippy, test`（run `37788220029`）里的 `cargo test` 步骤成功，那次 runner 有管理员权限 |
 | `LANWORK_IME_SPIKE_SMOKE=1` 运行 `target\debug\ime.exe` | 退出码 0。标准错误打印 `启动 Slint 1.18.1 构建 debug SLINT_BACKEND=未设置`。进程创建了窗口并离开事件循环。没有看屏幕，没有输入文字 |
 
 `TextInput.preedit-text` 能在 `.slint` 里绑定：`spikes/ime/ui/main.slint` 绑定了它，并且 `cargo build -p ime` 成功。Slint 1.18.1 的内建元素把该属性标成内部、未写入文档、只为输入法暴露。
