@@ -1,0 +1,4 @@
+# 读音摘录参与构建期校验和，禁止换行符转换。
+third_party/unihan/kMandarin_kHanyuPinyin.txt binary
+third_party/unihan/LICENSE.txt text eol=lf
+third_party/unihan/extract.py text eol=lf

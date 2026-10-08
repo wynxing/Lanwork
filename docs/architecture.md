@@ -8,19 +8,19 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search::classify_prefix`（`crates/core/src/search.rs`）：搜索条整段输入的前缀分类。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。待办、便签、收纳、GitHub、搜索索引等服务尚未接入。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。待办、便签、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
-| `third_party/` | 第三方许可说明的目录。当前没有许可文件。 |
+| `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。 |
 
 ### 尚未接入
 
 | 内容 | 将落在 |
 | --- | --- |
-| 待办、便签、收纳、GitHub 与搜索索引等服务 | `crates/core` |
+| 待办、便签、收纳、GitHub、应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析和存储已接入，这些还没有 |
 | 命令层、Win32 集成、搜索条、面板和其他界面 | `crates/app` |
 | 各项技术验证的最小程序 | `spikes/<名称>` |
-| Unihan、Everything SDK 等许可说明 | `third_party/` |
+| Everything SDK 的许可说明 | `third_party/`。Unihan 的许可说明已经放入 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
 
 ## 技术验证
@@ -122,6 +122,48 @@ Lanwork/
 待办与便签索引常驻内存，由写盘成功后的变更消息增量更新，查询时不读盘。只收未完成待办的标题，以及不在回收站中的便签的标题、标签和正文。
 
 预计算中文、英文、别名、英文模糊匹配、拼音和首字母。拼音和首字母只用于应用名、待办标题、便签标题和标签；便签正文只做原文子串匹配。拼音表使用固定版本的 Unicode Unihan，读音取 `kMandarin` 与 `kHanyuPinyin` 的并集，去掉声调后去重，并带许可说明。`kMandarin` 只有常用读音，单独使用会漏掉多音字。不做双拼，不按词义猜测读音。查询使用共享索引。
+
+匹配引擎已接在 `crates/core` 的 `search`。打分和索引机制如下。组内排序，以及最多 20 条在各组之间怎么分配，仍等 [product.md](product.md) 写入规格缺口 #9 第 7 项；这里不规定那两条可见行为。
+
+### 匹配引擎
+
+应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。文件名不走这张拼音表。应用枚举、文件索引和查询调度还没接；它们以后调用同一个 `prepare` 和 `query_prepared`。
+
+拼音表在构建 `lanwork-core` 时生成，查询时不下载、不解析 Unihan 原文，也不把查询里的汉字转成拼音。
+
+- 数据来自 Unicode 18.0.0 的 `Unihan_Readings.txt`，文件内日期 2026-07-31。下载地址是 `https://www.unicode.org/Public/18.0.0/ucd/Unihan.zip`。上游全文 SHA-256 为 `9d39995b5de714e8ce93716ed5d15eaa0792d68e407cdf8a0add2893b8f4150b`。仓库里放的是摘录 `third_party/unihan/kMandarin_kHanyuPinyin.txt`：只留 `kMandarin` 与 `kHanyuPinyin`，且码位在扩展 A 或基本区，数据行原样复制。摘录 SHA-256 为 `a5ad0750009db5a4461efc9c66a87c359b9cf7e6e972a6172ba45c673556fa18`。构建时校验摘录，不一致就失败。重现步骤在 `third_party/unihan/extract.py`。
+- 许可是 Unicode License v3，全文在 `third_party/unihan/LICENSE.txt`。
+- 覆盖 CJK 扩展 A（U+3400–U+4DBF）和 CJK 统一汉字基本区（U+4E00–U+9FFF）。扩展 B 及以后不收入。这一版覆盖 26,711 个有读音的码位、419 个无声调音节。表里没有的字只参与原文匹配。
+- 同一码位先保留 `kMandarin` 的书写顺序，再追加 `kHanyuPinyin` 里去声调后还没有的读音。文件里 `kHanyuPinyin` 行排在前面，生成时不沿用这个行序。两个 `kMandarin` 值都保留。不按词义删除读音，多个读音在能否命中上同等。
+- 声调符号去掉。`ü` 和带声调的 `ü` 写成 `v`。`ê` 写成 `e`。不做双拼，也不把查询里的声调字母折成无声调拼音。
+- 个别读音在源数据里是两个音节连写、中间没有分隔，例如 U+74F2 的 `túnwǎ`。去声调后仍是一个字符串，不猜测切分。
+- 生成表映射进进程的数据是 207,860 字节：音节字节、音节偏移、两段码位索引、读音块。这不是「性能测量」里的 Private Bytes。
+
+每个可拼音字段预计算四样东西：归一化原文、去空白形式、按字存放的音节 id、ASCII 词段。不生成多音字的全组合字符串。
+
+- 归一化：全角 ASCII（U+FF01–U+FF5E）折成半角，全角空格折成普通空格，再做 Unicode 小写。不做其他变音折叠，例如 `café` 不会变成 `cafe`。
+- 去空白形式是删掉归一化原文里的全部 Unicode 空白。和原文相同时不另存。
+- 连续的 ASCII 字母数字是一个词。有读音的汉字记下全部音节 id。没有读音的汉字，以及假名、谚文和其他非 ASCII 字母，记成间隔；拼音和首字母不能跨过间隔。标点只是分隔。
+- 正文不建词段和音节，只留原文。
+
+查询先去掉两端空白。剩下没有非空白字符时返回空列表。输出是命中类型加分数，不截断到 20 条，也不在各组之间分配名额。
+
+| 类型 | 条件 | 分数 |
+| --- | --- | --- |
+| `Exact` | 归一化原文相等，或去空白后相等 | 去掉首尾空白并归一化之后的查询的 Unicode 标量值个数，内部空白计入 |
+| `Prefix` | 查询是上述两种形式之一的前缀 | 同上 |
+| `Substring` | 查询是上述两种形式之一的子串 | 同上 |
+| `Pinyin` | 从某个词段起，用预存音节把查询对齐完，且至少用到一个汉字。最后一个音节可以只匹配前缀 | 同上 |
+| `Initial` | 查询的每个字母对齐连续词段的一个首字母。汉字取其任一读音的首字母，英文词取第一个字母 | 同上 |
+| `Fuzzy` | 查询每个字符按顺序在归一化原文里命中一次 | 见下 |
+
+同一字段的原文三类只返回最具体的一种。全拼、首字母和英文模糊只在字段不是正文、且查询去掉空白后只含 ASCII 字母数字时才做。纯英文词的对齐不算全拼。同一字段可以同时返回多种命中。别名和标签用 `FieldRole` 与字段序号区分。
+
+英文模糊的分数只在 `Fuzzy` 内部可比：每个命中字符 +1；与上一命中在原文中相邻再 +2；命中点是词首再 +2。词首指串首，或前一字节不是 ASCII 字母数字。取最高分的对齐。其他类型的分数不和模糊分数比较。
+
+`query_prepared` 的顺序是候选项输入顺序、字段输入顺序，然后按原文、全拼、首字母、模糊枚举。这不是组内排序。`GroupOrder` 是以后的接入点。`PendingGroupOrder` 的比较恒为相等，稳定排序后顺序不变。#9 第 7 项写入 product.md 之前，调用方保持这个顺序。
+
+`cargo bench -p lanwork-core` 用 5,000 个应用名和 10,000 条待办标题测量准备和查询。这组基准不按「性能测量」采样，不能当作应用结果 P95 已经达到。这组语料的 `MatchIndex::heap_bytes()`（各 `Vec` 和 `String` 的 capacity 之和，不含拼音表，不含分配器额外开销）在 Linux 的 debug 构建里是 3,563,603 字节。分配器取整会改变这个数，测试只要求它小于 16 MiB。
 
 文件和文件夹优先使用 Everything，支持 1.4 和 1.5。随包附带 voidtools 的 Everything SDK x64 DLL：1.4 用 SDK 的 DLL，1.5 用 SDK3 的 DLL。两者固定版本，放在程序目录，并附许可说明。启动时按 1.5、1.4 的顺序探测，不为每次查询启动命令行。
 
