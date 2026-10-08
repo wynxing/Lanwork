@@ -1,0 +1,16 @@
+[
+  {
+    "number": 8,
+    "title": "Document the panel",
+    "url": "https://github.com/example/widget/issues/8",
+    "state": "OPEN",
+    "updatedAt": "2026-08-30T00:00:00Z"
+  },
+  {
+    "number": 2,
+    "title": "Closed report",
+    "url": "https://github.com/example/widget/issues/2",
+    "state": "CLOSED",
+    "updatedAt": "2026-02-01T00:00:00Z"
+  }
+]

@@ -1,0 +1,10 @@
+[
+  {
+    "number": 4,
+    "title": "Keep the other repo",
+    "url": "https://github.com/example/other/pull/4",
+    "state": "OPEN",
+    "isDraft": false,
+    "updatedAt": "2026-08-30T00:00:00Z"
+  }
+]

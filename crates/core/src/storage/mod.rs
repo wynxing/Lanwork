@@ -27,6 +27,7 @@ pub use boot::{
 pub use change::{ChangeMeta, EntityChanged, EntityKind};
 pub use error::{Error, IoAction, StartupError};
 pub use log::{LOG_MAX_BYTES, LOG_MAX_FILES, Log, LogSettings};
+pub(crate) use paths::validate_id;
 pub use paths::{
     BOOTSTRAP_FILE, DataDirSource, ENV_DATA_DIR, ResolveInput, ResolvedPaths, absolute_lexical,
     cache_dir, maydolist_dir, resolve, resolve_from_process, write_bootstrap,
