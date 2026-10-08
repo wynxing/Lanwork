@@ -1,4 +1,4 @@
-﻿EnableTransparency original=1 at 2026-10-08T15:33:57.6904629+08:00
+EnableTransparency original=1 at 2026-10-08T15:33:57.6904629+08:00
 AppsUseLightTheme was not modified.
 Battery saver was not modified by this script unless a later line says so.
 set EnableTransparency=0 at 2026-10-08T15:33:58.7195556+08:00

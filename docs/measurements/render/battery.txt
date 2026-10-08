@@ -1,3 +1,3 @@
-﻿Battery saver was not toggled.
+Battery saver was not toggled.
 GetSystemPowerStatus is what the spike reads (SystemStatusFlag bit 0).
 Win32_Battery BatteryStatus=2 EstimatedChargeRemaining=96

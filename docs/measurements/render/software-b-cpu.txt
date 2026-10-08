@@ -1,4 +1,4 @@
-﻿System`t4`t129
+System`t4`t129
 MsMpEng`t5088`t108
 powershell#4`t24076`t62
 powershell#6`t27396`t46

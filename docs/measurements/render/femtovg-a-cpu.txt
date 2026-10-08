@@ -1,4 +1,4 @@
-﻿powershell#4`t28128`t260
+powershell#4`t28128`t260
 WmiPrvSE#2`t28064`t16
 MsMpEng`t5088`t10
 verge-mihomo`t14228`t10

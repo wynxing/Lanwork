@@ -1,4 +1,4 @@
-﻿powershell#7`t4636`t194
+powershell#7`t4636`t194
 powershell#6`t18224`t173
 powershell#4`t3472`t168
 powershell#5`t19708`t168

@@ -1,4 +1,4 @@
-﻿powershell#6`t22672`t196
+powershell#6`t22672`t196
 MsMpEng`t5088`t47
 System`t4`t21
 chrome#18`t20948`t10
