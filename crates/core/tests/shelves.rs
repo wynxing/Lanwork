@@ -459,6 +459,35 @@ fn unsupported_schema_is_left_untouched() {
     assert!(raw.contains("保留"), "{raw}");
 }
 
+/// 切掉 `#[cfg(test)] mod` 及其后的测试模块。先把换行归一成 `\n`，LF 和 CRLF 用同一处切分。
+fn production_source(source: &str) -> String {
+    let source = source.replace("\r\n", "\n").replace('\r', "\n");
+    let markers = ["#[cfg(test)]\nmod ", "#[cfg(test)] mod "];
+    let cut = markers
+        .iter()
+        .filter_map(|marker| source.find(marker))
+        .min();
+    match cut {
+        Some(index) => source[..index].to_owned(),
+        None => source,
+    }
+}
+
+#[test]
+fn production_scan_ignores_test_modules_on_lf_and_crlf() {
+    let body =
+        "fn keep() {}\n#[cfg(test)]\nmod tests {\n    let _ = std::fs::remove_dir_all(\"x\");\n}\n";
+    for source in [body.to_owned(), body.replace('\n', "\r\n")] {
+        let production = production_source(&source);
+        assert!(!production.contains("remove_dir_all"), "{production:?}");
+        assert!(production.contains("fn keep()"));
+    }
+    let leaked = "fn bad() { std::fs::remove_dir_all(\"x\"); }\n#[cfg(test)]\nmod tests {}\n";
+    for source in [leaked.to_owned(), leaked.replace('\n', "\r\n")] {
+        assert!(production_source(&source).contains("remove_dir_all"));
+    }
+}
+
 #[test]
 fn service_source_does_not_mutate_user_files() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/shelves");
@@ -478,10 +507,7 @@ fn service_source_does_not_mutate_user_files() {
             continue;
         }
         let source = std::fs::read_to_string(&path).unwrap();
-        let production = source
-            .split("\n#[cfg(test)]\nmod tests")
-            .next()
-            .unwrap_or(&source);
+        let production = production_source(&source);
         for token in forbidden {
             assert!(
                 !production.contains(token),

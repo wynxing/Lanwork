@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，以及读取时清除永久删除残留，仍见「收纳」。GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub、应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
@@ -115,7 +115,7 @@ Lanwork/
 进程仍在、同一批次里后面的写入失败时，先把本批次已经替换的文件写回内存里的操作前内容，然后返回错误。内存保持操作前状态，不发布 `EntityChanged`。这次回滚再失败时，重新读入清单，按上面的 `movedAt` 与 `currentSince` 规则修好后再返回，避免留下重复的条目 id 或两条当前标记。修复成功时返回的仍是原来的写入错误。重新读入失败则返回该读取错误。
 - **导入**：解压到临时目录并校验（白名单路径，拒绝 `..` 和绝对路径，每个 JSON 可解析，版本可识别）。通过后，先把当前数据完整备份到 `backups/`，再在数据目录写入 `import.pending`（内容是这份备份的路径），然后逐个替换文件、删除导入包中没有的数据文件，最后删除 `import.pending`。启动时发现 `import.pending`，就用其中记录的备份整体恢复，再删除该文件，并在界面显示导入未完成。
 
-加载修复和导入恢复在构建搜索索引、处理通知点击之前完成。`Store::boot` 的顺序是：若存在 `import.pending`，调用导入恢复钩子（备份与导入实现；未注册钩子则启动失败，不加载业务数据）；然后调用加载钩子；然后按注册顺序运行加载修复（`movedAt` 与 `currentSince` 由待办服务实现）。任一钩子返回错误则启动失败，不进入可建索引状态，也不写默认文档。成功之后 `build_index` 与 `handle_notification_click` 才执行调用方。恢复钩子成功且已删除 `import.pending` 时，`BootReport.import_recovered` 为真，界面据此显示「导入未完成」。变更消息只在整个操作完成后发出。永久删除通知是待办服务的领域事件 `TodoNotice::Purged`，不是这一层的 `EntityChanged`。收纳服务订阅它，收到后解除关联，见「收纳」。产品规格写明永久删除之前，待办服务不删除条目，也不发出这条事件，因此读取时还不能把残留的关联 id 当成已经删除。
+加载修复和导入恢复在构建搜索索引、处理通知点击之前完成。`Store::boot` 的顺序是：若存在 `import.pending`，调用导入恢复钩子（备份与导入实现；未注册钩子则启动失败，不加载业务数据）；然后调用加载钩子；然后按注册顺序运行加载修复（`movedAt` 与 `currentSince` 由待办服务实现）。任一钩子返回错误则启动失败，不进入可建索引状态，也不写默认文档。成功之后 `build_index` 与 `handle_notification_click` 才执行调用方。恢复钩子成功且已删除 `import.pending` 时，`BootReport.import_recovered` 为真，界面据此显示「导入未完成」。变更消息只在整个操作完成后发出。永久删除待办后，收纳分组里残留的关联 id 在读取时视为无关联，并在下次写该分组时清除。该清除在永久删除落地时实现。永久删除通知是待办服务的领域事件，不是这一层的 `EntityChanged`。收纳服务订阅 `TodoNotice::Purged`，收到后解除关联，见「收纳」。产品规格写明永久删除之前，待办服务不删除条目，也不发出这条事件。
 
 待办服务把加载钩子和名为 `movedAt`、`currentSince` 的两条加载修复注册到 `Store::boot`。修复写回使用同一批次，`EntityChanged` 只在该批次提交后发出。永久删除的领域事件是 `TodoNotice::Purged`。产品规格写明永久删除之前，服务不删除条目，也不发出这条事件。
 
@@ -199,7 +199,7 @@ Everything 未运行或未就绪时，退回 Windows Search 索引。查询只�
 - 展开 `\\?\`。`\\?\UNC\`（`UNC` 不区分大小写）改写成 `\\server\share\...`。其他 `\\?\` 只去掉前缀，留下盘符路径。`\\?\Volume{...}` 和 `\\.\` 拒绝。
 - 去掉末尾的 `\`。盘符根保留 `C:\` 里的根分隔符，避免变成盘符相对路径 `C:`。UNC 共享根写成 `\\server\share`。
 - `.` 和 `..` 按路径段处理，不用字符串前缀裁剪。空段和 `.` 丢掉。`..` 弹出上一段；已经在盘符根或 UNC 共享根上时留在根上。因此 `C:\A\..\AB\x` 与 `C:\AB\x` 相同，`C:\A` 不是 `C:\AB` 的前缀，段名 `foo..` 也不是上级目录。
-- 去重键是规范化结果的 Unicode 小写（`str::to_lowercase`），不按区域设置折叠。这对应 NTFS 默认的大小写不敏感。同一分组内键相同则不新增，保留先加入的那条的大小写、显示名、`folder` 和 `addedAt`。不同分组可以各有一条。
+- 去重键是规范化结果的逐字符简单大写，近似 NTFS 大写表。每个字符取 `char::to_uppercase`，只有结果恰好是一个字符时才替换，否则保留原字符。不按区域设置折叠，也不做随位置变化的 Σ 小写。因此 `İ` 不与 `i` 合并，`ẞ` 不与 `ß` 合并；`σ`、`ς` 与 `Σ` 合并，`ı` 与 `i` 合并。同一分组内键相同则不新增，保留先加入的那条的大小写、显示名、`folder` 和 `addedAt`。不同分组可以各有一条。
 - 落盘的 `path` 用规范化形式，分隔符是 `\`，大小写取第一次加入时的写法。
 - 显示名取最后一段。没有更短的段时，盘符根用整个 `C:\`，UNC 共享根用共享名。产品规格没有另写显示名，这是存储时的取值。
 - `folder` 由调用方传入。`add_refs` 不探测用户路径，避免网络路径在拖入时挂起。
@@ -224,7 +224,7 @@ Everything 未运行或未就绪时，退回 Windows Search 索引。查询只�
 
 关联只校验待办 id 是不是合法的文件名分量，不检查这条待办是否存在。产品规格没有写关联到不存在的 id 时怎么处理。
 
-服务订阅 `TodoNotice::Purged`，收到后按待办 id 解除关联。解除写盘失败时关联还在，这条事件不会重放。产品规格写明永久删除之前，待办服务不删除条目，也不发出这条事件。读取时不因为找不到这个 id 就清除关联。等永久删除会真正删掉条目之后，再决定怎样处理崩溃留在分组文件里的关联 id。
+服务订阅 `TodoNotice::Purged`，收到后按待办 id 解除关联。永久删除待办后，收纳分组里残留的关联 id 在读取时视为无关联，并在下次写该分组时清除。该清除在永久删除落地时实现。产品规格写明永久删除之前，待办服务不删除条目，也不发出这条事件，因此目前不会产生残留 id。解除写盘失败时关联还在，这条事件不会重放。
 
 待办完成或进入回收站不改变分组。服务不因这两件事解除关联。
 

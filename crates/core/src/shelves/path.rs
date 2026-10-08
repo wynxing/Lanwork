@@ -162,8 +162,29 @@ fn valid_segment(part: &str) -> bool {
 }
 
 fn finish(stored: String, name: String) -> NormalizedPath {
-    let key = stored.to_lowercase();
+    let key = fold_key(&stored);
     NormalizedPath { stored, key, name }
+}
+
+/// 近似 NTFS 的简单大写。
+///
+/// 每个字符取 [`char::to_uppercase`]。结果恰好是一个字符时才替换，否则保留原字符。
+/// 不按区域设置折叠，也不做随位置变化的 Σ 小写。
+pub(crate) fn fold_key(text: &str) -> String {
+    let mut folded = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let mut upper = ch.to_uppercase();
+        let Some(first) = upper.next() else {
+            folded.push(ch);
+            continue;
+        };
+        if upper.next().is_none() {
+            folded.push(first);
+        } else {
+            folded.push(ch);
+        }
+    }
+    folded
 }
 
 #[cfg(not(windows))]
@@ -249,5 +270,17 @@ mod tests {
         assert!(normalize_path(r"\\?\Volume{guid}\foo").is_err());
         assert!(normalize_path("").is_err());
         assert!(normalize_path(r"C:\A\b<.txt").is_err());
+    }
+
+    #[test]
+    fn dedup_key_is_simple_uppercase_not_full_lowercase() {
+        assert_ne!(key("C:\\İ"), key("C:\\i"));
+        assert_ne!(key("C:\\ẞ"), key("C:\\ß"));
+        assert_eq!(key("C:\\σ"), key("C:\\ς"));
+        assert_eq!(key("C:\\σ"), key("C:\\Σ"));
+        assert_eq!(key("C:\\ı"), key("C:\\i"));
+        assert_eq!(key("C:\\ΣA"), key("C:\\σA"));
+        assert_eq!(key("C:\\AΣ"), key("C:\\Aς"));
+        assert_eq!(key("C:\\AΣ"), key("C:\\Aσ"));
     }
 }
