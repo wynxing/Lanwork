@@ -146,7 +146,13 @@ mod tests {
 
     #[test]
     fn sampler_does_not_write_into_user_documents() {
-        let profile = PathBuf::from("/tmp/lanwork-sample-guard/Profile");
+        let mut profile = if cfg!(windows) {
+            PathBuf::from(r"C:\")
+        } else {
+            PathBuf::from("/")
+        };
+        profile.push("lanwork-sample-guard");
+        profile.push("Profile");
         let lanwork = refuse_output_path(
             &profile.join("Documents").join("Lanwork").join("a.csv"),
             Some(&profile),
@@ -157,13 +163,14 @@ mod tests {
             Some(&profile),
         );
         assert!(maydolist.unwrap_err().to_string().contains("拒绝写入"));
-        assert!(
-            refuse_output_path(
-                &PathBuf::from("/tmp/lanwork-sample-guard/out.csv"),
-                Some(&profile)
-            )
-            .is_ok()
-        );
+        let mut outside = if cfg!(windows) {
+            PathBuf::from(r"C:\")
+        } else {
+            PathBuf::from("/")
+        };
+        outside.push("lanwork-sample-guard");
+        outside.push("out.csv");
+        assert!(refuse_output_path(&outside, Some(&profile)).is_ok());
     }
 
     #[test]
