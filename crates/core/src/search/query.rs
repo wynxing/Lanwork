@@ -62,7 +62,7 @@ const HAN: u8 = 2;
 /// 查询一组已经预计算的候选项。
 ///
 /// 空查询返回空列表。输出顺序是候选项和字段的输入顺序，然后是原文、全拼、
-/// 首字母、模糊。这不是组内排序。
+/// 首字母、模糊。这不是组内排序；组内排序用 [`super::rank_hits`]。
 #[must_use]
 pub fn query_prepared(candidates: &[PreparedCandidate], query: &str) -> Vec<Hit> {
     let Some(plan) = Plan::new(query) else {

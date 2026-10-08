@@ -4,8 +4,8 @@
 //! 本模块不读系统时钟，也不创建待办。
 //!
 //! 能写入到期日的前缀只有产品规格列出的那些。词表不在这里扩大。
-//! 星期、下周、月底里规格还没写明的边界返回 [`TodoDue::Unresolved`]，
-//! 不猜测是今天还是七天后、下一周从周一起还是从周日起、月底当天算不算下个月。
+//! 单独的星期取今天之后最近的一次，不含今天。`下周` 从周一开始。
+//! `月底` 和 `月末` 在本月最后一天指今天。
 
 /// 公历日期。预览和存储怎么显示由调用方决定，这里不规定界面文字。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -56,10 +56,6 @@ impl CivilDate {
         u8::try_from((days + 3).rem_euclid(7)).expect("weekday is 0..=6")
     }
 
-    fn is_last_day_of_month(self) -> bool {
-        self.day == days_in_month(self.year, self.month)
-    }
-
     fn last_day_of_this_month(self) -> Self {
         Self {
             year: self.year,
@@ -78,15 +74,13 @@ pub struct TodoDuePrefix {
     pub due: TodoDue,
 }
 
-/// 到期日。`Unresolved` 表示前缀已经认出，但到期日落在尚未写进产品规格的边界上。
+/// 到期日。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TodoDue {
     /// 没有可识别的日期前缀，不写到期日。
     Absent,
-    /// 规格已经能确定的到期日。
+    /// 识别出日期前缀时的到期日。
     Date(CivilDate),
-    /// 前缀已识别。到期日等 #9 第 4 项写进产品规格后再计算，这里不选边。
-    Unresolved,
 }
 
 /// 解析待办收集的剩余文本。
@@ -201,67 +195,32 @@ fn weekday_index(ch: char) -> Option<u8> {
     })
 }
 
-/// `周X` / `星期X`。
-///
-/// 该日还在本周剩余的日子里时，「本周这一天」和「下一个这一天」是同一天，直接使用。
-/// 今天就是这一天，或者这一天在本周已经过去：两种读法不是同一天。
-/// #35 要求这些用例在 #9 第 4 项写进产品规格之前不预填期望。
+/// `周X` / `星期X`：今天之后最近的一次，不含今天。
 fn named_weekday_due(target: u8, today: CivilDate) -> TodoDue {
     let today_wd = today.weekday_monday0();
-    if target <= today_wd {
-        return TodoDue::Unresolved;
-    }
-    let delta = i32::from(target - today_wd);
+    let delta = if target > today_wd {
+        i32::from(target - today_wd)
+    } else {
+        i32::from(7 - today_wd + target)
+    };
     let due = today
         .checked_add_days(delta)
-        .expect("a weekday at most 6 days ahead stays in range");
+        .expect("the next weekday is at most 7 days ahead");
     TodoDue::Date(due)
 }
 
-/// `下周X`。以周一为始的下一周和以周日为始的下一周如果落到同一天，就用这一天。
-/// 两套周始不一致时，#9 第 4 项还没写明从哪一天算，返回 [`TodoDue::Unresolved`]。
+/// `下周X`：当前这一周（周一至周日）之后那一周里的星期 `target`。
 fn next_week_due(target: u8, today: CivilDate) -> TodoDue {
-    let from_monday = next_week_from(today, target, WeekStart::Monday);
-    let from_sunday = next_week_from(today, target, WeekStart::Sunday);
-    if from_monday == from_sunday {
-        TodoDue::Date(from_monday)
+    let weekday = today.weekday_monday0();
+    let days_until_next_monday = if weekday == 0 {
+        7
     } else {
-        TodoDue::Unresolved
-    }
-}
-
-#[derive(Clone, Copy)]
-enum WeekStart {
-    Monday,
-    Sunday,
-}
-
-fn next_week_from(today: CivilDate, target: u8, start: WeekStart) -> CivilDate {
-    let (to_next_start, offset) = match start {
-        WeekStart::Monday => {
-            let wd = today.weekday_monday0();
-            let to_next_monday = if wd == 0 { 7 } else { i32::from(7 - wd) };
-            (to_next_monday, i32::from(target))
-        }
-        WeekStart::Sunday => {
-            // 星期一为 0 时，距本周日的天数：星期日是 0，星期一是 1，星期六是 6。
-            let since_sunday = i32::from((today.weekday_monday0() + 1) % 7);
-            let to_next_sunday = if since_sunday == 0 {
-                7
-            } else {
-                7 - since_sunday
-            };
-            let offset = if target == 6 {
-                0
-            } else {
-                i32::from(target) + 1
-            };
-            (to_next_sunday, offset)
-        }
+        i32::from(7 - weekday)
     };
-    today
-        .checked_add_days(to_next_start + offset)
-        .expect("next week is only a few days ahead")
+    let due = today
+        .checked_add_days(days_until_next_monday + i32::from(target))
+        .expect("next week is only a few days ahead");
+    TodoDue::Date(due)
 }
 
 fn match_days_later(body: &str, today: CivilDate) -> Option<(&str, TodoDue)> {
@@ -303,13 +262,7 @@ fn match_month_end(body: &str, today: CivilDate) -> Option<(&str, TodoDue)> {
             continue;
         };
         if is_token_boundary(rest) {
-            let due = if today.is_last_day_of_month() {
-                // 月底当天指今天还是下个月底，#9 第 4 项还没写明。
-                TodoDue::Unresolved
-            } else {
-                TodoDue::Date(today.last_day_of_this_month())
-            };
-            return Some((rest, due));
+            return Some((rest, TodoDue::Date(today.last_day_of_this_month())));
         }
     }
     None
@@ -403,18 +356,6 @@ mod tests {
             TodoDuePrefix {
                 title: input.to_owned(),
                 due: TodoDue::Absent,
-            },
-            "input {input:?}"
-        );
-    }
-
-    fn assert_unresolved(input: &str, today: CivilDate, title: &str) {
-        let parsed = parse_todo_due_prefix(input, today);
-        assert_eq!(
-            parsed,
-            TodoDuePrefix {
-                title: title.to_owned(),
-                due: TodoDue::Unresolved,
             },
             "input {input:?}"
         );
@@ -648,44 +589,42 @@ mod tests {
     }
 
     #[test]
-    fn same_weekday_and_already_passed_weekdays_do_not_guess() {
+    fn bare_weekday_is_the_next_occurrence_excluding_today() {
+        // 2026-10-08 是周四。当天的「周四」是七天后，已经过去的星期是下一周。
         let thursday = ymd(2026, 10, 8);
-        assert_unresolved("周四 例会", thursday, "例会");
-        assert_unresolved("星期四 例会", thursday, "例会");
-        assert_unresolved("周四", thursday, "");
-        for name in ["一", "二", "三"] {
-            assert_unresolved(&format!("周{name} 计划"), thursday, "计划");
-            assert_unresolved(&format!("星期{name} 计划"), thursday, "计划");
+        assert_date("周四 例会", thursday, "例会", ymd(2026, 10, 15));
+        assert_date("星期四 例会", thursday, "例会", ymd(2026, 10, 15));
+        assert_date("周四", thursday, "", ymd(2026, 10, 15));
+        let passed = [("一", 12u8), ("二", 13), ("三", 14)];
+        for (name, day) in passed {
+            let due = ymd(2026, 10, day);
+            assert_date(&format!("周{name} 计划"), thursday, "计划", due);
+            assert_date(&format!("星期{name} 计划"), thursday, "计划", due);
         }
 
-        let sunday = ymd(2026, 10, 11);
-        assert_unresolved("周日 休息", sunday, "休息");
-        assert_unresolved("周天 休息", sunday, "休息");
-        assert_unresolved("星期天 休息", sunday, "休息");
-        for name in ["一", "二", "三", "四", "五", "六"] {
-            assert_unresolved(&format!("周{name} 事"), sunday, "事");
-        }
-
+        // 2026-08-12 是周三。「周三」是下周三，不是今天。
         let wednesday = ymd(2026, 8, 12);
-        assert_unresolved("周三 周会", wednesday, "周会");
-        assert_unresolved("星期一 计划", wednesday, "计划");
+        assert_date("周三 周会", wednesday, "周会", ymd(2026, 8, 19));
+        assert_date("星期一 计划", wednesday, "计划", ymd(2026, 8, 17));
         assert_date("周五 清理", wednesday, "清理", ymd(2026, 8, 14));
         assert_date("星期天 休息", wednesday, "休息", ymd(2026, 8, 16));
     }
 
     #[test]
-    fn next_weekday_when_both_week_starts_agree() {
-        // 2026-10-07 是周三。下周一到下周六在两种周始下是同一天，下周日不是。
+    fn next_week_is_the_monday_to_sunday_week_after_this_one() {
+        // 2026-10-07 是周三。下一周是 10 月 12 日至 18 日。
         let wednesday = ymd(2026, 10, 7);
-        let agreed = [
+        let next = [
             ("一", 12u8),
             ("二", 13),
             ("三", 14),
             ("四", 15),
             ("五", 16),
             ("六", 17),
+            ("日", 18),
+            ("天", 18),
         ];
-        for (name, day) in agreed {
+        for (name, day) in next {
             assert_date(
                 &format!("下周{name} 开会"),
                 wednesday,
@@ -693,34 +632,10 @@ mod tests {
                 ymd(2026, 10, day),
             );
         }
-        assert_unresolved("下周日 休息", wednesday, "休息");
-        assert_unresolved("下周天 休息", wednesday, "休息");
 
-        // 2026-10-11 是周日。只有下周日两种周始重合。
-        let sunday = ymd(2026, 10, 11);
-        assert_date("下周日 休息", sunday, "休息", ymd(2026, 10, 18));
-        assert_date("下周天", sunday, "", ymd(2026, 10, 18));
-        for name in ["一", "二", "三", "四", "五", "六"] {
-            assert_unresolved(&format!("下周{name} 事"), sunday, "事");
-        }
-
-        // 2026-10-05 是周一。下周一到下周六重合，下周日不重合。
-        let monday = ymd(2026, 10, 5);
-        assert_date("下周一 计划", monday, "计划", ymd(2026, 10, 12));
-        assert_date("下周六 计划", monday, "计划", ymd(2026, 10, 17));
-        assert_unresolved("下周日 休息", monday, "休息");
-
-        // 2026-10-08 是周四。当天的「周四」仍未定，但「下周四」两种周始都是 10 月 15 日。
+        // 2026-10-08 是周四。下周四是 10 月 15 日，下周日是 10 月 18 日。
         let thursday = ymd(2026, 10, 8);
-        let agreed_on_thursday = [
-            ("一", 12u8),
-            ("二", 13),
-            ("三", 14),
-            ("四", 15),
-            ("五", 16),
-            ("六", 17),
-        ];
-        for (name, day) in agreed_on_thursday {
+        for (name, day) in next {
             assert_date(
                 &format!("下周{name} 开会"),
                 thursday,
@@ -728,12 +643,77 @@ mod tests {
                 ymd(2026, 10, day),
             );
         }
-        assert_unresolved("下周日 休息", thursday, "休息");
-        assert_unresolved("下周天 休息", thursday, "休息");
     }
 
     #[test]
-    fn month_end_is_the_last_day_until_that_day_itself() {
+    fn sunday_and_monday_boundaries_for_weekday_and_next_week() {
+        // 2026-10-05 是周一。当天的「周一」是下周一；本周日仍是 10 月 11 日。
+        let monday = ymd(2026, 10, 5);
+        assert_date("周一 计划", monday, "计划", ymd(2026, 10, 12));
+        assert_date("星期一 计划", monday, "计划", ymd(2026, 10, 12));
+        assert_date("周二 事", monday, "事", ymd(2026, 10, 6));
+        assert_date("周日 休息", monday, "休息", ymd(2026, 10, 11));
+        assert_date("周天 休息", monday, "休息", ymd(2026, 10, 11));
+        assert_date("下周一 计划", monday, "计划", ymd(2026, 10, 12));
+        assert_date("下周六 计划", monday, "计划", ymd(2026, 10, 17));
+        assert_date("下周日 休息", monday, "休息", ymd(2026, 10, 18));
+        assert_date("下周天 休息", monday, "休息", ymd(2026, 10, 18));
+
+        // 2026-10-11 是周日。已经过去的星期落在 12 日至 17 日，当天的「周日」是下周日。
+        let sunday = ymd(2026, 10, 11);
+        let passed = [
+            ("一", 12u8),
+            ("二", 13),
+            ("三", 14),
+            ("四", 15),
+            ("五", 16),
+            ("六", 17),
+        ];
+        for (name, day) in passed {
+            let due = ymd(2026, 10, day);
+            assert_date(&format!("周{name} 事"), sunday, "事", due);
+            assert_date(&format!("下周{name} 事"), sunday, "事", due);
+        }
+        assert_date("周日 休息", sunday, "休息", ymd(2026, 10, 18));
+        assert_date("周天 休息", sunday, "休息", ymd(2026, 10, 18));
+        assert_date("星期天 休息", sunday, "休息", ymd(2026, 10, 18));
+        assert_date("星期一 计划", sunday, "计划", ymd(2026, 10, 12));
+        assert_date("下周一 计划", sunday, "计划", ymd(2026, 10, 12));
+        assert_date("下周日 休息", sunday, "休息", ymd(2026, 10, 18));
+        assert_date("下周天", sunday, "", ymd(2026, 10, 18));
+    }
+
+    #[test]
+    fn bare_weekday_and_next_week_cross_1_january() {
+        // 2026-12-31 是周四。周五落到 2027-01-01；下一周整周在 2027 年。
+        let thursday = ymd(2026, 12, 31);
+        assert_eq!(thursday.weekday_monday0(), 3);
+        assert_date("周五 跨年", thursday, "跨年", ymd(2027, 1, 1));
+        assert_date("星期五 跨年", thursday, "跨年", ymd(2027, 1, 1));
+        assert_date("周四 例会", thursday, "例会", ymd(2027, 1, 7));
+        assert_date("星期一 计划", thursday, "计划", ymd(2027, 1, 4));
+        assert_date("下周一 计划", thursday, "计划", ymd(2027, 1, 4));
+        assert_date("下周五 计划", thursday, "计划", ymd(2027, 1, 8));
+        assert_date("下周日 休息", thursday, "休息", ymd(2027, 1, 10));
+        assert_date("下周天 休息", thursday, "休息", ymd(2027, 1, 10));
+
+        // 2026-12-27 是周日。下周一仍在 2026 年，下周日跨过 1 月 1 日。
+        let sunday = ymd(2026, 12, 27);
+        assert_eq!(sunday.weekday_monday0(), 6);
+        assert_date("周日 休息", sunday, "休息", ymd(2027, 1, 3));
+        assert_date("下周一 计划", sunday, "计划", ymd(2026, 12, 28));
+        assert_date("下周日 休息", sunday, "休息", ymd(2027, 1, 3));
+
+        // 2026-12-28 是周一。单独的周一和下一周的周一都是 2027-01-04。
+        let monday = ymd(2026, 12, 28);
+        assert_eq!(monday.weekday_monday0(), 0);
+        assert_date("周一 计划", monday, "计划", ymd(2027, 1, 4));
+        assert_date("下周一 计划", monday, "计划", ymd(2027, 1, 4));
+        assert_date("星期日 休息", monday, "休息", ymd(2027, 1, 3));
+    }
+
+    #[test]
+    fn month_end_is_the_last_day_of_this_month_including_today() {
         assert_date("月底 发布", ymd(2026, 10, 8), "发布", ymd(2026, 10, 31));
         assert_date("月末 对账", ymd(2026, 10, 8), "对账", ymd(2026, 10, 31));
         assert_date("月底", ymd(2026, 2, 10), "", ymd(2026, 2, 28));
@@ -768,9 +748,10 @@ mod tests {
             ymd(2026, 12, 31),
             ymd(2023, 2, 28),
         ] {
-            assert_unresolved("月底 收工", today, "收工");
-            assert_unresolved("月末", today, "");
+            assert_date("月底 收工", today, "收工", today);
+            assert_date("月末", today, "", today);
         }
+        assert_date("月底 跨年", ymd(2026, 12, 31), "跨年", ymd(2026, 12, 31));
     }
 
     #[test]
@@ -828,7 +809,7 @@ mod tests {
         let PrefixClass::TodoCapture(capture) = classify_prefix("+ 周四 例会") else {
             panic!("expected todo capture");
         };
-        assert_unresolved(capture.remainder(), today, "例会");
+        assert_date(capture.remainder(), today, "例会", ymd(2026, 10, 15));
 
         assert!(matches!(
             classify_prefix("/note 明天 开会"),
@@ -847,49 +828,36 @@ mod tests {
         assert_absent("　", today);
     }
 
-    /// 今天是 2026-10-08（周四）。`周四` 可能指今天，也可能指 2026-10-15。
-    /// 不预填期望日期。产品规格写明后再补断言，并去掉 ignore。
+    /// 今天是 2026-10-08（周四）。「周四」是七天后，不是今天。
     #[test]
-    #[ignore = "待 #9 第 4 项写入 product.md：今天是该星期时，「周X / 星期X」指今天还是七天后"]
     fn issue_9_same_weekday_due_date() {
         let today = ymd(2026, 10, 8);
-        let parsed = parse_todo_due_prefix("周四 例会", today);
-        assert_eq!(parsed.title, "例会");
-        let _today_or_next = [ymd(2026, 10, 8), ymd(2026, 10, 15)];
-        todo!("#9 第 4 项尚未写入 product.md：不预填周四的到期日");
+        assert_date("周四 例会", today, "例会", ymd(2026, 10, 15));
+        assert_date("星期四", today, "", ymd(2026, 10, 15));
     }
 
-    /// 2026-10-08 是周四。`周一` 若指本周则是 2026-10-05，若指下一个则是 2026-10-12。
+    /// 2026-10-08 是周四。本周已经过去的星期一是 2026-10-12，不是 2026-10-05。
     #[test]
-    #[ignore = "待 #9 第 4 项写入 product.md：周X 指本周已经过去的那一天，还是下一个该星期"]
     fn issue_9_weekday_already_passed() {
         let today = ymd(2026, 10, 8);
-        let parsed = parse_todo_due_prefix("周一 计划", today);
-        assert_eq!(parsed.title, "计划");
-        let _this_week_or_next = [ymd(2026, 10, 5), ymd(2026, 10, 12)];
-        todo!("#9 第 4 项尚未写入 product.md：不预填已过去星期的到期日");
+        assert_date("周一 计划", today, "计划", ymd(2026, 10, 12));
+        assert_date("星期一 计划", today, "计划", ymd(2026, 10, 12));
     }
 
-    /// 2026-10-08 是周四。下周日：以周一为始是 2026-10-18，以周日为始是 2026-10-11。
-    /// 2026-10-11 是周日。下周一：以周一为始是 2026-10-12，以周日为始是 2026-10-19。
+    /// 下周从周一开始。2026-10-08 是周四，下周日是 2026-10-18。
+    /// 2026-10-11 是周日，下周一是 2026-10-12。
     #[test]
-    #[ignore = "待 #9 第 4 项写入 product.md：下周从周一起算还是从周日起算"]
     fn issue_9_next_week_start_day() {
         let thursday = ymd(2026, 10, 8);
-        let sunday_token = parse_todo_due_prefix("下周日 休息", thursday);
-        assert_eq!(sunday_token.title, "休息");
-        let _sunday_candidates = [ymd(2026, 10, 18), ymd(2026, 10, 11)];
+        assert_date("下周日 休息", thursday, "休息", ymd(2026, 10, 18));
+        assert_date("下周天 休息", thursday, "休息", ymd(2026, 10, 18));
 
         let sunday = ymd(2026, 10, 11);
-        let monday_token = parse_todo_due_prefix("下周一 计划", sunday);
-        assert_eq!(monday_token.title, "计划");
-        let _monday_candidates = [ymd(2026, 10, 12), ymd(2026, 10, 19)];
-        todo!("#9 第 4 项尚未写入 product.md：不预填下周的周始");
+        assert_date("下周一 计划", sunday, "计划", ymd(2026, 10, 12));
     }
 
-    /// 月底当天可能指今天，也可能指下个月的最后一天。不预填期望。
+    /// 月底当天指今天，不是下个月的最后一天。
     #[test]
-    #[ignore = "待 #9 第 4 项写入 product.md：月底当天输入「月底 / 月末」指今天还是下个月底"]
     fn issue_9_month_end_on_the_last_day() {
         let cases = [
             ymd(2026, 10, 31),
@@ -899,9 +867,8 @@ mod tests {
             ymd(2026, 12, 31),
         ];
         for today in cases {
-            assert_eq!(parse_todo_due_prefix("月底 收工", today).title, "收工");
-            assert_eq!(parse_todo_due_prefix("月末", today).title, "");
+            assert_date("月底 收工", today, "收工", today);
+            assert_date("月末", today, "", today);
         }
-        todo!("#9 第 4 项尚未写入 product.md：不预填月底当天的到期日");
     }
 }
