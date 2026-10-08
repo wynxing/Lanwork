@@ -13,7 +13,7 @@
 | 字段 | 值 |
 | --- | --- |
 | 日期 | 2026-10-08 |
-| commit | 2b06db233162119c0056398a88b56b81bd276abc |
+| commit | 0b7fd5f26ad333f2922417b7ba060746903750b3 |
 | 构建配置 | release |
 | Slint 精确版本 | 1.18.1 |
 | 渲染器 | Slint 1.18.1 默认 features。技术验证尚未选定 FemtoVG、Skia 或软件渲染 |
@@ -80,32 +80,29 @@ GitHub 快照不放进这组固定数据。刷新 GitHub 时另记内存。Every
 
 偏离协议：
 
-空 Slint 窗口采样。没有加载协议规定的固定数据，没有热召回，也没有结果延迟。上面的性能表保持「未测」。这份记录不能作为「已达到」的依据。
+这次正式记录是空 Slint 窗口。没有加载协议规定的固定数据，没有热召回，也没有结果延迟。上面的性能表保持「未测」，不能作为「已达到」的依据。`tools/README.md` 的脚本没有改，这次它自己跑完并写出了记录。
 
-`tools/README.md` 里的 PowerShell 没有改。它在采样器退出码为 0 之后还要求 CSV 至少 290 行、首尾至少隔 290 秒。两次跑满时长的结果都被这个行数检查拒绝，所以脚本没有写出 `measurements-out\empty-window.md`，上面的「实机」勾选也保持未勾。
+归档 CSV：[2026-10-08-empty-window.csv](2026-10-08-empty-window.csv)。采样器 JSON：`samples` 300，`stop` 为 `duration`，计数器 `\Thread(lanwork*)\Context Switches/sec`，PID 20164。每一列都有值。首尾 `2026-10-08T06:34:50.746Z` 到 `2026-10-08T06:39:49.735Z`，间隔 298.989 秒。行间隔平均 1000.0 ms（最小 641 ms，最大 1390 ms）。
 
-归档的是第一次跑满时长的 CSV：[2026-10-08-empty-window.csv](2026-10-08-empty-window.csv)。采样器 JSON：`samples` 272，`stop` 为 `duration`，计数器 `\Thread(lanwork*)\Context Switches/sec`，PID 24504。每一列都有值。首尾 `2026-10-08T05:43:57.338Z` 到 `2026-10-08T05:48:56.300Z`，间隔 298.962 秒。行间隔平均 1103.2 ms（最小 909 ms，最大 1494 ms）。
-
-- Private Bytes 峰值：49,844,224 字节（47.54 MiB）。最小 49,557,504 字节。
-- 工作集峰值：77,705,216 字节（74.11 MiB）。最小 77,467,648 字节。
-- 平均 CPU：（最后一行 `cpu_time_100ns` 14,062,500 − 第一行 4,531,250）÷ 墙钟 = 0.319%。
-- `wakeups_per_sec` 平均：96.629。
-- 句柄：325 到 339。
-- USER 对象：23 到 24。
+- Private Bytes 峰值：49,729,536 字节（47.43 MiB）。最小 49,455,104 字节。
+- 工作集峰值：77,799,424 字节（74.20 MiB）。最小 77,561,856 字节。
+- 平均 CPU：（最后一行 `cpu_time_100ns` 8,906,250 − 第一行 2,812,500）÷ 墙钟 = 0.204%。
+- `wakeups_per_sec` 平均：69.150（最小 59.158，最大 86.816）。
+- 句柄：326 到 343。
+- USER 对象：23。
 - GDI 对象：17。
 
-协议里 Private Bytes ≤ 100 MiB 是固定数据场景的目标。这次是空窗口，该行保持「未测」，不记通过或失败。47.54 MiB 只是这次读数，低于 100 MiB 这个数字本身，不能当成验收。
+协议里 Private Bytes ≤ 100 MiB，以及收起后空闲 5 分钟的 CPU 和唤醒，都是固定数据场景的目标。这次对不上那些场景，对应行保持「未测」。
 
-同一脚本再跑一次（仍是 `2b06db2`，没有改脚本）：`samples` 267，`stop` 为 `duration`，PID 17112，首尾间隔 299.018 秒，Private Bytes 峰值 49,467,392 字节，工作集峰值 77,455,360 字节，平均 CPU 0.199%，`wakeups_per_sec` 平均 97.202。脚本同样抛出「CSV 只有 267 行数据，5 分钟采样不完整。」这次 CSV 不入库。
+更早的两次没有当作这份正式记录：
 
-在 `5d7c133` 上、采样器还把 `PDH_CALC_NEGATIVE_VALUE`（`0x800007D8`）当成整次失败时，同一脚本先中止过两次：一次 24 行后退出，一次 47 行后退出，错误都是「读取计数器数组失败：0x800007D8」。那两次不是这份 5 分钟记录。`2b06db2` 让数组级的 `PDH_CALC_NEGATIVE_*` 继续返回实例，坏实例仍按自己的 `CStatus` 丢掉。
+- `5d7c133`：采样器把 `PDH_CALC_NEGATIVE_VALUE`（`0x800007D8`）当成整次失败，同一脚本在 24 行和 47 行处退出。
+- `2b06db2`：负值计数已经留下，但循环先睡满 1 秒再读计数器，时长把读取算进去。跑满 `duration` 后只有 272 行（首尾 298.962 秒）和再跑的 267 行（首尾 299.018 秒）。脚本因少于 290 行拒绝。`0b7fd5f` 把节拍改成从起始时刻对齐。
 
-采样期间还有别的工作树在编译。第一次（本 CSV）开始前，机器上有 `cargo test`、`cargo check -p lanwork-render-spike`，以及 issue-5 工作树的 `cargo run -p dnd -- --self-test`，rustc 在编 `windows`、`image`、`lanwork_core`、`criterion`、`usvg`。采样约 1 分钟时的 3 秒 CPU 差里，前排是 powershell、任务管理器、微信、audiodg、Edge WebView2、Cursor；`lanwork-sample` 约 0.125 秒，`lanwork.exe` 没有进前 15。再跑那一次的中途，issue-18 在编 `i-slint-compiler` / `i-slint-core`，issue-7 在编 FemtoVG 和软件渲染器，issue-5 在跑 clippy，另有 `cargo test --locked`。那 3 秒里 rustc 最高约 5.4 秒 CPU。桌面上一直有 Cursor、微信、Edge、GameViewer。
-
-行数过不了 290 的原因在采样循环，不在脚本门槛被改过：循环先睡满 1000 ms，再读性能计数器，时长时钟把这次读取算进去。这台机器上一次读取大约 100 ms，所以 300 秒时长写出 270 行上下，首尾却仍接近 299 秒。单独的改法是读完之后只睡完这一秒里剩下的时间，让读取短于 1 秒时仍然大约每秒一行。这次没有改 `tools/README.md`，也没有改这个循环。
+采样前先看了 cargo、rustc、link 和 Lanwork spike。14:29 有 5 个：`cargo test --locked -p lanwork-core --lib directory_watch_adds_a_shortcut`，以及 `cargo build -p fileidx --release` 和它的 `rustc`（`spikes\fileidx`）。等了 5 分钟，14:34 这些进程都不在了，然后才采样。开始前 3 秒 CPU 差的前排是 powershell（约 3.9 秒）、Cursor、任务管理器、Grok Bot、node、Edge WebView2、微信，没有 cargo、rustc 或 link。采样约 1 分钟时只有这次的 `lanwork.exe`、`cargo run -p lanwork-sample` 和 `lanwork-sample.exe`；那 3 秒里 `lanwork-sample` 约 0.188 秒，`lanwork.exe` 没有进前 12，前排是 powershell 和 Chrome。脚本结束后的快照里出现了新的 `cargo test --locked -p lanwork-core --lib directory_watch_adds_a_shortcut`，采样中途的快照里没有它。
 
 ## 实机
 
 下面这项要在 Windows 11 桌面上做。仓库里的单元测试和 Windows CI 不能代替。没做之前保持未勾选，对应格子填「未测」。
 
-- [ ] 对空 Slint 窗口采样 5 分钟，得到每一列都有值的 CSV。命令见 `tools/README.md`。采样器两次都跑满 `duration`（272 行和 267 行），每一列都有值，首尾都超过 290 秒。脚本因行数少于 290 拒绝，所以这里不勾。CSV：[2026-10-08-empty-window.csv](2026-10-08-empty-window.csv)。
+- [x] 对空 Slint 窗口采样 5 分钟，得到每一列都有值的 CSV。命令见 `tools/README.md`。CSV：[2026-10-08-empty-window.csv](2026-10-08-empty-window.csv)。

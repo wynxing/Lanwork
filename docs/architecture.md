@@ -14,7 +14,7 @@
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
 | `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合协议的实测记录。 |
-| `docs/measurements/2026-10-08-empty-window.md` | 空 Slint 窗口采样。采样器跑满 300 秒，272 行，首尾 298.962 秒。脚本因行数少于 290 拒绝。偏离协议，不算「已达到」。 |
+| `docs/measurements/2026-10-08-empty-window.md` | 空 Slint 窗口采样。脚本通过：300 行，首尾 298.989 秒。偏离协议，不算「已达到」。 |
 | `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。 |
 
 ### 尚未接入
