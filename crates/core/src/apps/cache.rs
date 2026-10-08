@@ -1,8 +1,9 @@
 //! `%LOCALAPPDATA%\Lanwork\cache\apps.json`。
 //!
-//! 写入走存储层的原子替换。无法解析，或 `schemaVersion` 不是本模块能读的版本时，
-//! 把文件改名为 `apps.json.corrupt-<UTC 毫秒>-<序号>`。缓存可以重建，
-//! 所以不认识的版本也丢弃；数据目录里的业务文件不按这条处理。
+//! 写入走存储层的原子替换。无法解析，或 `schemaVersion` 不是 1 时，
+//! 把文件改名为 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志。日志不含文件内容。
+//! 这是当前实现选择：缓存可以重建，所以不认识的版本也隔离；数据目录里的业务文件不按这条处理。
+//! 读取时的 IO 错误只记日志，不改名。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +22,11 @@ static QUARANTINE_SEQ: AtomicU64 = AtomicU64::new(0);
 pub enum CacheLoad {
     Missing,
     Loaded(Vec<AppEntry>),
-    Discarded { quarantine: Option<PathBuf> },
+    Discarded {
+        quarantine: Option<PathBuf>,
+    },
+    /// 文件还在。读失败不是解析失败，不隔离。
+    Unreadable,
 }
 
 /// 打开索引时缓存文件的状态。条目数只反映当时读到的文件，不含去重之后的变化。
@@ -30,6 +35,7 @@ pub enum CacheStatus {
     Missing,
     Loaded(usize),
     Discarded,
+    Unreadable,
 }
 
 impl From<&CacheLoad> for CacheStatus {
@@ -38,6 +44,7 @@ impl From<&CacheLoad> for CacheStatus {
             CacheLoad::Missing => Self::Missing,
             CacheLoad::Loaded(entries) => Self::Loaded(entries.len()),
             CacheLoad::Discarded { .. } => Self::Discarded,
+            CacheLoad::Unreadable => Self::Unreadable,
         }
     }
 }
@@ -88,22 +95,28 @@ enum TargetDto {
     },
 }
 
-pub fn load_cache(path: &Path) -> CacheLoad {
+pub(crate) fn load_cache_logged(path: &Path, log: Option<&crate::storage::Log>) -> CacheLoad {
     if !path.is_file() {
         return CacheLoad::Missing;
     }
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(_) => {
-            return CacheLoad::Discarded {
-                quarantine: quarantine(path),
-            };
+        Err(err) => {
+            note(
+                log,
+                &format!(
+                    "app cache read failed path={} os={:?}",
+                    path.display(),
+                    err.raw_os_error(),
+                ),
+            );
+            return CacheLoad::Unreadable;
         }
     };
     match parse_cache(&bytes) {
         Ok(entries) => CacheLoad::Loaded(entries),
-        Err(_) => CacheLoad::Discarded {
-            quarantine: quarantine(path),
+        Err(reason) => CacheLoad::Discarded {
+            quarantine: quarantine(path, log, reason),
         },
     }
 }
@@ -119,10 +132,10 @@ pub fn save_cache(path: &Path, entries: &[AppEntry]) -> Result<(), String> {
         .map_err(|err| format!("写入应用缓存失败 {}: {err}", path.display()))
 }
 
-fn parse_cache(bytes: &[u8]) -> Result<Vec<AppEntry>, ()> {
-    let file: CacheFile = serde_json::from_slice(bytes).map_err(|_| ())?;
+fn parse_cache(bytes: &[u8]) -> Result<Vec<AppEntry>, &'static str> {
+    let file: CacheFile = serde_json::from_slice(bytes).map_err(|_| "parse")?;
     if file.schema_version != CACHE_SCHEMA_VERSION {
-        return Err(());
+        return Err("schema");
     }
     Ok(file
         .entries
@@ -131,7 +144,13 @@ fn parse_cache(bytes: &[u8]) -> Result<Vec<AppEntry>, ()> {
         .collect())
 }
 
-fn quarantine(path: &Path) -> Option<PathBuf> {
+fn note(log: Option<&crate::storage::Log>, message: &str) {
+    if let Some(log) = log {
+        log.warn(message);
+    }
+}
+
+fn quarantine(path: &Path, log: Option<&crate::storage::Log>, reason: &str) -> Option<PathBuf> {
     let file_name = path.file_name()?;
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -142,8 +161,28 @@ fn quarantine(path: &Path) -> Option<PathBuf> {
     name.push(format!(".corrupt-{millis}-{seq}"));
     let target = path.with_file_name(name);
     match std::fs::rename(path, &target) {
-        Ok(()) => Some(target),
-        Err(_) => None,
+        Ok(()) => {
+            note(
+                log,
+                &format!(
+                    "app cache quarantined path={} quarantine={} reason={reason}",
+                    path.display(),
+                    target.display(),
+                ),
+            );
+            Some(target)
+        }
+        Err(err) => {
+            note(
+                log,
+                &format!(
+                    "app cache quarantine rename failed path={} reason={reason} os={:?}",
+                    path.display(),
+                    err.raw_os_error(),
+                ),
+            );
+            None
+        }
     }
 }
 
@@ -299,7 +338,7 @@ mod tests {
             icon_index: 0,
         };
         save_cache(&path, &[sample(), aumid.clone()]).unwrap();
-        let CacheLoad::Loaded(entries) = load_cache(&path) else {
+        let CacheLoad::Loaded(entries) = load_cache_logged(&path, None) else {
             panic!("cache should load");
         };
         assert_eq!(entries.len(), 2);
@@ -326,7 +365,7 @@ mod tests {
         let temp = TempDir::new();
         let path = temp.path().join(CACHE_FILE_NAME);
         std::fs::write(&path, b"{").unwrap();
-        let CacheLoad::Discarded { quarantine } = load_cache(&path) else {
+        let CacheLoad::Discarded { quarantine } = load_cache_logged(&path, None) else {
             panic!("corrupt cache should be discarded");
         };
         let quarantine = quarantine.expect("rename");
@@ -346,7 +385,10 @@ mod tests {
         let temp = TempDir::new();
         let path = temp.path().join(CACHE_FILE_NAME);
         std::fs::write(&path, br#"{"schemaVersion":99,"entries":[]}"#).unwrap();
-        assert!(matches!(load_cache(&path), CacheLoad::Discarded { .. }));
+        assert!(matches!(
+            load_cache_logged(&path, None),
+            CacheLoad::Discarded { .. }
+        ));
         assert!(!path.exists());
     }
 
@@ -354,8 +396,91 @@ mod tests {
     fn missing_file_is_not_an_error() {
         let temp = TempDir::new();
         assert_eq!(
-            load_cache(&temp.path().join(CACHE_FILE_NAME)),
+            load_cache_logged(&temp.path().join(CACHE_FILE_NAME), None),
             CacheLoad::Missing
         );
+    }
+
+    #[test]
+    fn corrupt_cache_is_logged_without_file_contents() {
+        let temp = TempDir::new();
+        let path = temp.path().join(CACHE_FILE_NAME);
+        let body = b"{not-json cache-body-do-not-log";
+        std::fs::write(&path, body).unwrap();
+        let log = test_log(temp.path());
+        let CacheLoad::Discarded { quarantine } = load_cache_logged(&path, Some(&log)) else {
+            panic!("corrupt cache should be discarded");
+        };
+        let quarantine = quarantine.expect("rename");
+        assert!(!path.exists());
+        let text = std::fs::read_to_string(log.path()).unwrap();
+        assert!(text.contains("app cache quarantined"));
+        assert!(text.contains("reason=parse"));
+        assert!(text.contains(&quarantine.display().to_string()));
+        assert!(!text.contains("cache-body-do-not-log"));
+    }
+
+    #[test]
+    fn unsupported_schema_is_logged_as_quarantine() {
+        let temp = TempDir::new();
+        let path = temp.path().join(CACHE_FILE_NAME);
+        std::fs::write(&path, br#"{"schemaVersion":99,"entries":[]}"#).unwrap();
+        let log = test_log(temp.path());
+        assert!(matches!(
+            load_cache_logged(&path, Some(&log)),
+            CacheLoad::Discarded { .. }
+        ));
+        let text = std::fs::read_to_string(log.path()).unwrap();
+        assert!(text.contains("reason=schema"));
+        assert!(!path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_error_keeps_the_cache_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let temp = TempDir::new();
+        let path = temp.path().join(CACHE_FILE_NAME);
+        std::fs::write(&path, b"{\"schemaVersion\":1,\"entries\":[]}").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let log = test_log(temp.path());
+        assert!(matches!(
+            load_cache_logged(&path, Some(&log)),
+            CacheLoad::Unreadable
+        ));
+        drop(held);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"{\"schemaVersion\":1,\"entries\":[]}"
+        );
+        let names: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.to_string_lossy().contains(".corrupt-"))
+        );
+        let text = std::fs::read_to_string(log.path()).unwrap();
+        assert!(text.contains("app cache read failed"));
+        assert!(!text.contains("schemaVersion"));
+    }
+
+    fn test_log(dir: &Path) -> crate::storage::Log {
+        crate::storage::Log::open(
+            dir.join("app.log"),
+            crate::storage::LogSettings {
+                max_bytes: 1024 * 1024,
+                max_files: 2,
+                secrets: Vec::new(),
+            },
+        )
+        .unwrap()
     }
 }

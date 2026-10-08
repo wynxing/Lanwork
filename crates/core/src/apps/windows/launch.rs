@@ -78,11 +78,11 @@ fn launch_inner(
     let dir_wide = directory.as_ref().map(|dir| comutil::wide_path(dir));
     let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     info.cbSize = u32::try_from(std::mem::size_of::<SHELLEXECUTEINFOW>()).unwrap_or(0);
-    info.fMask = if wait {
-        SEE_MASK_FLAG_NO_UI | SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
-    } else {
-        SEE_MASK_FLAG_NO_UI
-    };
+    // 这里没有消息泵。不带 SEE_MASK_NOASYNC 时，Shell 可能在返回后仍使用这些宽字符串。
+    info.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+    if wait {
+        info.fMask |= SEE_MASK_NOCLOSEPROCESS;
+    }
     info.lpVerb = w!("open");
     info.lpFile = pcwstr(&file_wide);
     info.lpParameters = if args.is_empty() {
@@ -95,7 +95,7 @@ fn launch_inner(
         None => windows::core::PCWSTR::null(),
     };
     info.nShow = show;
-    // SAFETY: 字符串缓冲区活到调用返回。hwnd 为空，不绑定 Lanwork 的窗口。
+    // SAFETY: SEE_MASK_NOASYNC 让调用在 Shell 用完字符串之前返回。hwnd 为空，不绑定 Lanwork 的窗口。
     unsafe { ShellExecuteExW(&mut info) }.map_err(|err| LaunchError {
         message: format!("启动失败: {err}"),
     })?;

@@ -87,7 +87,7 @@ fn watch_loop(
     let mut watches = Vec::new();
     for dir in directories {
         if let Some(watch) = DirWatch::open(&dir) {
-            watches.push(Box::new(watch));
+            watches.push(watch);
         }
     }
     if watches.is_empty() {
@@ -162,6 +162,33 @@ fn wait_code(status: windows::Win32::Foundation::WAIT_EVENT) -> u32 {
     status.0
 }
 
+/// 持有堆上的监视对象。取消后若读仍未完成，泄漏的是这一份，不是 `OVERLAPPED` 的副本。
+struct OwnedWatch {
+    inner: Option<Box<DirWatch>>,
+}
+
+impl Drop for OwnedWatch {
+    fn drop(&mut self) {
+        if let Some(watch) = self.inner.take() {
+            release_watch(watch, 1_000);
+        }
+    }
+}
+
+impl std::ops::Deref for OwnedWatch {
+    type Target = DirWatch;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().expect("directory watch")
+    }
+}
+
+impl std::ops::DerefMut for OwnedWatch {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().expect("directory watch")
+    }
+}
+
 struct DirWatch {
     handle: SendHandle,
     event: SendHandle,
@@ -171,7 +198,7 @@ struct DirWatch {
 }
 
 impl DirWatch {
-    fn open(dir: &Path) -> Option<Self> {
+    fn open(dir: &Path) -> Option<OwnedWatch> {
         let wide = comutil::wide_path(dir);
         let handle = unsafe {
             CreateFileW(
@@ -194,17 +221,18 @@ impl DirWatch {
                 return None;
             }
         };
-        let mut watch = Self {
+        let mut watch = Box::new(Self {
             handle: SendHandle(handle),
             event: SendHandle(event),
             buffer: vec![0u8; 16 * 1024],
             overlapped: unsafe { std::mem::zeroed() },
             armed: false,
-        };
+        });
         if !watch.arm() {
+            release_watch(watch, 0);
             return None;
         }
-        Some(watch)
+        Some(OwnedWatch { inner: Some(watch) })
     }
 
     fn arm(&mut self) -> bool {
@@ -216,7 +244,7 @@ impl DirWatch {
             | FILE_NOTIFY_CHANGE_ATTRIBUTES
             | FILE_NOTIFY_CHANGE_LAST_WRITE
             | FILE_NOTIFY_CHANGE_SIZE;
-        // SAFETY: 缓冲区和 OVERLAPPED 存在于这个堆上的监视对象里，完成前不释放。
+        // SAFETY: 缓冲区和 OVERLAPPED 在这个 Box 里。完成或泄漏之前不释放这份分配。
         let ok = unsafe {
             ReadDirectoryChangesW(
                 self.handle.0,
@@ -251,29 +279,65 @@ fn io_incomplete(err: &windows::core::Error) -> bool {
     code == ERROR_IO_INCOMPLETE.0 || code == 0x8007_03E4
 }
 
-impl Drop for DirWatch {
-    fn drop(&mut self) {
-        if self.armed {
-            unsafe {
-                let _ = CancelIoEx(self.handle.0, Some(&self.overlapped));
-                let _ = WaitForSingleObject(self.event.0, 1_000);
-                let mut bytes = 0u32;
-                let done = GetOverlappedResult(self.handle.0, &self.overlapped, &mut bytes, false);
-                if matches!(done, Err(err) if io_incomplete(&err)) {
-                    // 关掉目录句柄会取消这次读，内核仍会写回 OVERLAPPED。
-                    // 把缓冲区留下来，避免写到已经释放的栈上。
-                    let buffer = std::mem::take(&mut self.buffer);
-                    let overlapped = self.overlapped;
-                    let event = self.event;
-                    Box::leak(Box::new((buffer, overlapped, event)));
-                    let _ = CloseHandle(self.handle.0);
-                    return;
-                }
+enum Release {
+    Finished,
+    /// 内核仍握着原来的 `OVERLAPPED`。整份 `DirWatch` 留在堆上，然后再关目录句柄。
+    Leaked,
+}
+
+fn release_watch(mut watch: Box<DirWatch>, wait_ms: u32) -> Release {
+    if watch.armed {
+        unsafe {
+            let _ = CancelIoEx(watch.handle.0, Some(&watch.overlapped));
+            if wait_ms > 0 {
+                let _ = WaitForSingleObject(watch.event.0, wait_ms);
             }
         }
-        unsafe {
-            let _ = CloseHandle(self.handle.0);
-            let _ = CloseHandle(self.event.0);
+        match detach_if_incomplete(watch) {
+            Ok(finished) => watch = finished,
+            Err(()) => return Release::Leaked,
         }
+        watch.armed = false;
+    }
+    unsafe {
+        let _ = CloseHandle(watch.handle.0);
+        let _ = CloseHandle(watch.event.0);
+    }
+    Release::Finished
+}
+
+/// 读仍未完成时，内核持有的是这份 `OVERLAPPED` 的地址。泄漏整个 `DirWatch` 后再关目录句柄。
+fn detach_if_incomplete(watch: Box<DirWatch>) -> Result<Box<DirWatch>, ()> {
+    let mut bytes = 0u32;
+    let done = unsafe { GetOverlappedResult(watch.handle.0, &watch.overlapped, &mut bytes, false) };
+    if matches!(done, Err(err) if io_incomplete(&err)) {
+        let directory = watch.handle.0;
+        let pinned = Box::leak(watch);
+        unsafe {
+            let _ = CloseHandle(directory);
+        }
+        // 关掉句柄后内核仍会写回这份 OVERLAPPED。留着地址，避免写进已释放的副本。
+        let _ = pinned.overlapped.Internal;
+        return Err(());
+    }
+    Ok(watch)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{DirWatch, detach_if_incomplete};
+    use crate::storage::test_temp::TempDir;
+
+    #[test]
+    fn incomplete_read_leaks_the_original_overlapped_before_close() {
+        let temp = TempDir::new();
+        let mut owned = DirWatch::open(temp.path()).expect("watch");
+        let watch = owned.inner.take().expect("inner");
+        let detached = detach_if_incomplete(watch);
+        assert!(detached.is_err(), "刚挂上的读应该仍是 ERROR_IO_INCOMPLETE");
+        std::fs::write(temp.path().join("touch.txt"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
     }
 }

@@ -151,7 +151,9 @@ Lanwork/
 
 应用来源：当前用户和公共开始菜单、注册表 App Paths、PATH、商店应用、用户添加的便携应用和别名。按启动目标去重。快捷方式保留参数和工作目录。启动时先加载缓存，再在后台更新。目录变化合并后再重建；注册表、商店应用和手动刷新按来源更新。
 
-应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用和别名的入口与存储、手动刷新的界面入口仍等规格缺口 #9 第 1、2 项；`AppIndex::refresh` 只是进程内重建，没有产品入口。
+应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用和别名的入口与存储、手动刷新的界面入口仍等规格缺口 #9 第 1、2 项；`AppIndex::refresh` 只是进程内重建，没有产品入口。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
+
+下面是当前实现选择，不是产品规则。PATH 上的 UNC 目录跳过，避免一个断开的网络路径挡住其余来源。开始菜单目录变化的安静时间是 400ms，另有 2 秒上限，到点就重建开始菜单来源。`apps.json` 的 `schemaVersion` 不是 1 时，和无法解析一样隔离成 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，日志不含文件内容。这和数据目录里不认识的 `schemaVersion` 不隔离不同，因为这份缓存可以重建。读取缓存时的 IO 错误只记日志，不改名。
 
 待办与便签索引常驻内存，由写盘成功后的变更消息增量更新，查询时不读盘。只收未完成待办的标题，以及不在回收站中的便签的标题、标签和正文。
 

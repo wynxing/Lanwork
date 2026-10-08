@@ -118,6 +118,23 @@ fn shortcut_keeps_args_and_skips_missing_targets() {
         None,
     )
     .unwrap();
+    let broken_aumid = temp.path().join("Store Tile.lnk");
+    save_shortcut(
+        &broken_aumid,
+        Path::new(r"C:\Lanwork\missing\store-tile.exe"),
+        "",
+        None,
+    )
+    .unwrap();
+    super::shortcut::stamp_aumid(
+        &broken_aumid,
+        "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+    )
+    .unwrap();
+    assert_eq!(
+        super::shortcut::read_aumid(&broken_aumid).as_deref(),
+        Some("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App")
+    );
     let entries = read_shortcut_dir(temp.path()).unwrap();
     assert_eq!(entries.len(), 1);
     match &entries[0].target {
@@ -159,6 +176,7 @@ fn directory_watch_adds_a_shortcut_from_the_extra_directory() {
         background_rebuild: true,
         debounce: Duration::from_millis(200),
         enumerator: Some(Box::new(ExtraDir(extra.clone()))),
+        cache_log: None,
     })
     .unwrap();
     index.wait_idle().expect("initial rebuild");

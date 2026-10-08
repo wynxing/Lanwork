@@ -109,6 +109,7 @@ pub(crate) struct OpenOptions {
     pub background_rebuild: bool,
     pub debounce: Duration,
     pub enumerator: Option<Box<dyn SourceEnumerator>>,
+    pub cache_log: Option<crate::storage::Log>,
 }
 
 impl AppIndex {
@@ -133,6 +134,7 @@ impl AppIndex {
             background_rebuild: true,
             debounce: super::DEFAULT_DEBOUNCE,
             enumerator: None,
+            cache_log: process_cache_log(),
         })
     }
 
@@ -238,11 +240,11 @@ impl Drop for AppIndex {
 }
 
 pub(crate) fn open_with(options: OpenOptions) -> Result<AppIndex, IndexError> {
-    let loaded = cache::load_cache(&options.cache_path);
+    let loaded = cache::load_cache_logged(&options.cache_path, options.cache_log.as_ref());
     let cache_status = CacheStatus::from(&loaded);
     let initial_entries = match &loaded {
         CacheLoad::Loaded(entries) => entries.clone(),
-        CacheLoad::Missing | CacheLoad::Discarded { .. } => Vec::new(),
+        CacheLoad::Missing | CacheLoad::Discarded { .. } | CacheLoad::Unreadable => Vec::new(),
     };
     let snapshots = SourceSnapshots::from_entries(&initial_entries);
     let published = build_published(snapshots.merged());
@@ -303,6 +305,15 @@ pub(crate) fn open_with(options: OpenOptions) -> Result<AppIndex, IndexError> {
         worker: Some(worker),
         cache_status,
     })
+}
+
+fn process_cache_log() -> Option<crate::storage::Log> {
+    let paths = crate::storage::resolve_from_process().ok()?;
+    crate::storage::Log::open(
+        paths.data_dir.join("logs").join("app.log"),
+        crate::storage::LogSettings::default(),
+    )
+    .ok()
 }
 
 fn default_enumerator(
@@ -604,6 +615,7 @@ mod tests {
                 delay: Some(Arc::clone(&delay)),
                 delayed: false,
             })),
+            cache_log: None,
         })
         .unwrap();
         assert!(matches!(index.cache_status(), CacheStatus::Loaded(1)));
@@ -639,6 +651,7 @@ mod tests {
                 delay: None,
                 delayed: false,
             })),
+            cache_log: None,
         })
         .unwrap();
         assert_eq!(*index.cache_status(), CacheStatus::Discarded);
