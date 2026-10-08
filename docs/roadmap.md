@@ -160,7 +160,7 @@
 结论：**未通过**。七条通过条件都要人工用鼠标对资源管理器操作，结果栏留空。自动化观察到的内容写在后面，不充当这七条的「通过」。按 [#33](https://github.com/wynxing/Lanwork/issues/33)，不是每一条都通过就不算该项通过，因此不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
 
 - 日期：2026-10-08 首次自动化；2026-10-09 修验证程序拖错文件
-- commit：`COMMIT_HASH_HERE`。修过抓取之后，`cargo run -p dnd -- --self-test` 退出码 0。2026-10-09 之前的手测结果不算数
+- commit：`22daa43c1ae022112e2c8d788b46541b9507850e`。修过抓取之后，`cargo run -p dnd -- --self-test` 在这棵树上退出码 0。2026-10-09 之前的手测结果不算数
 - Slint：1.18.1（workspace 依赖 `=1.18.1`）。验证程序额外打开 feature `raw-window-handle-06`。默认 features 含 `backend-winit`、`renderer-femtovg`、`renderer-software`，不代表产品已选定渲染器
 - 渲染器：`GraphicsAPI::NativeOpenGL`（FemtoVG 的 OpenGL 路径被选中）。窗口缩放 1.5
 - 机器：DESKTOP-7C3P6OG，XIAOMI REDMI Book 14 2025 (FHD+)
