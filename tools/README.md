@@ -27,7 +27,7 @@ cargo run -p lanwork-fixture -- --out <目录>
     └── targets/
 ```
 
-引用放在夹具目录里，不放进系统 Temp，这样测量期间路径一直有效。快捷方式按 MS-SHLLINK 写成 `.lnk`，目标是同目录下生成的空文件，参数是 `fixture`，工作目录是 `targets`。盘符路径会带上 IDList，`IShellLinkW::GetPath` 才能读回目标。#18 规定指向不存在目标的快捷方式不进索引，所以这些目标文件要留着。
+引用放在夹具目录里，不放进系统 Temp，这样测量期间路径一直有效。快捷方式按 MS-SHLLINK 写成 `.lnk`，目标是同目录下生成的空文件，参数是 `fixture`，工作目录是 `targets`。盘符路径会带上 IDList，`IShellLinkW::GetPath` 才能读回目标。#18 规定指向不存在目标的快捷方式不进索引，所以这些目标文件要留着。应用索引读取环境变量 `LANWORK_EXTRA_SHORTCUT_DIR`。测量时把它指到上面的 `shortcuts` 目录。界面不暴露这个变量。
 
 `data` 里的 JSON 带 `schemaVersion` 1。字段按 #11、#12、#13、#14 已经列出的模型来写。architecture.md 要求每个 JSON 对象带 `schemaVersion`，示例模型是 `ExampleDocument`，不是待办、便签或收纳。那些 issue 落地时如果改了字段，夹具要跟着改。不生成 `config.json`，也不生成 GitHub 快照。待办都未完成，便签都不在回收站，这样后续索引能看见协议里的全部条数。时间戳固定为 `2026-01-01T00:00:00Z`，同一组参数会写出同一批字节。
 

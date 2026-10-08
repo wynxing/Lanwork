@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除等 #9 第 17 项，以及除长期未更新和 Draft 以外的信号与筛选等 #9 第 18 项。应用枚举、文件索引、查询调度与搜索索引尚未接入。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已不存在时的恢复、短月没有对应日的每月重复，以及在重复截止日当天完成是否再生成，仍等产品规格。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除等 #9 第 17 项，以及除长期未更新和 Draft 以外的信号与筛选等 #9 第 18 项。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。文件索引、查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。测量记录还不能当作渲染器已经选定。 |
@@ -22,7 +22,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 应用枚举、文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务和 GitHub 服务已接入，这些还没有 |
+| 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务和应用索引已接入，这些还没有 |
 | 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
 | 除 `spikes/render` 以外的技术验证最小程序 | `spikes/<名称>` |
 | Everything SDK 的许可说明 | `third_party/`。Unihan 的许可说明已经放入 |
@@ -152,6 +152,10 @@ Lanwork/
 
 应用来源：当前用户和公共开始菜单、注册表 App Paths、PATH、商店应用、用户添加的便携应用和别名。按启动目标去重。快捷方式保留参数和工作目录。启动时先加载缓存，再在后台更新。目录变化合并后再重建；注册表、商店应用和手动刷新按来源更新。
 
+应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用和别名的入口与存储、手动刷新的界面入口仍等规格缺口 #9 第 1、2 项；`AppIndex::refresh` 只是进程内重建，没有产品入口。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
+
+下面是当前实现选择，不是产品规则。PATH 上的 UNC 目录跳过，避免一个断开的网络路径挡住其余来源。开始菜单目录变化的安静时间是 400ms，另有 2 秒上限，到点就重建开始菜单来源。`apps.json` 的 `schemaVersion` 不是 1 时，和无法解析一样隔离成 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，日志不含文件内容。这和数据目录里不认识的 `schemaVersion` 不隔离不同，因为这份缓存可以重建。读取缓存时的 IO 错误只记日志，不改名。
+
 待办与便签索引常驻内存，由写盘成功后的变更消息增量更新，查询时不读盘。只收未完成待办的标题，以及不在回收站中的便签的标题、标签和正文。
 
 预计算中文、英文、别名、英文模糊匹配、拼音和首字母。拼音和首字母只用于应用名、待办标题、便签标题和标签；便签正文只做原文子串匹配。拼音表使用固定版本的 Unicode Unihan，读音取 `kMandarin` 与 `kHanyuPinyin` 的并集，去掉声调后去重，并带许可说明。`kMandarin` 只有常用读音，单独使用会漏掉多音字。不做双拼，不按词义猜测读音。查询使用共享索引。
@@ -160,7 +164,7 @@ Lanwork/
 
 ### 匹配引擎
 
-应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。文件名不走这张拼音表。应用枚举、文件索引和查询调度还没接；它们以后调用同一个 `prepare` 和 `query_prepared`。
+应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。文件名不走这张拼音表。应用索引查询应用名时已经调用 `MatchIndex`（内部是 `prepare` 和 `query`）。文件索引和查询调度还没接；它们以后调用同一个 `prepare` 和 `query_prepared`。
 
 拼音表在构建 `lanwork-core` 时生成，查询时不下载、不解析 Unihan 原文，也不把查询里的汉字转成拼音。
 
