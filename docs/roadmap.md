@@ -1,6 +1,6 @@
 # 实现状态
 
-行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。下表各项仍全部未实现：技术验证没有通过记录，搜索条界面、日期解析和提交也还没有代码。
+行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`）；星期、下周和月底的边界仍等产品规格写明。下表各项仍全部未实现：技术验证没有通过记录，搜索条界面和收集提交也还没有代码。
 
 ## 技术验证
 

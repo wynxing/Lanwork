@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search::classify_prefix`（`crates/core/src/search.rs`）：搜索条整段输入的前缀分类。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search::classify_prefix`（`crates/core/src/search.rs`）：搜索条整段输入的前缀分类。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储和其他服务还没有。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `third_party/` | 第三方许可说明的目录。当前没有许可文件。 |
@@ -17,7 +17,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 数据目录、原子写入、待办、便签、收纳、GitHub 与搜索索引等服务 | `crates/core` |
+| 数据目录、原子写入、待办服务、便签、收纳、GitHub 与搜索索引等服务 | `crates/core` |
 | 命令层、Win32 集成、搜索条、面板和其他界面 | `crates/app` |
 | 各项技术验证的最小程序 | `spikes/<名称>` |
 | Unihan、Everything SDK 等许可说明 | `third_party/` |
@@ -113,7 +113,7 @@ Lanwork/
 
 Everything 未运行或未就绪时，退回 Windows Search 索引。查询只匹配文件名，不匹配正文和属性，范围是 Windows 已建立索引的位置。Windows Search 服务不可用时报告文件索引不可用。Everything 恢复就绪后，下一次查询改回 Everything。两种来源都不复制全盘索引。有效 `http` / `https` 成为浏览器动作，无效地址丢弃。打开交给 Windows Shell。
 
-搜索条的输入先经 `lanwork_core::search::classify_prefix` 判断收集前缀。该函数只区分空输入、搜索、待办收集和便签收集，并给出前缀之后的剩余文本与是否可提交；不解析日期、不创建记录、不入查询队列。面板搜索框不调用它。命中前缀时不进入查询队列，尚未返回的查询结果丢弃，只做日期前缀解析和预览；未提交的收集文本保存在内存里，退出进程时不保留。
+搜索条的输入先经 `lanwork_core::search::classify_prefix` 判断收集前缀。该函数只区分空输入、搜索、待办收集和便签收集，并给出前缀之后的剩余文本与是否可提交；不解析日期、不创建记录、不入查询队列。面板搜索框不调用它。待办收集的剩余文本再交给 `parse_todo_due_prefix`，今天的日期由调用方传入。命中前缀时不进入查询队列，尚未返回的查询结果丢弃，只做日期前缀解析和预览；未提交的收集文本保存在内存里，退出进程时不保留。
 
 查询队列只保留一个待处理请求，新输入替换旧请求。每次查询有序号，过期序号的结果必须丢弃。应用、待办和便签结果先返回。最后一次输入后 60ms 内没有新输入，才向 Everything 或 Windows Search 发请求并合并结果。每次最多接收 50 条，界面最多显示 20 条。只为可见项取图标。图标缓存同时不超过 128 项和 8 MiB，搜索和收纳共用。
 
