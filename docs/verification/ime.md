@@ -22,7 +22,7 @@ GPU 与驱动：
 
 `[System.Windows.Forms.Screen]::AllScreens` 只返回 `\\.\DISPLAY1`，主显示器，边界 1280×800。`GetDpiForMonitor` 的有效 DPI 是 96，即 100%。这次自动检查没有看到第二块显示器，也没有看到 150% 缩放。
 
-构建配置：debug。编译器 `rustc 1.99.0 (b940084d7 2026-09-28)`。命令是 `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`，以及下面的启动检查。没有设置 `SLINT_BACKEND`。
+构建配置：debug。编译器 `rustc 1.99.0 (b940084d7 2026-09-28)`。并入当前 `origin/main` 之后又跑了 `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test`。没有设置 `SLINT_BACKEND`。
 
 该项尚未通过。下面每个通过条件仍是「未测」。按 architecture.md，全部条件都通过才算这项通过。
 
@@ -129,9 +129,10 @@ cargo run -p ime
 
 | 核对 | 结果 |
 | --- | --- |
-| `cargo fmt --all -- --check` | 退出码 0 |
-| `cargo clippy --all-targets -- -D warnings` | 退出码 0 |
-| `cargo test` | 退出码 0。`ime` 4 项通过，`lanwork-core` 1 项通过 |
+| `cargo fmt --all -- --check` | 退出码 0。spike commit 上一次，并入 `origin/main` 的 merge commit `5c873138ddd9062db0a68802d90712a656e6f833` 上又一次 |
+| `cargo clippy --all-targets -- -D warnings` | 退出码 0。同上，两次 |
+| `cargo test`（spike commit `93b01db`） | 退出码 0。`ime` 4 项通过，当时的 `lanwork-core` 1 项通过 |
+| `cargo test`（merge commit 之后的工作区） | `ime` 4 项通过。其余测试通过。`crates/core/tests/disk_full.rs` 未跑完：本机会话不是管理员，`diskpart` 返回错误 740（请求的操作需要提升），测试进程以 `0xc0000409` 退出。该测试来自 main，要提升权限才能创建 VHD。Windows CI 的 runner 有管理员权限，以那次结果为准 |
 | `LANWORK_IME_SPIKE_SMOKE=1` 运行 `target\debug\ime.exe` | 退出码 0。标准错误打印 `启动 Slint 1.18.1 构建 debug SLINT_BACKEND=未设置`。进程创建了窗口并离开事件循环。没有看屏幕，没有输入文字 |
 
 `TextInput.preedit-text` 能在 `.slint` 里绑定：`spikes/ime/ui/main.slint` 绑定了它，并且 `cargo build -p ime` 成功。Slint 1.18.1 的内建元素把该属性标成内部、未写入文档、只为输入法暴露。
