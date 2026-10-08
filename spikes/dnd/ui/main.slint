@@ -1,0 +1,168 @@
+export global Api {
+    pure callback file-transfer() -> data-transfer;
+    pure callback accepts(data-transfer) -> bool;
+    pure callback describe(data-transfer) -> string;
+    callback ole-press(int, length, length);
+    callback ole-move(int, length, length);
+    callback ole-release();
+}
+
+export component MainWindow inherits Window {
+    title: "拖放验证";
+    width: 780px;
+    height: 680px;
+    background: #1e1e1e;
+
+    in-out property <[string]> rows: [];
+    in-out property <bool> request-move: false;
+    in-out property <string> log: "";
+    in-out property <string> status: "";
+
+    out property <length> ole-x: ole-zone.absolute-position.x;
+    out property <length> ole-y: ole-zone.absolute-position.y;
+    out property <length> ole-w: ole-zone.width;
+    out property <length> ole-h: ole-zone.height;
+
+    out property <length> slint-drag-x: slint-source.absolute-position.x;
+    out property <length> slint-drag-y: slint-source.absolute-position.y;
+    out property <length> slint-drag-w: slint-source.width;
+    out property <length> slint-drag-h: slint-source.height;
+
+    out property <length> slint-drop-x: slint-target.absolute-position.x;
+    out property <length> slint-drop-y: slint-target.absolute-position.y;
+    out property <length> slint-drop-w: slint-target.width;
+    out property <length> slint-drop-h: slint-target.height;
+
+    out property <bool> slint-dragging: source-drag.dragging;
+    in-out property <bool> slint-got-drop: false;
+    in-out property <string> slint-dropped: "";
+    in-out property <bool> slint-finished: false;
+    in-out property <DragAction> slint-finished-action: DragAction.none;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            text: root.status;
+            color: #dddddd;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            height: 120px;
+
+            slint-source := Rectangle {
+                background: #3a5a40;
+                width: 50%;
+                source-drag := DragArea {
+                    width: 100%;
+                    height: 100%;
+                    allow-copy: true;
+                    allow-move: false;
+                    allow-link: true;
+                    data: Api.file-transfer();
+                    drag-finished(action) => {
+                        root.slint-finished = true;
+                        root.slint-finished-action = action;
+                    }
+                    Text {
+                        text: "Slint 拖出";
+                        color: #ffffff;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            slint-target := Rectangle {
+                background: slint-drop.has-drag ? #2d6a4f : #3d405b;
+                width: 50%;
+                slint-drop := DropArea {
+                    width: 100%;
+                    height: 100%;
+                    can-drop(event) => {
+                        if !Api.accepts(event.data) {
+                            DragAction.none
+                        } else if root.request-move {
+                            DragAction.move
+                        } else {
+                            event.proposed-action
+                        }
+                    }
+                    dropped(event) => {
+                        root.slint-got-drop = true;
+                        root.slint-dropped = Api.describe(event.data);
+                        event.proposed-action
+                    }
+                    Text {
+                        text: "Slint 放下";
+                        color: #ffffff;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        ole-zone := Rectangle {
+            background: #9b2226;
+            height: 110px;
+            Text {
+                text: "OLE 拖入";
+                color: #ffffff;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: "OLE 拖出";
+            color: #dddddd;
+        }
+
+        Flickable {
+            height: 150px;
+            VerticalLayout {
+                for path[i] in root.rows: Rectangle {
+                    height: 28px;
+                    background: ta.has-hover ? #333333 : #2a2a2a;
+                    ta := TouchArea {
+                        pointer-event(event) => {
+                            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                Api.ole-press(i, ta.mouse-x, ta.mouse-y);
+                            }
+                            if (event.kind == PointerEventKind.move && ta.pressed) {
+                                Api.ole-move(i, ta.mouse-x, ta.mouse-y);
+                            }
+                            if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                                Api.ole-release();
+                            }
+                        }
+                    }
+                    Text {
+                        x: 8px;
+                        text: path;
+                        color: #eeeeee;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        width: parent.width - 8px;
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: "记录";
+            color: #dddddd;
+        }
+
+        Text {
+            text: root.log;
+            color: #f1faee;
+            wrap: word-wrap;
+            height: 140px;
+        }
+    }
+}

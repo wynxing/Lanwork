@@ -1,6 +1,6 @@
 # 实现状态
 
-行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`），包括已写入产品规格的星期、下周和月底边界。规格缺口 #9 的第 4 项和第 7 项已定，其余项仍待定。便签服务在 `crates/core`（`lanwork_core::notes`）。待办服务在 `crates/core`（`lanwork_core::todos`）：清单、收件箱、周期、软删除与恢复、当前标记、处理模式和跨清单移动已有代码；永久删除、原清单不存在时的恢复，以及短月没有对应日、在截止日当天完成是否再生成，仍等产品规格。收纳服务在 `crates/core`（`lanwork_core::shelves`）：分组、路径引用、去重、待办关联和存在性检查已有代码。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍等产品规格。残留关联 id 在读取时视为无关联，并在下次写该分组时清除；该清除在永久删除落地时实现。GitHub 服务在 `crates/core`（`lanwork_core::github`）：本机 `gh` 的探测与调用、watchlist、刷新与快照、长期未更新和 Draft、转为待办、隐藏规则和来源同步已有代码。追踪仓库的添加与移除等 #9 第 17 项，以及需要处理、需要 Review、CI 失败和筛选组合等 #9 第 18 项，仍等产品规格。应用索引在 `crates/core` 的 `apps`。便携应用、别名和手动刷新入口仍等规格。测量工具的代码已在仓库中，协议记录仍空着。Everything 与 Windows Search 的记录见下表，其余技术验证项没有通过记录。搜索条界面、待办界面、收纳界面和收集提交也还没有代码。界面表里的各项仍全部未实现。
+行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`），包括已写入产品规格的星期、下周和月底边界。规格缺口 #9 的第 4 项和第 7 项已定，其余项仍待定。便签服务在 `crates/core`（`lanwork_core::notes`）。待办服务在 `crates/core`（`lanwork_core::todos`）：清单、收件箱、周期、软删除与恢复、当前标记、处理模式和跨清单移动已有代码；永久删除、原清单不存在时的恢复，以及短月没有对应日、在截止日当天完成是否再生成，仍等产品规格。收纳服务在 `crates/core`（`lanwork_core::shelves`）：分组、路径引用、去重、待办关联和存在性检查已有代码。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍等产品规格。残留关联 id 在读取时视为无关联，并在下次写该分组时清除；该清除在永久删除落地时实现。GitHub 服务在 `crates/core`（`lanwork_core::github`）：本机 `gh` 的探测与调用、watchlist、刷新与快照、长期未更新和 Draft、转为待办、隐藏规则和来源同步已有代码。追踪仓库的添加与移除等 #9 第 17 项，以及需要处理、需要 Review、CI 失败和筛选组合等 #9 第 18 项，仍等产品规格。应用索引在 `crates/core` 的 `apps`。便携应用、别名和手动刷新入口仍等规格。测量工具的代码已在仓库中，协议记录仍空着。Everything 与 Windows Search 的记录见下表。外部拖放有一份未通过的验证记录，资源管理器方向的通过条件留空。其余技术验证项没有通过记录。搜索条界面、待办界面、收纳界面和收集提交也还没有代码。界面表里的各项仍全部未实现。
 
 ## 测量工具
 
@@ -19,7 +19,7 @@
 | 中文输入法 | [记录](verification/ime.md)。100% 缩放下用户报告单行、多行、候选窗、拖动后的候选窗、Enter 和数字键没有问题。150% 未测，该项未通过 |
 | 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，FemtoVG、软件渲染、Skia 软件、Skia OpenGL 的窗口都是磨砂、能透出背景、没有黑色客户区。系统浅色/深色主题切换通过，深色下也清楚。关闭/打开「透明效果」通过。节电模式通过。渲染器未选定，这一项仍未通过。真实透明渲染失败没有新的记录。独立显卡机器未测。观察（不是失败判定）：自定义标题栏导致窗口拖不动；有两个关闭按钮 |
 | 渲染器 | 部分记录，未通过。同上。2026-10-09 四种窗口的文字清楚（含中文和 0OIl1）。没有选定渲染器，也没有写进 architecture.md「运行时」。独立显卡机器未测 |
-| 外部拖放 | 无 |
+| 外部拖放 | 未通过。记录见下方「外部拖放」。资源管理器方向的通过条件留空，等人工填写。 |
 | Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
 | Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。`WSearch` 停止时的错误码未测 |
 | 通知 | 有记录，未通过。见下方「通知（#7）」 |
@@ -154,3 +154,65 @@
 | 收纳服务 | 有。`lanwork_core::shelves`：分组、路径引用、去重、待办关联、存在性检查。服务不移动、不复制、不删除用户文件。已有分组但未指定目标、再次关联另一条待办是拒绝还是替换、关联到尚不存在的待办 id，仍待定。残留关联 id 在读取时视为无关联，并在下次写该分组时清除；该清除在永久删除落地时实现。存在性检查每条路径的上限是 2 秒 |
 | GitHub 服务 | 有。`lanwork_core::github`：`gh` 探测与调用、watchlist、刷新与快照、长期未更新、Draft、转为待办、隐藏规则、来源同步。添加和移除追踪仓库等 #9 第 17 项，需要处理、需要 Review、CI 失败和筛选组合等 #9 第 18 项，仍等产品规格。界面仍无 |
 | 应用索引 | 有。`crates/core` 的 `apps`：开始菜单、App Paths、PATH、商店应用、去重、缓存和启动。便携应用和别名、手动刷新的界面入口等规格缺口 #9 第 1、2 项 |
+
+## 外部拖放
+
+结论：**未通过**。七条通过条件都要人工用鼠标对资源管理器操作，结果栏留空。自动化观察到的内容写在后面，不充当这七条的「通过」。按 [#33](https://github.com/wynxing/Lanwork/issues/33)，不是每一条都通过就不算该项通过，因此不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
+
+- 日期：2026-10-08
+- commit：自动化在写入本哈希之前的工作树上通过，哈希见下一笔提交
+- Slint：1.18.1（workspace 依赖 `=1.18.1`）。验证程序额外打开 feature `raw-window-handle-06`。默认 features 含 `backend-winit`、`renderer-femtovg`、`renderer-software`，不代表产品已选定渲染器
+- 渲染器：`GraphicsAPI::NativeOpenGL`（FemtoVG 的 OpenGL 路径被选中）。窗口缩放 1.5
+- 机器：DESKTOP-7C3P6OG，XIAOMI REDMI Book 14 2025 (FHD+)
+- Windows：标题为 Windows 11 家庭中文版。`RtlGetVersion` 返回 10.0.26300，status=0。注册表 `DisplayVersion=26H2`，`CurrentBuild=26300`，`UBR=9550`。`ProductName` 仍是 Windows 10 Home China
+- GPU 与驱动：PCI 设备 Intel(R) UHD Graphics，驱动 32.0.101.6733，日期 2025-04-02。同机还有两块虚拟显示：Virtual Display Driver 11.30.4.434（2024-12-24），GameViewer Virtual Display Adapter 15.6.5.199（2026-02-28）。没有判断哪一块在合成这个窗口
+- 构建：debug。命令 `cargo run -p dnd -- --self-test`，退出码 0。Rust 1.99.0（b940084d7 2026-09-28），host `x86_64-pc-windows-msvc`
+
+### 通过条件
+
+结果留空。请按步骤做完后，只把亲眼看到的写成「通过」或「失败」。
+
+| 条件 | 结果 |
+| --- | --- |
+| 拖入的多个路径全部拿到 |  |
+| 拖出到资源管理器产生副本或快捷方式 |  |
+| 同盘拖出不移动原文件 |  |
+| 拖入 .lnk 时保留快捷方式本身的路径 |  |
+| 超过 260 字符的长路径也能拿到 |  |
+| 拖出过程中按 Esc 取消，原文件不变、没有残留 |  |
+| 反复拖放 100 次，句柄数不持续增加 |  |
+
+另有一条不在上面七条里，同样留空：从资源管理器把文件拖到 Slint 的「Slint 放下」区域，Slint 是否拿到路径。源码上 winit 后端不把外部放下交给 `DropArea`，但没有用鼠标确认。
+
+### 人工步骤
+
+在仓库根目录执行。样本由程序写到 `%TEMP%\lanwork-dnd-spike`，不要改用户文档目录。控制台每一行以 `dnd:` 开头。本机 `SM_CXDRAG=4`、`SM_CYDRAG=4`，缩放 1.5，所以要拖过大约 4 个物理像素才开始 OLE 拖出。
+
+1. `cargo run -p dnd -- --ole`。等窗口「拖放验证」出现，并看到 `registration-how=RevokeDragDrop then RegisterDragDrop`，且 `our-pointer` 与 `prop` 相同。
+2. 打开 `%TEMP%\lanwork-dnd-spike`。同时选中 `readme.txt` 和 `folder`，拖进红色「OLE 拖入」矩形。控制台应有一行 `drop effect=1 paths=...`，两个路径都在，顺序不限。矩形外松手应没有这条 drop，光标不是复制。把看到的写入第一条。
+3. 在窗口下方列表按住 `readme.txt`，拖到同一磁盘的一个文件夹，松手时选择复制。原文件还在样本目录，目标里有副本。再拖一次，松手时选择创建快捷方式。目标里出现快捷方式，原文件仍在。不要选移动；如果资源管理器只给出移动，记失败。写入第二、三条。
+4. 把 `shortcut.lnk` 拖进红色矩形。`paths=` 里必须是 `shortcut.lnk` 自己的路径，不能变成 `readme.txt`。写入第四条。
+5. 把 `long.txt` 拖进红色矩形。控制台里的路径应仍是样本目录下那段嵌套路径，UTF-16 长度大于 260。若拖出列表里的 `long.txt` 时控制台出现 `ole-drag-error` 或 `0x8007007A`，把原文记下，第五条不要写成通过。写入第五条。
+6. 按住 `readme.txt` 拖出窗口，还没松手时按 Esc。样本目录里的 `readme.txt` 还在，目标里没有多出来的文件或半成品。写入第六条。
+7. 在红色矩形和同一文件夹之间来回拖放，合计 100 次（拖入和拖出都算）。开始前抄下控制台里的 `handles=`，每 20 次再抄一次。数字可以波动，但不能一路涨。写入第七条。
+8. 关掉窗口。另开 `cargo run -p dnd -- --slint`。从资源管理器把 `readme.txt` 拖到「Slint 放下」。窗口「记录」和 `paths` 有没有出现路径，写在七条之外的那一行。这一步不代替上面的 OLE 拖入。
+
+### 自动化已经看到的（不是上面七条的通过）
+
+`cargo run -p dnd -- --self-test` 退出码 0。
+
+- 调用 `OleInitialize` 之前，以及 `--probe-no-ole` 在 `MainWindow::new` 之后、进入事件循环之前：`CoGetApartmentType` 为 `0x800401F0`（尚未 `CoInitialize`）。
+- 进入 winit 事件循环后，以及本进程调用 `OleInitialize` 之后：`APTTYPE(3)` 即 `APTTYPE_MAINSTA`，qualifier 0。这是主 STA，不是 MTA。
+- 未替换目标时，`RegisterDragDrop` 返回 already-registered。winit 0.30.13 的 `create_window_data` 在 `drag_and_drop` 为真时 `OleInitialize` 并注册 `FileDropHandler`。
+- 替换后：`registration-how=RevokeDragDrop then RegisterDragDrop`，`our-pointer` 与 `prop` 同为 `0x2b94b473a58`，再次注册仍是 already-registered。
+- `SM_CXDRAG=4`，`SM_CYDRAG=4`。判定是物理像素位移严格大于这两个值。Slint 窗口内阈值是另一套：`DISTANCE_THRESHOLD` 为 8 逻辑像素。
+- Shell `IDataObject` 往返：`readme.txt`、`folder`、`shortcut.lnk` 三个路径原样返回，快捷方式没有被解析成目标。
+- 同一接口对 269 个 UTF-16 单元的 `long.txt` 调用 `GetData(CF_HDROP)` 失败：`0x8007007A`（数据区域太小）。
+- 自己组的 `CF_HDROP` 能读回该长路径和 `shortcut.lnk`，长路径未被截断。
+- 连续 100 次创建 Shell `IDataObject` 并读回 `CF_HDROP`：`handles=299` 前后相同，`gdi=0`，`user=2`。这不是资源管理器拖放 100 次。
+- `IDropSource::QueryContinueDrag` 在强制取消时返回 `0x40101`（`DRAGDROP_S_CANCEL`）。没有调用 `DoDragDrop`。
+- 窗口内 `dispatch_event`：从「Slint 拖出」拖到「Slint 放下」得到 `got=true`、`action=Copy`、文本为 `readme.txt`。目标改要移动后 `got=false`、`action=None`。这不是拖到资源管理器。
+
+### 和 #27 的选择
+
+收纳的外部拖放用原生 OLE，不改用 Slint `DragArea` / `DropArea`。窗口内拖放可用，但 winit 不实现 `start_drag`，窗口句柄上的放下目标也是 winit 的。替换目标的做法已经在本机注册成功。资源管理器是否给出复制和快捷方式、是否会在同盘变成移动、长路径和 Esc、句柄是否上涨，都还要上面的人工步骤。`crates/app` 里不写收纳界面。

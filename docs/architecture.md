@@ -15,6 +15,7 @@
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。测量记录还不能当作渲染器已经选定。 |
 | `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。两种方案都在，机制没有选定。记录见 `docs/measurements/2026-10-08-hotcorner.md`。 |
 | `spikes/toast` | 通知技术验证的最小程序。只验证注册、显示、点击参数和模拟面板定位，不进发布包，也不被 `lanwork` 依赖。运行命令写在 `spikes/README.md`。验证记录没有全部通过之前，待办界面不调用它。 |
+| `spikes/dnd` | 外部拖放验证程序，包名 `dnd`。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `docs/measurements/2026-10-08-hotcorner.md` | 热角 spike 的实机记录。不是「性能测量」协议的验收。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
@@ -28,7 +29,7 @@
 | --- | --- |
 | 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务和应用索引已接入，这些还没有 |
 | 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
-| 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner` 与 `spikes/toast` 已经在 |
+| 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
 | 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
 
 ## 技术验证
@@ -59,7 +60,7 @@
 - 界面调用薄命令。命令做校验，业务规则在服务中。需要保存的数据先原子写入，成功后再向本进程已打开的窗口发变更消息。非法输入返回明确错误。单进程、单写者。
 - 中文输入法能在搜索条、面板搜索框、待办标题和便签正文中上屏。做不到这一点时，界面方案不成立，不能改用「只支持英文」通过验收。
 - 搜索条和面板在启动时创建并保持隐藏，以满足热召回目标；隐藏中不做整页重绘。快速收集是搜索条的一种输入状态，不另建窗口。便签悬浮窗、番茄钟在使用时创建，关闭时释放文本、图标和绘图资源。到期提醒的调度保留在主进程里。
-- Slint 1.17 的 `DragArea` / `DropArea` 只在应用内部生效。固定版本是否支持与资源管理器之间的拖放，由技术验证确定；不支持时，收纳的外部拖入和拖出由原生适配层实现，见「收纳」。
+- Slint 1.18.1 编进本仓库的 winit 后端没有实现 `start_drag`（`i-slint-backend-winit` 1.18.1 的 `WinitWindowAdapter` 只实现了 `start_window_move`；`WindowAdapterInternal::start_drag` 的默认实现返回 false）。因此 `DragArea` 的拖动留在窗口内。`spikes/dnd` 用 `dispatch_event` 观察到：同一窗口里文件路径以复制放下，目标要求移动时放下被拒绝。winit 0.30.13 创建窗口时调用 `OleInitialize` 并 `RegisterDragDrop` 注册自己的 `FileDropHandler`；探针在我们注册之前得到 already-registered。资源管理器方向还没有人工鼠标结果，外部拖放仍按「收纳」的原生 OLE 实现，不改用 Slint。
 - 托盘先用 Slint 自带的托盘图标；菜单或逾期徽标做不到时改用 Win32 `Shell_NotifyIcon`。
 - 热角检测机制由技术验证在低级鼠标钩子和定时读取光标位置之间选定。用钩子时，回调只投递消息，不做计算。
 - `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。这次没有选定机制。
@@ -293,11 +294,12 @@ Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提�
 
 ### 拖放
 
-下面是原生 OLE 方案。技术验证若确认固定版本 Slint 自带的拖放满足全部条件，改用 Slint 并更新本节。
+外部拖入和拖出用原生 OLE。Slint 1.18.1 的窗口内拖放不能代替它，原因见「运行时」。资源管理器方向的通过条件还没有人工结果，该项未通过。下面是 `spikes/dnd` 里已经观察到的做法。
 
-- 拖入：在面板窗口句柄上注册 OLE `IDropTarget`（`RegisterDragDrop`），只在收纳标签显示时接受 `CF_HDROP`，其他标签返回 `DROPEFFECT_NONE`。窗口库已经注册了自己的拖放目标时，先关闭它再注册。
-- 拖出：由 Shell 为原路径生成 `IDataObject`，调用 `DoDragDrop`，允许的效果只有 `DROPEFFECT_COPY | DROPEFFECT_LINK`。
-- 路径是否存在只对可见条目调用上面的 `check_exists`，结果回到界面线程更新。
+- 拖入：事件循环线程调用 `OleInitialize`。本机该线程是 `APTTYPE_MAINSTA`（主 STA），不是 MTA。`MainWindow::new` 之前 COM 尚未初始化；进入 winit 事件循环后由 winit 初始化。拿到 HWND 后 `RegisterDragDrop` 返回 `DRAGDROP_E_ALREADYREGISTERED`，于是 `RevokeDragDrop` 再注册自己的 `IDropTarget`。注册之后窗口属性 `OleDropTargetInterface` 的指针与自己的接口相同。只接受 `CF_HDROP`。指针在收纳区域外返回 `DROPEFFECT_NONE`；区域内只从源提供的效果里选复制，其次快捷方式，不返回移动。验证程序没有标签，用一个矩形代替收纳区域，区域外的判定有单元测试。产品里仍只在收纳标签显示时接受放下。
+- 拖出：按下后，物理像素位移严格超过 `SM_CXDRAG` 或 `SM_CYDRAG` 才调用 `DoDragDrop`。`IDataObject` 用 `IShellItemArray::BindToHandler(BHID_DataObject)`。允许的效果只有 `DROPEFFECT_COPY | DROPEFFECT_LINK`。取消由 `IDropSource::QueryContinueDrag` 返回 `DRAGDROP_S_CANCEL`。自动化没有调用 `DoDragDrop`：它要等键盘或鼠标状态变化才会第一次询问是否继续，调用会作用到光标下的窗口。
+- 不解析 `.lnk`。合成的 `CF_HDROP` 能读回超过 260 个 UTF-16 单元的路径。Shell 的 `IDataObject` 对验证程序里那条 269 单元路径调用 `GetData(CF_HDROP)` 返回 `0x8007007A`。这条路径从资源管理器拖入、拖出是否成功，以人工记录为准。
+- 路径是否存在只对可见条目调用上面的 `check_exists`，结果回到界面线程更新。不监视文件系统。
 - 不实现物理文件夹同步、文件操作撤销栈和桌面嵌入。
 
 ## 更新
