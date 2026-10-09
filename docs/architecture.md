@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已删除时回到默认清单、每月 31 日在小月落到月末、重复截止日当天不再生成，可见行为已写入产品规格；这些路径尚未按规格实现。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除、信号与筛选的可见行为已写入产品规格，服务尚未按规格实现。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引、查询调度与搜索索引尚未接入。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已删除时回到默认清单、每月 31 日在小月落到月末、重复截止日当天不再生成，可见行为已写入产品规格；这些路径尚未按规格实现。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除、信号与筛选的可见行为已写入产品规格，服务尚未按规格实现。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度与搜索索引尚未接入。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条宿主和面板宿主。搜索条和面板的可见内容还没有。见「程序外壳」。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
@@ -27,7 +27,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务、应用索引和配置已接入，这些还没有 |
+| 查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务、应用索引、配置和文件索引已接入，这两项还没有 |
 | 搜索条、面板和其他界面 | `crates/app`。程序外壳已接入。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core`。热角的 50ms 轮询还没有接上 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
@@ -233,7 +233,7 @@ Lanwork/
 
 ### 匹配引擎
 
-应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。文件名不走这张拼音表。应用索引查询应用名时已经调用 `MatchIndex`（内部是 `prepare` 和 `query`）。文件索引和查询调度还没接；它们以后调用同一个 `prepare` 和 `query_prepared`。
+应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。文件名不走这张拼音表。应用索引查询应用名时已经调用 `MatchIndex`（内部是 `prepare` 和 `query`）。文件索引在 `lanwork_core::files`，不调用 `prepare`。查询调度还没接；它以后对应用、待办和便签调用同一个 `prepare` 和 `query_prepared`。
 
 拼音表在构建 `lanwork-core` 时生成，查询时不下载、不解析 Unihan 原文，也不把查询里的汉字转成拼音。
 
@@ -280,6 +280,16 @@ Lanwork/
 Everything 未运行或未就绪时，退回 Windows Search 索引。查询只匹配文件名，不匹配正文和属性，范围是 Windows 已建立索引的位置。Windows Search 服务不可用时报告文件索引不可用。Everything 恢复就绪后，下一次查询改回 Everything。两种来源都不复制全盘索引。有效 `http` / `https` 成为浏览器动作，无效地址丢弃。打开交给 Windows Shell。
 
 Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提供程序 `Search.CollatorDSO.1`，SQL 含 `System.FileName LIKE`，`TOP` 不超过 50。匹配方式（子串、前缀或整名，以及查询里的 `*`、`?` 和 `LIKE` 的 `%`、`_` 是否同义）待定；产品规格只写到按名称。`ISearchQueryHelper::GenerateSQLFromUserQuery` 的默认语句是 `CONTAINS(*)`，会返回正文命中，不作为产品查询。`ISearchManager` 只用来对照 SQL 和列出索引根。这次做法只说明技术验证里测通的调用，不表示「性能测量」的 P95 已经达到。
+
+文件索引服务在 `lanwork_core::files`，薄命令是 `FileCommands`。界面尚未调用。查询队列、60ms 等待、过期序号和分组合并不在这里；`query` 只把调用方传入的序号原样带回。
+
+每次查询前先检查 Everything，再决定要不要问 Windows Search。状态只有就绪、未就绪、未运行。Windows Search 只有可用、不可用。1.5 的 DLL 能连上但数据库还在加载时是未就绪，不再改问 1.4。1.5 未运行时才探测 1.4。1.5 先连未命名实例，管道不存在再连 `1.5a`。已经连上的客户端在下次查询前只调用 `IsDBLoaded`。探测失败按未运行，日志写服务端版本；读不到时写「未知」，不把 `GetLastError` 的 0 改写成管道不存在。DLL 缺失记一条日志，Everything 按未运行。两个 DLL 都按文件名放在程序目录：`Everything3_x64.dll`、`Everything64.dll`。开发构建在程序目录找不到时，再找仓库 `third_party/everything/`。发布构建不回退到编译机路径。不为查询启动进程，也不复制索引。
+
+Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `ISearchManager` 读到就用那条，否则用 `Provider=Search.CollatorDSO.1`。服务状态不是正在运行时记为不可用，不打开连接。状态读不到时仍尝试查询。查询失败时同样记为不可用，日志可以带 HRESULT；空的异常 `message` 不作为界面说明。两者都不可用时，结果上的说明只有「文件索引不可用」。查询成功但没有命中是空列表，不是这句说明。`System.ItemType` 等于 `Directory` 标成文件夹，其余标成文件。这是当前实现选择。匹配方式仍待定。
+
+状态检查为就绪但这次查询调用失败时，本次改走 Windows Search，并记日志。规格没有单独写这一步。`Everything3_ConnectW` 在数据库加载时可能长时间不返回，规格没有超时，这里不加。只有 `WSearch` 正在运行才当作可用；正在启动算不算可用，规格没写。
+
+程序目录还要带上两份许可，文件名是 `Everything-SDK3-LICENSE.txt`、`Everything-SDK-LICENSE.txt`，来源是 `third_party/everything/` 里对应的 `LICENSE.txt`。安装程序还没做，拷贝不在本服务里。清单是 `PROGRAM_DIRECTORY_FILES`。
 
 搜索条的输入先经 `lanwork_core::search::classify_prefix` 判断收集前缀。该函数只区分空输入、搜索、待办收集和便签收集，并给出前缀之后的剩余文本与是否可提交；不解析日期、不创建记录、不入查询队列。面板搜索框不调用它。待办收集的剩余文本再交给 `parse_todo_due_prefix`，今天的日期由调用方传入。命中前缀时不进入查询队列，尚未返回的查询结果丢弃，只做日期前缀解析和预览；未提交的收集文本保存在内存里，退出进程时不保留。
 
