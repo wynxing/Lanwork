@@ -207,6 +207,11 @@ impl Store {
         self.inner.data_dir.join("backups")
     }
 
+    /// 便携应用、别名和隐藏名单。路径固定为数据目录下的 `user-apps.json`。
+    pub fn user_apps_path(&self) -> PathBuf {
+        self.inner.data_dir.join("user-apps.json")
+    }
+
     pub fn log_path(&self) -> &Path {
         self.inner.log.path()
     }
@@ -348,32 +353,39 @@ impl Store {
     }
 
     pub fn write_import_pending(&self, backup: &Path) -> Result<(), Error> {
-        if !backup.is_absolute() {
-            return Err(Error::ImportPending {
-                message: "备份路径不是绝对路径",
-            });
-        }
-        let text = backup.to_str().ok_or(Error::ImportPending {
-            message: "备份路径不是 UTF-8",
-        })?;
-        if text.is_empty() || text.contains('\n') || text.contains('\r') {
-            return Err(Error::ImportPending {
-                message: "备份路径无效",
-            });
-        }
-        let mut bytes = text.as_bytes().to_vec();
-        bytes.push(b'\n');
-        let path = self.import_pending_path();
+        let bytes = encode_import_pending(backup)?;
         let _guard = lock_mutex(&self.inner.write_lock);
+        self.write_import_pending_bytes(&bytes)
+    }
+
+    /// 调用方已经持有 [`Self::with_write_lock`]。不要再调用会获取写锁的方法。
+    pub(crate) fn write_import_pending_holding_lock(&self, backup: &Path) -> Result<(), Error> {
+        let bytes = encode_import_pending(backup)?;
+        self.write_import_pending_bytes(&bytes)
+    }
+
+    fn write_import_pending_bytes(&self, bytes: &[u8]) -> Result<(), Error> {
         self.inner.ensure_writable()?;
-        atomic_write(&path, &bytes).map_err(|source| Error::io(IoAction::Replace, path, source))
+        let path = self.import_pending_path();
+        atomic_write(&path, bytes).map_err(|source| Error::io(IoAction::Replace, path, source))
     }
 
     pub fn clear_import_pending(&self) -> Result<(), Error> {
-        let path = self.import_pending_path();
         let _guard = lock_mutex(&self.inner.write_lock);
+        self.clear_import_pending_holding_lock()
+    }
+
+    /// 调用方已经持有 [`Self::with_write_lock`]。
+    pub(crate) fn clear_import_pending_holding_lock(&self) -> Result<(), Error> {
         self.inner.ensure_writable()?;
+        let path = self.import_pending_path();
         fsutil::remove_file(&path).map_err(|source| Error::io(IoAction::Remove, path, source))
+    }
+
+    /// 持有写锁执行 `body`。`body` 不得再调用会获取这把写锁的方法。
+    pub(crate) fn with_write_lock<T>(&self, body: impl FnOnce() -> T) -> T {
+        let _guard = lock_mutex(&self.inner.write_lock);
+        body()
     }
 
     pub fn read_import_pending(&self) -> Result<Option<ImportPending>, Error> {
@@ -742,6 +754,25 @@ impl Drop for Batch<'_> {
     fn drop(&mut self) {
         self.guard.take();
     }
+}
+
+fn encode_import_pending(backup: &Path) -> Result<Vec<u8>, Error> {
+    if !backup.is_absolute() {
+        return Err(Error::ImportPending {
+            message: "备份路径不是绝对路径",
+        });
+    }
+    let text = backup.to_str().ok_or(Error::ImportPending {
+        message: "备份路径不是 UTF-8",
+    })?;
+    if text.is_empty() || text.contains('\n') || text.contains('\r') {
+        return Err(Error::ImportPending {
+            message: "备份路径无效",
+        });
+    }
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 fn document_path(data_dir: &Path, doc: &DocumentId) -> Result<PathBuf, Error> {

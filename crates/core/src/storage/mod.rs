@@ -39,6 +39,10 @@ pub use store::{
 };
 
 pub(crate) use atomic::atomic_write;
+pub(crate) use fsutil::{
+    DirEntry as FsDirEntry, create_dir_all as fs_create_dir_all, exists as fs_exists,
+    read as fs_read, read_dir as fs_read_dir, remove_file as fs_remove_file,
+};
 
 pub(crate) fn lock_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
