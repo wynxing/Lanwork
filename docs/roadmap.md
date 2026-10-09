@@ -1,6 +1,6 @@
 # 实现状态
 
-行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`），包括已写入产品规格的星期、下周和月底边界。规格缺口 #9 的各项可见行为已写入产品规格。便签服务在 `crates/core`（`lanwork_core::notes`）。待办服务在 `crates/core`（`lanwork_core::todos`）：清单、收件箱、周期、软删除与恢复、当前标记、处理模式和跨清单移动已有代码；永久删除只在回收站、保留 30 天后自动清除、原清单已删除时回到默认清单、每月 31 日在没有 31 日的月份落到该月最后一天、在重复截止日当天完成不再生成下一次，已写入产品规格；服务尚未按这些规则实现。收纳服务在 `crates/core`（`lanwork_core::shelves`）：分组、路径引用、去重、待办关联和存在性检查已有代码。关联待办时弹出搜索框并点击关联，已写入产品规格。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，产品规格仍未写。残留关联 id 在读取时视为无关联，并在下次写该分组时清除；该清除在永久删除落地时实现。GitHub 服务在 `crates/core`（`lanwork_core::github`）：本机 `gh` 的探测与调用、watchlist、刷新与快照、长期未更新和 Draft、转为待办、隐藏规则和来源同步已有代码。追踪仓库的添加与移除、筛选含义和并集组合已写入产品规格；服务尚未实现添加、移除和这些信号。应用索引在 `crates/core` 的 `apps`。便携应用、别名和手动刷新的入口已写入产品规格的设置「应用」页，界面尚未实现。测量工具的代码已在仓库中，协议记录仍空着。Everything 与 Windows Search 的记录见下表。外部拖放有一份未通过的验证记录。2026-10-09 10:56（UTC+8）在 `3311ecc` 上长路径拖入通过，走的是 `SHCreateShellItemArrayFromDataObject` 的退路；100 次句柄没有做完，`--slint` 拖放没有路径。其余技术验证项没有通过记录。搜索条界面、待办界面、收纳界面和收集提交也还没有代码。界面表里的各项仍全部未实现。
+行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`），包括已写入产品规格的星期、下周和月底边界。规格缺口 #9 的各项可见行为已写入产品规格。便签服务在 `crates/core`（`lanwork_core::notes`）。待办服务在 `crates/core`（`lanwork_core::todos`）：清单、收件箱、周期、软删除与恢复、当前标记、处理模式和跨清单移动已有代码；永久删除只在回收站、保留 30 天后自动清除、原清单已删除时回到默认清单、每月 31 日在没有 31 日的月份落到该月最后一天、在重复截止日当天完成不再生成下一次，已写入产品规格；服务尚未按这些规则实现。收纳服务在 `crates/core`（`lanwork_core::shelves`）：分组、路径引用、去重、待办关联和存在性检查已有代码。关联待办时弹出搜索框并点击关联，已写入产品规格。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，产品规格仍未写。残留关联 id 在读取时视为无关联，并在下次写该分组时清除；该清除在永久删除落地时实现。GitHub 服务在 `crates/core`（`lanwork_core::github`）：本机 `gh` 的探测与调用、watchlist、刷新与快照、长期未更新和 Draft、转为待办、隐藏规则和来源同步已有代码。追踪仓库的添加与移除、筛选含义和并集组合已写入产品规格；服务尚未实现添加、移除和这些信号。应用索引在 `crates/core` 的 `apps`。便携应用、别名和手动刷新的入口已写入产品规格的设置「应用」页，界面尚未实现。测量工具的代码已在仓库中，协议记录仍空着。Everything 与 Windows Search 的记录见下表。外部拖放的通过条件表七条都已通过，产品用 OLE。2026-10-09 10:56（UTC+8）在 `3311ecc` 上长路径拖入通过，走的是 `SHCreateShellItemArrayFromDataObject` 的退路。同日 14:10–14:24（UTC+8）条件 7 记为通过，次数是用户估计。`--slint` 拖放仍没有路径。其余技术验证项没有通过记录。搜索条界面、待办界面、收纳界面和收集提交也还没有代码。界面表里的各项仍全部未实现。
 
 ## 测量工具
 
@@ -19,9 +19,9 @@
 | 中文输入法 | [记录](verification/ime.md)。100% 缩放下用户报告单行、多行、候选窗、拖动后的候选窗、Enter 和数字键没有问题。150% 未测，该项未通过 |
 | 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，FemtoVG、软件渲染、Skia 软件、Skia OpenGL 的窗口都是磨砂、能透出背景、没有黑色客户区。系统浅色/深色主题切换通过，深色下也清楚。关闭/打开「透明效果」通过。节电模式通过。渲染器未选定，这一项仍未通过。真实透明渲染失败没有新的记录。独立显卡机器未测。观察（不是失败判定）：自定义标题栏导致窗口拖不动；有两个关闭按钮 |
 | 渲染器 | 部分记录，未通过。同上。2026-10-09 四种窗口的文字清楚（含中文和 0OIl1）。没有选定渲染器，也没有写进 architecture.md「运行时」。独立显卡机器未测 |
-| 外部拖放 | 未通过。2026-10-09 手测见下方「外部拖放」。条件 5 在 `3311ecc` 上通过，条件 7 未满 100 次，步骤 8 无路径。 |
+| 外部拖放 | 通过条件表七条都通过，产品用 OLE。`--slint` 拖放仍失败，没有路径。2026-10-09 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。见下方「外部拖放」。 |
 | Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
-| Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。`WSearch` 停止时的错误码未测 |
+| Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。2026-10-09 14:24（UTC+8）停止 `WSearch` 后，`fileidx.exe wsearch --text notepad` 的 `ok` 为 false，`hresult` 为 2147614729（`0x80020009`，`DISP_E_EXCEPTION`），`message` 为空字符串，约 5.3 ms，`returned` 为 0，没有崩溃或卡住。随后服务恢复为 Running/Manual。错误提示文案不能依赖空的 `message`，列为后续。 |
 | 通知 | 有记录，未通过。见下方「通知（#7）」 |
 | 热角 | 2026-10-08，`spikes/hotcorner`，release。停留一次、离开约 340ms、离开后再进入，以及静止 5 分钟的三种采样，在 1920×1200 的屏幕上有记录。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，钩子和 50ms 轮询各做了 5 分钟鼠标正常移动的采样（各 300 行）；100ms 轮询未测。拖动窗口、多显示器、全屏未测。没有选定机制，不算通过。见 [measurements/2026-10-08-hotcorner.md](measurements/2026-10-08-hotcorner.md) |
 
@@ -157,10 +157,10 @@
 
 ## 外部拖放
 
-结论：**未通过**。2026-10-09 在 `24b7624` 的 `--ole` 上亲手测过。同日 10:56（UTC+8）在 `3311ecc` 的 dev 构建上重测条件 5，拖入通过。条件 7 没有做满 100 次，步骤 8 没有拿到路径。按 [#33](https://github.com/wynxing/Lanwork/issues/33)，不是每一条都通过就不算该项通过，因此不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
+结论：通过条件表的七条都是通过，该项按该表通过。2026-10-09 在 `24b7624` 的 `--ole` 上亲手测过。同日 10:56（UTC+8）在 `3311ecc` 的 dev 构建上重测条件 5，拖入通过。同日 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。`--slint` 拖放仍是失败，没有路径，这一条不在通过条件表的七条里。按 [#33](https://github.com/wynxing/Lanwork/issues/33)，以通过条件表为准。产品用 OLE。这份记录不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
 
-- 日期：2026-10-08 首次自动化；2026-10-09 手测 `24b7624`，并修改长路径拖入的读取；同日 10:56（UTC+8）在 `3311ecc` 上重测长路径拖入
-- 手测构建：`24b7624eb090d6f655c3ef144594d5a4206d61ad`，`cargo run -p dnd -- --ole`。条件 5 的重测是 `3311eccf503ca97df870be859753e14dcfa1dd95`，同样是 `cargo run -p dnd -- --ole`（dev）
+- 日期：2026-10-08 首次自动化；2026-10-09 手测 `24b7624`，并修改长路径拖入的读取；同日 10:56（UTC+8）在 `3311ecc` 上重测长路径拖入；同日 14:10–14:24（UTC+8）在 DESKTOP-7C3P6OG 上测条件 7
+- 手测构建：`24b7624eb090d6f655c3ef144594d5a4206d61ad`，`cargo run -p dnd -- --ole`。条件 5 的重测是 `3311eccf503ca97df870be859753e14dcfa1dd95`，同样是 `cargo run -p dnd -- --ole`（dev）。条件 7 是 main 合入后的 `spikes/dnd`，debug 构建，工作树 `E:\My_project\Lanwork-wt\issue-5`，与 [PR #49](https://github.com/wynxing/Lanwork/pull/49) 头 `fa011146986a5a00fbfe8ec0c478c7b61193ebf7` 同一份代码，命令 `dnd.exe --ole`
 - commit：`96355a285b6c948df12fe0ac210d359e7fbacb8b`。长路径读取修改之后，`cargo run -p dnd -- --self-test` 在这棵树上退出码 0。Shell `GetData(CF_HDROP)` 对 269 单元路径仍是 `0x8007007A`，随后用外壳项显示名读回同一路径
 - Slint：1.18.1（workspace 依赖 `=1.18.1`）。验证程序额外打开 feature `raw-window-handle-06`。默认 features 含 `backend-winit`、`renderer-femtovg`、`renderer-software`，不代表产品已选定渲染器
 - 渲染器：`GraphicsAPI::NativeOpenGL`（FemtoVG 的 OpenGL 路径被选中）。窗口缩放 1.5
@@ -171,7 +171,7 @@
 
 ### 通过条件
 
-2026-10-09，构建 `24b7624`，`--ole`。只写这次亲眼看到的。条件 5 的当前结果是同日 10:56（UTC+8）在 `3311ecc` 上重测的。
+2026-10-09，构建 `24b7624`，`--ole`。只写这次亲眼看到的。条件 5 的当前结果是同日 10:56（UTC+8）在 `3311ecc` 上重测的。条件 7 的当前结果是同日 14:10–14:24（UTC+8）在与 PR #49 头 `fa011146986a5a00fbfe8ec0c478c7b61193ebf7` 同一份代码上测的，次数是用户估计。
 
 | 条件 | 结果 |
 | --- | --- |
@@ -181,7 +181,7 @@
 | 拖入 .lnk 时保留快捷方式本身的路径 | 通过。`paths` 里是 `shortcut.lnk` 本身。 |
 | 超过 260 字符的长路径也能拿到 | 通过。2026-10-09 10:56（UTC+8），构建 `3311ecc`，`cargo run -p dnd -- --ole`（dev）。从资源管理器把 269 字符路径下的 `long.txt` 拖进红色矩形，控制台输出 `drop effect=1 paths=C:\Users\wynn\AppData\Local\Temp\lanwork-dnd-spike\long\dddd…\long.txt`。路径完整，没有再出现 `0x8007007A`。这次读取走的是 `GetData(CF_HDROP)` 返回 `0x8007007A` 之后的 `SHCreateShellItemArrayFromDataObject` 退路。此前在 `24b7624` 上拖出列表里的 `long.txt` 成功（`ole-drag-start index=3`，`effect=copy`，目标出现 `long.txt`），拖入报 `drop read failed: GetData CF_HDROP: 传递给系统调用的数据区域太小。 (0x8007007A)`。 |
 | 拖出过程中按 Esc 取消，原文件不变、没有残留 | 通过。目标无残留，原文件在。 |
-| 反复拖放 100 次，句柄数不持续增加 | 约 30 次，523→523，未满 100 次，不写通过。外部 `Get-Process` 读到的 `HandleCount` 前后都是 523，Private Bytes 57,266,176。首次拖放时句柄从 133 到大约 529，是一次性增长。 |
+| 反复拖放 100 次，句柄数不持续增加 | 通过。2026-10-09 14:10–14:24（UTC+8），DESKTOP-7C3P6OG，main 合入后的 `spikes/dnd`（debug，工作树 `E:\My_project\Lanwork-wt\issue-5`，与 PR #49 头 `fa011146986a5a00fbfe8ec0c478c7b61193ebf7` 同一份代码），`dnd.exe --ole`。用户把 `readme.txt` 从资源管理器拖进红色矩形，再从列表拖回文件夹，约 50 来回（约 100 次拖放，用户没有精确计数）。启动后、未拖动前 `HandleCount` 为 446；约 100 次后为 515；再约 10 来回后为 516。工作集约 132MB，没有变。446→515 是首次拖放加载组件的一次性增长，与此前 133→523 后稳定一致。后续约 20 次只增加 1，判定无按次泄漏。次数是用户估计。此前约 30 次、523→523 的那次未满 100 次，不作为这次的计数。 |
 
 另有一条不在上面七条里：从资源管理器把 `readme.txt` 拖到「Slint 放下」。失败。没有任何反应，记录和 `paths` 都没有路径。与 winit 不把外部放下交给 `DropArea` 的源码预期一致。
 
@@ -208,10 +208,10 @@
 4. 通过。见条件 4。
 5. `24b7624` 上失败：拖出成功，拖入报 `0x8007007A`。2026-10-09 10:56（UTC+8）在 `3311ecc` 上重测通过。见条件 5。
 6. 通过。见条件 6。
-7. 未满 100 次。见条件 7。
+7. 通过。2026-10-09 14:10–14:24（UTC+8），见条件 7。次数是用户估计。
 8. 失败。`--slint` 下从资源管理器把 `readme.txt` 拖到「Slint 放下」，没有任何反应。
 
-条件 5 已按 `3311ecc` 上 10:56（UTC+8）的拖入改成通过。条件 7 仍是约 30 次，523→523，未满 100 次，不写通过。步骤 8 仍是失败。[#5](https://github.com/wynxing/Lanwork/issues/5) 不关闭。
+条件 5 已按 `3311ecc` 上 10:56（UTC+8）的拖入改成通过。条件 7 已按同日 14:10–14:24（UTC+8）的句柄记录改成通过，次数是用户估计。步骤 8 仍是失败。通过条件表的七条都是通过，该项按该表通过。产品用 OLE。这份记录不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
 
 ### 自动化已经看到的（不是上面七条的通过）
 
@@ -232,4 +232,4 @@
 
 ### 和 #27 的选择
 
-收纳的外部拖放用原生 OLE，不改用 Slint `DragArea` / `DropArea`。窗口内拖放可用，但 winit 不实现 `start_drag`，窗口句柄上的放下目标也是 winit 的。`24b7624` 的手测里，复制、快捷方式、同盘不移动和 Esc 都看到了。`3311ecc` 上长路径拖入通过，走 `SHCreateShellItemArrayFromDataObject`。100 次句柄没有做完，Slint 放下没有路径。`crates/app` 里不写收纳界面。
+收纳的外部拖放用原生 OLE。窗口内拖放可用，但 winit 不实现 `start_drag`，窗口句柄上的放下目标也是 winit 的。`24b7624` 的手测里，复制、快捷方式、同盘不移动和 Esc 都看到了。`3311ecc` 上长路径拖入通过，走 `SHCreateShellItemArrayFromDataObject`。2026-10-09 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。`--slint` 放下没有路径。通过条件表七条都通过，产品用 OLE。`crates/app` 里不写收纳界面。
