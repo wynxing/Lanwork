@@ -12,8 +12,8 @@
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
-| `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。测量记录还不能当作渲染器已经选定。 |
-| `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。两种方案都在，机制没有选定。记录见 `docs/measurements/2026-10-08-hotcorner.md`。 |
+| `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。产品渲染器见「运行时」。 |
+| `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。产品用 50ms 轮询，见「运行时」。记录见 `docs/measurements/2026-10-08-hotcorner.md`。 |
 | `spikes/toast` | 通知技术验证的最小程序。只验证注册、显示、点击参数和模拟面板定位，不进发布包，也不被 `lanwork` 依赖。运行命令写在 `spikes/README.md`。验证记录没有全部通过之前，待办界面不调用它。 |
 | `spikes/dnd` | 外部拖放验证程序，包名 `dnd`。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `docs/measurements/2026-10-08-hotcorner.md` | 热角 spike 的实机记录。不是「性能测量」协议的验收。 |
@@ -30,7 +30,7 @@
 | 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务和应用索引已接入，这些还没有 |
 | 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
-| 渲染器 | 技术验证选定后再写入「运行时」。空窗口使用 Slint 默认 features，不代表已经选定渲染器 |
+| 渲染器 | 已写入「运行时」：默认 FemtoVG，初始化失败自动退回软件渲染 |
 
 ## 技术验证
 
@@ -46,13 +46,13 @@
 | 外部拖放 | 从资源管理器拖入多个文件能拿到路径；从窗口拖出到资源管理器时，只出现复制和创建快捷方式两种效果。先测固定版本 Slint 自带的拖放，不满足再测原生 OLE | 收纳 |
 | Everything | 通过随包的 SDK DLL，Everything 1.4 和 1.5 都能返回结果，并能区分「未运行」和「未就绪」 | 搜索 |
 | Windows Search | Everything 不可用时，Rust 进程只按文件名查询 Windows Search 索引，正文命中不返回；记录结果 P95 和查询带来的 Private Bytes 增量 | 搜索 |
-| 通知 | 到期通知能显示，点击后打开面板并定位该条。安装版和便携版分开记录 | 待办 |
+| 通知 | 到期通知能显示。安装版点击后打开面板并定位该条。便携版只显示提醒，点击不定位。安装版和便携版分开记录 | 待办 |
 | 热角 | 收起状态下光标在屏幕上移动 5 分钟、静止 5 分钟，记录 Lanwork 的 CPU 占用和每秒唤醒次数（口径见「性能测量」） | 面板 |
 
 ## 运行时
 
 - 只支持 Windows 11 x64。
-- 界面用 Slint，渲染器由技术验证选定。窗口外观用 Desktop Window Manager：无边框、圆角、暗色、Acrylic（`DWMWA_SYSTEMBACKDROP_TYPE` 的 transient backdrop）。透明不可用时用纯色背景。不做 CSS `backdrop-filter`，也不提供按百分比调节的玻璃透明度。
+- 界面用 Slint。渲染器默认 FemtoVG。初始化失败时自动退回软件渲染。窗口外观用 Desktop Window Manager：无边框、圆角、暗色、Acrylic（`DWMWA_SYSTEMBACKDROP_TYPE` 的 transient backdrop）。透明不可用时用纯色背景。不做 CSS `backdrop-filter`，也不提供按百分比调节的玻璃透明度。
 - Slint crate 固定为 1.18.1。升级单独提交，并重跑依赖该版本行为的技术验证。
 - `DWMWA_SYSTEMBACKDROP_TYPE` 从 Windows 11 Build 22621 起可用。运行时检查 build 和调用返回值，不可用时不设置该属性，按纯色处理。产品支持的最低 build 尚未确定。
 - 进程内没有 Vue、Tauri、WebView2。
@@ -62,8 +62,8 @@
 - 搜索条和面板在启动时创建并保持隐藏，以满足热召回目标；隐藏中不做整页重绘。快速收集是搜索条的一种输入状态，不另建窗口。便签悬浮窗、番茄钟在使用时创建，关闭时释放文本、图标和绘图资源。到期提醒的调度保留在主进程里。
 - Slint 1.18.1 编进本仓库的 winit 后端没有实现 `start_drag`（`i-slint-backend-winit` 1.18.1 的 `WinitWindowAdapter` 只实现了 `start_window_move`；`WindowAdapterInternal::start_drag` 的默认实现返回 false）。因此 `DragArea` 的拖动留在窗口内。`spikes/dnd` 用 `dispatch_event` 观察到：同一窗口里文件路径以复制放下，目标要求移动时放下被拒绝。winit 0.30.13 创建窗口时调用 `OleInitialize` 并 `RegisterDragDrop` 注册自己的 `FileDropHandler`；探针在我们注册之前得到 already-registered。资源管理器方向的手测见 [roadmap.md](roadmap.md)。`--slint` 拖放没有路径，外部拖放按「收纳」的原生 OLE 实现。
 - 托盘先用 Slint 自带的托盘图标；菜单或逾期徽标做不到时改用 Win32 `Shell_NotifyIcon`。
-- 热角检测机制由技术验证在低级鼠标钩子和定时读取光标位置之间选定。用钩子时，回调只投递消息，不做计算。
-- `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。这次没有选定机制。
+- 热角检测用 50ms 轮询读取光标位置，不用低级鼠标钩子。
+- `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。
 
 Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜索索引不写进界面回调里。
 
@@ -85,7 +85,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 
 控制台子系统进程和 COM 拉起的本地服务器，启动信息里经常带 `SW_HIDE`。第一次 `ShowWindow` 会改用这个值。面板需要再调用一次 `ShowWindow(SW_SHOWNORMAL)`，并用 `SetWindowPos(SWP_SHOWWINDOW)` 确认 `IsWindowVisible`。读快捷方式属性之前要先 `CoInitializeEx`。
 
-便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。能否显示、运行中点击、退出后点击、收到 id、定位，以验证记录为准。2026-10-09 的记录里，便携版通知能显示；运行中点击没有定位，日志没有 `COM Activate`；退出后点击没有拉起进程。是否把「便携版不能点击定位」写进产品规格，由所有者决定，现为待定。在那之前不改产品规格。
+便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。便携版通知只显示提醒，点击不定位。2026-10-09 的记录里，便携版通知能显示；运行中点击没有定位，日志没有 `COM Activate`；退出后点击没有拉起进程。
 
 卸载要删掉上述快捷方式和 HKCU 键，由安装程序实现。验证程序自己的注销只清理它写过的 spike 标识，不清理将来产品用的标识。
 
@@ -106,6 +106,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 ```text
 Lanwork/
 ├── config.json
+├── user-apps.json           便携应用、别名和隐藏名单
 ├── backups/
 ├── logs/app.log
 ├── notes/<id>.json          一篇便签一个文件
@@ -118,7 +119,7 @@ Lanwork/
 
 应用索引和图标缓存放在 `%LOCALAPPDATA%\Lanwork\cache`，可删除后重建，不进导出包。
 
-用户添加的便携应用、别名和已隐藏应用没有约定的文件。上面的目录树和 `config.json` 的字段都没有这项。`apps.json` 可以删除后重建，不能当作这份用户数据的唯一副本。文件放在哪、叫什么，待定。是否进入导出包，待定。最小实现见「搜索」。
+便携应用、别名和隐藏名单在数据目录的 `user-apps.json`。字段见「搜索」。该文件进入导出包，也进入备份。`%LOCALAPPDATA%\Lanwork\cache\apps.json` 可以删除后重建，不能代替 `user-apps.json`。
 
 - 文件名是 id。id 是单个路径分量，不允许分隔符、Windows 保留设备名和文件名非法字符。`github/cache/<repo>.json` 的 `<repo>` 也是单个分量。`owner/repo` 的编码由 GitHub 服务决定：每个 `/` 换成 `%2F`，见「GitHub 服务」。
 - 写入：进程内一把互斥锁。同目录写 `<name>.tmp`，调用 `FlushFileBuffers` 后，目标已存在时用 `ReplaceFileW`（`REPLACEFILE_WRITE_THROUGH`），否则用 `MoveFileExW`（`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`）。替换失败则删除临时文件、保留原文件，并返回带路径的错误。不自动重试。数据目录位于 OneDrive 同步的「文档」下时，同步进程占用按同一规则报错。
@@ -133,7 +134,7 @@ Lanwork/
 - 便签带递增的 `revision`。保存时带上加载时的 revision，与磁盘不一致则返回冲突错误，调用方保留正文。冲突之后的可见行为以产品规格为准。
 - 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。服务不做覆盖；冲突后的版本选择、关闭和退出时的未保存正文，以及便签删除的界面入口，仍以产品规格为准。
 - GitHub 通过本机 `gh` 读取。token 不进入配置、日志或导出包。
-- 导出包包含配置、待办、便签、收纳分组和 GitHub watchlist，缓存可选。不含日志、备份目录和 token。
+- 导出包包含配置、待办、便签、收纳分组、GitHub watchlist，以及 `user-apps.json`（便携应用、别名和隐藏名单），缓存可选。不含日志、备份目录和 token。备份包含 `user-apps.json`。
 - 不实现 Focus 的聚合服务，也不实现从 MayDolist schema 的一次性迁移。
 
 ### GitHub 服务
@@ -193,11 +194,11 @@ Lanwork/
 
 收录的 `.url` 只取 `[InternetShortcut]` 段内的第一条非空 `URL=`。地址以 `steam://run/`、`steam://rungameid/` 或 `com.epicgames.launcher://apps/` 开头，且前缀之后还有剩余，才进入索引。比较前缀时忽略 ASCII 大小写。普通 `http` / `https` 以及其他协议不收。去重键是整段地址的 ASCII 小写。启动时把这段地址交给 `ShellExecuteExW`，动词 `open`。不要求本机存在对应的 exe。
 
-`AppSource::ALL` 在四种系统来源之后加上 `Portable` 和 `Alias`。系统来源仍由枚举填入。便携应用和别名来自调用方持有的用户目录，不由 Windows 枚举产生。便携应用是一条路径目标，来源记为 `Portable`。`kind` 不是路径的便携条目跳过并记日志，不进入索引。别名是一个名称加一个启动目标，来源记为 `Alias`。去重时系统来源在前。便携应用的启动目标已经存在时不另成一条，名称并入备用名。结果里显示系统名称还是用户起的名称，待定；最小实现保留系统条目的显示名。别名同样只并入备用名。别名的目标不在索引里时是否单独显示，待定；最小实现不单独成条。
+`AppSource::ALL` 在四种系统来源之后加上 `Portable` 和 `Alias`。系统来源仍由枚举填入。便携应用和别名来自数据目录的 `user-apps.json`，不由 Windows 枚举产生。便携应用是一条路径目标，来源记为 `Portable`。`kind` 不是路径的便携条目跳过并记日志，不进入索引。别名是一个名称加一个启动目标，来源记为 `Alias`。便携应用与系统来源是同一启动目标时只显示一条，名称用用户填的名称。当前代码去重时系统来源在前，便携应用不另成一条，名称并入备用名，仍显示系统条目的名称，尚未按规格实现。别名同样只并入备用名。别名的目标不在索引里时是否单独显示，待定；最小实现不单独成条。
 
-用户目录的路径待定，见「数据」。最小实现是 `load_user_catalog` 和 `save_user_catalog`：调用方传入路径。JSON 的 `schemaVersion` 为 1，字段是 `portable`、`aliases`、`hidden`。缺少 `schemaVersion` 时按 1 读取。文件不存在视为空目录。无法解析，或 `schemaVersion` 更高时返回错误，不改名、不隔离。`AppIndex::open_from_process` 不猜测路径，内存中的目录开始是空的。`set_user_catalog` 替换这份内存并只重建便携应用和别名两个来源。在此之前若后台重建已经用空目录跑完，缓存里残留的便携应用和别名会被清掉。调用方要在打开索引之后把目录设进来。`hide` 和 `restore` 只改这份内存。落盘仍由调用方保存。隐藏按启动目标的去重键。`entries` 仍包含已隐藏的应用。搜索必须走 `query`，那里丢掉隐藏键。`hidden_apps` 把目录里的隐藏项交给设置页；索引里还能找到同一键时，用当前显示名。
+`user-apps.json` 见「数据」。JSON 的 `schemaVersion` 为 1，字段是 `portable`、`aliases`、`hidden`。缺少 `schemaVersion` 时按 1 读取。文件不存在视为空目录。无法解析，或 `schemaVersion` 更高时返回错误，不改名、不隔离。当前 `load_user_catalog` 和 `save_user_catalog` 仍由调用方传入路径。`AppIndex::open_from_process` 不猜测路径，内存中的目录开始是空的。`set_user_catalog` 替换这份内存并只重建便携应用和别名两个来源。在此之前若后台重建已经用空目录跑完，缓存里残留的便携应用和别名会被清掉。调用方要在打开索引之后把目录设进来。`hide` 和 `restore` 只改这份内存。落盘仍由调用方保存。隐藏按启动目标的去重键。`entries` 仍包含已隐藏的应用。搜索必须走 `query`，那里丢掉隐藏键。`hidden_apps` 把目录里的隐藏项交给设置页；索引里还能找到同一键时，用当前显示名。
 
-有路径的应用可以「以管理员身份运行」和「打开所在文件夹」。前者用 `ShellExecuteExW`，动词 `runas`，掩码与普通启动相同，会交给系统的提权提示。后者返回目标 exe 的父目录，不是快捷方式所在的开始菜单目录；打开这个目录的窗口不在本模块。商店应用的目标只有 AUMID，启动串是 `shell:AppsFolder\<AUMID>`。`runas` 不能用来提权打包应用，枚举也拿不到可以交给资源管理器的普通文件路径，包目录通常在受保护的 WindowsApps 下。因此最小实现里这两个动作对商店应用不可用。协议链接没有本地 exe，「以管理员身份运行」会去提权协议处理程序，最小实现不提供。「打开所在文件夹」最小实现也不提供。商店应用和游戏链接等没有本地文件的结果如何处理这两个动作，产品规格列为待定。具体快捷键待定，这里不写死。
+有路径的应用可以「以管理员身份运行」和「打开所在文件夹」。前者用 `ShellExecuteExW`，动词 `runas`，掩码与普通启动相同，会交给系统的提权提示。后者返回目标 exe 的父目录，不是快捷方式所在的开始菜单目录；打开这个目录的窗口不在本模块。商店应用的目标只有 AUMID，启动串是 `shell:AppsFolder\<AUMID>`。`runas` 不能用来提权打包应用，枚举也拿不到可以交给资源管理器的普通文件路径，包目录通常在受保护的 WindowsApps 下。因此这两个动作只对有本地文件的路径目标提供。商店应用和游戏链接等没有本地文件的结果不显示「以管理员身份运行」和「打开所在文件夹」，对应快捷键无效。快捷键是 Ctrl+Shift+Enter 与 Ctrl+Enter，见产品规格。界面尚未接这两个入口。
 
 待办与便签索引常驻内存，由写盘成功后的变更消息增量更新，查询时不读盘。只收未完成待办的标题，以及不在回收站中的便签的标题、标签和正文。
 
