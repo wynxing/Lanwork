@@ -1,4 +1,4 @@
-//! 便签服务的验收测试。界面入口和冲突后的选择仍等产品规格，对应用例标了 ignore。
+//! 便签服务的验收测试。冲突后的版本选择和未保存正文的关闭、退出是界面行为，对应用例标了 ignore。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -693,20 +693,59 @@ fn failed_save_keeps_body_in_memory() {
     assert_eq!(saved.revision, created.revision + 1);
 }
 
-/// #9 第 10 项还没写进 product.md。
-/// 服务层已经能软删除和恢复。界面入口、用户能否删除、删除后是否进入回收站，仍待规格。
-/// 在此之前不提供永久删除。
 #[test]
-#[ignore = "待 product.md 写入 #9 第 10 项：便签删除的界面入口，以及删除后是否进入回收站"]
-fn note_delete_ui_and_recycle_policy_pending_spec() {
-    panic!("待 product.md 写入 #9 第 10 项之后再验收删除的界面入口和回收站策略");
+fn purge_only_removes_trashed_notes_and_boot_drops_expired_ones() {
+    let fix = fixture();
+    let clock = ManualClock::new(1_000);
+    let clock_for_open = Arc::clone(&clock);
+    let commands = NoteCommands::open_at(fix.store.clone(), move || clock_for_open.now()).unwrap();
+    let active = commands.create(&input("留下", "还在")).unwrap();
+    let trashed = commands.create(&input("丢掉", "回收站")).unwrap();
+    let deleted = commands.soft_delete(&trashed.id, trashed.revision).unwrap();
+    let err = commands.purge(&active.id, active.revision).unwrap_err();
+    assert!(matches!(err, NoteError::NotDeleted { .. }), "{err}");
+    assert!(
+        fix.store
+            .document_path(&DocumentId::Note(active.id.clone()))
+            .unwrap()
+            .is_file()
+    );
+
+    commands.purge(&deleted.id, deleted.revision).unwrap();
+    assert!(matches!(
+        commands.get(&deleted.id).unwrap_err(),
+        NoteError::NotFound { .. }
+    ));
+    assert!(
+        !fix.store
+            .document_path(&DocumentId::Note(deleted.id.clone()))
+            .unwrap()
+            .is_file()
+    );
+    assert_eq!(commands.list().len(), 1);
+
+    let old = commands.create(&input("过期", "三十天")).unwrap();
+    clock.set(2_000);
+    let old_deleted = commands.soft_delete(&old.id, old.revision).unwrap();
+    clock.set(2_000 + lanwork_core::notes::TRASH_RETENTION_MS);
+    let removed = commands.purge_expired().unwrap();
+    assert_eq!(removed, vec![old_deleted.id.clone()]);
+    assert!(commands.deleted().is_empty());
+
+    let kept = commands.create(&input("未满", "还在回收站")).unwrap();
+    clock.set(10_000);
+    let kept_deleted = commands.soft_delete(&kept.id, kept.revision).unwrap();
+    let clock_for_reopen = Arc::clone(&clock);
+    let reloaded =
+        NoteCommands::open_at(fix.store.clone(), move || clock_for_reopen.now()).unwrap();
+    assert_eq!(reloaded.deleted().len(), 1);
+    assert_eq!(reloaded.deleted()[0].id, kept_deleted.id);
 }
 
-/// #9 第 16 项还没写进 product.md。
-/// 服务层在 revision 不一致时返回冲突并且不覆盖磁盘。
-/// 冲突后选择哪一版、关闭窗口和退出时如何处理未保存正文，仍待规格。
+/// 冲突后选择哪一版、关闭和退出时如何处理未保存正文，是界面行为。
+/// 服务层仍只返回冲突并且不覆盖。
 #[test]
-#[ignore = "待 product.md 写入 #9 第 16 项：冲突后的版本选择，以及关闭和退出时的未保存正文"]
-fn note_conflict_resolution_and_unsaved_close_pending_spec() {
-    panic!("待 product.md 写入 #9 第 16 项之后再验收冲突版本选择和未保存正文的关闭、退出");
+#[ignore = "版本选择和未保存正文的关闭、退出是界面行为，不在便签服务里实现"]
+fn note_conflict_choice_and_unsaved_close_are_ui() {
+    panic!("界面行为，不在便签服务里实现");
 }

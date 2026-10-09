@@ -68,7 +68,7 @@ impl NoteService {
                 seq: AtomicU64::new(1),
             }),
         };
-        reload_cache(&service.inner)?;
+        service.reload_cache()?;
         let reload: Arc<dyn crate::storage::MemoryReload> = service.inner.clone();
         service.inner.store.watch_memory(&reload);
         drop(reload);
@@ -139,11 +139,10 @@ impl NoteService {
         })
     }
 
-    /// 软删除：写入 `deletedAt`，文件留在 `notes/`。
+    /// 软删除：写入 `deletedAt`，文件留在 `notes/`，列表不再返回它。
     ///
-    /// 界面入口以及删除后是否对用户显示为回收站，等 product.md 写入 #9 第 10 项。
-    /// 搜索规格排除了回收站中的便签，因此 [`Self::list`] 和 [`Self::filter_by_tag`] 不返回它们。
-    /// 关闭悬浮窗不是这个动作。
+    /// 这就是进入回收站。关闭悬浮窗不是这个动作。
+    /// [`Self::list`] 和 [`Self::filter_by_tag`] 不返回回收站中的便签。
     pub fn soft_delete(&self, id: &str, revision: u64) -> Result<Note, NoteError> {
         self.mutate(id, revision, |current, now| {
             if current.deleted_at.is_some() {
@@ -155,6 +154,32 @@ impl NoteService {
             next.deleted_at = Some(now);
             Ok(next)
         })
+    }
+
+    /// 永久删除回收站中的一篇，文件从 `notes/` 去掉。
+    ///
+    /// 不在回收站时不删文件。`revision` 必须与当前一致。
+    pub fn purge(&self, id: &str, revision: u64) -> Result<(), NoteError> {
+        self.check_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        let current = self.cached(id)?;
+        if current.revision != revision {
+            return Err(NoteError::Conflict {
+                id: id.to_owned(),
+                expected: revision,
+                actual: current.revision,
+            });
+        }
+        if current.deleted_at.is_none() {
+            return Err(NoteError::NotDeleted { id: id.to_owned() });
+        }
+        self.remove_note(id)
+    }
+
+    /// 清除进入回收站已满 30 天的便签。打开服务时也会用当时的时钟做一次。
+    pub fn purge_expired(&self) -> Result<Vec<String>, NoteError> {
+        let _write = lock_mutex(&self.inner.write);
+        self.purge_expired_locked()
     }
 
     /// 清除 `deletedAt`。便签回到 [`Self::list`]。
@@ -189,7 +214,7 @@ impl NoteService {
         self.collect(|note| !note.is_deleted())
     }
 
-    /// 已软删除的便签。顺序与 [`Self::list`] 相同。界面是否展示等 #9 第 10 项。
+    /// 已软删除、且尚未满 30 天的便签。顺序与 [`Self::list`] 相同。
     pub fn deleted(&self) -> Vec<Note> {
         self.collect(Note::is_deleted)
     }
@@ -290,6 +315,68 @@ impl NoteService {
         }
         Err(NoteError::AllocateId)
     }
+
+    fn reload_cache(&self) -> Result<(), NoteError> {
+        let _write = lock_mutex(&self.inner.write);
+        let loaded = self
+            .inner
+            .store
+            .read_collection::<NoteFile>(CollectionKind::Notes)?;
+        let mut cache = Cache::default();
+        for file in loaded.files {
+            match file.value.into_note(file.id.clone()) {
+                Ok(note) => {
+                    cache.notes.insert(note.id.clone(), note);
+                }
+                Err(reason) => {
+                    cache.skipped.insert(file.id, reason);
+                }
+            }
+        }
+        *lock_mutex(&self.inner.cache) = cache;
+        self.purge_expired_locked()?;
+        Ok(())
+    }
+
+    fn cached(&self, id: &str) -> Result<Note, NoteError> {
+        let cache = lock_mutex(&self.inner.cache);
+        if let Some(reason) = cache.skipped.get(id) {
+            return Err(reason.error(id));
+        }
+        cache
+            .notes
+            .get(id)
+            .cloned()
+            .ok_or_else(|| NoteError::NotFound { id: id.to_owned() })
+    }
+
+    fn remove_note(&self, id: &str) -> Result<(), NoteError> {
+        self.inner.store.remove(&DocumentId::Note(id.to_owned()))?;
+        lock_mutex(&self.inner.cache).notes.remove(id);
+        Ok(())
+    }
+
+    fn purge_expired_locked(&self) -> Result<Vec<String>, NoteError> {
+        let now = (self.inner.now)().as_millis();
+        let expired: Vec<String> = {
+            let cache = lock_mutex(&self.inner.cache);
+            cache
+                .notes
+                .values()
+                .filter(|note| {
+                    note.deleted_at
+                        .is_some_and(|deleted_at| trash_expired(deleted_at.as_millis(), now))
+                })
+                .map(|note| note.id.clone())
+                .collect()
+        };
+        let mut removed = Vec::new();
+        for id in expired {
+            self.remove_note(&id)?;
+            removed.push(id);
+        }
+        Ok(removed)
+    }
 }
 
 impl crate::storage::MemoryReload for Inner {
@@ -316,4 +403,8 @@ fn reload_cache(inner: &Inner) -> Result<(), NoteError> {
     }
     *lock_mutex(&inner.cache) = cache;
     Ok(())
+}
+
+fn trash_expired(deleted_at_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(deleted_at_ms) >= super::model::TRASH_RETENTION_MS
 }

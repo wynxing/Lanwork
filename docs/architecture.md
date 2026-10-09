@@ -150,7 +150,7 @@ Lanwork/
 - 待办可带到期日、提醒、周期、GitHub 来源，以及至多一个当前标记。
 - 收纳服务在 `lanwork_core::shelves`。分组文件是 `shelves/<id>.json`，字段为名称、排序、可选的关联待办 id，以及引用列表。每条引用保存绝对路径、显示名、是否文件夹和加入时间，不保存文件内容和图标。路径规范化和存在性检查见「收纳」。
 - 便签带递增的 `revision`。保存时带上加载时的 revision，与磁盘不一致则返回冲突错误，调用方保留正文。冲突之后的可见行为以产品规格为准。
-- 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。服务不做覆盖；冲突后的版本选择、关闭和退出时的未保存正文，以及便签删除的界面入口，仍以产品规格为准。
+- 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。删除写入 `deletedAt`，文件留在 `notes/`。永久删除只删除已经软删除的文件。进入回收站满 30 天（30×86400000 毫秒）时，打开服务会清除。服务不做覆盖。冲突后的版本选择、关闭和退出时的未保存正文由界面处理。
 - GitHub 通过本机 `gh` 读取。token 不进入配置、日志或导出包。
 - 导出包包含配置、待办、便签、收纳分组、GitHub watchlist，以及 `user-apps.json`（便携应用、别名和隐藏名单），GitHub 缓存可选。导出省略缓存不等于清空本地 `github/cache`。不含日志、备份目录、`import.pending`、token 和环境变量。备份包含 `user-apps.json`，并且总是包含 GitHub 缓存。服务在 `lanwork_core::backup`，薄命令是 `BackupCommands`。包是只含存储法（compression method 0）的 ZIP。根上的 `manifest.json` 有 `packageSchemaVersion`（当前为 1）、`exportedAt`（调用方传入的 UTC 毫秒）、`appVersion` 和 `counts`。路径拒绝 `..` 和绝对路径，只接受上述白名单。每个 JSON 可解析；缺少 `schemaVersion` 按 1，高于 1 则整包拒绝。自动备份文件名是 `auto-年-月-日-毫秒.zip`，手动是 `manual-毫秒.zip`，导入前的备份是 `import-毫秒.zip`。`backups/auto-day.txt` 记下最近一次自动备份的公历日，不计入 7 份。同一天再次调用自动备份不再写新文件。自动和手动合计超过 7 份时按文件名里的毫秒删除最旧的，不删除 `import-` 和其他文件。手动备份不改 `auto-day.txt`。调用方传入公历日和毫秒，服务不读时钟，也不读环境变量。
 - 不实现 Focus 的聚合服务，也不实现从 MayDolist schema 的一次性迁移。

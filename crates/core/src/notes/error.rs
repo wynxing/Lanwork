@@ -18,7 +18,7 @@ pub enum NoteError {
     NotFound { id: String },
     /// 调用方带来的 `revision` 与磁盘不一致。服务不覆盖。
     ///
-    /// 冲突之后保留哪一版、关闭窗口和退出时如何处理未保存正文，等 product.md 写入 #9 第 16 项。
+    /// 冲突之后由用户选择保留哪一版。服务不覆盖。关闭和退出时的未保存正文由界面处理。
     Conflict {
         id: String,
         expected: u64,
@@ -26,7 +26,7 @@ pub enum NoteError {
     },
     /// 已经软删除，再次软删除不会写盘。
     AlreadyDeleted { id: String },
-    /// 没有软删除，不能恢复。
+    /// 没有软删除，不能恢复，也不能永久删除。
     NotDeleted { id: String },
     /// 文件能解析，但 `schemaVersion` 不是本程序负责的版本。服务不改这个文件。
     UnsupportedSchema { id: String, found: u32 },

@@ -53,7 +53,7 @@ impl NoteCommands {
         self.service.set_tags(id, revision, tags)
     }
 
-    /// 软删除。不提供永久删除，界面入口等 #9 第 10 项。
+    /// 软删除，进入回收站。文件仍留在 `notes/`。
     pub fn soft_delete(&self, id: &str, revision: u64) -> Result<Note, NoteError> {
         self.service.check_id(id)?;
         self.service.soft_delete(id, revision)
@@ -62,6 +62,17 @@ impl NoteCommands {
     pub fn restore(&self, id: &str, revision: u64) -> Result<Note, NoteError> {
         self.service.check_id(id)?;
         self.service.restore(id, revision)
+    }
+
+    /// 永久删除回收站中的一篇。不在回收站时不删文件。
+    pub fn purge(&self, id: &str, revision: u64) -> Result<(), NoteError> {
+        self.service.check_id(id)?;
+        self.service.purge(id, revision)
+    }
+
+    /// 清除进入回收站已满 30 天的便签。
+    pub fn purge_expired(&self) -> Result<Vec<String>, NoteError> {
+        self.service.purge_expired()
     }
 
     pub fn get(&self, id: &str) -> Result<Note, NoteError> {
