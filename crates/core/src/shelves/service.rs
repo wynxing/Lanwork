@@ -326,7 +326,7 @@ impl ShelfService {
 
     /// 收到待办永久删除事件后解除关联。
     ///
-    /// 目前唯一的事件是 [`TodoNotice::Purged`]。待办服务在永久删除写进产品规格之前不会发出它。
+    /// 目前唯一的事件是 [`TodoNotice::Purged`]。待办服务在永久删除写入成功后发出它。
     pub fn apply_todo_notice(&self, notice: &TodoNotice) -> Result<(), ShelfError> {
         match notice {
             TodoNotice::Purged { item_id } => {
