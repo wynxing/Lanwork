@@ -8,7 +8,7 @@ use crate::storage::Error as StorageError;
 
 /// 产品规格还没写明、因此服务拒绝猜测的点。
 ///
-/// 每月重复的 31 日已经落到小月月末。这里只留下日不是 31、目标月却没有这一天的情况。
+/// 每月重复的 31 日已经落到小月月末，并在下一次回到锚点日。这里只留下日不是 31、目标月却没有这一天的情况。
 /// 这些分支不落盘。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingTopic {

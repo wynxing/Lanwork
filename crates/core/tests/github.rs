@@ -740,6 +740,7 @@ fn auto_complete_failure_keeps_that_todo_and_reports() {
                 recurrence: Some(Recurrence {
                     rule: RecurrenceRule::Monthly,
                     until: None,
+                    month_day: None,
                 }),
                 source: Some(source(
                     SourceKind::GithubPr,

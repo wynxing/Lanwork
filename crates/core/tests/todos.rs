@@ -104,7 +104,11 @@ fn new_todo(title: &str) -> NewTodo {
 }
 
 fn recurrence(rule: RecurrenceRule, until: Option<Date>) -> Recurrence {
-    Recurrence { rule, until }
+    Recurrence {
+        rule,
+        until,
+        month_day: None,
+    }
 }
 
 fn source_pr() -> TodoSource {
@@ -404,6 +408,10 @@ fn monthly_31_in_a_short_month_lands_on_the_last_day() {
         .find(|item| !item.completed)
         .unwrap();
     assert_eq!(next.due, Some(date(2026, 2, 28)));
+    assert_eq!(
+        next.recurrence.as_ref().and_then(|rule| rule.month_day),
+        Some(31)
+    );
     let next_id = next.id.clone();
     fixture.todos.complete_item(&next_id).unwrap();
     let lists = fixture.todos.lists().unwrap();
@@ -412,7 +420,77 @@ fn monthly_31_in_a_short_month_lands_on_the_last_day() {
         .iter()
         .find(|item| !item.completed)
         .unwrap();
-    assert_eq!(after.due, Some(date(2026, 3, 28)));
+    assert_eq!(after.due, Some(date(2026, 3, 31)));
+    assert_eq!(
+        after.recurrence.as_ref().and_then(|rule| rule.month_day),
+        Some(31)
+    );
+}
+
+#[test]
+fn monthly_without_saved_anchor_uses_the_current_due_day() {
+    let temp = TempDir::new();
+    let paths = StorePaths {
+        data_dir: temp.path().join("data"),
+        cache_dir: temp.path().join("cache"),
+        user_profile: temp.path().join("profile"),
+        local_app_data: temp.path().join("local"),
+    };
+    let store = Store::open(paths).unwrap();
+    write_raw(
+        &store,
+        "work",
+        r#"{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{"id":"clamped","title":"已在月末","due":"2026-02-28","recurrence":{"rule":"monthly"}},{"id":"jan","title":"仍是31","due":"2026-01-31","recurrence":{"rule":"monthly"}}]}"#,
+    );
+    let todos = TodoCommands::open(store);
+    todos.boot().unwrap();
+    assert!(
+        todos
+            .item("clamped")
+            .unwrap()
+            .item
+            .recurrence
+            .unwrap()
+            .month_day
+            .is_none()
+    );
+    todos.complete_item("clamped").unwrap();
+    let lists = todos.lists().unwrap();
+    let after_clamp = lists
+        .iter()
+        .flat_map(|list| &list.items)
+        .find(|item| !item.completed && item.title == "已在月末")
+        .unwrap();
+    assert_eq!(after_clamp.due, Some(date(2026, 3, 28)));
+    assert_eq!(
+        after_clamp
+            .recurrence
+            .as_ref()
+            .and_then(|rule| rule.month_day),
+        Some(28)
+    );
+
+    todos.complete_item("jan").unwrap();
+    let lists = todos.lists().unwrap();
+    let february = lists
+        .iter()
+        .flat_map(|list| &list.items)
+        .find(|item| !item.completed && item.title == "仍是31")
+        .unwrap();
+    assert_eq!(february.due, Some(date(2026, 2, 28)));
+    assert_eq!(
+        february.recurrence.as_ref().and_then(|rule| rule.month_day),
+        Some(31)
+    );
+    let february_id = february.id.clone();
+    todos.complete_item(&february_id).unwrap();
+    let lists = todos.lists().unwrap();
+    let march = lists
+        .iter()
+        .flat_map(|list| &list.items)
+        .find(|item| !item.completed && item.title == "仍是31")
+        .unwrap();
+    assert_eq!(march.due, Some(date(2026, 3, 31)));
 }
 
 #[test]

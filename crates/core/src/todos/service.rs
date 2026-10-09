@@ -540,6 +540,9 @@ impl Service {
         item.due = draft.due;
         item.remind_at = draft.remind_at;
         item.recurrence = draft.recurrence;
+        if let Some(recurrence) = item.recurrence.as_mut() {
+            recurrence.fill_missing_month_day(item.due);
+        }
         item.source = draft.source;
         lists[list_index].items.push(item);
         let changed = lists[list_index].clone();
@@ -570,6 +573,9 @@ impl Service {
     fn set_due_locked(&self, item_id: &str, due: Option<CivilDate>) -> Result<(), TodoError> {
         self.edit_active(item_id, |item| {
             item.due = due;
+            if let Some(recurrence) = item.recurrence.as_mut() {
+                recurrence.fill_missing_month_day(item.due);
+            }
             Ok(())
         })
     }
@@ -591,6 +597,10 @@ impl Service {
         recurrence: Option<super::model::Recurrence>,
     ) -> Result<(), TodoError> {
         self.edit_active(item_id, |item| {
+            let mut recurrence = recurrence;
+            if let Some(recurrence) = recurrence.as_mut() {
+                recurrence.fill_missing_month_day(item.due);
+            }
             item.recurrence = recurrence;
             Ok(())
         })
@@ -647,6 +657,10 @@ impl Service {
                     .any(|list| list.items.iter().any(|item| item.id == candidate))
             })?;
             next.completed = false;
+            let source_due = lists[list_index].items[item_index].due;
+            if let Some(recurrence) = next.recurrence.as_mut() {
+                recurrence.fill_missing_month_day(source_due);
+            }
             next.due = Some(due);
             next.current = false;
             next.current_since = None;
