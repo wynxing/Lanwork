@@ -1,9 +1,8 @@
 //! 便签服务。业务规则在这里：修订号、标签、置顶顺序、软删除。
 //!
-//! 内存里的副本只在写盘成功之后更新。写盘失败或修订号冲突都不改磁盘，也不改这份副本。
-//! 存储层在写盘成功后、本函数返回前发布 [`crate::storage::EntityChanged`]。
+//! 内存里的副本只在写盘成功之后、发布变更之前更新。写盘失败或修订号冲突都不改磁盘，也不改这份副本。
+//! 订阅者读到 [`crate::storage::EntityChanged`] 时，[`NoteService::list`] 已是新内容。
 //! 那个回调里不要再进入本服务的写入：写入锁还被这次保存持有。
-//! 回调里可以读 [`NoteService::list`]，但读到的仍是上一次成功保存的内容。
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -255,16 +254,19 @@ impl NoteService {
     fn persist(&self, note: Note) -> Result<Note, NoteError> {
         let file = NoteFile::from_note(&note);
         let doc = DocumentId::Note(note.id.clone());
-        self.inner.store.write_with(
+        let revision = note.revision;
+        self.inner.store.write_with_before_publish(
             &doc,
             &file,
             ChangeMeta {
-                revision: Some(note.revision),
+                revision: Some(revision),
+            },
+            || {
+                let mut cache = lock_mutex(&self.inner.cache);
+                cache.skipped.remove(&note.id);
+                cache.notes.insert(note.id.clone(), note.clone());
             },
         )?;
-        let mut cache = lock_mutex(&self.inner.cache);
-        cache.skipped.remove(&note.id);
-        cache.notes.insert(note.id.clone(), note.clone());
         Ok(note)
     }
 

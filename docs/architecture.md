@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已删除时回到默认清单、每月 31 日在小月落到月末、重复截止日当天不再生成，可见行为已写入产品规格；这些路径尚未按规格实现。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除、信号与筛选的可见行为已写入产品规格，服务尚未按规格实现。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度与搜索索引尚未接入。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已删除时回到默认清单、每月 31 日在小月落到月末、重复截止日当天不再生成，可见行为已写入产品规格；这些路径尚未按规格实现。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除、信号与筛选的可见行为已写入产品规格，服务尚未按规格实现。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条宿主和面板宿主。搜索条和面板的可见内容还没有。见「程序外壳」。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
@@ -27,8 +27,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务、应用索引、配置和文件索引已接入，这两项还没有 |
-| 搜索条、面板和其他界面 | `crates/app`。程序外壳已接入。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core`。热角的 50ms 轮询还没有接上 |
+| 搜索条、面板和其他界面 | `crates/app`。程序外壳已接入。查询调度已在 `lanwork_core::dispatch`，搜索条和面板还没有调用它。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core`。热角的 50ms 轮询还没有接上 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
 
@@ -233,7 +232,7 @@ Lanwork/
 
 ### 匹配引擎
 
-应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。文件名不走这张拼音表。应用索引查询应用名时已经调用 `MatchIndex`（内部是 `prepare` 和 `query`）。文件索引在 `lanwork_core::files`，不调用 `prepare`。查询调度还没接；它以后对应用、待办和便签调用同一个 `prepare` 和 `query_prepared`。
+应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。文件名不走这张拼音表。应用索引查询应用名时已经调用 `MatchIndex`（内部是 `prepare` 和 `query`）。文件索引在 `lanwork_core::files`，不调用 `prepare`。查询调度在 `lanwork_core::dispatch`，对应用、待办和便签调用同一个 `prepare` 和 `query_prepared`。
 
 拼音表在构建 `lanwork-core` 时生成，查询时不下载、不解析 Unihan 原文，也不把查询里的汉字转成拼音。
 
@@ -294,6 +293,14 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 搜索条的输入先经 `lanwork_core::search::classify_prefix` 判断收集前缀。该函数只区分空输入、搜索、待办收集和便签收集，并给出前缀之后的剩余文本与是否可提交；不解析日期、不创建记录、不入查询队列。面板搜索框不调用它。待办收集的剩余文本再交给 `parse_todo_due_prefix`，今天的日期由调用方传入。命中前缀时不进入查询队列，尚未返回的查询结果丢弃，只做日期前缀解析和预览；未提交的收集文本保存在内存里，退出进程时不保留。
 
 查询队列只保留一个待处理请求，新输入替换旧请求。每次查询有序号，过期序号的结果必须丢弃。应用、待办和便签结果先返回。最后一次输入后 60ms 内没有新输入，才向 Everything 或 Windows Search 发请求并合并结果。每次最多接收 50 条，界面最多显示 20 条。只为可见项取图标。图标缓存同时不超过 128 项和 8 MiB，搜索和收纳共用。
+
+查询调度的代码在 `lanwork_core::dispatch`，类型是 `Dispatch`。搜索条和面板还没有调用它。`TodoCommands::boot` 成功并且 `NoteCommands::open` 在导入恢复之后完成，才调用 `Dispatch::build`。`Store::build_index` 在启动未完成时不会建索引。索引读的是这两份服务的内存：未完成且不在回收站的待办标题，以及未软删除便签的标题、标签和正文。之后只在 `EntityChanged` 的种类是待办或便签时，从同一份内存重建对应索引。查询不读盘。交给 `Dispatch` 的必须是正在写入的那一份命令；克隆仍是同一份内存。待办在提交批次之前写入内存。便签在写盘成功之后、发布变更之前写入内存。订阅者读到消息时，这两份内存已是新值。保存便签的回调里不要再调用便签写入，写入锁还被这次保存持有。
+
+`submit` 的时钟读数是结果延迟的起点。搜索条先经 `classify_prefix`。空输入和收集前缀不进入查询队列，并使当前序号失效。面板不分类：空字符串是空输入，其余按搜索。组合中的预编辑不要调用 `submit`。序号从 1 递增。本地分组写好之后，并且距这次 `submit` 已满 60ms、期间没有更新的输入，才调用文件来源。文件查询返回时序号已经变了就不合并。不可用时结果上的说明是「文件索引不可用」，已有的应用、待办和便签行保留。文件服务最多交回 50 条，显示用 `allocate_display` 收到最多 20 条。
+
+有效地址沿用 `is_http_source_url`。应用、待办和便签的组内顺序用 `rank_hits`。`record_open` 把对应键的次数加 1，只放在本进程内存里，下一次查询才参与排序。`LatencyRecord::to_json_line` 的字段与 `tools/sample` 的延迟输入一致。终点由调用方用 `mark_rendered` 填上同序号、同一来源的 `end_ns`。被取代的记录单独标出。热召回不在这一层。没有按「性能测量」采样时，这些记录不表示目标已经达到。
+
+图标缓存是 `IconCache`。`Dispatch::icon_cache` 把同一份缓存交给收纳。取图只针对当前可见行。Windows 上用 `IShellItemImageFactory::GetImage`，只要图标并缩放到请求边长，再用 `GetDIBits` 读成 RGBA。非 Windows 上取不到图。下面几项规格没有写死，当前做法如下，不把它们当成产品规则：请求边长是 32 像素；快捷方式图标序号只区分缓存键，取图接口没有这个参数；使用次数不落盘；待办、便签和浏览器行没有可交给壳层的路径，不取图标；文件和文件夹保持文件来源的返回顺序，不按次数重排。
 
 ## 收纳
 
