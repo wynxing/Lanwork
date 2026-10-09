@@ -17,13 +17,13 @@
 | 项 | 记录 |
 | --- | --- |
 | 中文输入法 | 无 |
-| 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。亚克力外观、系统主题切换、节电和另一台显卡都还没有确认 |
-| 渲染器 | 部分记录，未通过。同上。没有选定渲染器，也没有写进 architecture.md「运行时」 |
+| 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，FemtoVG、软件渲染、Skia 软件、Skia OpenGL 的窗口都是磨砂、能透出背景、没有黑色客户区。系统浅色/深色主题切换通过，深色下也清楚。关闭/打开「透明效果」通过。节电模式通过。渲染器未选定，这一项仍未通过。真实透明渲染失败没有新的记录。独立显卡机器未测。观察（不是失败判定）：自定义标题栏导致窗口拖不动；有两个关闭按钮 |
+| 渲染器 | 部分记录，未通过。同上。2026-10-09 四种窗口的文字清楚（含中文和 0OIl1）。没有选定渲染器，也没有写进 architecture.md「运行时」。独立显卡机器未测 |
 | 外部拖放 | 无 |
 | Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
 | Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。`WSearch` 停止时的错误码未测 |
 | 通知 | 无 |
-| 热角 | 2026-10-08，`spikes/hotcorner`，release。停留一次、离开约 340ms、离开后再进入，以及静止 5 分钟的三种采样，在这块屏幕上有记录。移动 5 分钟、拖动窗口、多显示器没有实测。没有选定机制，不算通过。见 [measurements/2026-10-08-hotcorner.md](measurements/2026-10-08-hotcorner.md) |
+| 热角 | 2026-10-08，`spikes/hotcorner`，release。停留一次、离开约 340ms、离开后再进入，以及静止 5 分钟的三种采样，在 1920×1200 的屏幕上有记录。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，钩子和 50ms 轮询各做了 5 分钟鼠标正常移动的采样（各 300 行）；100ms 轮询未测。拖动窗口、多显示器、全屏未测。没有选定机制，不算通过。见 [measurements/2026-10-08-hotcorner.md](measurements/2026-10-08-hotcorner.md) |
 
 ## 界面
 
