@@ -118,6 +118,8 @@ Lanwork/
 
 应用索引和图标缓存放在 `%LOCALAPPDATA%\Lanwork\cache`，可删除后重建，不进导出包。
 
+用户添加的便携应用、别名和已隐藏应用没有约定的文件。上面的目录树和 `config.json` 的字段都没有这项。`apps.json` 可以删除后重建，不能当作这份用户数据的唯一副本。文件放在哪、叫什么，待定。是否进入导出包，待定。最小实现见「搜索」。
+
 - 文件名是 id。id 是单个路径分量，不允许分隔符、Windows 保留设备名和文件名非法字符。`github/cache/<repo>.json` 的 `<repo>` 也是单个分量。`owner/repo` 的编码由 GitHub 服务决定：每个 `/` 换成 `%2F`，见「GitHub 服务」。
 - 写入：进程内一把互斥锁。同目录写 `<name>.tmp`，调用 `FlushFileBuffers` 后，目标已存在时用 `ReplaceFileW`（`REPLACEFILE_WRITE_THROUGH`），否则用 `MoveFileExW`（`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`）。替换失败则删除临时文件、保留原文件，并返回带路径的错误。不自动重试。数据目录位于 OneDrive 同步的「文档」下时，同步进程占用按同一规则报错。
 - 单个 JSON 无法解析时，把该文件改名为 `<id>.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，其他文件仍可读。日志不含文件内容。不认识的 `schemaVersion` 不隔离，由调用方拒绝。
@@ -179,9 +181,23 @@ Lanwork/
 
 应用来源：当前用户和公共开始菜单、注册表 App Paths、PATH、商店应用、用户添加的便携应用和别名。按启动目标去重。快捷方式保留参数和工作目录。启动时先加载缓存，再在后台更新。目录变化合并后再重建；注册表、商店应用和手动刷新按来源更新。
 
-应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用、别名和手动刷新的可见入口已写入产品规格。`AppIndex::refresh` 仍只是进程内重建，设置页入口尚未实现。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
+应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用、别名、隐藏和手动刷新的可见入口已写入产品规格。设置页、右键菜单和快捷键尚未实现。`AppIndex::refresh` 仍只是进程内重建。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
 
-下面是当前实现选择，不是产品规则。PATH 上的 UNC 目录跳过，避免一个断开的网络路径挡住其余来源。开始菜单目录变化的安静时间是 400ms，另有 2 秒上限，到点就重建开始菜单来源。`apps.json` 的 `schemaVersion` 不是 1 时，和无法解析一样隔离成 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，日志不含文件内容。这和数据目录里不认识的 `schemaVersion` 不隔离不同，因为这份缓存可以重建。读取缓存时的 IO 错误只记日志，不改名。
+下面是当前实现选择，不是产品规则。PATH 上的 UNC 目录跳过，避免一个断开的网络路径挡住其余来源。开始菜单目录变化的安静时间是 400ms，另有 2 秒上限，到点就重建开始菜单来源。`apps.json` 的 `schemaVersion` 不是 1 时，和无法解析一样隔离成 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，日志不含文件内容。这和数据目录里不认识的 `schemaVersion` 不隔离不同，因为这份缓存可以重建。读取缓存时的 IO 错误只记日志，不改名。`apps.json` 仍是 schemaVersion 1，新增可选字段 `alternateNames`，来源值 `portable` 与 `alias`，以及目标种类 `url`。旧缓存没有这些字段时按空值读取。
+
+开始菜单的 `.lnk` 和收录的 `.url`，显示名用 `SHCreateItemFromParsingName` 得到 `IShellItem`，再 `GetDisplayName(SIGDN_NORMALDISPLAY)`。失败或结果为空白时，用文件名去掉扩展名。快捷方式文件名（含扩展名）和目标 exe 的文件名（含扩展名）作为可搜索备用名，放进匹配引擎的别名字段，不作为结果上的名称。与显示名相同的不重复存。`.url` 没有目标 exe，只加它自己的文件名。
+
+递归扫描开始菜单时，用 `SHGetKnownFolderPath` 取 `FOLDERID_Startup` 和 `FOLDERID_CommonStartup`。目录的规范化路径与其中之一相同则整目录跳过。不按「Startup」或「启动」这些名字判断。测量用的额外目录使用同一组路径，只有扫到这两个已知文件夹才跳过。
+
+卸载程序默认不收录，没有开关。规则对应 Flow Launcher `Plugins/Flow.Launcher.Plugin.Program/Main.cs` 的 `HideUninstallersFilter`，但始终生效。目标文件名（不含目录）忽略大小写等于 `uninst.exe`、`unins000.exe`、`uninst000.exe` 或 `uninstall.exe` 时不收录。目标文件名以该处的前缀开头并且以 `.exe` 结尾时不收录。显示名以前缀开头时不收录。快捷方式文件名以前缀开头并且以 `.lnk` 结尾时不收录。前缀包括 `uninstall`、`卸载`、`卸載`，以及该文件里其他语言的对应词；同一拼写只保留一次。只作用于开始菜单、App Paths 和 PATH。商店应用和用户添加的便携应用不过这道过滤。
+
+收录的 `.url` 读取 `InternetShortcut` 的第一条非空 `URL=`。地址以 `steam://run/`、`steam://rungameid/` 或 `com.epicgames.launcher://apps/` 开头，且前缀之后还有剩余，才进入索引。比较前缀时忽略 ASCII 大小写。普通 `http` / `https` 以及其他协议不收。去重键是整段地址的 ASCII 小写。启动时把这段地址交给 `ShellExecuteExW`，动词 `open`。不要求本机存在对应的 exe。
+
+`AppSource::ALL` 在四种系统来源之后加上 `Portable` 和 `Alias`。系统来源仍由枚举填入。便携应用和别名来自调用方持有的用户目录，不由 Windows 枚举产生。便携应用是一条路径目标，来源记为 `Portable`。别名是一个名称加一个启动目标，来源记为 `Alias`。去重时系统来源在前。便携应用的启动目标已经存在时不另成一条，名称并入备用名。结果里显示系统名称还是用户起的名称，待定；最小实现保留系统条目的显示名。别名同样只并入备用名。别名的目标不在索引里时是否单独显示，待定；最小实现不单独成条。
+
+用户目录的路径待定，见「数据」。最小实现是 `load_user_catalog` 和 `save_user_catalog`：调用方传入路径。JSON 的 `schemaVersion` 为 1，字段是 `portable`、`aliases`、`hidden`。缺少 `schemaVersion` 时按 1 读取。文件不存在视为空目录。无法解析，或 `schemaVersion` 更高时返回错误，不改名、不隔离。`AppIndex::open_from_process` 不猜测路径，内存中的目录开始是空的。`set_user_catalog` 替换这份内存并只重建便携应用和别名两个来源。在此之前若后台重建已经用空目录跑完，缓存里残留的便携应用和别名会被清掉。调用方要在打开索引之后把目录设进来。`hide` 和 `restore` 只改这份内存。落盘仍由调用方保存。隐藏按启动目标的去重键。`entries` 仍包含已隐藏的应用。搜索必须走 `query`，那里丢掉隐藏键。`hidden_apps` 把目录里的隐藏项交给设置页；索引里还能找到同一键时，用当前显示名。
+
+有路径的应用可以「以管理员身份运行」和「打开所在文件夹」。前者用 `ShellExecuteExW`，动词 `runas`，掩码与普通启动相同，会交给系统的提权提示。后者返回目标 exe 的父目录，不是快捷方式所在的开始菜单目录；打开这个目录的窗口不在本模块。商店应用的目标只有 AUMID，启动串是 `shell:AppsFolder\<AUMID>`。`runas` 不能用来提权打包应用，枚举也拿不到可以交给资源管理器的普通文件路径，包目录通常在受保护的 WindowsApps 下。因此这两个动作对商店应用不可用。协议链接没有本地 exe，「以管理员身份运行」会去提权协议处理程序，最小实现不提供。协议链接的「打开所在文件夹」若是指 `.url` 自己所在的目录，产品规格标为待定，最小实现也不提供。具体快捷键待定，这里不写死。
 
 待办与便签索引常驻内存，由写盘成功后的变更消息增量更新，查询时不读盘。只收未完成待办的标题，以及不在回收站中的便签的标题、标签和正文。
 
