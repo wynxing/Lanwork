@@ -75,6 +75,12 @@ pub(crate) struct Platform {
     thread: Option<JoinHandle<()>>,
 }
 
+/// 可以在别的线程上请求重新注册热键。窗口仍由平台线程拥有。
+#[derive(Clone, Copy)]
+pub(crate) struct HotkeyControl {
+    hwnd: isize,
+}
+
 impl Platform {
     pub(crate) fn start(primary: Primary) -> Result<Self, String> {
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -102,11 +108,8 @@ impl Platform {
         })
     }
 
-    pub(crate) fn rebind(&self, next: Vec<RegisteredHotkey>) -> Result<(), BindError> {
-        let (tx, rx) = mpsc::channel();
-        lock(rebind_queue()).push_back(RebindRequest { next, reply: tx });
-        self.post(WM_REBIND);
-        rx.recv().unwrap_or(Err(BindError::Occupied { id: 0 }))
+    pub(crate) fn control(&self) -> HotkeyControl {
+        HotkeyControl { hwnd: self.hwnd }
     }
 
     pub(crate) fn set_theme_callback(&self, callback: Box<dyn Fn() + Send>) {
@@ -122,6 +125,19 @@ impl Platform {
     }
 
     fn post(&self, message: u32) {
+        self.control().post(message);
+    }
+}
+
+impl HotkeyControl {
+    pub(crate) fn rebind(self, next: Vec<RegisteredHotkey>) -> Result<(), BindError> {
+        let (tx, rx) = mpsc::channel();
+        lock(rebind_queue()).push_back(RebindRequest { next, reply: tx });
+        self.post(WM_REBIND);
+        rx.recv().unwrap_or(Err(BindError::Occupied { id: 0 }))
+    }
+
+    fn post(self, message: u32) {
         let hwnd = HWND(self.hwnd as *mut std::ffi::c_void);
         // SAFETY: 窗口在平台线程退出前一直存在。失败表示线程已经结束。
         unsafe {
@@ -236,6 +252,7 @@ fn create_window() -> Result<CreatedWindow, String> {
     // SAFETY: 类名在 CreatedWindow 里活到反注册。过程地址是静态函数。
     let atom = unsafe { RegisterClassW(&window_class) };
     if atom == 0 {
+        // SAFETY: 紧挨着失败的 RegisterClassW，读取这次失败的错误码。
         let err = unsafe { GetLastError() };
         return Err(format!("平台窗口类注册失败: {err:?}"));
     }
@@ -292,6 +309,7 @@ fn pump() -> bool {
         if message.message == WM_QUIT {
             return true;
         }
+        // SAFETY: message 已由上面的 PeekMessageW 填好。这两次调用只使用这条 MSG。
         unsafe {
             let _ = TranslateMessage(&message);
             let _ = DispatchMessageW(&message);
@@ -321,10 +339,14 @@ unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_STOP => {
+            // SAFETY: 在这个窗口过程所在的线程上投递 WM_QUIT。
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
-        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+        _ => {
+            // SAFETY: 未处理的消息交给系统默认过程。hwnd 是这次回调收到的窗口。
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
     }
 }
 

@@ -63,20 +63,28 @@ pub(crate) fn claim(mutex_name: &str, activate_name: &str) -> Result<Claim, Stri
         CreateSemaphoreW(None, 0, i32::MAX, pcwstr(&activate))
             .map_err(|err| format!("单实例信号量创建失败: {err}"))?
     };
-    let mutex_handle = unsafe {
+    // SAFETY: 名字以 0 结尾。先清掉上次的错误码。创建者请求初始所有权。
+    let mutex_result = unsafe {
         SetLastError(WIN32_ERROR(0));
-        match CreateMutexW(None, true, pcwstr(&mutex)) {
-            Ok(handle) => handle,
-            Err(err) => {
+        CreateMutexW(None, true, pcwstr(&mutex))
+    };
+    let mutex_handle = match mutex_result {
+        Ok(handle) => handle,
+        Err(err) => {
+            // SAFETY: 互斥量没有创建成功。信号量刚打开，还没有交给 Primary。
+            unsafe {
                 let _ = CloseHandle(semaphore);
-                return Err(format!("单实例互斥量创建失败: {err}"));
             }
+            return Err(format!("单实例互斥量创建失败: {err}"));
         }
     };
+    // SAFETY: 紧挨着上面的 CreateMutexW。成功时 windows-rs 不改写上次的错误码。
     let last_error = unsafe { GetLastError() };
     let already = last_error == ERROR_ALREADY_EXISTS;
     if already {
+        // SAFETY: 信号量句柄刚打开。计数加一，留给已经拥有互斥量的进程。
         let released = unsafe { ReleaseSemaphore(semaphore, 1, None) };
+        // SAFETY: 第二个进程不保留这两个句柄。关闭后不再使用。
         unsafe {
             let _ = CloseHandle(mutex_handle);
             let _ = CloseHandle(semaphore);

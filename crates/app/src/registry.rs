@@ -118,6 +118,7 @@ fn write_sz(subkey: &str, name: &str, value: &str) -> Result<(), String> {
     let key = create_key(subkey)?;
     let name = wide(name);
     let mut data = wide(value);
+    // SAFETY: data 活过这次调用。指针指向这块缓冲区，长度是它的字节数，含结尾的 0。
     let bytes =
         unsafe { std::slice::from_raw_parts(data.as_mut_ptr().cast::<u8>(), data.len() * 2) };
     // SAFETY: 值名和数据在调用期间有效，数据含结尾 0。
