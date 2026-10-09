@@ -1,4 +1,4 @@
-//! GitHub 服务里不依赖 #9 第 17、18 项的验收。
+//! GitHub 服务的验收。筛选仍因快照缺字段而拒绝。
 //!
 //! 夹具是手写并脱敏的 `gh --json` 数组。不启动本机 `gh`，不访问网络。
 
@@ -866,22 +866,13 @@ fn convert_failure_and_snapshot_write_failure_leave_no_partial_todo() {
 }
 
 #[test]
-fn ignore_and_pin_are_remembered_and_repo_edits_wait() {
+fn ignore_and_pin_are_remembered() {
     let env = Env::new(&["example/widget"]);
     env.script.set_fetch("example/widget", Ok(widget()));
     env.github
         .refresh_all(NOW_MS, &settings(14, false))
         .unwrap();
-    let before = doc_bytes(&env.store, &DocumentId::GithubWatchlist);
     let events = env.store.subscribe();
-    let err = env.github.add_tracked("example/new").unwrap_err();
-    assert_eq!(err.pending_topic(), Some(PendingTopic::RepoManagement));
-    assert!(matches!(
-        env.github.remove_tracked("example/widget").unwrap_err(),
-        GithubError::PendingSpec(PendingTopic::RepoManagement)
-    ));
-    assert_eq!(doc_bytes(&env.store, &DocumentId::GithubWatchlist), before);
-    assert!(events.try_recv().is_err());
     assert!(
         env.github
             .set_ignored("", SourceKind::GithubPr, 1, true)
@@ -917,6 +908,124 @@ fn ignore_and_pin_are_remembered_and_repo_edits_wait() {
     assert_eq!(watch.ignored.len(), 1);
     assert_eq!(watch.pinned.len(), 1);
     assert_eq!(watch.ignored[0].kind, SourceKind::GithubPr);
+}
+
+#[test]
+fn add_tracked_checks_owner_repo_and_remove_drops_snapshot_and_source() {
+    let env = Env::new(&["example/widget"]);
+    env.script.set_fetch("example/widget", Ok(widget()));
+    env.github
+        .refresh_all(NOW_MS, &settings(14, false))
+        .unwrap();
+    env.github
+        .set_pinned("example/widget", SourceKind::GithubPr, 12, true)
+        .unwrap();
+    let before = env.github.tracked().unwrap();
+    for bad in [
+        "example",
+        "owner/repo/extra",
+        " owner/repo",
+        "-owner/repo",
+        "owner/",
+        "/repo",
+    ] {
+        let err = env.github.add_tracked(bad).unwrap_err();
+        assert!(
+            err.to_string().contains("正确格式是 owner/repo"),
+            "{bad}: {err}"
+        );
+    }
+    assert_eq!(env.github.tracked().unwrap(), before);
+
+    env.github.add_tracked("example/new").unwrap();
+    env.github.add_tracked("example/new").unwrap();
+    assert_eq!(
+        env.github
+            .tracked()
+            .unwrap()
+            .iter()
+            .filter(|repo| repo.as_str() == "example/new")
+            .count(),
+        1
+    );
+    assert!(matches!(
+        env.github.remove_tracked("example/missing").unwrap_err(),
+        GithubError::RepoNotTracked { .. }
+    ));
+
+    let open = inbox_item(
+        &env,
+        "仍打开",
+        Some(source(
+            SourceKind::GithubPr,
+            "example/widget",
+            12,
+            "https://github.com/example/widget/pull/12",
+        )),
+    );
+    let done = inbox_item(
+        &env,
+        "已完成",
+        Some(source(
+            SourceKind::GithubIssue,
+            "example/widget",
+            8,
+            "https://github.com/example/widget/issues/8",
+        )),
+    );
+    env.todos.complete_item(&done).unwrap();
+    let trashed = inbox_item(
+        &env,
+        "在回收站",
+        Some(source(
+            SourceKind::GithubIssue,
+            "example/widget",
+            2,
+            "https://github.com/example/widget/issues/2",
+        )),
+    );
+    env.todos.soft_delete(&trashed).unwrap();
+    let other = inbox_item(
+        &env,
+        "另一个仓库",
+        Some(source(
+            SourceKind::GithubPr,
+            "example/new",
+            1,
+            "https://github.com/example/new/pull/1",
+        )),
+    );
+
+    env.github.remove_tracked("example/widget").unwrap();
+    assert!(env.github.snapshot("example/widget").unwrap().is_none());
+    assert!(
+        !env.store
+            .document_path(&cache_doc("example/widget"))
+            .unwrap()
+            .exists()
+    );
+    assert!(
+        !env.github
+            .tracked()
+            .unwrap()
+            .iter()
+            .any(|repo| repo == "example/widget")
+    );
+    for id in [&open, &done, &trashed] {
+        assert!(env.todos.item(id).unwrap().item.source.is_none());
+    }
+    assert_eq!(
+        env.todos.item(&other).unwrap().item.source.unwrap().repo,
+        "example/new"
+    );
+    let watch = env.github.watchlist().unwrap();
+    assert!(
+        watch
+            .pinned
+            .iter()
+            .any(|mark| mark.repo == "example/widget")
+    );
+    assert_eq!(env.todos.item(&open).unwrap().item.title, "仍打开");
 }
 
 #[test]

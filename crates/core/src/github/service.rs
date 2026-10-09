@@ -227,6 +227,43 @@ impl Service {
         self.set_flag(repo, kind, number, on, false)
     }
 
+    pub(crate) fn add_tracked(&self, name: &str) -> Result<(), GithubError> {
+        let repo = require_owner_repo(name)?;
+        let _op = lock_mutex(&self.op);
+        self.ensure_loaded()?;
+        let mut list = lock_mutex(&self.state).watchlist.clone();
+        if list.repos.iter().any(|item| item == &repo) {
+            return Ok(());
+        }
+        list.repos.push(repo);
+        self.store.write_json(&DocumentId::GithubWatchlist, &list)?;
+        lock_mutex(&self.state).watchlist = list;
+        Ok(())
+    }
+
+    pub(crate) fn remove_tracked(&self, name: &str) -> Result<(), GithubError> {
+        let repo = require_owner_repo(name)?;
+        let _op = lock_mutex(&self.op);
+        self.ensure_loaded()?;
+        if !lock_mutex(&self.state)
+            .watchlist
+            .repos
+            .iter()
+            .any(|item| item == &repo)
+        {
+            return Err(GithubError::RepoNotTracked { repo });
+        }
+        let cache_id = cache_file_id(&repo)?;
+        self.todos.clear_sources_for_repo(&repo)?;
+        self.store.remove(&DocumentId::GithubCache(cache_id))?;
+        lock_mutex(&self.state).repos.remove(&repo);
+        let mut list = lock_mutex(&self.state).watchlist.clone();
+        list.repos.retain(|item| item != &repo);
+        self.store.write_json(&DocumentId::GithubWatchlist, &list)?;
+        lock_mutex(&self.state).watchlist = list;
+        Ok(())
+    }
+
     pub(crate) fn refresh_all(
         &self,
         now_ms: i64,
@@ -653,6 +690,21 @@ impl Service {
             Err(_) => self.store.log_info("gh unavailable"),
         }
     }
+}
+
+fn require_owner_repo(name: &str) -> Result<String, GithubError> {
+    let Some((owner, repo)) = name.split_once('/') else {
+        return Err(GithubError::InvalidRepoFormat);
+    };
+    if owner.is_empty()
+        || repo.is_empty()
+        || repo.contains('/')
+        || name.starts_with('-')
+        || name.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err(GithubError::InvalidRepoFormat);
+    }
+    Ok(name.to_owned())
 }
 
 fn empty_repo(repo: String) -> RepoList {

@@ -7,14 +7,12 @@ use std::fmt;
 use crate::storage::Error as StorageError;
 use crate::todos::{SourceKind, TodoError};
 
-/// 产品规格还没写明、因此命令拒绝猜测的点。
+/// 快照里没有计算筛选所需的字段，因此命令拒绝猜测。
 ///
-/// 见 GitHub issue #9 第 17 项和第 18 项。这些分支不改 watchlist、快照或待办。
+/// 见 GitHub issue #9 第 18 项。这个分支不改 watchlist、快照或待办。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingTopic {
-    /// 追踪仓库的输入校验、移除后的缓存和关联待办。
-    RepoManagement,
-    /// 信号判定、筛选含义和多个条件的组合。
+    /// 作者、被分配、被提及、审查请求和 CI 结果不在快照里。
     SignalFilters,
 }
 
@@ -88,6 +86,8 @@ pub enum GithubError {
     RepoNotTracked {
         repo: String,
     },
+    /// 不是 `owner/repo`。不写入追踪列表。
+    InvalidRepoFormat,
     ItemNotFound {
         repo: String,
         kind: SourceKind,
@@ -116,14 +116,12 @@ impl fmt::Display for GithubError {
             Self::Todo(err) => write!(f, "{err}"),
             Self::NotReady => write!(f, "GitHub 尚未加载"),
             Self::RepoNotTracked { repo } => write!(f, "未追踪仓库：{repo}"),
+            Self::InvalidRepoFormat => write!(f, "正确格式是 owner/repo"),
             Self::ItemNotFound { repo, number, .. } => write!(f, "找不到条目：{repo}#{number}"),
             Self::InvalidItem => write!(f, "条目无效"),
             Self::UnsupportedSchema { found } => write!(f, "schemaVersion {found} 不受支持"),
-            Self::PendingSpec(PendingTopic::RepoManagement) => {
-                write!(f, "追踪仓库的添加和移除尚未写入产品规格")
-            }
             Self::PendingSpec(PendingTopic::SignalFilters) => {
-                write!(f, "筛选和信号组合尚未写入产品规格")
+                write!(f, "当前快照没有作者、审查和 CI，不能按这些条件筛选")
             }
         }
     }

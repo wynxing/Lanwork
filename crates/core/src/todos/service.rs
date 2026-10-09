@@ -374,6 +374,10 @@ impl Service {
         self.ready_op(|| self.clear_source_locked(item_id))
     }
 
+    pub(crate) fn clear_sources_for_repo(&self, repo: &str) -> Result<(), TodoError> {
+        self.ready_op(|| self.clear_sources_for_repo_locked(repo))
+    }
+
     pub(crate) fn complete_item(&self, item_id: &str) -> Result<(), TodoError> {
         self.ready_op(|| self.complete_locked(item_id))
     }
@@ -621,6 +625,28 @@ impl Service {
             item.source = None;
             Ok(())
         })
+    }
+
+    fn clear_sources_for_repo_locked(&self, repo: &str) -> Result<(), TodoError> {
+        let mut lists = self.lists_vec()?;
+        let mut changed = Vec::new();
+        for list in &mut lists {
+            let mut touched = false;
+            for item in &mut list.items {
+                if item
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.repo == repo)
+                {
+                    item.source = None;
+                    touched = true;
+                }
+            }
+            if touched {
+                changed.push(list.clone());
+            }
+        }
+        self.persist(lists, changed)
     }
 
     fn complete_locked(&self, item_id: &str) -> Result<(), TodoError> {
