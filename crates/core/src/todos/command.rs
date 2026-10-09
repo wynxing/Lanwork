@@ -227,6 +227,16 @@ impl TodoCommands {
         self.service.purge_expired(now_ms)
     }
 
+    /// 清除记录里尚未确认的 id。收纳用来补解除，不给界面调用。
+    pub(crate) fn pending_purges(&self) -> Result<Vec<String>, TodoError> {
+        self.service.pending_purges()
+    }
+
+    /// 这些 id 的收纳关联已经解除。从清除记录去掉。
+    pub(crate) fn ack_purges(&self, ids: &[String]) -> Result<(), TodoError> {
+        self.service.ack_purges(ids)
+    }
+
     /// 返回 `http` / `https` 来源 URL。其他协议拒绝。
     pub fn open_source(&self, item_id: &str) -> Result<String, TodoError> {
         let url = self.service.source_url(item_id)?;

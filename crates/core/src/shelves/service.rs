@@ -336,13 +336,84 @@ impl ShelfService {
         }
     }
 
-    /// 订阅待办服务的领域事件。收到永久删除后解除对应关联。
+    /// 订阅待办服务的领域事件，并补上订阅前已经永久删除的关联。
     ///
-    /// 监听在后台线程进行，直到待办服务的订阅端关闭。重复调用会再订一份。
+    /// 先订阅，这样补解除期间新发出的 `Purged` 留在通道里。然后同步处理
+    /// `todo-purge-pending.json`：只解除记录中已经不在任何清单里的 id，
+    /// 写盘成功后才从记录去掉。待办还在时不解除。不在记录里的关联不动。
+    /// 随后的事件在后台线程里解除并确认记录，直到订阅端关闭。重复调用会再订一份。
     pub fn watch_todo_notices(&self, todos: &TodoCommands) {
-        self.watch_notices(todos.subscribe_notices());
+        let notices = todos.subscribe_notices();
+        self.finish_pending_purges(todos);
+        self.watch_notices_acking(notices, todos.clone());
     }
 
+    fn finish_pending_purges(&self, todos: &TodoCommands) {
+        let ids = match todos.pending_purges() {
+            Ok(ids) => ids,
+            Err(err) => {
+                todos
+                    .store()
+                    .log_warn(&format!("读取待办清除记录失败，本次不补解除关联：{err}"));
+                return;
+            }
+        };
+        let mut acked = Vec::new();
+        for id in ids {
+            match todos.item(&id) {
+                Ok(_) => continue,
+                Err(crate::todos::TodoError::ItemNotFound { .. }) => {}
+                Err(crate::todos::TodoError::NotLoaded) => {
+                    todos.store().log_warn("待办尚未加载，本次不补解除关联");
+                    break;
+                }
+                Err(err) => {
+                    todos
+                        .store()
+                        .log_warn(&format!("读取待办失败，本次不解除关联：{id}：{err}"));
+                    continue;
+                }
+            }
+            match self.unlink_todo_everywhere(&id) {
+                Ok(_) => acked.push(id),
+                Err(err) => {
+                    todos
+                        .store()
+                        .log_warn(&format!("补解除收纳关联失败，已跳过：{id}：{err}"));
+                }
+            }
+        }
+        if let Err(err) = todos.ack_purges(&acked) {
+            todos
+                .store()
+                .log_warn(&format!("确认待办清除记录失败，下次启动再试：{err}"));
+        }
+    }
+
+    fn watch_notices_acking(&self, notices: Receiver<TodoNotice>, todos: TodoCommands) {
+        let service = self.clone();
+        thread::Builder::new()
+            .name("lanwork-shelf-todo-notice".to_owned())
+            .spawn(move || {
+                while let Ok(notice) = notices.recv() {
+                    let TodoNotice::Purged { item_id } = &notice;
+                    match service.unlink_todo_everywhere(item_id) {
+                        Ok(_) => {
+                            let _ = todos.ack_purges(std::slice::from_ref(item_id));
+                        }
+                        Err(err) => {
+                            todos.store().log_warn(&format!(
+                                "解除收纳关联失败，清除记录保留：{item_id}：{err}"
+                            ));
+                        }
+                    }
+                }
+            })
+            .expect("spawn shelf notice thread");
+    }
+
+    /// 只按通道里的事件解除关联，不读清除记录。
+    #[cfg(test)]
     pub(crate) fn watch_notices(&self, notices: Receiver<TodoNotice>) {
         let service = self.clone();
         thread::Builder::new()

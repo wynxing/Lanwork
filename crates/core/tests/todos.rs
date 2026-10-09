@@ -629,6 +629,40 @@ fn trash_older_than_thirty_days_is_purged_on_boot() {
         .unwrap();
     assert!(disk.items.iter().all(|item| item.id != "old"));
     assert!(disk.items.iter().any(|item| item.id == "fresh"));
+    let pending = store
+        .data_dir()
+        .join(lanwork_core::todos::PURGE_PENDING_FILE);
+    let recorded = std::fs::read_to_string(&pending).unwrap();
+    assert!(recorded.contains("\"old\""), "{recorded}");
+    assert!(!recorded.contains("\"fresh\""), "{recorded}");
+}
+
+#[test]
+fn unreadable_purge_record_does_not_fail_boot_or_drop_the_file() {
+    let temp = TempDir::new();
+    let paths = StorePaths {
+        data_dir: temp.path().join("data"),
+        cache_dir: temp.path().join("cache"),
+        user_profile: temp.path().join("profile"),
+        local_app_data: temp.path().join("local"),
+    };
+    let store = Store::open(paths).unwrap();
+    let deleted_at = now_ms() - TRASH_RETENTION_MS;
+    write_raw(
+        &store,
+        "work",
+        &format!(
+            r#"{{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{{"id":"old","title":"过期","deletedAt":{deleted_at}}}]}}"#
+        ),
+    );
+    let pending = store
+        .data_dir()
+        .join(lanwork_core::todos::PURGE_PENDING_FILE);
+    std::fs::write(&pending, b"{").unwrap();
+    let todos = TodoCommands::open(store);
+    todos.boot().unwrap();
+    assert_eq!(todos.item("old").unwrap().item.title, "过期");
+    assert_eq!(std::fs::read(&pending).unwrap(), b"{");
 }
 
 #[test]

@@ -10,7 +10,9 @@ use lanwork_core::shelves::{
     DEFAULT_GROUP_NAME, IncomingRef, ShelfCommands, ShelfError, normalize_path,
 };
 use lanwork_core::storage::{CollectionKind, DocumentId, EntityKind, Store, StorePaths};
-use lanwork_core::todos::TodoNotice;
+use lanwork_core::todos::{
+    NewTodo, PURGE_PENDING_FILE, TRASH_RETENTION_MS, TodoCommands, TodoError, TodoNotice,
+};
 
 struct TempDir {
     path: PathBuf,
@@ -413,6 +415,104 @@ fn linking_is_one_todo_per_group_and_many_groups_per_todo() {
         Some("todo-a")
     );
     assert_unchanged(&file, b"keep");
+}
+
+fn now_ms() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+fn draft(title: &str) -> NewTodo {
+    NewTodo {
+        title: title.to_owned(),
+        due: None,
+        remind_at: None,
+        recurrence: None,
+        source: None,
+    }
+}
+
+#[test]
+fn watch_after_boot_clears_the_purged_link_and_keeps_an_unrecorded_id() {
+    let fix = fixture();
+    let deleted_at = now_ms() - TRASH_RETENTION_MS;
+    let list_path = fix
+        .store
+        .document_path(&DocumentId::Todo("work".into()))
+        .unwrap();
+    std::fs::create_dir_all(list_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &list_path,
+        format!(
+            r#"{{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{{"id":"old","title":"过期","deletedAt":{deleted_at}}}]}}"#
+        ),
+    )
+    .unwrap();
+    let shelves = commands(&fix.store);
+    let purged = shelves.create_group("已删").unwrap();
+    let missing = shelves.create_group("尚无").unwrap();
+    shelves.link_todo(&purged.id, "old").unwrap();
+    shelves.link_todo(&missing.id, "missing-todo").unwrap();
+
+    let todos = TodoCommands::open(fix.store.clone());
+    todos.boot().unwrap();
+    assert!(matches!(
+        todos.item("old").unwrap_err(),
+        TodoError::ItemNotFound { .. }
+    ));
+    let pending = fix.store.data_dir().join(PURGE_PENDING_FILE);
+    let recorded = std::fs::read_to_string(&pending).unwrap();
+    assert!(recorded.contains("\"old\""), "{recorded}");
+
+    shelves.watch_todo_notices(&todos);
+    assert!(shelves.get(&purged.id).unwrap().todo_id.is_none());
+    assert_eq!(
+        shelves.get(&missing.id).unwrap().todo_id.as_deref(),
+        Some("missing-todo")
+    );
+    assert!(!pending.exists());
+}
+
+#[test]
+fn watch_finishes_unlink_after_the_todo_write_and_leaves_other_ids() {
+    let fix = fixture();
+    let todos = TodoCommands::open(fix.store.clone());
+    todos.boot().unwrap();
+    let list_id = todos.create_list("工作").unwrap();
+    let still = todos.create_item(&list_id, draft("还在")).unwrap();
+    let pending = fix.store.data_dir().join(PURGE_PENDING_FILE);
+    std::fs::write(
+        &pending,
+        format!(r#"{{"schemaVersion":1,"ids":["gone","{still}"]}}"#),
+    )
+    .unwrap();
+
+    let shelves = commands(&fix.store);
+    let gone_group = shelves.create_group("已写盘").unwrap();
+    let still_group = shelves.create_group("还在").unwrap();
+    let never_group = shelves.create_group("从未").unwrap();
+    shelves.link_todo(&gone_group.id, "gone").unwrap();
+    shelves.link_todo(&still_group.id, &still).unwrap();
+    shelves.link_todo(&never_group.id, "missing-todo").unwrap();
+
+    shelves.watch_todo_notices(&todos);
+    assert!(shelves.get(&gone_group.id).unwrap().todo_id.is_none());
+    assert_eq!(
+        shelves.get(&still_group.id).unwrap().todo_id.as_deref(),
+        Some(still.as_str())
+    );
+    assert_eq!(
+        shelves.get(&never_group.id).unwrap().todo_id.as_deref(),
+        Some("missing-todo")
+    );
+    let left = std::fs::read_to_string(&pending).unwrap();
+    assert!(left.contains(&format!("\"{still}\"")), "{left}");
+    assert!(!left.contains("\"gone\""), "{left}");
 }
 
 #[test]

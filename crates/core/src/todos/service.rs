@@ -114,6 +114,8 @@ impl crate::storage::MemoryReload for Service {
 pub(crate) struct Service {
     store: Store,
     op: Mutex<()>,
+    /// 清除记录的读改写。不和 `op` 嵌套，收纳线程可以在待办操作之外确认记录。
+    pending: Mutex<()>,
     state: Mutex<State>,
     notices: NoticeBus,
     #[cfg(test)]
@@ -125,6 +127,7 @@ impl Service {
         let service = Arc::new(Self {
             store,
             op: Mutex::new(()),
+            pending: Mutex::new(()),
             state: Mutex::new(State {
                 loaded: false,
                 lists: Vec::new(),
@@ -163,7 +166,14 @@ impl Service {
         let _op = lock_mutex(&self.op);
         let lists = self.read_disk()?;
         self.set_lists(lists);
-        self.purge_expired_locked(now_ms())?;
+        // 记录读不出来时不覆盖、不删除。启动不因此失败，条目留到记录能合并再清。
+        if let Err(err) = self.purge_expired_locked(now_ms()) {
+            if matches!(err, TodoError::PurgeRecord) {
+                self.store.log_warn("待办清除记录无法读取，本次不自动清除");
+            } else {
+                return Err(err);
+            }
+        }
         Ok(())
     }
 
@@ -183,6 +193,34 @@ impl Service {
 
     pub(crate) fn subscribe_notices(&self) -> Receiver<TodoNotice> {
         self.notices.subscribe()
+    }
+
+    /// 已记入、尚未确认解除的永久删除 id。
+    pub(crate) fn pending_purges(&self) -> Result<Vec<String>, TodoError> {
+        let _pending = lock_mutex(&self.pending);
+        let ids = super::purge_record::read(&self.store)?;
+        Ok(ids.into_iter().collect())
+    }
+
+    /// 收纳已经解除这些 id 之后，从清除记录去掉。不在记录里的 id 忽略。
+    pub(crate) fn ack_purges(&self, ids: &[String]) -> Result<(), TodoError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _pending = lock_mutex(&self.pending);
+        let mut current = super::purge_record::read(&self.store)?;
+        let mut changed = false;
+        for id in ids {
+            changed |= current.remove(id);
+        }
+        if !changed {
+            return Ok(());
+        }
+        if current.is_empty() {
+            super::purge_record::remove(&self.store)
+        } else {
+            super::purge_record::write(&self.store, &current)
+        }
     }
 
     pub(crate) fn lists(&self) -> Result<Vec<TodoList>, TodoError> {
@@ -677,6 +715,7 @@ impl Service {
         if !lists[list_index].items[item_index].in_trash() {
             return Err(TodoError::NotInTrash);
         }
+        self.remember_purged(&[item_id.to_owned()])?;
         lists[list_index].items.remove(item_index);
         let changed = lists[list_index].clone();
         self.persist(lists, vec![changed])?;
@@ -708,6 +747,7 @@ impl Service {
         if purged.is_empty() {
             return Ok(purged);
         }
+        self.remember_purged(&purged)?;
         let writes = lists
             .iter()
             .filter(|list| changed_ids.contains(&list.id))
@@ -720,6 +760,23 @@ impl Service {
             });
         }
         Ok(purged)
+    }
+
+    /// 在删除清单里的条目之前记下 id。失败时不改清单。
+    fn remember_purged(&self, ids: &[String]) -> Result<(), TodoError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _pending = lock_mutex(&self.pending);
+        let mut current = super::purge_record::read(&self.store)?;
+        let mut changed = false;
+        for id in ids {
+            changed |= current.insert(id.clone());
+        }
+        if changed {
+            super::purge_record::write(&self.store, &current)?;
+        }
+        Ok(())
     }
 
     fn source_url_locked(&self, item_id: &str) -> Result<String, TodoError> {
@@ -1439,5 +1496,63 @@ mod tests {
         let err = ready.service.process_move(&item_id, &target).unwrap_err();
         assert!(err.to_string().contains("读取失败"), "{err}");
         assert!(ready.service.lists().is_err());
+    }
+
+    #[test]
+    fn failed_list_write_keeps_the_item_and_the_purge_record() {
+        let ready = Ready::new();
+        let list_id = ready.service.create_list("工作").unwrap();
+        let item_id = ready.service.create_item(&list_id, draft("回收")).unwrap();
+        ready.service.soft_delete(&item_id).unwrap();
+        ready.service.set_write_fault(Some(0), false, None);
+        let err = ready.service.purge(&item_id).unwrap_err();
+        assert!(err.to_string().contains("写入失败"), "{err}");
+        assert!(ready.service.item(&item_id).unwrap().item.in_trash());
+        let pending = ready
+            .store
+            .data_dir()
+            .join(crate::todos::PURGE_PENDING_FILE);
+        let recorded = std::fs::read_to_string(&pending).unwrap();
+        assert!(recorded.contains(&format!("\"{item_id}\"")), "{recorded}");
+        ready.service.set_write_fault(None, false, None);
+        ready.service.purge(&item_id).unwrap();
+        assert!(matches!(
+            ready.service.item(&item_id).unwrap_err(),
+            crate::todos::TodoError::ItemNotFound { .. }
+        ));
+        let recorded = std::fs::read_to_string(&pending).unwrap();
+        assert!(recorded.contains(&format!("\"{item_id}\"")), "{recorded}");
+        ready.service.ack_purges(&[item_id]).unwrap();
+        assert!(!pending.exists());
+    }
+
+    #[test]
+    fn unreadable_purge_record_skips_auto_purge_and_keeps_the_file() {
+        let ready = Ready::new();
+        let deleted_at = super::now_ms() - crate::todos::TRASH_RETENTION_MS;
+        let path = ready
+            .store
+            .document_path(&DocumentId::Todo("work".into()))
+            .unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{{"id":"old","title":"过期","deletedAt":{deleted_at}}}]}}"#
+            ),
+        )
+        .unwrap();
+        let pending = ready
+            .store
+            .data_dir()
+            .join(crate::todos::PURGE_PENDING_FILE);
+        std::fs::write(&pending, b"{").unwrap();
+        ready.service.load().unwrap();
+        assert_eq!(ready.service.item("old").unwrap().item.title, "过期");
+        assert_eq!(std::fs::read(&pending).unwrap(), b"{");
+        let err = ready.service.purge_expired(super::now_ms()).unwrap_err();
+        assert!(matches!(err, crate::todos::TodoError::PurgeRecord), "{err}");
+        assert_eq!(ready.service.item("old").unwrap().item.title, "过期");
+        assert_eq!(std::fs::read(&pending).unwrap(), b"{");
     }
 }
