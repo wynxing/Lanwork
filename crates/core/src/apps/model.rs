@@ -95,12 +95,13 @@ pub fn launch_key(target: &LaunchTarget) -> String {
 
 /// 各组按 [`AppSource::ALL`] 的顺序传入。同一键只保留先出现的条目。
 ///
-/// 后出现的便携应用或别名不另成一条，名称并入已保留条目的备用名。
-/// 别名在没有任何已有目标时不单独显示。
+/// 后出现的便携应用不另成一条。显示名改成用户填的名称，原来的名称进入备用名。
+/// 便携应用先出现时，后到的系统来源不改这条的显示名。两条系统来源仍保留先出现的名称。
+/// 别名只并入备用名。别名在没有任何已有目标时不单独显示。
 #[must_use]
 pub fn dedupe_entries(groups: &[&[AppEntry]]) -> Vec<AppEntry> {
-    let mut seen = HashMap::new();
-    let mut out = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<AppEntry> = Vec::new();
     for group in groups {
         for entry in *group {
             let key = launch_key(&entry.target);
@@ -108,7 +109,10 @@ pub fn dedupe_entries(groups: &[&[AppEntry]]) -> Vec<AppEntry> {
                 continue;
             }
             if let Some(&index) = seen.get(&key) {
-                if matches!(entry.source, AppSource::Portable | AppSource::Alias) {
+                let kept_is_portable = out[index].source == AppSource::Portable;
+                if entry.source == AppSource::Portable && !kept_is_portable {
+                    adopt_user_name(&mut out[index], entry);
+                } else if matches!(entry.source, AppSource::Portable | AppSource::Alias) {
                     merge_alternates(&mut out[index], entry);
                 }
                 continue;
@@ -121,6 +125,17 @@ pub fn dedupe_entries(groups: &[&[AppEntry]]) -> Vec<AppEntry> {
         }
     }
     out
+}
+
+/// 同一启动目标已有系统条目时，搜索结果显示用户填的名称。
+fn adopt_user_name(kept: &mut AppEntry, portable: &AppEntry) {
+    let previous = std::mem::replace(&mut kept.name, portable.name.clone());
+    kept.alternate_names
+        .retain(|name| !name.eq_ignore_ascii_case(kept.name.trim()));
+    push_alternate(&mut kept.alternate_names, &kept.name, &previous);
+    for name in &portable.alternate_names {
+        push_alternate(&mut kept.alternate_names, &kept.name, name);
+    }
 }
 
 fn merge_alternates(kept: &mut AppEntry, incoming: &AppEntry) {
@@ -452,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn portable_duplicate_keeps_the_system_name_and_adds_an_alternate() {
+    fn portable_duplicate_uses_the_user_name() {
         let start = entry(
             "记事本",
             AppSource::StartMenu,
@@ -468,9 +483,17 @@ mod tests {
             std::slice::from_ref(&portable),
         ]);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].name, "记事本");
+        assert_eq!(merged[0].name, "便携记事本");
         assert_eq!(merged[0].source, AppSource::StartMenu);
-        assert_eq!(merged[0].alternate_names, vec!["便携记事本".to_owned()]);
+        assert_eq!(merged[0].alternate_names, vec!["记事本".to_owned()]);
+
+        let portable_first = dedupe_entries(&[
+            std::slice::from_ref(&portable),
+            std::slice::from_ref(&start),
+        ]);
+        assert_eq!(portable_first.len(), 1);
+        assert_eq!(portable_first[0].name, "便携记事本");
+        assert_eq!(portable_first[0].source, AppSource::Portable);
     }
 
     #[test]
