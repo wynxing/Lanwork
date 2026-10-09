@@ -59,6 +59,7 @@ impl NoteCommands {
         self.service.soft_delete(id, revision)
     }
 
+    /// 从回收站恢复。已满 30 天的不恢复。
     pub fn restore(&self, id: &str, revision: u64) -> Result<Note, NoteError> {
         self.service.check_id(id)?;
         self.service.restore(id, revision)
@@ -71,6 +72,9 @@ impl NoteCommands {
     }
 
     /// 清除进入回收站已满 30 天的便签。
+    ///
+    /// 打开服务时也会清除一次。外壳可定时调用。服务不建定时器。
+    /// 某一篇删不掉时记日志并跳过。
     pub fn purge_expired(&self) -> Result<Vec<String>, NoteError> {
         self.service.purge_expired()
     }
@@ -84,6 +88,7 @@ impl NoteCommands {
         self.service.list()
     }
 
+    /// 已软删除、且尚未满 30 天的便签。
     pub fn deleted(&self) -> Vec<Note> {
         self.service.deleted()
     }

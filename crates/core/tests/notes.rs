@@ -727,10 +727,26 @@ fn purge_only_removes_trashed_notes_and_boot_drops_expired_ones() {
     let old = commands.create(&input("过期", "三十天")).unwrap();
     clock.set(2_000);
     let old_deleted = commands.soft_delete(&old.id, old.revision).unwrap();
+    let old_path = fix
+        .store
+        .document_path(&DocumentId::Note(old_deleted.id.clone()))
+        .unwrap();
+    clock.set(2_000 + lanwork_core::notes::TRASH_RETENTION_MS - 1);
+    assert_eq!(commands.deleted().len(), 1);
     clock.set(2_000 + lanwork_core::notes::TRASH_RETENTION_MS);
+    assert!(commands.deleted().is_empty());
+    let restore_err = commands
+        .restore(&old_deleted.id, old_deleted.revision)
+        .unwrap_err();
+    assert!(
+        matches!(restore_err, NoteError::NotFound { .. }),
+        "{restore_err}"
+    );
+    assert!(old_path.is_file());
     let removed = commands.purge_expired().unwrap();
     assert_eq!(removed, vec![old_deleted.id.clone()]);
     assert!(commands.deleted().is_empty());
+    assert!(!old_path.is_file());
 
     let kept = commands.create(&input("未满", "还在回收站")).unwrap();
     clock.set(10_000);
@@ -740,6 +756,157 @@ fn purge_only_removes_trashed_notes_and_boot_drops_expired_ones() {
         NoteCommands::open_at(fix.store.clone(), move || clock_for_reopen.now()).unwrap();
     assert_eq!(reloaded.deleted().len(), 1);
     assert_eq!(reloaded.deleted()[0].id, kept_deleted.id);
+}
+
+fn assert_open_skips_one_expired_delete(
+    store: &Store,
+    clock: &Arc<ManualClock>,
+    active_id: &str,
+    recent_id: &str,
+    expired_id: &str,
+    expired_revision: u64,
+) -> NoteCommands {
+    let reopened = NoteCommands::open_at(store.clone(), {
+        let clock = Arc::clone(clock);
+        move || clock.now()
+    })
+    .unwrap();
+    assert_eq!(
+        reopened
+            .list()
+            .iter()
+            .map(|note| note.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![active_id]
+    );
+    assert_eq!(
+        reopened
+            .deleted()
+            .iter()
+            .map(|note| note.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![recent_id]
+    );
+    let err = reopened.restore(expired_id, expired_revision).unwrap_err();
+    assert!(matches!(err, NoteError::NotFound { .. }), "{err}");
+    assert!(
+        store
+            .document_path(&DocumentId::Note(expired_id.to_owned()))
+            .unwrap()
+            .is_file()
+    );
+    let log = std::fs::read_to_string(store.log_path()).unwrap();
+    assert!(log.contains("清除过期便签失败，已跳过"), "{log}");
+    reopened
+}
+
+#[cfg(unix)]
+#[test]
+fn open_skips_expired_note_that_cannot_be_deleted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fix = fixture();
+    let clock = ManualClock::new(1_000);
+    let commands = NoteCommands::open_at(fix.store.clone(), {
+        let clock = Arc::clone(&clock);
+        move || clock.now()
+    })
+    .unwrap();
+    let expired = commands.create(&input("过期", "删不掉")).unwrap();
+    let expired = commands.soft_delete(&expired.id, expired.revision).unwrap();
+    clock.set(2_000);
+    let recent = commands.create(&input("未满", "还在回收站")).unwrap();
+    let recent = commands.soft_delete(&recent.id, recent.revision).unwrap();
+    clock.set(3_000);
+    let active = commands.create(&input("留下", "可用")).unwrap();
+    drop(commands);
+
+    clock.set(1_000 + lanwork_core::notes::TRASH_RETENTION_MS);
+    let dir = fix.store.collection_dir(CollectionKind::Notes);
+    let original_mode = std::fs::metadata(&dir).unwrap().permissions();
+    let _restore = ResetMode {
+        path: dir.clone(),
+        permissions: original_mode.clone(),
+    };
+    let mut readonly = original_mode;
+    readonly.set_mode(0o555);
+    std::fs::set_permissions(&dir, readonly).unwrap();
+
+    let reopened = assert_open_skips_one_expired_delete(
+        &fix.store,
+        &clock,
+        &active.id,
+        &recent.id,
+        &expired.id,
+        expired.revision,
+    );
+    drop(reopened);
+    drop(_restore);
+
+    let cleared = NoteCommands::open_at(fix.store.clone(), {
+        let clock = Arc::clone(&clock);
+        move || clock.now()
+    })
+    .unwrap();
+    assert!(cleared.deleted().iter().all(|note| note.id != expired.id));
+    assert!(
+        !fix.store
+            .document_path(&DocumentId::Note(expired.id))
+            .unwrap()
+            .is_file()
+    );
+    assert_eq!(cleared.deleted().len(), 1);
+    assert_eq!(cleared.list().len(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn open_skips_expired_note_that_cannot_be_deleted() {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let fix = fixture();
+    let clock = ManualClock::new(1_000);
+    let commands = NoteCommands::open_at(fix.store.clone(), {
+        let clock = Arc::clone(&clock);
+        move || clock.now()
+    })
+    .unwrap();
+    let expired = commands.create(&input("过期", "删不掉")).unwrap();
+    let expired = commands.soft_delete(&expired.id, expired.revision).unwrap();
+    clock.set(2_000);
+    let recent = commands.create(&input("未满", "还在回收站")).unwrap();
+    let recent = commands.soft_delete(&recent.id, recent.revision).unwrap();
+    clock.set(3_000);
+    let active = commands.create(&input("留下", "可用")).unwrap();
+    drop(commands);
+
+    clock.set(1_000 + lanwork_core::notes::TRASH_RETENTION_MS);
+    let path = fix
+        .store
+        .document_path(&DocumentId::Note(expired.id.clone()))
+        .unwrap();
+    // FILE_SHARE_READ = 1。不带 FILE_SHARE_DELETE，删除必须失败。
+    let lock = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&path)
+        .unwrap();
+    let reopened = assert_open_skips_one_expired_delete(
+        &fix.store,
+        &clock,
+        &active.id,
+        &recent.id,
+        &expired.id,
+        expired.revision,
+    );
+    drop(lock);
+    let removed = reopened.purge_expired().unwrap();
+    assert_eq!(removed, vec![expired.id.clone()]);
+    assert!(reopened.deleted().iter().all(|note| note.id != expired.id));
+    assert!(!path.is_file());
+    assert_eq!(reopened.deleted().len(), 1);
+    assert_eq!(reopened.list().len(), 1);
 }
 
 /// 冲突后选择哪一版、关闭和退出时如何处理未保存正文，是界面行为。
