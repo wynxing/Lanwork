@@ -206,7 +206,9 @@ impl TodoCommands {
     }
 
     /// 仓库字符串按原文比较。已完成和回收站里的条目也断开，条目本身保留。
-    pub fn clear_sources_for_repo(&self, repo: &str) -> Result<(), TodoError> {
+    ///
+    /// 返回是否断开了至少一条来源。
+    pub fn clear_sources_for_repo(&self, repo: &str) -> Result<bool, TodoError> {
         self.service.clear_sources_for_repo(repo)
     }
 

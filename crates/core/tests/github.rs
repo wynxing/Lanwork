@@ -917,18 +917,8 @@ fn add_tracked_checks_owner_repo_and_remove_drops_snapshot_and_source() {
     env.github
         .refresh_all(NOW_MS, &settings(14, false))
         .unwrap();
-    env.github
-        .set_pinned("example/widget", SourceKind::GithubPr, 12, true)
-        .unwrap();
     let before = env.github.tracked().unwrap();
-    for bad in [
-        "example",
-        "owner/repo/extra",
-        " owner/repo",
-        "-owner/repo",
-        "owner/",
-        "/repo",
-    ] {
+    for bad in ["example", "owner/repo/extra", "owner/", "/repo"] {
         let err = env.github.add_tracked(bad).unwrap_err();
         assert!(
             err.to_string().contains("正确格式是 owner/repo"),
@@ -936,9 +926,15 @@ fn add_tracked_checks_owner_repo_and_remove_drops_snapshot_and_source() {
         );
     }
     assert_eq!(env.github.tracked().unwrap(), before);
+    env.github.add_tracked("acme/my repo").unwrap();
+    env.github.add_tracked("-acme/tool").unwrap();
 
     env.github.add_tracked("example/new").unwrap();
-    env.github.add_tracked("example/new").unwrap();
+    let duplicate = env.github.add_tracked("example/new").unwrap_err();
+    assert_eq!(
+        duplicate.pending_topic(),
+        Some(PendingTopic::DuplicateTracked)
+    );
     assert_eq!(
         env.github
             .tracked()
@@ -1018,14 +1014,62 @@ fn add_tracked_checks_owner_repo_and_remove_drops_snapshot_and_source() {
         env.todos.item(&other).unwrap().item.source.unwrap().repo,
         "example/new"
     );
-    let watch = env.github.watchlist().unwrap();
-    assert!(
-        watch
-            .pinned
-            .iter()
-            .any(|mark| mark.repo == "example/widget")
-    );
     assert_eq!(env.todos.item(&open).unwrap().item.title, "仍打开");
+}
+
+#[test]
+fn remove_retries_after_snapshot_delete_fails_and_skips_illegal_cache_names() {
+    let env = Env::new(&["example/widget"]);
+    env.script.set_fetch("example/widget", Ok(widget()));
+    env.github
+        .refresh_all(NOW_MS, &settings(14, false))
+        .unwrap();
+    let linked = inbox_item(
+        &env,
+        "仍关联",
+        Some(source(
+            SourceKind::GithubPr,
+            "example/widget",
+            12,
+            "https://github.com/example/widget/pull/12",
+        )),
+    );
+    let cache = env
+        .store
+        .document_path(&cache_doc("example/widget"))
+        .unwrap();
+    std::fs::remove_file(&cache).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    assert!(env.github.remove_tracked("example/widget").is_err());
+    assert!(
+        !env.github
+            .tracked()
+            .unwrap()
+            .iter()
+            .any(|repo| repo == "example/widget")
+    );
+    assert!(env.todos.item(&linked).unwrap().item.source.is_some());
+    std::fs::remove_dir(&cache).unwrap();
+    env.github.remove_tracked("example/widget").unwrap();
+    assert!(env.todos.item(&linked).unwrap().item.source.is_none());
+    assert!(env.github.snapshot("example/widget").unwrap().is_none());
+
+    let odd = "acme/bad:name";
+    env.github.add_tracked(odd).unwrap();
+    let odd_todo = inbox_item(
+        &env,
+        "非法缓存名",
+        Some(source(
+            SourceKind::GithubIssue,
+            odd,
+            3,
+            "https://github.com/acme/bad/issues/3",
+        )),
+    );
+    assert!(cache_file_id(odd).is_err());
+    env.github.remove_tracked(odd).unwrap();
+    assert!(!env.github.tracked().unwrap().iter().any(|repo| repo == odd));
+    assert!(env.todos.item(&odd_todo).unwrap().item.source.is_none());
 }
 
 #[test]

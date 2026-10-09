@@ -1,7 +1,7 @@
 //! GitHub 薄命令。
 //!
 //! 界面只调用这里。添加和移除按 `owner/repo` 修改 watchlist。
-//! 任一筛选项被选中时仍不筛选：快照没有作者、审查和 CI。
+//! 任一筛选项被选中时返回 [`PendingTopic::SignalFilters`]，不写界面文案。
 //! 打开条目只返回 `http` / `https` URL，由外壳用系统浏览器打开。
 
 use std::sync::Arc;
@@ -62,12 +62,14 @@ impl GithubCommands {
         Ok(self.service.watchlist()?.repos)
     }
 
-    /// 格式必须是 `owner/repo`。已经追踪时不再追加。
+    /// 格式是恰好一个 `/`、两边都非空的 `owner/repo`。
+    ///
+    /// 同一字符串已经在列表里时不写盘，返回 [`PendingTopic::DuplicateTracked`]。
     pub fn add_tracked(&self, name: &str) -> Result<(), GithubError> {
         self.service.add_tracked(name)
     }
 
-    /// 删除该仓库快照，并断开关联待办。待办本身保留。
+    /// 先移出追踪列表，再删快照，最后断开关联待办。待办本身保留。
     pub fn remove_tracked(&self, name: &str) -> Result<(), GithubError> {
         self.service.remove_tracked(name)
     }
@@ -118,10 +120,7 @@ impl GithubCommands {
         self.service.lists(now_ms, settings.stale_days)
     }
 
-    /// 没有筛选项时与 [`Self::list`] 相同。
-    ///
-    /// 有任一筛选项时返回错误，不改数据。快照没有作者、被分配、被提及、审查请求和 CI 结果，
-    /// 不能按并集计算这些条件。长期未更新和 Draft 只出现在无筛选列表的每条状态上。
+    /// 没有筛选项时与 [`Self::list`] 相同。有任一筛选项时返回 [`PendingTopic::SignalFilters`]，不改数据。
     pub fn list_filtered(
         &self,
         filter: &GithubFilter,

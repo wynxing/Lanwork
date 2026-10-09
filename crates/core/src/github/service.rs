@@ -15,7 +15,7 @@ use crate::storage::{
 };
 use crate::todos::{NewTodo, SourceKind, TodoCommands, TodoSource, is_http_source_url};
 
-use super::error::{FetchFailure, GhCallError, GithubError};
+use super::error::{FetchFailure, GhCallError, GithubError, PendingTopic};
 use super::gh::{GhClient, GhProbe, version_log_line};
 use super::model::{
     ItemMark, ListedItem, OFFLINE_CACHE_LABEL, RepoList, RepoSnapshot, SnapshotItem, Watchlist,
@@ -233,7 +233,7 @@ impl Service {
         self.ensure_loaded()?;
         let mut list = lock_mutex(&self.state).watchlist.clone();
         if list.repos.iter().any(|item| item == &repo) {
-            return Ok(());
+            return Err(GithubError::PendingSpec(PendingTopic::DuplicateTracked));
         }
         list.repos.push(repo);
         self.store.write_json(&DocumentId::GithubWatchlist, &list)?;
@@ -241,27 +241,42 @@ impl Service {
         Ok(())
     }
 
+    /// 先从追踪列表去掉，再删快照，最后断开来源。
+    ///
+    /// 后两步失败时列表里已经没有这个仓库。再次调用会把剩下的步骤做完。
+    /// 来源不会在仓库仍被追踪时先被清掉。
     pub(crate) fn remove_tracked(&self, name: &str) -> Result<(), GithubError> {
         let repo = require_owner_repo(name)?;
         let _op = lock_mutex(&self.op);
         self.ensure_loaded()?;
-        if !lock_mutex(&self.state)
+        let tracked = lock_mutex(&self.state)
             .watchlist
             .repos
             .iter()
-            .any(|item| item == &repo)
-        {
+            .any(|item| item == &repo);
+        if tracked {
+            let mut list = lock_mutex(&self.state).watchlist.clone();
+            list.repos.retain(|item| item != &repo);
+            self.store.write_json(&DocumentId::GithubWatchlist, &list)?;
+            lock_mutex(&self.state).watchlist = list;
+        }
+        let removed_snapshot = self.remove_snapshot(&repo)?;
+        let cleared = self.todos.clear_sources_for_repo(&repo)?;
+        if !tracked && !removed_snapshot && !cleared {
             return Err(GithubError::RepoNotTracked { repo });
         }
-        let cache_id = cache_file_id(&repo)?;
-        self.todos.clear_sources_for_repo(&repo)?;
-        self.store.remove(&DocumentId::GithubCache(cache_id))?;
-        lock_mutex(&self.state).repos.remove(&repo);
-        let mut list = lock_mutex(&self.state).watchlist.clone();
-        list.repos.retain(|item| item != &repo);
-        self.store.write_json(&DocumentId::GithubWatchlist, &list)?;
-        lock_mutex(&self.state).watchlist = list;
         Ok(())
+    }
+
+    /// `cache_file_id` 失败时没有对应快照文件，跳过删除。
+    fn remove_snapshot(&self, repo: &str) -> Result<bool, GithubError> {
+        let Ok(cache_id) = cache_file_id(repo) else {
+            lock_mutex(&self.state).repos.remove(repo);
+            return Ok(false);
+        };
+        let removed = self.store.remove(&DocumentId::GithubCache(cache_id))?;
+        lock_mutex(&self.state).repos.remove(repo);
+        Ok(removed)
     }
 
     pub(crate) fn refresh_all(
@@ -692,16 +707,15 @@ impl Service {
     }
 }
 
+/// 产品规格里的格式是 `owner/repo`：恰好一个 `/`，两边都非空。
+///
+/// 不以 `-` 开头、不含控制字符，是传给 `gh` 时的实现约束，不在这里拒绝。
+/// 空白算不算格式错误，产品规格没有写。
 fn require_owner_repo(name: &str) -> Result<String, GithubError> {
     let Some((owner, repo)) = name.split_once('/') else {
         return Err(GithubError::InvalidRepoFormat);
     };
-    if owner.is_empty()
-        || repo.is_empty()
-        || repo.contains('/')
-        || name.starts_with('-')
-        || name.chars().any(|ch| ch.is_whitespace() || ch.is_control())
-    {
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
         return Err(GithubError::InvalidRepoFormat);
     }
     Ok(name.to_owned())

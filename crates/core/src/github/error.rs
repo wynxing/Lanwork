@@ -7,12 +7,14 @@ use std::fmt;
 use crate::storage::Error as StorageError;
 use crate::todos::{SourceKind, TodoError};
 
-/// 快照里没有计算筛选所需的字段，因此命令拒绝猜测。
+/// 产品规格没有写明、因此命令不猜测的点。不改已经写好的数据。
 ///
-/// 见 GitHub issue #9 第 18 项。这个分支不改 watchlist、快照或待办。
+/// [`fmt::Display`] 只写出类型名，不是界面文案。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingTopic {
-    /// 作者、被分配、被提及、审查请求和 CI 结果不在快照里。
+    /// 同一 `owner/repo` 再次添加时如何处理，产品规格没有写。
+    DuplicateTracked,
+    /// 筛选并集含快照里没有的字段。不实现其中的子集。
     SignalFilters,
 }
 
@@ -120,9 +122,7 @@ impl fmt::Display for GithubError {
             Self::ItemNotFound { repo, number, .. } => write!(f, "找不到条目：{repo}#{number}"),
             Self::InvalidItem => write!(f, "条目无效"),
             Self::UnsupportedSchema { found } => write!(f, "schemaVersion {found} 不受支持"),
-            Self::PendingSpec(PendingTopic::SignalFilters) => {
-                write!(f, "当前快照没有作者、审查和 CI，不能按这些条件筛选")
-            }
+            Self::PendingSpec(topic) => write!(f, "{topic:?}"),
         }
     }
 }
