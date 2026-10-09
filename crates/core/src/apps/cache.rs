@@ -403,6 +403,41 @@ mod tests {
     }
 
     #[test]
+    fn old_cache_without_alternate_names_url_or_portable_still_loads() {
+        let raw = r#"{
+            "schemaVersion": 1,
+            "entries": [
+                {
+                    "name": "记事本",
+                    "source": "startMenu",
+                    "target": {
+                        "kind": "path",
+                        "path": "C:\\Windows\\notepad.exe",
+                        "args": "",
+                        "workingDirectory": ""
+                    },
+                    "iconIndex": 0
+                },
+                {
+                    "name": "计算器",
+                    "source": "store",
+                    "target": {
+                        "kind": "aumid",
+                        "aumid": "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+                    }
+                }
+            ]
+        }"#;
+        let entries = parse_cache(raw.as_bytes()).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].alternate_names.is_empty());
+        assert!(matches!(entries[0].target, LaunchTarget::Path { .. }));
+        assert_eq!(entries[0].source, AppSource::StartMenu);
+        assert_eq!(entries[1].source, AppSource::Store);
+        assert!(matches!(entries[1].target, LaunchTarget::Aumid { .. }));
+    }
+
+    #[test]
     fn missing_schema_version_reads_as_current() {
         let raw = r#"{"entries":[{"name":"A","source":"path","target":{"kind":"path","path":"C:\\a.exe"}}]}"#;
         let entries = parse_cache(raw.as_bytes()).unwrap();

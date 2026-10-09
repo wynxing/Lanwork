@@ -115,12 +115,19 @@ pub fn save_user_catalog(path: &Path, catalog: &UserCatalog) -> Result<(), Strin
 }
 
 fn parse_catalog(bytes: &[u8]) -> Result<UserCatalog, String> {
+    parse_catalog_logged(bytes, None)
+}
+
+fn parse_catalog_logged(
+    bytes: &[u8],
+    log: Option<&crate::storage::Log>,
+) -> Result<UserCatalog, String> {
     let file: CatalogFile =
         serde_json::from_slice(bytes).map_err(|_| "用户应用目录无法解析".to_owned())?;
     if file.schema_version != CATALOG_SCHEMA_VERSION {
         return Err("用户应用目录的 schemaVersion 不受支持".to_owned());
     }
-    Ok(file.into_catalog())
+    Ok(file.into_catalog(log))
 }
 
 impl CatalogFile {
@@ -149,12 +156,12 @@ impl CatalogFile {
         }
     }
 
-    fn into_catalog(self) -> UserCatalog {
+    fn into_catalog(self, log: Option<&crate::storage::Log>) -> UserCatalog {
         UserCatalog {
             portable: self
                 .portable
                 .iter()
-                .filter_map(PortableDto::to_entry)
+                .filter_map(|entry| entry.to_entry(log))
                 .collect(),
             aliases: self.aliases.iter().filter_map(AliasDto::to_alias).collect(),
             hidden: self
@@ -194,7 +201,11 @@ impl PortableDto {
         })
     }
 
-    fn to_entry(&self) -> Option<AppEntry> {
+    fn to_entry(&self, log: Option<&crate::storage::Log>) -> Option<AppEntry> {
+        if !matches!(self.target, TargetDto::Path { .. }) {
+            note_portable_skip(log, target_dto_kind(&self.target));
+            return None;
+        }
         let name = self.name.trim();
         if name.is_empty() {
             return None;
@@ -320,10 +331,21 @@ impl TargetDto {
 }
 
 pub(crate) fn portable_entries(catalog: &UserCatalog) -> Vec<AppEntry> {
+    portable_entries_logged(catalog, None)
+}
+
+fn portable_entries_logged(
+    catalog: &UserCatalog,
+    log: Option<&crate::storage::Log>,
+) -> Vec<AppEntry> {
     catalog
         .portable
         .iter()
         .filter_map(|entry| {
+            if !matches!(entry.target, LaunchTarget::Path { .. }) {
+                note_portable_skip(log, target_kind_name(&entry.target));
+                return None;
+            }
             let name = entry.name.trim();
             if name.is_empty() || super::model::launch_key(&entry.target).is_empty() {
                 return None;
@@ -334,6 +356,40 @@ pub(crate) fn portable_entries(catalog: &UserCatalog) -> Vec<AppEntry> {
             Some(owned)
         })
         .collect()
+}
+
+fn note_portable_skip(log: Option<&crate::storage::Log>, kind: &str) {
+    const MESSAGE_PREFIX: &str = "portable app skipped reason=not-path kind=";
+    if let Some(log) = log {
+        log.warn(&format!("{MESSAGE_PREFIX}{kind}"));
+        return;
+    }
+    let Some(paths) = crate::storage::resolve_from_process().ok() else {
+        return;
+    };
+    let Ok(opened) = crate::storage::Log::open(
+        paths.data_dir.join("logs").join("app.log"),
+        crate::storage::LogSettings::default(),
+    ) else {
+        return;
+    };
+    opened.warn(&format!("{MESSAGE_PREFIX}{kind}"));
+}
+
+fn target_dto_kind(target: &TargetDto) -> &'static str {
+    match target {
+        TargetDto::Path { .. } => "path",
+        TargetDto::Aumid { .. } => "aumid",
+        TargetDto::Url { .. } => "url",
+    }
+}
+
+fn target_kind_name(target: &LaunchTarget) -> &'static str {
+    match target {
+        LaunchTarget::Path { .. } => "path",
+        LaunchTarget::Aumid { .. } => "aumid",
+        LaunchTarget::Url { .. } => "url",
+    }
 }
 
 pub(crate) fn alias_entries(catalog: &UserCatalog) -> Vec<AppEntry> {
@@ -445,5 +501,50 @@ mod tests {
             catalog.aliases[0].target,
             LaunchTarget::Url { .. }
         ));
+    }
+
+    #[test]
+    fn portable_rejects_url_and_aumid_and_logs_the_kind() {
+        let temp = TempDir::new();
+        let log = crate::storage::Log::open(
+            temp.path().join("app.log"),
+            crate::storage::LogSettings {
+                max_bytes: 1024 * 1024,
+                max_files: 2,
+                secrets: Vec::new(),
+            },
+        )
+        .unwrap();
+        let raw = r#"{"schemaVersion":1,"portable":[
+            {"name":"网页","target":{"kind":"url","url":"steam://rungameid/999"}},
+            {"name":"商店","target":{"kind":"aumid","aumid":"App"}},
+            {"name":"工具","target":{"kind":"path","path":"D:\\tool.exe"}}
+        ]}"#;
+        let catalog = parse_catalog_logged(raw.as_bytes(), Some(&log)).unwrap();
+        assert_eq!(catalog.portable.len(), 1);
+        assert_eq!(catalog.portable[0].name, "工具");
+        assert!(matches!(
+            catalog.portable[0].target,
+            LaunchTarget::Path { .. }
+        ));
+        let mut in_memory = catalog;
+        in_memory.portable.push(AppEntry {
+            name: "另一条链接".into(),
+            source: AppSource::Portable,
+            target: LaunchTarget::Url {
+                url: "com.epicgames.launcher://apps/Foo".into(),
+            },
+            icon_path: None,
+            icon_index: 0,
+            alternate_names: Vec::new(),
+        });
+        let entries = portable_entries_logged(&in_memory, Some(&log));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "工具");
+        let text = std::fs::read_to_string(log.path()).unwrap();
+        assert!(text.contains("portable app skipped reason=not-path kind=url"));
+        assert!(text.contains("portable app skipped reason=not-path kind=aumid"));
+        assert!(!text.contains("steam://rungameid/999"));
+        assert!(!text.contains("com.epicgames.launcher://apps/Foo"));
     }
 }

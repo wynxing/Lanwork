@@ -90,12 +90,21 @@ pub(crate) fn indexed_game_url(url: &str) -> Option<String> {
     None
 }
 
-/// 读 `.url` 正文。UTF-16 LE/BE 带 BOM 时按对应端序解码，其余按 UTF-8。
+/// 读 `.url` 正文。只取 `[InternetShortcut]` 段内的第一条非空 `URL=`。
+/// UTF-16 LE/BE 带 BOM 时按对应端序解码，其余按 UTF-8。
 #[must_use]
 pub(crate) fn internet_shortcut_url(bytes: &[u8]) -> Option<String> {
     let text = decode_shortcut_text(bytes);
+    let mut in_section = false;
     for line in text.lines() {
         let line = line.trim().trim_start_matches('\u{feff}');
+        if let Some(name) = section_name(line) {
+            in_section = name.eq_ignore_ascii_case("InternetShortcut");
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
@@ -107,6 +116,15 @@ pub(crate) fn internet_shortcut_url(bytes: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+fn section_name(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if line.len() >= 2 && line.starts_with('[') && line.ends_with(']') {
+        Some(line[1..line.len() - 1].trim())
+    } else {
+        None
+    }
 }
 
 /// 规范化路径与排除名单中的某一项相同。不看最后一段的名字。
@@ -263,14 +281,14 @@ mod tests {
     }
 
     #[test]
-    fn internet_shortcut_reads_the_first_url_line() {
+    fn internet_shortcut_reads_the_first_url_line_in_its_section() {
         let text = "[InternetShortcut]\r\nIconFile=game.ico\r\nURL=steam://rungameid/570\r\n";
         assert_eq!(
             internet_shortcut_url(text.as_bytes()).as_deref(),
             Some("steam://rungameid/570")
         );
         let mut utf16 = vec![0xFF, 0xFE];
-        for unit in "URL=steam://run/12\n".encode_utf16() {
+        for unit in "[InternetShortcut]\nURL=steam://run/12\n".encode_utf16() {
             utf16.extend(unit.to_le_bytes());
         }
         assert_eq!(
@@ -278,6 +296,13 @@ mod tests {
             Some("steam://run/12")
         );
         assert!(internet_shortcut_url(b"[InternetShortcut]\nIconFile=a.ico\n").is_none());
+        let outside = "[Other]\r\nURL=steam://run/9\r\nURL=steam://rungameid/1\r\n";
+        assert!(internet_shortcut_url(outside.as_bytes()).is_none());
+        let later = "[Other]\r\nURL=https://evil.example/\r\n[InternetShortcut]\r\nURL=\r\nURL=steam://rungameid/570\r\n[Other]\r\nURL=steam://run/9\r\n";
+        assert_eq!(
+            internet_shortcut_url(later.as_bytes()).as_deref(),
+            Some("steam://rungameid/570")
+        );
     }
 
     #[test]

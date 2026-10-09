@@ -158,8 +158,10 @@ enum LinkField {
 
 fn localized_display_name(path: &Path) -> Option<String> {
     let wide = comutil::wide_path(path);
+    // SAFETY: 宽路径在调用期间有效，bind context 为空。失败时不保留接口。
     let item: IShellItem =
         unsafe { SHCreateItemFromParsingName(comutil::pcwstr(&wide), None) }.ok()?;
+    // SAFETY: SIGDN_NORMALDISPLAY 只取显示名。返回的字符串由 take_pwstr 释放。
     let raw = unsafe { item.GetDisplayName(SIGDN_NORMALDISPLAY) }.ok()?;
     let text = take_pwstr(raw);
     let trimmed = text.trim();
