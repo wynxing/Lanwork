@@ -60,7 +60,7 @@
 - 界面调用薄命令。命令做校验，业务规则在服务中。需要保存的数据先原子写入，成功后再向本进程已打开的窗口发变更消息。非法输入返回明确错误。单进程、单写者。
 - 中文输入法能在搜索条、面板搜索框、待办标题和便签正文中上屏。做不到这一点时，界面方案不成立，不能改用「只支持英文」通过验收。
 - 搜索条和面板在启动时创建并保持隐藏，以满足热召回目标；隐藏中不做整页重绘。快速收集是搜索条的一种输入状态，不另建窗口。便签悬浮窗、番茄钟在使用时创建，关闭时释放文本、图标和绘图资源。到期提醒的调度保留在主进程里。
-- Slint 1.18.1 编进本仓库的 winit 后端没有实现 `start_drag`（`i-slint-backend-winit` 1.18.1 的 `WinitWindowAdapter` 只实现了 `start_window_move`；`WindowAdapterInternal::start_drag` 的默认实现返回 false）。因此 `DragArea` 的拖动留在窗口内。`spikes/dnd` 用 `dispatch_event` 观察到：同一窗口里文件路径以复制放下，目标要求移动时放下被拒绝。winit 0.30.13 创建窗口时调用 `OleInitialize` 并 `RegisterDragDrop` 注册自己的 `FileDropHandler`；探针在我们注册之前得到 already-registered。资源管理器方向还没有人工鼠标结果，外部拖放仍按「收纳」的原生 OLE 实现，不改用 Slint。
+- Slint 1.18.1 编进本仓库的 winit 后端没有实现 `start_drag`（`i-slint-backend-winit` 1.18.1 的 `WinitWindowAdapter` 只实现了 `start_window_move`；`WindowAdapterInternal::start_drag` 的默认实现返回 false）。因此 `DragArea` 的拖动留在窗口内。`spikes/dnd` 用 `dispatch_event` 观察到：同一窗口里文件路径以复制放下，目标要求移动时放下被拒绝。winit 0.30.13 创建窗口时调用 `OleInitialize` 并 `RegisterDragDrop` 注册自己的 `FileDropHandler`；探针在我们注册之前得到 already-registered。资源管理器方向的手测见 [roadmap.md](roadmap.md)。`--slint` 拖放没有路径，外部拖放按「收纳」的原生 OLE 实现。
 - 托盘先用 Slint 自带的托盘图标；菜单或逾期徽标做不到时改用 Win32 `Shell_NotifyIcon`。
 - 热角检测机制由技术验证在低级鼠标钩子和定时读取光标位置之间选定。用钩子时，回调只投递消息，不做计算。
 - `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。这次没有选定机制。
@@ -245,7 +245,7 @@ Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提�
 
 ## 收纳
 
-服务在 `lanwork_core::shelves`，薄命令是 `ShelfCommands`。一个分组一个 `shelves/<id>.json`。分组只保存路径引用。服务不调用删除、移动、复制用户文件的接口。界面拖放仍按本节末尾的原生 OLE 方案；外部拖放的技术验证通过之前不写界面。
+服务在 `lanwork_core::shelves`，薄命令是 `ShelfCommands`。一个分组一个 `shelves/<id>.json`。分组只保存路径引用。服务不调用删除、移动、复制用户文件的接口。界面拖放按本节末尾的原生 OLE 方案。外部拖放的通过条件表见 [roadmap.md](roadmap.md)，七条都已通过。收纳界面仍未写。
 
 文件字段：`schemaVersion`、`id`、`name`、`order`、可选的 `todoId`、`refs`。引用字段：`path`、`name`、`folder`、`addedAt`。`addedAt` 是 Unix 纪元起的 UTC 毫秒。不保存文件内容和图标。
 
@@ -294,7 +294,7 @@ Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提�
 
 ### 拖放
 
-外部拖入和拖出用原生 OLE。Slint 1.18.1 的窗口内拖放不能代替它，原因见「运行时」。2026-10-09 的资源管理器手测见 [roadmap.md](roadmap.md)。`24b7624` 上长路径拖入失败；同日 10:56（UTC+8）在 `3311ecc` 上拖入通过。条件 7 未满 100 次，`--slint` 拖放没有路径，该项仍未通过。下面是 `spikes/dnd` 里已经观察到的做法。
+外部拖入和拖出用原生 OLE。Slint 1.18.1 的窗口内拖放不能代替它，原因见「运行时」。2026-10-09 的资源管理器手测见 [roadmap.md](roadmap.md)。`24b7624` 上长路径拖入失败；同日 10:56（UTC+8）在 `3311ecc` 上拖入通过。同日 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。`--slint` 拖放没有路径。通过条件表七条都通过，该项按该表通过，产品用 OLE。下面是 `spikes/dnd` 里已经观察到的做法。
 
 - 拖入：事件循环线程调用 `OleInitialize`。本机该线程是 `APTTYPE_MAINSTA`（主 STA），不是 MTA。`MainWindow::new` 之前 COM 尚未初始化；进入 winit 事件循环后由 winit 初始化。拿到 HWND 后 `RegisterDragDrop` 返回 `DRAGDROP_E_ALREADYREGISTERED`，于是 `RevokeDragDrop` 再注册自己的 `IDropTarget`。注册之后窗口属性 `OleDropTargetInterface` 的指针与自己的接口相同。只接受 `CF_HDROP`。指针在收纳区域外返回 `DROPEFFECT_NONE`；区域内只从源提供的效果里选复制，其次快捷方式，不返回移动。验证程序没有标签，用一个矩形代替收纳区域，区域外的判定有单元测试。产品里仍只在收纳标签显示时接受放下。
 - 拖出：按下后，物理像素位移严格超过 `SM_CXDRAG` 或 `SM_CYDRAG` 才调用 `DoDragDrop`。`IDataObject` 用 `IShellItemArray::BindToHandler(BHID_DataObject)`。允许的效果只有 `DROPEFFECT_COPY | DROPEFFECT_LINK`。取消由 `IDropSource::QueryContinueDrag` 返回 `DRAGDROP_S_CANCEL`。`DoDragDrop` 的模态循环会吃掉鼠标抬起，列表行的 `TouchArea` 会一直抓着鼠标，下一次按下仍落在刚才那一行。拖出结束（成功、取消或出错）后要向窗口补 `PointerReleased` 和 `PointerExited`。自动化没有调用 `DoDragDrop`：它要等键盘或鼠标状态变化才会第一次询问是否继续，调用会作用到光标下的窗口。自测用 `dispatch_event` 先拖长路径那一行，再拖文件夹那一行，第二次必须是文件夹。

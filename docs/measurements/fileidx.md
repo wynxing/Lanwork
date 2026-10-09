@@ -27,7 +27,7 @@
 | Windows Search | 只按文件名查询，正文命中不返回 | 通过 | P95 与 Private Bytes 见下 |
 | 其余技术验证项 | 见模板 | 未测 | |
 
-`WSearch` 停止时的错误码是 issue 里的异常项，这次未测。没有管理员权限，没有停止服务。
+`WSearch` 停止时的结果见文末「人工停止 WSearch 结果」。`message` 是空字符串，错误提示文案不能依赖它，列为后续。
 
 `loadmon` 把系统 CPU 不低于 70%，或同时有 `rustc`、`link`、`cl`，标成明显干扰。这是 spike 自己的筛选，用来决定这次计时要不要重跑。架构「性能测量」协议里没有这条门槛。
 
@@ -117,17 +117,26 @@ Private Bytes 用 `PROCESS_MEMORY_COUNTERS_EX.PrivateUsage`：
 
 1.4 与 1.5 的单次查询都远低于架构里 Everything 文件结果 150 ms 的目标，但样本不是 100 次，也不含 60 ms 等待和界面渲染。这里不写「已达到」。
 
-## 给人做的 WSearch 停止检查
+## 人工停止 WSearch 结果
 
-这次没有管理员权限，没有停止 `WSearch`。当时服务是 Running，启动类型是 Manual。请在提升过的 PowerShell 里做，做完恢复，不要改 `StartType`：
+2026-10-09 14:24（UTC+8），DESKTOP-7C3P6OG，issue-6 工作树 `08b28fe35deb47b0ac9278e4700bf6e51af7bad1`，release 构建。管理员 PowerShell 脚本依次执行了下面这些。
 
-```powershell
-Get-Service WSearch | Format-List Name,Status,StartType
-Stop-Service WSearch
-Set-Location E:\My_project\Lanwork-wt\issue-6
-cargo run -p fileidx --release -- wsearch --text notepad
-Start-Service WSearch
-Get-Service WSearch | Format-List Name,Status,StartType
-```
+初始 `WSearch`：Status 为 Running，StartType 为 Manual。
 
-把 JSON 里的 `hresult` 和 `message` 补进这份记录。停止期间如果查询挂起或崩溃，记下来，不要把它写成已经观察到的错误码。
+`Stop-Service WSearch -Force` 之后：Status 为 Stopped。
+
+然后运行 `fileidx.exe wsearch --text notepad`。程序没有崩溃，也没有卡住。输出 JSON：
+
+| 字段 | 值 |
+| --- | --- |
+| mode | `filename_like` |
+| ok | false |
+| hresult | 2147614729（`0x80020009`，`DISP_E_EXCEPTION`） |
+| message | 空字符串 |
+| elapsed_ns | 5322000（约 5.3 ms） |
+| returned | 0 |
+| matching_names | `[]` |
+
+随后 `Start-Service` 恢复 `WSearch`。最终 Status 为 Running，StartType 为 Manual。
+
+`message` 是空字符串。错误提示文案不能依赖它。这可以列为后续。
