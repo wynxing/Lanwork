@@ -5,6 +5,7 @@
 
 mod backend;
 mod command;
+mod everything_hit;
 mod model;
 mod package;
 mod service;

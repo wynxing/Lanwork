@@ -275,7 +275,7 @@ Lanwork/
 
 `cargo bench -p lanwork-core` 用 5,000 个应用名和 10,000 条待办标题测量准备和查询。这组基准不按「性能测量」采样，不能当作应用结果 P95 已经达到。这组语料的 `MatchIndex::heap_bytes()`（各 `Vec` 和 `String` 的 capacity 之和，不含拼音表，不含分配器额外开销）在 Linux 的 debug 构建里是 3,563,603 字节。分配器取整会改变这个数，测试只要求它小于 16 MiB。
 
-文件和文件夹优先使用 Everything，支持 1.4 和 1.5。随包附带 voidtools 的 Everything SDK x64 DLL：1.4 用 SDK 的 DLL，1.5 用 SDK3 的 DLL。两者固定版本，放在程序目录，并附许可说明。启动时按 1.5、1.4 的顺序探测，不为每次查询启动命令行。
+文件和文件夹优先使用 Everything，支持 1.4 和 1.5。随包附带 voidtools 的 Everything SDK x64 DLL：1.4 用 SDK 的 DLL，1.5 用 SDK3 的 DLL。两者固定版本，放在程序目录，并附许可说明。每次查询前按 1.5、1.4 的顺序检查状态并探测，不为每次查询启动命令行。
 
 Everything 未运行或未就绪时，退回 Windows Search 索引。查询只匹配文件名，不匹配正文和属性，范围是 Windows 已建立索引的位置。Windows Search 服务不可用时报告文件索引不可用。Everything 恢复就绪后，下一次查询改回 Everything。两种来源都不复制全盘索引。有效 `http` / `https` 成为浏览器动作，无效地址丢弃。打开交给 Windows Shell。
 

@@ -12,14 +12,14 @@ use windows::core::s;
 
 use super::wide::{NAME_BUF, pcwstr, string_from_wide, wide_null, wide_path};
 use crate::files::backend::{ProbeNote, ProbeNoteKind, SourceFailure};
-use crate::files::model::{FileHit, FileKind, MAX_FILE_RESULTS};
+use crate::files::everything_hit::{everything_hit, sdk3_property_requests};
+use crate::files::model::{FileHit, MAX_FILE_RESULTS};
 use crate::files::service::probe_failed_line;
 
 const EVERYTHING_OK: u32 = 0;
 const EVERYTHING_ERROR_IPC: u32 = 2;
 const EVERYTHING3_ERROR_IPC_PIPE_NOT_FOUND: u32 = 0xE000_0002;
 const ALPHA_INSTANCE: &str = "1.5a";
-const PROPERTY_NAME: u32 = 0;
 
 pub(crate) enum LoadFail {
     Missing,
@@ -200,12 +200,15 @@ impl Sdk3 {
             state,
             results: std::ptr::null_mut(),
         };
-        // SAFETY: state 由 guard 持有。搜索串以 0 结尾。viewport 不超过 50。不请求 NAME 时 GetResultNameW 得到空串，所以请求属性 0。
+        // SAFETY: state 由 guard 持有。搜索串以 0 结尾。viewport 不超过 50。
+        // 同时请求 PATH_AND_NAME 和 NAME。只请求 NAME 会替换默认的完整路径。
         let (results, err) = unsafe {
             (self.set_text)(guard.state, wide.as_ptr());
             (self.set_match_path)(guard.state, 0);
             (self.set_viewport)(guard.state, MAX_FILE_RESULTS);
-            (self.add_property)(guard.state, PROPERTY_NAME);
+            for property in sdk3_property_requests() {
+                (self.add_property)(guard.state, *property);
+            }
             let results = (self.search)(self.client, guard.state);
             let err = (self.last_error)();
             (results, err)
@@ -226,7 +229,7 @@ impl Sdk3 {
             let path = read_sdk3(self.full_path, results, index);
             // SAFETY: results 仍由 guard 持有，index 小于结果数。
             let folder = unsafe { (self.is_folder)(results, index) } != 0;
-            if let Some(hit) = hit_from_parts(name, path, folder) {
+            if let Some(hit) = everything_hit(name, path, folder) {
                 hits.push(hit);
             }
         }
@@ -527,7 +530,7 @@ impl Sdk14 {
                 (name, folder)
             };
             let name = string_from_wide(&name);
-            if let Some(hit) = hit_from_parts(name, string_from_wide(&path_buf), folder) {
+            if let Some(hit) = everything_hit(name, string_from_wide(&path_buf), folder) {
                 hits.push(hit);
             }
         }
@@ -576,26 +579,6 @@ fn failure_note(sdk: &str, version: &str, detail: &str) -> ProbeNote {
         kind: ProbeNoteKind::ProbeFailed,
         line: probe_failed_line(sdk, version, detail),
     }
-}
-
-fn hit_from_parts(name: String, path: String, folder: bool) -> Option<FileHit> {
-    let name = if name.is_empty() {
-        path.rsplit(['\\', '/']).next().unwrap_or("").to_owned()
-    } else {
-        name
-    };
-    if name.is_empty() && path.is_empty() {
-        return None;
-    }
-    Some(FileHit {
-        name,
-        path,
-        kind: if folder {
-            FileKind::Folder
-        } else {
-            FileKind::File
-        },
-    })
 }
 
 fn wide_from_ptr(ptr: *const u16) -> Vec<u16> {
