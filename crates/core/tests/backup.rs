@@ -6,7 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
 use lanwork_core::backup::{BackupCommands, LaunchBackup};
-use lanwork_core::storage::{BootHooks, Store, StorePaths};
+use lanwork_core::notes::{NoteCommands, NoteError, NoteInput};
+use lanwork_core::storage::{BootHooks, EntityKind, Store, StorePaths};
 
 struct TempDir {
     path: PathBuf,
@@ -108,10 +109,6 @@ fn export_includes_user_apps_and_omits_logs_env_and_referenced_file() {
         b"log-secret-marker-77",
     )
     .unwrap();
-    let probe = "probe-value-9f3c2a-lanwork";
-    // SAFETY: 这个测试进程没有别的线程读取该变量。导出不得读取环境变量，此值只用来证明压缩包里没有它。
-    unsafe { std::env::set_var("LANWORK_BACKUP_PROBE_TOKEN", probe) };
-
     let dest = fx._temp.path().join("out.zip");
     let overview = commands.export(&dest, false, 1_700_000_000_000).unwrap();
     assert!(overview.user_apps);
@@ -123,17 +120,34 @@ fn export_includes_user_apps_and_omits_logs_env_and_referenced_file() {
     assert!(text.contains("我的工具"));
     assert!(text.contains("kept-ref"));
     assert!(!text.contains("log-secret-marker-77"));
-    assert!(!text.contains(probe));
     assert!(!text.contains("shelf-file-bytes-not-in-zip"));
     assert!(!text.contains("cache-marker-77"));
     assert!(!text.contains("import.pending"));
+    assert_zip_omits_env(&text, &["note-body-marker-77", "我的工具", "kept-ref"]);
 
     let full = commands.backup_manual(50).unwrap();
     let backed = String::from_utf8_lossy(&std::fs::read(full).unwrap()).into_owned();
     assert!(backed.contains("cache-marker-77"));
     assert!(backed.contains("我的工具"));
     assert!(!backed.contains("log-secret-marker-77"));
-    assert!(!backed.contains(probe));
+    assert_zip_omits_env(
+        &backed,
+        &[
+            "note-body-marker-77",
+            "我的工具",
+            "kept-ref",
+            "cache-marker-77",
+        ],
+    );
+}
+
+fn assert_zip_omits_env(text: &str, intentional: &[&str]) {
+    for (key, value) in std::env::vars() {
+        if value.len() < 8 || intentional.iter().any(|part| part.contains(&value)) {
+            continue;
+        }
+        assert!(!text.contains(&value), "导出包含环境变量 {key} 的值");
+    }
 }
 
 #[test]
@@ -290,6 +304,93 @@ fn missing_backup_leaves_import_pending() {
     assert!(err.to_string().contains("备份文件不存在"));
     assert!(fx.store.read_import_pending().unwrap().is_some());
     assert!(read_rel(&fx.store, "notes/n.json").contains("stay"));
+}
+
+#[test]
+fn import_reloads_open_notes_so_a_later_save_does_not_restore_the_old_body() {
+    let fx = fixture();
+    let notes = NoteCommands::open(fx.store.clone()).unwrap();
+    let created = notes
+        .create(&NoteInput {
+            title: "标题".to_owned(),
+            body: "imported-body".to_owned(),
+            tags: Vec::new(),
+            pinned: false,
+        })
+        .unwrap();
+    let commands = BackupCommands::open(fx.store.clone());
+    let package = fx._temp.path().join("pkg.zip");
+    commands.export(&package, false, 70).unwrap();
+    let edited = notes
+        .save(
+            &created.id,
+            created.revision,
+            &NoteInput {
+                title: "标题".to_owned(),
+                body: "edited-body".to_owned(),
+                tags: Vec::new(),
+                pinned: false,
+            },
+        )
+        .unwrap();
+    let rx = fx.store.subscribe();
+    commands.import(&package, 80).unwrap();
+    let loaded = notes.get(&created.id).unwrap();
+    assert_eq!(loaded.body, "imported-body");
+    let err = notes
+        .save(
+            &created.id,
+            edited.revision,
+            &NoteInput {
+                title: "标题".to_owned(),
+                body: "edited-body".to_owned(),
+                tags: Vec::new(),
+                pinned: false,
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, NoteError::Conflict { .. }), "{err}");
+    let disk = read_rel(&fx.store, &format!("notes/{}.json", created.id));
+    assert!(disk.contains("imported-body"), "{disk}");
+    assert!(!disk.contains("edited-body"), "{disk}");
+    let mut saw_note = false;
+    while let Ok(event) = rx.try_recv() {
+        if event.kind == EntityKind::Note && event.id == created.id {
+            saw_note = true;
+        }
+    }
+    assert!(saw_note);
+}
+
+#[test]
+fn import_without_github_cache_keeps_the_local_cache() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    write_rel(
+        &fx.store,
+        "notes/n.json",
+        r#"{"schemaVersion":1,"body":"from-package"}"#,
+    );
+    write_rel(
+        &fx.store,
+        "github/cache/acme%2Fapp.json",
+        r#"{"schemaVersion":1,"repo":"before-export"}"#,
+    );
+    let package = fx._temp.path().join("pkg.zip");
+    commands.export(&package, false, 90).unwrap();
+    write_rel(
+        &fx.store,
+        "notes/n.json",
+        r#"{"schemaVersion":1,"body":"local-edit"}"#,
+    );
+    write_rel(
+        &fx.store,
+        "github/cache/acme%2Fapp.json",
+        r#"{"schemaVersion":1,"repo":"still-local"}"#,
+    );
+    commands.import(&package, 91).unwrap();
+    assert!(read_rel(&fx.store, "notes/n.json").contains("from-package"));
+    assert!(read_rel(&fx.store, "github/cache/acme%2Fapp.json").contains("still-local"));
 }
 
 fn zip_names(store: &Store) -> Vec<String> {

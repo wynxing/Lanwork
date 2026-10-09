@@ -1,4 +1,4 @@
-//! 启动顺序：先占住单实例，再打开数据目录，然后选渲染器、注册热键、创建隐藏窗口和托盘。
+//! 启动顺序：先占住单实例，再打开数据目录，完成导入恢复和待办加载，加载配置，按本地日期自动备份，然后选渲染器、注册热键、创建隐藏窗口和托盘。
 //!
 //! 搜索条、面板、设置和便签的可见内容不在这里绘制。
 
@@ -7,13 +7,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
+use lanwork_core::backup::BackupCommands;
 use lanwork_core::config::{ConfigCommands, Fallback, Theme};
 use lanwork_core::github::{GithubCommands, GithubError, ProcessGh, RefreshReport, RepoResult};
 use lanwork_core::shell::{
     PANEL_HOTKEY_ID, QuitDecision, SEARCH_HOTKEY_ID, ShellCommand, SystemLight, TRAY_ICON_PX,
     desired_bindings, quit_without_note_editors, resolve_theme, tray_icon_rgba,
 };
-use lanwork_core::storage::{EntityKind, Store, resolve_from_process};
+use lanwork_core::storage::{BootHooks, EntityKind, Store, resolve_from_process};
 use lanwork_core::todos::TodoCommands;
 use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -57,6 +58,15 @@ pub(crate) fn run() -> i32 {
 }
 
 fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> {
+    let todos = TodoCommands::open(store.clone());
+    let mut hooks = BootHooks::new();
+    BackupCommands::register_boot_hooks(&mut hooks);
+    todos.register_boot_hooks(&mut hooks);
+    let report = store.boot(hooks).map_err(|err| err.to_string())?;
+    IMPORT_RECOVERED.store(report.import_recovered, Ordering::Release);
+    if import_was_recovered() {
+        store.log_warn("导入未完成");
+    }
     let config = ConfigCommands::open(store.clone()).map_err(|err| err.to_string())?;
     match config.fallback() {
         Some(Fallback::Quarantined) => {
@@ -67,8 +77,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         }
         Some(Fallback::Missing) | None => {}
     }
-    let todos = TodoCommands::open(store.clone());
-    todos.boot().map_err(|err| err.to_string())?;
+    backup_if_due(store);
     select_renderer()?;
     let platform = Platform::start(primary)?;
     let hotkeys = platform.control();
@@ -180,15 +189,38 @@ fn watch_todos(tray: &Tray, todos: &TodoCommands, store: &Store) {
     });
 }
 
+/// 这次启动是否用 `import.pending` 里的备份恢复过。
+///
+/// 界面以后用它显示「导入未完成」。现在只在启动时记日志。
+pub(crate) fn import_was_recovered() -> bool {
+    IMPORT_RECOVERED.load(Ordering::Acquire)
+}
+
+static IMPORT_RECOVERED: AtomicBool = AtomicBool::new(false);
+
+fn backup_if_due(store: &Store) {
+    let Some(today) = local_today() else {
+        store.log_warn("读不到本地日期，本次不自动备份");
+        return;
+    };
+    if let Err(err) = BackupCommands::open(store.clone()).backup_on_launch(today, unix_now_ms()) {
+        store.log_warn(&format!("自动备份未完成：{err}"));
+    }
+}
+
+fn unix_now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 fn refresh_github(
     github: &GithubCommands,
     config: &ConfigCommands,
 ) -> Result<RefreshReport, GithubError> {
     github.load()?;
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0);
+    let now_ms = unix_now_ms();
     let settings = config.github_settings();
     github.refresh_all(now_ms, &settings)
 }

@@ -9,7 +9,7 @@ use super::error::BackupError;
 use super::package::{self, PackageOverview};
 use super::zipstore::{self, StoredFile};
 use crate::capture::CivilDate;
-use crate::storage::{self, BootHooks, ImportPending, Store};
+use crate::storage::{self, BootHooks, EntityChanged, EntityKind, ImportPending, Store};
 
 /// 同一天再次自动备份时的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,11 +82,18 @@ impl BackupService {
     }
 
     /// 校验通过后先做导入备份，再替换。校验失败时当前数据不变。
+    ///
+    /// 替换结束并删掉 `import.pending` 之后，已打开的服务从磁盘重新载入，然后才发布变更。
     pub fn import(&self, package: &Path, now_ms: i64) -> Result<PackageOverview, BackupError> {
         let files = read_zip(package)?;
         let overview = package::inspect_files(&files)?;
-        self.store
+        let events = self
+            .store
             .with_write_lock(|| self.import_holding(&files, now_ms))?;
+        self.store.reload_memories()?;
+        for event in events {
+            self.store.publish_change(event);
+        }
         Ok(overview)
     }
 
@@ -113,16 +120,23 @@ impl BackupService {
         Ok(path)
     }
 
-    fn import_holding(&self, files: &[StoredFile], now_ms: i64) -> Result<(), BackupError> {
+    fn import_holding(
+        &self,
+        files: &[StoredFile],
+        now_ms: i64,
+    ) -> Result<Vec<EntityChanged>, BackupError> {
         let backup = self.write_named(&format!("import-{now_ms}.zip"), now_ms)?;
         self.store.write_import_pending_holding_lock(&backup)?;
-        if let Err(err) = apply(&self.store, files) {
-            restore_backup(&self.store, &backup)?;
-            self.store.clear_import_pending_holding_lock()?;
-            return Err(err);
-        }
+        let events = match apply(&self.store, files) {
+            Ok(events) => events,
+            Err(err) => {
+                restore_backup(&self.store, &backup)?;
+                self.store.clear_import_pending_holding_lock()?;
+                return Err(err);
+            }
+        };
         self.store.clear_import_pending_holding_lock()?;
-        Ok(())
+        Ok(events)
     }
 
     fn prune(&self) -> Result<(), BackupError> {
@@ -185,11 +199,16 @@ fn restore_backup(store: &Store, path: &Path) -> Result<(), BackupError> {
     }
     let files = read_zip(path)?;
     package::inspect_files(&files)?;
-    apply(store, &files)
+    apply(store, &files)?;
+    Ok(())
 }
 
-fn apply(store: &Store, files: &[StoredFile]) -> Result<(), BackupError> {
+fn apply(store: &Store, files: &[StoredFile]) -> Result<Vec<EntityChanged>, BackupError> {
+    let keep_local_cache = !files
+        .iter()
+        .any(|file| file.name.starts_with("github/cache/"));
     let mut keep = std::collections::BTreeSet::new();
+    let mut events = Vec::new();
     for file in files {
         if file.name == "manifest.json" {
             continue;
@@ -202,13 +221,46 @@ fn apply(store: &Store, files: &[StoredFile]) -> Result<(), BackupError> {
         storage::atomic_write(&path, &file.bytes)
             .map_err(|_| BackupError::io("无法写入", &path))?;
         keep.insert(file.name.clone());
-    }
-    for (name, path) in package::list_data_files(store)? {
-        if !keep.contains(&name) {
-            storage::fs_remove_file(&path).map_err(|_| BackupError::io("无法删除", &path))?;
+        if let Some(event) = change_for(&file.name) {
+            events.push(event);
         }
     }
-    Ok(())
+    for (name, path) in package::list_data_files(store)? {
+        if keep_local_cache && name.starts_with("github/cache/") {
+            continue;
+        }
+        if !keep.contains(&name) {
+            storage::fs_remove_file(&path).map_err(|_| BackupError::io("无法删除", &path))?;
+            if let Some(event) = change_for(&name) {
+                events.push(event);
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn change_for(name: &str) -> Option<EntityChanged> {
+    let (kind, id) = match name {
+        "config.json" => (EntityKind::Config, "config".to_owned()),
+        "github/watchlist.json" => (EntityKind::GithubWatchlist, "watchlist".to_owned()),
+        _ => {
+            let (dir, file) = name.rsplit_once('/')?;
+            let id = file.strip_suffix(".json")?.to_owned();
+            let kind = match dir {
+                "todos" => EntityKind::Todo,
+                "notes" => EntityKind::Note,
+                "shelves" => EntityKind::Shelf,
+                "github/cache" => EntityKind::GithubCache,
+                _ => return None,
+            };
+            (kind, id)
+        }
+    };
+    Some(EntityChanged {
+        kind,
+        id,
+        revision: None,
+    })
 }
 
 fn read_zip(path: &Path) -> Result<Vec<StoredFile>, BackupError> {
@@ -306,5 +358,68 @@ mod tests {
         let text = std::fs::read_to_string(store.data_dir().join("notes").join("n.json")).unwrap();
         assert!(text.contains("keep"));
         assert!(!text.contains("nope"));
+    }
+
+    #[test]
+    fn import_reloads_note_memory_before_publish() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::notes::{NoteError, NoteInput, NoteService};
+
+        let (temp, store) = store();
+        let notes = NoteService::open(store.clone()).unwrap();
+        let created = notes
+            .create(&NoteInput {
+                title: "标题".to_owned(),
+                body: "imported-body".to_owned(),
+                tags: Vec::new(),
+                pinned: false,
+            })
+            .unwrap();
+        let package = temp.path().join("pkg.zip");
+        let commands = BackupService::open(store.clone());
+        commands.export(&package, false, 1).unwrap();
+        let edited = notes
+            .save(
+                &created.id,
+                created.revision,
+                &NoteInput {
+                    title: "标题".to_owned(),
+                    body: "edited-body".to_owned(),
+                    tags: Vec::new(),
+                    pinned: false,
+                },
+            )
+            .unwrap();
+
+        let during = Arc::new(Mutex::new(None));
+        let during_probe = Arc::clone(&during);
+        let notes_probe = notes.clone();
+        let id = created.id.clone();
+        store.set_publish_probe(Some(Arc::new(move || {
+            let body = notes_probe.get(&id).unwrap().body;
+            *during_probe.lock().expect("probe") = Some(body);
+        })));
+        commands.import(&package, 2).unwrap();
+        store.set_publish_probe(None);
+
+        assert_eq!(
+            during.lock().expect("probe").clone().expect("发布时已重载"),
+            "imported-body"
+        );
+        assert_eq!(notes.get(&created.id).unwrap().body, "imported-body");
+        let err = notes
+            .save(
+                &created.id,
+                edited.revision,
+                &NoteInput {
+                    title: "标题".to_owned(),
+                    body: "edited-body".to_owned(),
+                    tags: Vec::new(),
+                    pinned: false,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, NoteError::Conflict { .. }), "{err}");
     }
 }

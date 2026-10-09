@@ -90,6 +90,9 @@ impl ShelfService {
             }),
         };
         service.reload()?;
+        let reload: Arc<dyn crate::storage::MemoryReload> = service.inner.clone();
+        service.inner.store.watch_memory(&reload);
+        drop(reload);
         Ok(service)
     }
 
@@ -524,23 +527,7 @@ impl ShelfService {
     }
 
     fn reload(&self) -> Result<(), ShelfError> {
-        let loaded = self
-            .inner
-            .store
-            .read_collection::<ShelfFile>(CollectionKind::Shelves)?;
-        let mut cache = Cache::default();
-        for file in loaded.files {
-            match file.value.into_loaded(file.id.clone()) {
-                LoadedShelf::Group(shelf) => {
-                    cache.groups.insert(shelf.id.clone(), shelf);
-                }
-                LoadedShelf::Unsupported { found } => {
-                    cache.skipped.insert(file.id, found);
-                }
-            }
-        }
-        *lock_mutex(&self.inner.cache) = cache;
-        Ok(())
+        reload_inner(&self.inner)
     }
 
     fn allocate_id(&self) -> Result<String, ShelfError> {
@@ -670,6 +657,31 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+impl crate::storage::MemoryReload for Inner {
+    fn reload_memory(&self) -> Result<(), String> {
+        reload_inner(self).map_err(|err| err.to_string())
+    }
+}
+
+fn reload_inner(inner: &Inner) -> Result<(), ShelfError> {
+    let loaded = inner
+        .store
+        .read_collection::<ShelfFile>(CollectionKind::Shelves)?;
+    let mut cache = Cache::default();
+    for file in loaded.files {
+        match file.value.into_loaded(file.id.clone()) {
+            LoadedShelf::Group(shelf) => {
+                cache.groups.insert(shelf.id.clone(), shelf);
+            }
+            LoadedShelf::Unsupported { found } => {
+                cache.skipped.insert(file.id, found);
+            }
+        }
+    }
+    *lock_mutex(&inner.cache) = cache;
+    Ok(())
 }
 
 fn injected_error() -> ShelfError {

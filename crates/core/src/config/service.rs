@@ -44,13 +44,17 @@ impl std::fmt::Debug for ConfigService {
 impl ConfigService {
     pub fn open(store: Store) -> Result<Self, ConfigError> {
         let (config, fallback) = load(&store)?;
-        Ok(Self {
+        let service = Self {
             inner: Arc::new(Inner {
                 store,
                 config: Mutex::new(config),
                 fallback: Mutex::new(fallback),
             }),
-        })
+        };
+        let reload: Arc<dyn crate::storage::MemoryReload> = service.inner.clone();
+        service.inner.store.watch_memory(&reload);
+        drop(reload);
+        Ok(service)
     }
 
     #[must_use]
@@ -83,6 +87,15 @@ impl ConfigService {
             })
             .map_err(ConfigError::from)?;
         Ok(stored)
+    }
+}
+
+impl crate::storage::MemoryReload for Inner {
+    fn reload_memory(&self) -> Result<(), String> {
+        let (config, fallback) = load(&self.store).map_err(|err| err.to_string())?;
+        *lock(&self.config) = config;
+        *lock(&self.fallback) = fallback;
+        Ok(())
     }
 }
 

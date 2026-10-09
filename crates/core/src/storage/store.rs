@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use super::MemoryReload;
 use super::atomic::atomic_write;
 use super::boot::{BootHooks, BootReport, ImportPending};
 use super::change::{ChangeBus, ChangeMeta, EntityChanged, EntityKind};
@@ -134,6 +135,8 @@ struct Inner {
     phase: Mutex<Phase>,
     changes: ChangeBus,
     log: Log,
+    /// 已打开服务的弱引用。导入完成后重载，避免内存里的旧数据再写回磁盘。
+    reloaders: Mutex<Vec<std::sync::Weak<dyn MemoryReload>>>,
 }
 
 /// 进程内的单写者存储。
@@ -191,6 +194,7 @@ impl Store {
                 phase: Mutex::new(Phase::Init),
                 changes: ChangeBus::new(),
                 log,
+                reloaders: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -316,6 +320,30 @@ impl Store {
         before_publish();
         self.inner.changes.publish(event);
         Ok(receipt)
+    }
+
+    /// 记住一份已打开的服务。调用方必须继续持有强引用，否则重载时会跳过。
+    pub(crate) fn watch_memory(&self, reload: &Arc<dyn MemoryReload>) {
+        let mut slots = lock_mutex(&self.inner.reloaders);
+        slots.retain(|slot| slot.strong_count() > 0);
+        slots.push(Arc::downgrade(reload));
+    }
+
+    /// 把已打开的服务从磁盘重新载入。没有打开的服务时什么也不做。
+    pub(crate) fn reload_memories(&self) -> Result<(), Error> {
+        let slots = lock_mutex(&self.inner.reloaders).clone();
+        for slot in slots {
+            if let Some(reload) = slot.upgrade() {
+                reload
+                    .reload_memory()
+                    .map_err(|message| Error::Startup(StartupError::Load { message }))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn publish_change(&self, event: EntityChanged) {
+        self.inner.changes.publish(event);
     }
 
     /// 测试用。在变更已经入队、`publish` 返回之前调用。

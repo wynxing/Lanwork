@@ -52,6 +52,7 @@ impl BackupCommands {
         self.service.inspect(package)
     }
 
+    /// 确认后的导入。结束后重载已打开的服务内存，再发布变更。
     pub fn import(&self, package: &Path, now_ms: i64) -> Result<PackageOverview, BackupError> {
         self.service.import(package, now_ms)
     }
