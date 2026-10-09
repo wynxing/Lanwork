@@ -218,6 +218,16 @@ impl Store {
         self.inner.log.info(message);
     }
 
+    /// 记一条警告。规则与 [`Self::log_info`] 相同。
+    pub fn log_warn(&self, message: &str) {
+        self.inner.log.warn(message);
+    }
+
+    /// 记一条错误。规则与 [`Self::log_info`] 相同。
+    pub fn log_error(&self, message: &str) {
+        self.inner.log.error(message);
+    }
+
     pub fn import_pending_path(&self) -> PathBuf {
         self.inner.data_dir.join("import.pending")
     }
