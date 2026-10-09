@@ -8,6 +8,9 @@ use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 
 use super::error::NoteError;
 
+/// 回收站保留时间。满这段时间后自动清除。一天按 86_400_000 毫秒。
+pub const TRASH_RETENTION_MS: i64 = 30 * 86_400_000;
+
 /// 标题没有非空白字符时的显示名。
 ///
 /// 便签列表和快速收集预览用同一规则。空白使用 Unicode `White_Space`（[`str::trim`]）。

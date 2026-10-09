@@ -150,7 +150,7 @@ Lanwork/
 - 待办可带到期日、提醒、周期、GitHub 来源，以及至多一个当前标记。
 - 收纳服务在 `lanwork_core::shelves`。分组文件是 `shelves/<id>.json`，字段为名称、排序、可选的关联待办 id，以及引用列表。每条引用保存绝对路径、显示名、是否文件夹和加入时间，不保存文件内容和图标。路径规范化和存在性检查见「收纳」。
 - 便签带递增的 `revision`。保存时带上加载时的 revision，与磁盘不一致则返回冲突错误，调用方保留正文。冲突之后的可见行为以产品规格为准。
-- 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。服务不做覆盖；冲突后的版本选择、关闭和退出时的未保存正文，以及便签删除的界面入口，仍以产品规格为准。
+- 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。删除写入 `deletedAt`，文件留在 `notes/`。永久删除只删除已经软删除的文件；删文件成功后、发布变更前从内存去掉。进入回收站满 30 天（30×86400000 毫秒）的便签，`deleted` 不再返回，`restore` 不恢复、也不写盘。打开服务时清除一次；外壳也可以调用 `NoteCommands::purge_expired`。服务不建定时器，调用间隔未在规格里写明。某一篇删不掉时记日志并跳过，打开服务仍成功，其余便签照常可用。服务不做覆盖。冲突后的版本选择、关闭和退出时的未保存正文由界面处理。
 - GitHub 通过本机 `gh` 读取。token 不进入配置、日志或导出包。
 - 导出包包含配置、待办、便签、收纳分组、GitHub watchlist，以及 `user-apps.json`（便携应用、别名和隐藏名单），GitHub 缓存可选。导出省略缓存不等于清空本地 `github/cache`。不含日志、备份目录、`import.pending`、token 和环境变量。备份包含 `user-apps.json`，并且总是包含 GitHub 缓存。服务在 `lanwork_core::backup`，薄命令是 `BackupCommands`。包是只含存储法（compression method 0）的 ZIP。根上的 `manifest.json` 有 `packageSchemaVersion`（当前为 1）、`exportedAt`（调用方传入的 UTC 毫秒）、`appVersion` 和 `counts`。路径拒绝 `..` 和绝对路径，只接受上述白名单。每个 JSON 可解析；缺少 `schemaVersion` 按 1，高于 1 则整包拒绝。自动备份文件名是 `auto-年-月-日-毫秒.zip`，手动是 `manual-毫秒.zip`，导入前的备份是 `import-毫秒.zip`。`backups/auto-day.txt` 记下最近一次自动备份的公历日，不计入 7 份。同一天再次调用自动备份不再写新文件。自动和手动合计超过 7 份时按文件名里的毫秒删除最旧的，不删除 `import-` 和其他文件。手动备份不改 `auto-day.txt`。调用方传入公历日和毫秒，服务不读时钟，也不读环境变量。
 - 不实现 Focus 的聚合服务，也不实现从 MayDolist schema 的一次性迁移。
@@ -294,7 +294,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 查询队列只保留一个待处理请求，新输入替换旧请求。每次查询有序号，过期序号的结果必须丢弃。应用、待办和便签结果先返回。最后一次输入后 60ms 内没有新输入，才向 Everything 或 Windows Search 发请求并合并结果。每次最多接收 50 条，界面最多显示 20 条。只为可见项取图标。图标缓存同时不超过 128 项和 8 MiB，搜索和收纳共用。
 
-查询调度的代码在 `lanwork_core::dispatch`，类型是 `Dispatch`。搜索条和面板还没有调用它。`TodoCommands::boot` 成功并且 `NoteCommands::open` 在导入恢复之后完成，才调用 `Dispatch::build`。`Store::build_index` 在启动未完成时不会建索引。索引读的是这两份服务的内存：未完成且不在回收站的待办标题，以及未软删除便签的标题、标签和正文。之后只在 `EntityChanged` 的种类是待办或便签时，从同一份内存重建对应索引。查询不读盘。交给 `Dispatch` 的必须是正在写入的那一份命令；克隆仍是同一份内存。待办在提交批次之前写入内存。便签在写盘成功之后、发布变更之前写入内存。订阅者读到消息时，这两份内存已是新值。保存便签的回调里不要再调用便签写入，写入锁还被这次保存持有。
+查询调度的代码在 `lanwork_core::dispatch`，类型是 `Dispatch`。搜索条和面板还没有调用它。`TodoCommands::boot` 成功并且 `NoteCommands::open` 在导入恢复之后完成，才调用 `Dispatch::build`。`Store::build_index` 在启动未完成时不会建索引。索引读的是这两份服务的内存：未完成且不在回收站的待办标题，以及未软删除便签的标题、标签和正文。之后只在 `EntityChanged` 的种类是待办或便签时，从同一份内存重建对应索引。查询不读盘。交给 `Dispatch` 的必须是正在写入的那一份命令；克隆仍是同一份内存。待办在提交批次之前写入内存。便签在写盘或删文件成功之后、发布变更之前更新内存。订阅者读到消息时，这两份内存已是新值。保存或永久删除便签的回调里不要再调用便签写入，写入锁还被这次操作持有。
 
 `submit` 的时钟读数是结果延迟的起点。搜索条先经 `classify_prefix`。空输入和收集前缀不进入查询队列，并使当前序号失效。面板不分类：空字符串是空输入，其余按搜索。组合中的预编辑不要调用 `submit`。序号从 1 递增。本地分组写好之后，并且距这次 `submit` 已满 60ms、期间没有更新的输入，才调用文件来源。文件查询返回时序号已经变了就不合并。不可用时结果上的说明是「文件索引不可用」，已有的应用、待办和便签行保留。文件服务最多交回 50 条，显示用 `allocate_display` 收到最多 20 条。
 

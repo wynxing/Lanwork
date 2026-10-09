@@ -354,11 +354,27 @@ impl Store {
 
     /// 文件不存在时返回 `Ok(false)`，不发布消息。
     pub fn remove(&self, doc: &DocumentId) -> Result<bool, Error> {
+        self.remove_with_before_publish(doc, || {})
+    }
+
+    /// 先删文件，再执行 `before_publish`，最后才发布变更。
+    ///
+    /// 调用方在 `before_publish` 里更新内存。订阅者读到事件时，内存已经是新值。
+    /// 文件不存在时返回 `Ok(false)`，不调用 `before_publish`，也不发布消息。
+    pub(crate) fn remove_with_before_publish<F>(
+        &self,
+        doc: &DocumentId,
+        before_publish: F,
+    ) -> Result<bool, Error>
+    where
+        F: FnOnce(),
+    {
         let event = {
             let _guard = lock_mutex(&self.inner.write_lock);
             self.inner.remove_json(doc)?
         };
         if let Some(event) = event {
+            before_publish();
             self.inner.changes.publish(event);
             Ok(true)
         } else {

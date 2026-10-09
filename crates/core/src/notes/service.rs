@@ -1,8 +1,8 @@
 //! 便签服务。业务规则在这里：修订号、标签、置顶顺序、软删除。
 //!
-//! 内存里的副本只在写盘成功之后、发布变更之前更新。写盘失败或修订号冲突都不改磁盘，也不改这份副本。
-//! 订阅者读到 [`crate::storage::EntityChanged`] 时，[`NoteService::list`] 已是新内容。
-//! 那个回调里不要再进入本服务的写入：写入锁还被这次保存持有。
+//! 内存里的副本只在写盘或删文件成功之后、发布变更之前更新。写盘失败或修订号冲突都不改磁盘，也不改这份副本。
+//! 订阅者读到 [`crate::storage::EntityChanged`] 时，内存已经是新内容。
+//! 那个回调里不要再进入本服务的写入：写入锁还被这次保存或永久删除持有。
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -68,7 +68,7 @@ impl NoteService {
                 seq: AtomicU64::new(1),
             }),
         };
-        reload_cache(&service.inner)?;
+        service.reload_cache()?;
         let reload: Arc<dyn crate::storage::MemoryReload> = service.inner.clone();
         service.inner.store.watch_memory(&reload);
         drop(reload);
@@ -139,11 +139,10 @@ impl NoteService {
         })
     }
 
-    /// 软删除：写入 `deletedAt`，文件留在 `notes/`。
+    /// 软删除：写入 `deletedAt`，文件留在 `notes/`，列表不再返回它。
     ///
-    /// 界面入口以及删除后是否对用户显示为回收站，等 product.md 写入 #9 第 10 项。
-    /// 搜索规格排除了回收站中的便签，因此 [`Self::list`] 和 [`Self::filter_by_tag`] 不返回它们。
-    /// 关闭悬浮窗不是这个动作。
+    /// 这就是进入回收站。关闭悬浮窗不是这个动作。
+    /// [`Self::list`] 和 [`Self::filter_by_tag`] 不返回回收站中的便签。
     pub fn soft_delete(&self, id: &str, revision: u64) -> Result<Note, NoteError> {
         self.mutate(id, revision, |current, now| {
             if current.deleted_at.is_some() {
@@ -157,11 +156,47 @@ impl NoteService {
         })
     }
 
+    /// 永久删除回收站中的一篇，文件从 `notes/` 去掉。
+    ///
+    /// 不在回收站时不删文件。`revision` 必须与当前一致。
+    pub fn purge(&self, id: &str, revision: u64) -> Result<(), NoteError> {
+        self.check_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        let current = self.cached(id)?;
+        if current.revision != revision {
+            return Err(NoteError::Conflict {
+                id: id.to_owned(),
+                expected: revision,
+                actual: current.revision,
+            });
+        }
+        if current.deleted_at.is_none() {
+            return Err(NoteError::NotDeleted { id: id.to_owned() });
+        }
+        self.remove_note(id)
+    }
+
+    /// 清除进入回收站已满 30 天的便签。返回这次删掉的 id。
+    ///
+    /// 打开服务时用当时的时钟做一次。外壳也可以定时调用。本服务不建定时器，间隔未在规格里写明。
+    /// 某一篇删不掉时记日志并跳过，其余继续，因此打开服务不会因为这一步失败。
+    pub fn purge_expired(&self) -> Result<Vec<String>, NoteError> {
+        let _write = lock_mutex(&self.inner.write);
+        self.purge_expired_locked()
+    }
+
     /// 清除 `deletedAt`。便签回到 [`Self::list`]。
+    ///
+    /// 已满 30 天的不恢复，也不写盘。文件留到 [`Self::purge_expired`]。
     pub fn restore(&self, id: &str, revision: u64) -> Result<Note, NoteError> {
-        self.mutate(id, revision, |current, _now| {
-            if current.deleted_at.is_none() {
+        self.mutate(id, revision, |current, now| {
+            let Some(deleted_at) = current.deleted_at else {
                 return Err(NoteError::NotDeleted {
+                    id: current.id.clone(),
+                });
+            };
+            if trash_expired(deleted_at.as_millis(), now.as_millis()) {
+                return Err(NoteError::NotFound {
                     id: current.id.clone(),
                 });
             }
@@ -189,9 +224,16 @@ impl NoteService {
         self.collect(|note| !note.is_deleted())
     }
 
-    /// 已软删除的便签。顺序与 [`Self::list`] 相同。界面是否展示等 #9 第 10 项。
+    /// 已软删除、且尚未满 30 天的便签。顺序与 [`Self::list`] 相同。
+    ///
+    /// 满 30 天的不返回。文件仍在，直到外壳或打开服务时调用 [`Self::purge_expired`]。
+    /// 本服务不建定时器，间隔未在规格里写明。
     pub fn deleted(&self) -> Vec<Note> {
-        self.collect(Note::is_deleted)
+        let now = (self.inner.now)().as_millis();
+        self.collect(|note| {
+            note.deleted_at
+                .is_some_and(|deleted_at| !trash_expired(deleted_at.as_millis(), now))
+        })
     }
 
     /// 按规范化之后的整段标签筛选未软删除的便签。不是子串搜索。
@@ -290,6 +332,81 @@ impl NoteService {
         }
         Err(NoteError::AllocateId)
     }
+
+    fn reload_cache(&self) -> Result<(), NoteError> {
+        let _write = lock_mutex(&self.inner.write);
+        let loaded = self
+            .inner
+            .store
+            .read_collection::<NoteFile>(CollectionKind::Notes)?;
+        let mut cache = Cache::default();
+        for file in loaded.files {
+            match file.value.into_note(file.id.clone()) {
+                Ok(note) => {
+                    cache.notes.insert(note.id.clone(), note);
+                }
+                Err(reason) => {
+                    cache.skipped.insert(file.id, reason);
+                }
+            }
+        }
+        *lock_mutex(&self.inner.cache) = cache;
+        self.purge_expired_locked()?;
+        Ok(())
+    }
+
+    fn cached(&self, id: &str) -> Result<Note, NoteError> {
+        let cache = lock_mutex(&self.inner.cache);
+        if let Some(reason) = cache.skipped.get(id) {
+            return Err(reason.error(id));
+        }
+        cache
+            .notes
+            .get(id)
+            .cloned()
+            .ok_or_else(|| NoteError::NotFound { id: id.to_owned() })
+    }
+
+    fn remove_note(&self, id: &str) -> Result<(), NoteError> {
+        let removed = self.inner.store.remove_with_before_publish(
+            &DocumentId::Note(id.to_owned()),
+            || {
+                lock_mutex(&self.inner.cache).notes.remove(id);
+            },
+        )?;
+        if !removed {
+            lock_mutex(&self.inner.cache).notes.remove(id);
+        }
+        Ok(())
+    }
+
+    fn purge_expired_locked(&self) -> Result<Vec<String>, NoteError> {
+        let now = (self.inner.now)().as_millis();
+        let expired: Vec<String> = {
+            let cache = lock_mutex(&self.inner.cache);
+            cache
+                .notes
+                .values()
+                .filter(|note| {
+                    note.deleted_at
+                        .is_some_and(|deleted_at| trash_expired(deleted_at.as_millis(), now))
+                })
+                .map(|note| note.id.clone())
+                .collect()
+        };
+        let mut removed = Vec::new();
+        for id in expired {
+            match self.remove_note(&id) {
+                Ok(()) => removed.push(id),
+                Err(err) => {
+                    self.inner
+                        .store
+                        .log_warn(&format!("清除过期便签失败，已跳过：{err}"));
+                }
+            }
+        }
+        Ok(removed)
+    }
 }
 
 impl crate::storage::MemoryReload for Inner {
@@ -316,4 +433,70 @@ fn reload_cache(inner: &Inner) -> Result<(), NoteError> {
     }
     *lock_mutex(&inner.cache) = cache;
     Ok(())
+}
+
+fn trash_expired(deleted_at_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(deleted_at_ms) >= super::model::TRASH_RETENTION_MS
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::storage::StorePaths;
+    use crate::storage::test_temp::TempDir;
+
+    #[test]
+    fn purge_drops_cache_before_publish() {
+        let temp = TempDir::new();
+        let root = temp.path();
+        let store = Store::open(StorePaths {
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            user_profile: root.join("profile"),
+            local_app_data: root.join("local"),
+        })
+        .unwrap();
+        let clock = Arc::new(AtomicI64::new(1_000));
+        let clock_for_open = Arc::clone(&clock);
+        let service = NoteService::open_at(store.clone(), move || {
+            TimestampMillis::from_millis(clock_for_open.load(Ordering::SeqCst))
+        })
+        .unwrap();
+        let created = service
+            .create(&NoteInput {
+                title: "丢掉".to_owned(),
+                body: "正文".to_owned(),
+                tags: Vec::new(),
+                pinned: false,
+            })
+            .unwrap();
+        let deleted = service.soft_delete(&created.id, created.revision).unwrap();
+
+        let during = Arc::new(Mutex::new(None));
+        let during_probe = Arc::clone(&during);
+        let service_probe = service.clone();
+        let id = deleted.id.clone();
+        store.set_publish_probe(Some(Arc::new(move || {
+            let missing = service_probe.get(&id).unwrap_err();
+            let listed = service_probe.deleted().iter().any(|note| note.id == id);
+            *during_probe.lock().expect("probe") = Some((missing.to_string(), listed));
+        })));
+        service.purge(&deleted.id, deleted.revision).unwrap();
+        store.set_publish_probe(None);
+
+        let (message, listed) = during
+            .lock()
+            .expect("probe")
+            .clone()
+            .expect("发布时已检查缓存");
+        assert!(!listed, "{message}");
+        assert!(message.contains("找不到便签"), "{message}");
+        assert!(matches!(
+            service.get(&deleted.id).unwrap_err(),
+            NoteError::NotFound { .. }
+        ));
+    }
 }
