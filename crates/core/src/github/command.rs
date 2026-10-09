@@ -1,7 +1,7 @@
 //! GitHub 薄命令。
 //!
-//! 界面只调用这里。添加和移除追踪仓库在 #9 第 17 项写入产品规格之前不落盘。
-//! 任一筛选项被选中时，在 #9 第 18 项写入产品规格之前不筛选。
+//! 界面只调用这里。添加和移除按 `owner/repo` 修改 watchlist。
+//! 任一筛选项被选中时返回 [`PendingTopic::SignalFilters`]，不写界面文案。
 //! 打开条目只返回 `http` / `https` URL，由外壳用系统浏览器打开。
 
 use std::sync::Arc;
@@ -62,16 +62,16 @@ impl GithubCommands {
         Ok(self.service.watchlist()?.repos)
     }
 
-    /// #9 第 17 项。不校验输入，不写 watchlist，不改快照和待办。
+    /// 格式是恰好一个 `/`、两边都非空的 `owner/repo`。
+    ///
+    /// 同一字符串已经在列表里时不写盘，返回 [`PendingTopic::DuplicateTracked`]。
     pub fn add_tracked(&self, name: &str) -> Result<(), GithubError> {
-        let _ = name;
-        Err(GithubError::PendingSpec(PendingTopic::RepoManagement))
+        self.service.add_tracked(name)
     }
 
-    /// #9 第 17 项。不移除缓存，也不改关联待办。
+    /// 先移出追踪列表，再删快照，最后断开关联待办。待办本身保留。
     pub fn remove_tracked(&self, name: &str) -> Result<(), GithubError> {
-        let _ = name;
-        Err(GithubError::PendingSpec(PendingTopic::RepoManagement))
+        self.service.remove_tracked(name)
     }
 
     pub fn set_ignored(
@@ -120,7 +120,7 @@ impl GithubCommands {
         self.service.lists(now_ms, settings.stale_days)
     }
 
-    /// 没有筛选项时与 [`Self::list`] 相同。有任一筛选项则返回未定错误，不改数据。
+    /// 没有筛选项时与 [`Self::list`] 相同。有任一筛选项时返回 [`PendingTopic::SignalFilters`]，不改数据。
     pub fn list_filtered(
         &self,
         filter: &GithubFilter,
