@@ -12,8 +12,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # 存储层只引用文件 API（FlushFileBuffers、ReplaceFileW、MoveFileExW）。
-# 应用索引另外引用 Shell、COM、注册表和目录变更，仍然不引用窗口创建、
-# 控件或消息循环。启动时的 SW_SHOWNORMAL 用整数值，不打开 WindowsAndMessaging。
+# 应用索引另外引用 Shell、COM、注册表和目录变更。
+# 文件索引动态加载 Everything SDK，并用 ADO 查询 Windows Search。
+# 仍然不引用窗口创建、控件或消息循环。启动时的 SW_SHOWNORMAL 用整数值，不打开 WindowsAndMessaging。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
@@ -27,8 +28,12 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Environment",
     "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
     "Win32_System_ProcessStatus",
     "Win32_System_Registry",
+    "Win32_System_Search",
+    "Win32_System_Services",
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_Shell",
