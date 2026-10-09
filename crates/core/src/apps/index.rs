@@ -1,7 +1,7 @@
 //! 先加载缓存，再在后台重建。目录变化只重建开始菜单来源。
 //!
-//! `refresh` 是进程内的整表重建。规格缺口 #9 第 2 项还没有写进 product.md，
-//! 手动刷新放在界面的哪里没有产品规则，这里不提供入口。
+//! `refresh` 是进程内的整表重建。设置页里的手动刷新还没有界面。
+//! 便携应用、别名和隐藏来自调用方传入的用户目录，不从 Windows 枚举。
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -11,11 +11,13 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::search::{FieldInput, FieldRole, HitKind, MatchIndex};
+use crate::search::{FieldInput, FieldRole, HitKind, MatchIndex, hit_kind_rank};
 
 use super::cache::{self, CacheLoad, CacheStatus};
+use super::catalog::{self, HiddenApp, UserCatalog};
 use super::model::{
     AppEntry, AppSource, SourceAttempt, SourceError, SourceSnapshots, apply_source_results,
+    launch_key,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +43,7 @@ pub enum IndexError {
     MissingEnv,
     UnsupportedPlatform,
     Spawn(String),
+    NotIndexed,
 }
 
 impl std::fmt::Display for IndexError {
@@ -51,6 +54,7 @@ impl std::fmt::Display for IndexError {
             Self::MissingEnv => write!(f, "缺少 LOCALAPPDATA"),
             Self::UnsupportedPlatform => write!(f, "应用索引的系统枚举只在 Windows 上可用"),
             Self::Spawn(message) => write!(f, "应用索引线程没有启动: {message}"),
+            Self::NotIndexed => write!(f, "应用不在索引里"),
         }
     }
 }
@@ -68,6 +72,7 @@ pub(crate) trait SourceEnumerator: Send {
 enum RebuildKind {
     All,
     StartMenu,
+    User,
 }
 
 struct Msg {
@@ -89,6 +94,7 @@ struct Gate {
 
 struct Shared {
     published: RwLock<Published>,
+    catalog: RwLock<UserCatalog>,
     gate: Mutex<Gate>,
     cv: Condvar,
     cache_path: PathBuf,
@@ -110,6 +116,7 @@ pub(crate) struct OpenOptions {
     pub debounce: Duration,
     pub enumerator: Option<Box<dyn SourceEnumerator>>,
     pub cache_log: Option<crate::storage::Log>,
+    pub user_catalog: UserCatalog,
 }
 
 impl AppIndex {
@@ -135,6 +142,7 @@ impl AppIndex {
             debounce: super::DEFAULT_DEBOUNCE,
             enumerator: None,
             cache_log: process_cache_log(),
+            user_catalog: UserCatalog::default(),
         })
     }
 
@@ -148,20 +156,33 @@ impl AppIndex {
         read_lock(&self.shared.published).entries.clone()
     }
 
-    /// 用匹配引擎查应用名。别名等规格缺口 #9 第 1 项，这里不加别名字段。
+    /// 查显示名和备用名。已隐藏的启动目标不出现。同一条只留命中类型最前的一种。
     #[must_use]
     pub fn query(&self, text: &str) -> Vec<AppHit> {
         let published = read_lock(&self.shared.published);
+        let hidden = hidden_keys(&self.shared.catalog);
         let hits = published.match_index.query(text);
-        let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::new();
+        let mut chosen: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        let mut out: Vec<AppHit> = Vec::new();
         for hit in hits {
-            if !seen.insert(hit.id) {
+            if let Some(&index) = chosen.get(&hit.id) {
+                if let Some(slot) = out.get_mut(index)
+                    && hit_kind_rank(hit.kind) < hit_kind_rank(slot.kind)
+                {
+                    slot.kind = hit.kind;
+                    slot.score = hit.score;
+                }
                 continue;
             }
             let Some(entry) = published.entries.get(hit.id as usize) else {
+                chosen.insert(hit.id, usize::MAX);
                 continue;
             };
+            if hidden.contains(&launch_key(&entry.target)) {
+                chosen.insert(hit.id, usize::MAX);
+                continue;
+            }
+            chosen.insert(hit.id, out.len());
             out.push(AppHit {
                 entry: entry.clone(),
                 kind: hit.kind,
@@ -169,6 +190,79 @@ impl AppIndex {
             });
         }
         out
+    }
+
+    /// 当前内存中的用户目录。落盘由调用方 `save_user_catalog` 完成。
+    #[must_use]
+    pub fn user_catalog(&self) -> UserCatalog {
+        read_lock(&self.shared.catalog).clone()
+    }
+
+    /// 替换用户目录，并只重建便携应用和别名。隐藏名单一并换成这份目录里的。
+    pub fn set_user_catalog(&self, catalog: UserCatalog) -> Result<RefreshReport, IndexError> {
+        *write_lock(&self.shared.catalog) = catalog;
+        let ticket = self.submit(RebuildKind::User)?;
+        self.wait(ticket, Duration::from_secs(30))
+    }
+
+    /// 按启动目标隐藏。应用不在当前索引里时返回 [`IndexError::NotIndexed`]。
+    pub fn hide(&self, key: &str) -> Result<(), IndexError> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(IndexError::NotIndexed);
+        }
+        let name = {
+            let published = read_lock(&self.shared.published);
+            published
+                .entries
+                .iter()
+                .find(|entry| launch_key(&entry.target) == key)
+                .map(|entry| entry.name.clone())
+        };
+        let Some(name) = name else {
+            return Err(IndexError::NotIndexed);
+        };
+        let mut catalog = write_lock(&self.shared.catalog);
+        if catalog.hidden.iter().any(|item| item.launch_key == key) {
+            return Ok(());
+        }
+        catalog.hidden.push(HiddenApp {
+            launch_key: key.to_owned(),
+            name,
+        });
+        Ok(())
+    }
+
+    /// 从隐藏名单去掉这个键。本来就没有时返回 `false`。
+    pub fn restore(&self, key: &str) -> bool {
+        let key = key.trim();
+        let mut catalog = write_lock(&self.shared.catalog);
+        let before = catalog.hidden.len();
+        catalog.hidden.retain(|item| item.launch_key != key);
+        catalog.hidden.len() != before
+    }
+
+    /// 设置页要列出的隐藏项。索引里还有同一键时，用当前显示名。
+    #[must_use]
+    pub fn hidden_apps(&self) -> Vec<HiddenApp> {
+        let published = read_lock(&self.shared.published);
+        let catalog = read_lock(&self.shared.catalog);
+        catalog
+            .hidden
+            .iter()
+            .map(|item| {
+                let name = published
+                    .entries
+                    .iter()
+                    .find(|entry| launch_key(&entry.target) == item.launch_key)
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_else(|| item.name.clone());
+                HiddenApp {
+                    launch_key: item.launch_key.clone(),
+                    name,
+                }
+            })
+            .collect()
     }
 
     /// 重新枚举全部来源并替换缓存。这是内部接口，不是设置里的按钮。
@@ -257,6 +351,7 @@ pub(crate) fn open_with(options: OpenOptions) -> Result<AppIndex, IndexError> {
     };
     let shared = Arc::new(Shared {
         published: RwLock::new(published),
+        catalog: RwLock::new(options.user_catalog),
         gate: Mutex::new(Gate {
             done_ticket: 0,
             stopped: false,
@@ -353,12 +448,14 @@ fn worker_main(
         let rebuilds: Vec<&Msg> = batch.iter().filter(|msg| !msg.shutdown).collect();
         if !rebuilds.is_empty() {
             let ticket = rebuilds.iter().map(|msg| msg.ticket).max().unwrap_or(0);
-            let kind = if rebuilds.iter().any(|msg| msg.kind == RebuildKind::All) {
-                RebuildKind::All
-            } else {
-                RebuildKind::StartMenu
-            };
-            let outcome = rebuild(&mut *enumerator, &mut snapshots, kind, &shared.cache_path);
+            let kind = combine_kind(rebuilds.iter().map(|msg| msg.kind));
+            let outcome = rebuild(
+                &mut *enumerator,
+                &mut snapshots,
+                kind,
+                &shared.cache_path,
+                &shared,
+            );
             publish(&shared, outcome, ticket);
         }
         if shutdown {
@@ -393,23 +490,59 @@ struct RebuildOutcome {
     report: RefreshReport,
 }
 
+fn combine_kind(kinds: impl Iterator<Item = RebuildKind>) -> RebuildKind {
+    let mut all = false;
+    let mut start_menu = false;
+    let mut user = false;
+    for kind in kinds {
+        match kind {
+            RebuildKind::All => all = true,
+            RebuildKind::StartMenu => start_menu = true,
+            RebuildKind::User => user = true,
+        }
+    }
+    if all || (start_menu && user) {
+        RebuildKind::All
+    } else if user {
+        RebuildKind::User
+    } else {
+        RebuildKind::StartMenu
+    }
+}
+
 fn rebuild(
     enumerator: &mut dyn SourceEnumerator,
     snapshots: &mut SourceSnapshots,
     kind: RebuildKind,
     cache_path: &Path,
+    shared: &Shared,
 ) -> RebuildOutcome {
     let started = Instant::now();
     let sources: &[AppSource] = match kind {
         RebuildKind::All => &AppSource::ALL,
         RebuildKind::StartMenu => &[AppSource::StartMenu],
+        RebuildKind::User => &[AppSource::Portable, AppSource::Alias],
+    };
+    let catalog = if sources
+        .iter()
+        .any(|source| matches!(source, AppSource::Portable | AppSource::Alias))
+    {
+        Some(read_lock(&shared.catalog).clone())
+    } else {
+        None
     };
     let mut attempts = Vec::with_capacity(sources.len());
     for source in sources {
-        let result = catch_unwind(AssertUnwindSafe(|| enumerator.enumerate(*source)));
-        let result = match result {
-            Ok(result) => result,
-            Err(_) => Err("枚举中断".to_owned()),
+        let result = if let Some(catalog) = &catalog
+            && matches!(source, AppSource::Portable | AppSource::Alias)
+        {
+            Ok(user_source_entries(catalog, *source))
+        } else {
+            let result = catch_unwind(AssertUnwindSafe(|| enumerator.enumerate(*source)));
+            match result {
+                Ok(result) => result,
+                Err(_) => Err("枚举中断".to_owned()),
+            }
         };
         attempts.push(SourceAttempt {
             source: *source,
@@ -454,19 +587,43 @@ fn publish(shared: &Shared, outcome: RebuildOutcome, ticket: u64) {
 fn build_published(entries: Vec<AppEntry>) -> Published {
     let mut match_index = MatchIndex::new();
     for (index, entry) in entries.iter().enumerate() {
-        // 别名等 #9 第 1 项。现在只准备显示名。
-        match_index.insert(
-            index as u64,
-            &[FieldInput {
-                role: FieldRole::Name,
-                text: &entry.name,
-            }],
-        );
+        let mut fields = Vec::with_capacity(1 + entry.alternate_names.len());
+        fields.push(FieldInput {
+            role: FieldRole::Name,
+            text: &entry.name,
+        });
+        for name in &entry.alternate_names {
+            if !name.trim().is_empty() {
+                fields.push(FieldInput {
+                    role: FieldRole::Alias,
+                    text: name,
+                });
+            }
+        }
+        match_index.insert(index as u64, &fields);
     }
     Published {
         entries,
         match_index,
     }
+}
+
+fn user_source_entries(catalog: &UserCatalog, source: AppSource) -> Vec<AppEntry> {
+    match source {
+        AppSource::Portable => catalog::portable_entries(catalog),
+        AppSource::Alias => catalog::alias_entries(catalog),
+        AppSource::StartMenu | AppSource::AppPaths | AppSource::Path | AppSource::Store => {
+            Vec::new()
+        }
+    }
+}
+
+fn hidden_keys(catalog: &RwLock<UserCatalog>) -> std::collections::HashSet<String> {
+    read_lock(catalog)
+        .hidden
+        .iter()
+        .map(|item| item.launch_key.clone())
+        .collect()
 }
 
 fn spawn_watcher(
@@ -591,6 +748,7 @@ mod tests {
             },
             icon_path: None,
             icon_index: 0,
+            alternate_names: Vec::new(),
         }
     }
 
@@ -616,6 +774,7 @@ mod tests {
                 delayed: false,
             })),
             cache_log: None,
+            user_catalog: UserCatalog::default(),
         })
         .unwrap();
         assert!(matches!(index.cache_status(), CacheStatus::Loaded(1)));
@@ -652,6 +811,7 @@ mod tests {
                 delayed: false,
             })),
             cache_log: None,
+            user_catalog: UserCatalog::default(),
         })
         .unwrap();
         assert_eq!(*index.cache_status(), CacheStatus::Discarded);
@@ -663,5 +823,96 @@ mod tests {
         assert_eq!(index.entries().len(), 1);
         assert_eq!(index.entries()[0].name, "新的");
         assert!(cache_path.is_file());
+    }
+
+    #[test]
+    fn catalog_aliases_are_searchable_and_hidden_apps_leave_query() {
+        let temp = TempDir::new();
+        let cache_path = temp.path().join("apps.json");
+        let note = entry("记事本", AppSource::Path, r"C:\Apps\note.exe");
+        cache::save_cache(&cache_path, std::slice::from_ref(&note)).unwrap();
+        let index = open_with(OpenOptions {
+            cache_path,
+            extra_shortcut_dir: None,
+            watch: false,
+            background_rebuild: false,
+            debounce: Duration::from_millis(50),
+            enumerator: Some(Box::new(FakeSources {
+                results: std::collections::HashMap::new(),
+                delay: None,
+                delayed: false,
+            })),
+            cache_log: None,
+            user_catalog: UserCatalog::default(),
+        })
+        .unwrap();
+        let report = index
+            .set_user_catalog(UserCatalog {
+                portable: vec![entry("便携工具", AppSource::Portable, r"D:\Tools\tool.exe")],
+                aliases: vec![crate::apps::AppAlias {
+                    name: "笔记".into(),
+                    target: note.target.clone(),
+                }],
+                hidden: Vec::new(),
+            })
+            .unwrap();
+        assert!(report.errors.is_empty());
+        assert_eq!(index.query("便携工具").len(), 1);
+        assert_eq!(index.query("便携工具")[0].entry.name, "便携工具");
+        let alias_hits = index.query("笔记");
+        assert_eq!(alias_hits.len(), 1);
+        assert_eq!(alias_hits[0].entry.name, "记事本");
+        assert_eq!(alias_hits[0].kind, crate::search::HitKind::Exact);
+        assert!(index.query("找不到的别名").is_empty());
+
+        let key = launch_key(&note.target);
+        index.hide(&key).unwrap();
+        assert!(index.query("记事本").is_empty());
+        assert!(index.query("笔记").is_empty());
+        assert!(index.entries().iter().any(|item| item.name == "记事本"));
+        assert_eq!(index.hidden_apps()[0].name, "记事本");
+        assert!(index.restore(&key));
+        assert_eq!(index.query("记事本").len(), 1);
+        assert!(!index.restore(&key));
+        assert!(index.hide("missing").is_err());
+    }
+
+    #[test]
+    fn refresh_without_a_catalog_drops_cached_portable_apps() {
+        let temp = TempDir::new();
+        let cache_path = temp.path().join("apps.json");
+        cache::save_cache(
+            &cache_path,
+            &[entry("旧便携", AppSource::Portable, r"D:\Old\old.exe")],
+        )
+        .unwrap();
+        let index = open_with(OpenOptions {
+            cache_path,
+            extra_shortcut_dir: None,
+            watch: false,
+            background_rebuild: false,
+            debounce: Duration::from_millis(50),
+            enumerator: Some(Box::new(FakeSources {
+                results: std::collections::HashMap::new(),
+                delay: None,
+                delayed: false,
+            })),
+            cache_log: None,
+            user_catalog: UserCatalog::default(),
+        })
+        .unwrap();
+        assert_eq!(index.entries()[0].name, "旧便携");
+        index.refresh_timeout(Duration::from_secs(5)).unwrap();
+        assert!(index.entries().is_empty());
+        index
+            .set_user_catalog(UserCatalog {
+                portable: vec![entry("新便携", AppSource::StartMenu, r"D:\New\new.exe")],
+                aliases: Vec::new(),
+                hidden: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(index.entries().len(), 1);
+        assert_eq!(index.entries()[0].name, "新便携");
+        assert_eq!(index.entries()[0].source, AppSource::Portable);
     }
 }

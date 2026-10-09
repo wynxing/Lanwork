@@ -1,6 +1,6 @@
 //! Windows 上的应用来源。COM 只在枚举线程初始化，不创建窗口。
 //!
-//! 便携应用和别名（规格缺口 #9 第 1 项）没有产品规则，这里没有这个来源。
+//! 便携应用和别名由索引从用户目录填入，不在这里枚举。
 
 mod app_paths;
 mod comutil;
@@ -47,7 +47,7 @@ impl WindowsSources {
             Err(message) => errors.push(message),
         }
         if let Some(extra) = &self.extra {
-            match start_menu::read_shortcut_dir(extra) {
+            match start_menu::read_shortcut_dir_excluding(extra, &start_menu::startup_folders()) {
                 Ok(entries) => self.extra_entries = entries,
                 Err(message) => errors.push(message),
             }
@@ -72,6 +72,7 @@ impl SourceEnumerator for WindowsSources {
             AppSource::AppPaths => app_paths::read_app_paths(),
             AppSource::Path => path_env::read_path_entries(),
             AppSource::Store => store::read_store(),
+            AppSource::Portable | AppSource::Alias => Ok(Vec::new()),
         }
     }
 

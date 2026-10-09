@@ -3,12 +3,14 @@
 use std::path::{Path, PathBuf};
 
 use windows::Win32::UI::Shell::{
-    FOLDERID_CommonStartMenu, FOLDERID_StartMenu, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath,
+    FOLDERID_CommonStartMenu, FOLDERID_CommonStartup, FOLDERID_StartMenu, FOLDERID_Startup,
+    KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath,
 };
 
-use super::shortcut::read_shortcut;
+use super::shortcut::read_indexed_file;
 use super::store::take_pwstr;
 use crate::apps::AppEntry;
+use crate::apps::rules::is_excluded_directory;
 
 const MAX_DEPTH: u32 = 16;
 
@@ -20,13 +22,23 @@ pub(crate) fn read_common() -> Result<Vec<AppEntry>, String> {
     read_known(&FOLDERID_CommonStartMenu)
 }
 
-pub(crate) fn read_shortcut_dir(dir: &Path) -> Result<Vec<AppEntry>, String> {
+pub(crate) fn read_shortcut_dir_excluding(
+    dir: &Path,
+    excluded: &[PathBuf],
+) -> Result<Vec<AppEntry>, String> {
     let mut files = Vec::new();
-    collect(dir, &mut files, 0)?;
+    collect(dir, &mut files, 0, excluded)?;
     Ok(files
         .iter()
-        .filter_map(|path| read_shortcut(path))
+        .filter_map(|path| read_indexed_file(path))
         .collect())
+}
+
+pub(crate) fn startup_folders() -> Vec<PathBuf> {
+    [FOLDERID_Startup, FOLDERID_CommonStartup]
+        .into_iter()
+        .filter_map(|id| known_folder(&id).ok())
+        .collect()
 }
 
 pub(crate) fn watch_directories(extra: Option<&Path>) -> Vec<PathBuf> {
@@ -47,7 +59,7 @@ pub(crate) fn watch_directories(extra: Option<&Path>) -> Vec<PathBuf> {
 
 fn read_known(id: &windows::core::GUID) -> Result<Vec<AppEntry>, String> {
     let dir = known_folder(id)?;
-    read_shortcut_dir(&dir)
+    read_shortcut_dir_excluding(&dir, &startup_folders())
 }
 
 fn known_folder(id: &windows::core::GUID) -> Result<PathBuf, String> {
@@ -62,8 +74,13 @@ fn known_folder(id: &windows::core::GUID) -> Result<PathBuf, String> {
     }
 }
 
-fn collect(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) -> Result<(), String> {
-    if depth > MAX_DEPTH {
+fn collect(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    depth: u32,
+    excluded: &[PathBuf],
+) -> Result<(), String> {
+    if depth > MAX_DEPTH || is_excluded_directory(dir, excluded) {
         return Ok(());
     }
     let iter = std::fs::read_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
@@ -76,16 +93,19 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) -> Result<(), String>
             continue;
         }
         if file_type.is_dir() {
-            let _ = collect(&path, out, depth + 1);
-        } else if is_lnk(&path) {
+            if is_excluded_directory(&path, excluded) {
+                continue;
+            }
+            let _ = collect(&path, out, depth + 1, excluded);
+        } else if is_indexed_file(&path) {
             out.push(path);
         }
     }
     Ok(())
 }
 
-fn is_lnk(path: &Path) -> bool {
+fn is_indexed_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("lnk"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("lnk") || ext.eq_ignore_ascii_case("url"))
 }

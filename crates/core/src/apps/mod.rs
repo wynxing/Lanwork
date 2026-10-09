@@ -1,24 +1,29 @@
-//! 应用索引：开始菜单、App Paths、PATH、商店应用、缓存和启动。
+//! 应用索引：开始菜单、App Paths、PATH、商店应用、用户目录、缓存和启动。
 //!
 //! 架构把应用枚举放在 `crates/core`，同时要求这里不依赖 Slint，也不依赖 Win32 窗口 API。
 //! 枚举用到的是快捷方式、注册表、`shell:AppsFolder`、目录变更和 `ShellExecuteExW`，
 //! 不创建窗口，所以留在本模块，不放进 `crates/app`。界面以后只调用这里。
 //!
-//! 规格缺口 #9 第 1 项（便携应用和别名的入口与存储）和第 2 项（手动刷新的界面入口）
-//! 还没有写进 product.md。这两项没有实现。`AppIndex::refresh` 只是进程内的重建函数。
+//! 便携应用、别名和隐藏的文件路径待定。调用方用 [`load_user_catalog`] 读入后交给
+//! [`AppIndex::set_user_catalog`]。`AppIndex::refresh` 仍是进程内重建，设置页入口还没有。
 
 mod cache;
+mod catalog;
 mod index;
 mod model;
+mod rules;
 
 #[cfg(windows)]
 mod windows;
 
 pub use cache::{CACHE_FILE_NAME, CACHE_SCHEMA_VERSION, CacheStatus};
+pub use catalog::{AppAlias, HiddenApp, UserCatalog, load_user_catalog, save_user_catalog};
 pub use index::{AppHit, AppIndex, IndexError, RefreshReport};
 pub use model::{AppEntry, AppSource, LaunchTarget, SourceError, launch_key};
+pub use rules::{containing_folder, supports_open_containing_folder, supports_run_as_admin};
 
 #[cfg(test)]
+#[cfg_attr(not(windows), allow(unused_imports))]
 pub(crate) use index::{OpenOptions, open_with};
 
 use std::time::Duration;
@@ -48,5 +53,12 @@ pub fn launch(_target: &LaunchTarget) -> Result<(), LaunchError> {
     })
 }
 
+#[cfg(not(windows))]
+pub fn launch_elevated(_target: &LaunchTarget) -> Result<(), LaunchError> {
+    Err(LaunchError {
+        message: "应用启动只在 Windows 上可用".to_owned(),
+    })
+}
+
 #[cfg(windows)]
-pub use windows::launch::LaunchError;
+pub use windows::launch::{LaunchError, launch_elevated};

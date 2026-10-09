@@ -73,6 +73,7 @@ fn read_item(item: &IShellItem) -> Option<AppEntry> {
         target: LaunchTarget::Aumid { aumid },
         icon_path: None,
         icon_index: 0,
+        alternate_names: Vec::new(),
     })
 }
 
@@ -111,6 +112,7 @@ mod tests {
             },
             icon_path: None,
             icon_index: 0,
+            alternate_names: Vec::new(),
         }
     }
 

@@ -1,12 +1,14 @@
 //! 应用条目、启动目标和去重。
 //!
-//! 去重键是启动目标：规范化路径加参数，或 AUMID。工作目录不进键。
-//! 同一键保留先出现的一条。来源顺序是开始菜单、App Paths、PATH、商店应用。
+//! 去重键是启动目标：规范化路径加参数、AUMID，或协议地址。工作目录不进键。
+//! 同一键保留先出现的一条。来源顺序是开始菜单、App Paths、PATH、商店应用、
+//! 便携应用、别名。别名不单独成条，只把名称并入已有条目的备用名。
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 /// 一条可搜索的应用。`source` 是合并后留下来的那一次来源。
+/// `alternate_names` 可以搜到，不作为结果上的名称。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppEntry {
     pub name: String,
@@ -14,26 +16,33 @@ pub struct AppEntry {
     pub target: LaunchTarget,
     pub icon_path: Option<PathBuf>,
     pub icon_index: i32,
+    pub alternate_names: Vec<String>,
 }
 
-/// 索引来源。便携应用和别名不在这里。
-///
-/// 规格缺口 #9 第 1 项还没有写进 product.md：便携应用和别名在哪里添加、
-/// 编辑、删除，以及记在哪个文件，都没有产品规则。本模块不猜测入口和存储位置。
+/// 索引来源。`Portable` 和 `Alias` 来自用户目录，不由系统枚举产生。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppSource {
     StartMenu,
     AppPaths,
     Path,
     Store,
+    Portable,
+    Alias,
 }
 
 impl AppSource {
-    pub(crate) const ALL: [Self; 4] = [Self::StartMenu, Self::AppPaths, Self::Path, Self::Store];
+    pub(crate) const ALL: [Self; 6] = [
+        Self::StartMenu,
+        Self::AppPaths,
+        Self::Path,
+        Self::Store,
+        Self::Portable,
+        Self::Alias,
+    ];
 }
 
 /// 启动目标。路径目标保留参数和工作目录，交给 `ShellExecuteExW`。
-/// 商店应用只保留 AUMID。
+/// 商店应用只保留 AUMID。协议链接保留收录的地址。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchTarget {
     Path {
@@ -43,6 +52,9 @@ pub enum LaunchTarget {
     },
     Aumid {
         aumid: String,
+    },
+    Url {
+        url: String,
     },
 }
 
@@ -70,13 +82,24 @@ pub fn launch_key(target: &LaunchTarget) -> String {
                 format!("aumid\u{1}{aumid}")
             }
         }
+        LaunchTarget::Url { url } => {
+            let url = url.trim();
+            if url.is_empty() {
+                String::new()
+            } else {
+                format!("url\u{1}{}", url.to_ascii_lowercase())
+            }
+        }
     }
 }
 
 /// 各组按 [`AppSource::ALL`] 的顺序传入。同一键只保留先出现的条目。
+///
+/// 后出现的便携应用或别名不另成一条，名称并入已保留条目的备用名。
+/// 别名在没有任何已有目标时不单独显示。
 #[must_use]
 pub fn dedupe_entries(groups: &[&[AppEntry]]) -> Vec<AppEntry> {
-    let mut seen = HashSet::new();
+    let mut seen = HashMap::new();
     let mut out = Vec::new();
     for group in groups {
         for entry in *group {
@@ -84,12 +107,42 @@ pub fn dedupe_entries(groups: &[&[AppEntry]]) -> Vec<AppEntry> {
             if key.is_empty() || entry.name.trim().is_empty() {
                 continue;
             }
-            if seen.insert(key) {
-                out.push(entry.clone());
+            if let Some(&index) = seen.get(&key) {
+                if matches!(entry.source, AppSource::Portable | AppSource::Alias) {
+                    merge_alternates(&mut out[index], entry);
+                }
+                continue;
             }
+            if entry.source == AppSource::Alias {
+                continue;
+            }
+            seen.insert(key, out.len());
+            out.push(entry.clone());
         }
     }
     out
+}
+
+fn merge_alternates(kept: &mut AppEntry, incoming: &AppEntry) {
+    push_alternate(&mut kept.alternate_names, &kept.name, &incoming.name);
+    for name in &incoming.alternate_names {
+        push_alternate(&mut kept.alternate_names, &kept.name, name);
+    }
+}
+
+/// 与显示名不同、且名单里还没有的备用名。
+pub(crate) fn push_alternate(names: &mut Vec<String>, display: &str, candidate: &str) {
+    let candidate = candidate.trim();
+    if candidate.is_empty() || candidate.eq_ignore_ascii_case(display.trim()) {
+        return;
+    }
+    if names
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(candidate))
+    {
+        return;
+    }
+    names.push(candidate.to_owned());
 }
 
 /// 各来源上一次成功的结果。失败的来源不改这里。
@@ -99,6 +152,8 @@ pub struct SourceSnapshots {
     pub app_paths: Vec<AppEntry>,
     pub path: Vec<AppEntry>,
     pub store: Vec<AppEntry>,
+    pub portable: Vec<AppEntry>,
+    pub alias: Vec<AppEntry>,
 }
 
 impl SourceSnapshots {
@@ -117,7 +172,14 @@ impl SourceSnapshots {
 
     #[must_use]
     pub fn merged(&self) -> Vec<AppEntry> {
-        dedupe_entries(&[&self.start_menu, &self.app_paths, &self.path, &self.store])
+        dedupe_entries(&[
+            &self.start_menu,
+            &self.app_paths,
+            &self.path,
+            &self.store,
+            &self.portable,
+            &self.alias,
+        ])
     }
 
     fn bucket_mut(&mut self, source: AppSource) -> &mut Vec<AppEntry> {
@@ -126,6 +188,8 @@ impl SourceSnapshots {
             AppSource::AppPaths => &mut self.app_paths,
             AppSource::Path => &mut self.path,
             AppSource::Store => &mut self.store,
+            AppSource::Portable => &mut self.portable,
+            AppSource::Alias => &mut self.alias,
         }
     }
 }
@@ -227,7 +291,23 @@ mod tests {
             target,
             icon_path: None,
             icon_index: 0,
+            alternate_names: Vec::new(),
         }
+    }
+
+    #[test]
+    fn source_order_is_system_sources_then_user_catalog() {
+        assert_eq!(
+            AppSource::ALL,
+            [
+                AppSource::StartMenu,
+                AppSource::AppPaths,
+                AppSource::Path,
+                AppSource::Store,
+                AppSource::Portable,
+                AppSource::Alias,
+            ]
+        );
     }
 
     #[test]
@@ -352,5 +432,71 @@ mod tests {
                 .iter()
                 .any(|entry| entry.name == "Kept")
         );
+    }
+
+    #[test]
+    fn url_key_folds_ascii_case_and_keeps_the_rest() {
+        let left = LaunchTarget::Url {
+            url: "steam://rungameid/570".into(),
+        };
+        let right = LaunchTarget::Url {
+            url: "  STEAM://rungameid/570 ".into(),
+        };
+        assert_eq!(launch_key(&left), launch_key(&right));
+        assert_ne!(
+            launch_key(&left),
+            launch_key(&LaunchTarget::Url {
+                url: "steam://rungameid/730".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn portable_duplicate_keeps_the_system_name_and_adds_an_alternate() {
+        let start = entry(
+            "记事本",
+            AppSource::StartMenu,
+            path_target(r"C:\Windows\notepad.exe", "", None),
+        );
+        let portable = entry(
+            "便携记事本",
+            AppSource::Portable,
+            path_target(r"c:\windows\notepad.exe", "", None),
+        );
+        let merged = dedupe_entries(&[
+            std::slice::from_ref(&start),
+            std::slice::from_ref(&portable),
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "记事本");
+        assert_eq!(merged[0].source, AppSource::StartMenu);
+        assert_eq!(merged[0].alternate_names, vec!["便携记事本".to_owned()]);
+    }
+
+    #[test]
+    fn unique_portable_is_kept_and_orphan_alias_is_not() {
+        let portable = entry(
+            "便携工具",
+            AppSource::Portable,
+            path_target(r"D:\Tools\tool.exe", "", None),
+        );
+        let orphan = entry(
+            "找不到",
+            AppSource::Alias,
+            path_target(r"D:\Missing\missing.exe", "", None),
+        );
+        let attached = entry(
+            "工具别名",
+            AppSource::Alias,
+            path_target(r"D:\Tools\tool.exe", "", None),
+        );
+        let merged = dedupe_entries(&[
+            std::slice::from_ref(&portable),
+            std::slice::from_ref(&orphan),
+            std::slice::from_ref(&attached),
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "便携工具");
+        assert_eq!(merged[0].alternate_names, vec!["工具别名".to_owned()]);
     }
 }
