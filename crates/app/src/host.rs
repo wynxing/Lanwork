@@ -19,7 +19,7 @@ use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 use crate::instance::{self, Claim};
-use crate::platform::Platform;
+use crate::platform::{HotkeyControl, Platform};
 use crate::registry::{apply_startup, read_system_theme};
 use crate::{PanelHost, SearchHost, Tray};
 
@@ -71,14 +71,9 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     todos.boot().map_err(|err| err.to_string())?;
     select_renderer()?;
     let platform = Platform::start(primary)?;
-    match desired_bindings(&config.current()) {
-        Ok(next) => {
-            if let Err(err) = platform.rebind(next) {
-                store.log_warn(&err.to_string());
-            }
-        }
-        Err(err) => store.log_warn(&err.to_string()),
-    }
+    let hotkeys = platform.control();
+    apply_configured_hotkeys(&hotkeys, &config, store);
+    watch_config(hotkeys, &config, store);
     match std::env::current_exe() {
         Ok(executable) => {
             if let Err(err) = apply_startup(config.current().launch_at_startup, &executable) {
@@ -109,6 +104,31 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     slint::run_event_loop().map_err(|err| err.to_string())?;
     platform.shutdown();
     Ok(())
+}
+
+fn apply_configured_hotkeys(hotkeys: &HotkeyControl, config: &ConfigCommands, store: &Store) {
+    match desired_bindings(&config.current()) {
+        Ok(next) => {
+            if let Err(err) = hotkeys.rebind(next) {
+                store.log_warn(&err.to_string());
+            }
+        }
+        Err(err) => store.log_warn(&err.to_string()),
+    }
+}
+
+fn watch_config(hotkeys: HotkeyControl, config: &ConfigCommands, store: &Store) {
+    let events = store.subscribe();
+    let config = config.clone();
+    let store = store.clone();
+    std::thread::spawn(move || {
+        while let Ok(event) = events.recv() {
+            if event.kind != EntityKind::Config {
+                continue;
+            }
+            apply_configured_hotkeys(&hotkeys, &config, &store);
+        }
+    });
 }
 
 fn select_renderer() -> Result<(), String> {

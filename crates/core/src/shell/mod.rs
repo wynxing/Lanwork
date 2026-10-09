@@ -1,7 +1,7 @@
 //! 外壳里不依赖窗口 API 的决定。
 //!
 //! 单实例的互斥量、托盘菜单、热键注册、主题和开机启动的系统调用在 `crates/app`。
-//! 这里固定菜单文字、热键回滚、图标像素、主题解析，以及退出时还不存在便签编辑器的情况。
+//! 这里固定菜单文字、热键修改顺序、图标像素、主题解析，以及退出时还不存在便签编辑器的情况。
 
 mod bind;
 mod icon;
@@ -9,8 +9,8 @@ mod startup;
 mod theme;
 
 pub use bind::{
-    BindError, HotkeyPort, PANEL_HOTKEY_ID, RegisteredHotkey, SEARCH_HOTKEY_ID, apply_hotkeys,
-    desired_bindings,
+    BindError, HotkeyPort, PANEL_HOTKEY_ID, RegisteredHotkey, SEARCH_HOTKEY_ID, SaveHotkeyError,
+    apply_hotkeys, desired_bindings, save_hotkeys,
 };
 pub use icon::{TRAY_ICON_PX, has_badge_pixels, tray_icon_rgba};
 pub use startup::{RunValueAction, quoted_executable, run_value_action};

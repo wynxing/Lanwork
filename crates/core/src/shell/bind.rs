@@ -1,9 +1,9 @@
-//! 把一组热键注册到系统。失败时恢复注册前的那一组。
+//! 把一组热键注册到系统。
 //!
-//! 真正的 `RegisterHotKey` 在外壳。这里只规定顺序：先卸下旧的，再注册新的；
-//! 中途失败则卸下已经注册的新热键，再把旧的注册回去。
+//! 真正的 `RegisterHotKey` 在外壳。修改时先注册新热键。成功后再写入配置，
+//! 然后卸掉不再使用的旧热键。注册失败则保留旧热键，不写配置。
 
-use crate::config::{Config, ConfigError, Hotkey, parse_hotkey};
+use crate::config::{Config, ConfigCommands, ConfigError, Hotkey, normalize, parse_hotkey};
 
 /// 搜索条热键的 id。面板热键用 [`PANEL_HOTKEY_ID`]。
 pub const SEARCH_HOTKEY_ID: i32 = 1;
@@ -61,32 +61,163 @@ pub fn desired_bindings(config: &Config) -> Result<Vec<RegisteredHotkey>, Config
     Ok(bindings)
 }
 
-/// 让端口上的热键变成 `next`。内容相同时不调用端口。
+/// 让端口上的热键变成 `next`。先注册新的，成功后再卸掉不再使用的旧 id。
+///
+/// 内容相同时不调用端口。注册失败时恢复这次已经换上的热键，不卸掉还没替换的旧热键。
 pub fn apply_hotkeys<P: HotkeyPort>(
     port: &mut P,
     current: &[RegisteredHotkey],
     next: &[RegisteredHotkey],
 ) -> Result<(), BindError> {
+    let prepared = prepare(port, current, next)?;
+    retire(port, &prepared);
+    Ok(())
+}
+
+/// 修改热键失败。注册失败时配置没有写入。
+#[derive(Debug)]
+pub enum SaveHotkeyError {
+    Bind(BindError),
+    Config(ConfigError),
+}
+
+impl std::fmt::Display for SaveHotkeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bind(err) => write!(f, "{err}"),
+            Self::Config(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for SaveHotkeyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Bind(_) => None,
+            Self::Config(err) => Some(err),
+        }
+    }
+}
+
+/// 先注册 `search` 和 `panel`。成功后再 [`ConfigCommands::replace`]，然后卸掉旧热键。
+///
+/// 字符串不合法或注册失败时，端口和 `config.json` 都保持原样。
+pub fn save_hotkeys<P: HotkeyPort>(
+    port: &mut P,
+    commands: &ConfigCommands,
+    current: &[RegisteredHotkey],
+    search: &str,
+    panel: Option<&str>,
+) -> Result<Vec<RegisteredHotkey>, SaveHotkeyError> {
+    let mut next = commands.current();
+    next.search_hotkey = search.to_owned();
+    next.panel_hotkey = panel.map(str::to_owned);
+    let next = normalize(next).map_err(SaveHotkeyError::Config)?;
+    let bindings = desired_bindings(&next).map_err(SaveHotkeyError::Config)?;
+    commit_hotkeys(port, current, &bindings, || {
+        commands.replace(next).map(|_| ())
+    })
+    .map_err(|err| match err {
+        CommitError::Occupied(err) => SaveHotkeyError::Bind(err),
+        CommitError::Persist(err) => SaveHotkeyError::Config(err),
+    })
+}
+
+#[derive(Debug)]
+enum CommitError<E> {
+    Occupied(BindError),
+    Persist(E),
+}
+
+fn commit_hotkeys<P, E>(
+    port: &mut P,
+    current: &[RegisteredHotkey],
+    next: &[RegisteredHotkey],
+    persist: impl FnOnce() -> Result<(), E>,
+) -> Result<Vec<RegisteredHotkey>, CommitError<E>>
+where
+    P: HotkeyPort,
+{
+    let prepared = prepare(port, current, next).map_err(CommitError::Occupied)?;
+    if prepared.undo.is_empty() && prepared.retired.is_empty() {
+        return Ok(prepared.next);
+    }
+    if let Err(err) = persist() {
+        undo_hotkeys(port, &prepared.undo);
+        return Err(CommitError::Persist(err));
+    }
+    retire(port, &prepared);
+    Ok(prepared.next)
+}
+
+enum Undo {
+    Restore(RegisteredHotkey),
+    DropNew(i32),
+}
+
+struct Prepared {
+    next: Vec<RegisteredHotkey>,
+    undo: Vec<Undo>,
+    retired: Vec<i32>,
+}
+
+fn prepare<P: HotkeyPort>(
+    port: &mut P,
+    current: &[RegisteredHotkey],
+    next: &[RegisteredHotkey],
+) -> Result<Prepared, BindError> {
     if same(current, next) {
-        return Ok(());
+        return Ok(Prepared {
+            next: next.to_vec(),
+            undo: Vec::new(),
+            retired: Vec::new(),
+        });
     }
-    for item in current {
-        port.unregister(item.id);
-    }
-    let mut applied: Vec<RegisteredHotkey> = Vec::new();
+    let mut undo = Vec::new();
     for item in next {
+        if current
+            .iter()
+            .any(|old| old.id == item.id && old.hotkey == item.hotkey)
+        {
+            continue;
+        }
         if !port.register(item.id, &item.hotkey) {
-            for done in &applied {
-                port.unregister(done.id);
-            }
-            for old in current {
-                let _ = port.register(old.id, &old.hotkey);
-            }
+            undo_hotkeys(port, &undo);
             return Err(BindError::Occupied { id: item.id });
         }
-        applied.push(item.clone());
+        if let Some(old) = current.iter().find(|old| old.id == item.id) {
+            undo.push(Undo::Restore(old.clone()));
+        } else {
+            undo.push(Undo::DropNew(item.id));
+        }
     }
-    Ok(())
+    let retired = current
+        .iter()
+        .filter(|old| !next.iter().any(|item| item.id == old.id))
+        .map(|old| old.id)
+        .collect();
+    Ok(Prepared {
+        next: next.to_vec(),
+        undo,
+        retired,
+    })
+}
+
+fn undo_hotkeys<P: HotkeyPort>(port: &mut P, undo: &[Undo]) {
+    for step in undo.iter().rev() {
+        match step {
+            Undo::Restore(old) => {
+                let _ = port.register(old.id, &old.hotkey);
+            }
+            Undo::DropNew(id) => port.unregister(*id),
+        }
+    }
+}
+
+fn retire<P: HotkeyPort>(port: &mut P, prepared: &Prepared) {
+    for id in &prepared.retired {
+        port.unregister(*id);
+    }
 }
 
 fn same(current: &[RegisteredHotkey], next: &[RegisteredHotkey]) -> bool {
@@ -99,7 +230,7 @@ fn same(current: &[RegisteredHotkey], next: &[RegisteredHotkey]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CommitError, *};
     use crate::config::Config;
     use std::collections::BTreeMap;
 
@@ -158,5 +289,222 @@ mod tests {
         apply_hotkeys(&mut port, &current, &next).unwrap();
         assert_eq!(port.live.len(), 1);
         assert!(port.live.contains_key(&SEARCH_HOTKEY_ID));
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Op {
+        Register(i32),
+        Unregister(i32),
+        Persist,
+    }
+
+    struct LogPort<'a> {
+        live: &'a std::cell::RefCell<BTreeMap<i32, Hotkey>>,
+        ops: &'a std::cell::RefCell<Vec<Op>>,
+        fail_key: Option<Hotkey>,
+    }
+
+    impl HotkeyPort for LogPort<'_> {
+        fn register(&mut self, id: i32, hotkey: &Hotkey) -> bool {
+            self.ops.borrow_mut().push(Op::Register(id));
+            if self.fail_key == Some(*hotkey) {
+                return false;
+            }
+            self.live.borrow_mut().insert(id, *hotkey);
+            true
+        }
+
+        fn unregister(&mut self, id: i32) {
+            self.ops.borrow_mut().push(Op::Unregister(id));
+            self.live.borrow_mut().remove(&id);
+        }
+    }
+
+    #[test]
+    fn new_hotkey_is_registered_before_save_and_old_combo_is_dropped_after() {
+        let current = desired_bindings(&Config::default()).unwrap();
+        let with_panel = desired_bindings(&Config {
+            panel_hotkey: Some("Ctrl+Shift+P".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let changed = Config {
+            search_hotkey: "Ctrl+Alt+N".into(),
+            ..Config::default()
+        };
+        let next = desired_bindings(&changed).unwrap();
+        let old_search = current[0].hotkey;
+        let new_search = next[0].hotkey;
+        let live = std::cell::RefCell::new(BTreeMap::new());
+        let ops = std::cell::RefCell::new(Vec::new());
+        let mut port = LogPort {
+            live: &live,
+            ops: &ops,
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &with_panel).unwrap();
+        ops.borrow_mut().clear();
+        commit_hotkeys(&mut port, &with_panel, &next, || {
+            assert_eq!(live.borrow().get(&SEARCH_HOTKEY_ID), Some(&new_search));
+            assert!(live.borrow().contains_key(&PANEL_HOTKEY_ID));
+            ops.borrow_mut().push(Op::Persist);
+            Ok::<(), &str>(())
+        })
+        .unwrap();
+        assert_eq!(
+            ops.borrow().as_slice(),
+            &[
+                Op::Register(SEARCH_HOTKEY_ID),
+                Op::Persist,
+                Op::Unregister(PANEL_HOTKEY_ID),
+            ]
+        );
+        assert_eq!(live.borrow().get(&SEARCH_HOTKEY_ID), Some(&new_search));
+        assert_ne!(live.borrow().get(&SEARCH_HOTKEY_ID), Some(&old_search));
+        assert!(!live.borrow().contains_key(&PANEL_HOTKEY_ID));
+    }
+
+    #[test]
+    fn occupied_change_keeps_the_old_hotkey_and_does_not_persist() {
+        let current = desired_bindings(&Config::default()).unwrap();
+        let changed = Config {
+            search_hotkey: "Ctrl+Alt+N".into(),
+            ..Config::default()
+        };
+        let next = desired_bindings(&changed).unwrap();
+        let live = std::cell::RefCell::new(BTreeMap::new());
+        let ops = std::cell::RefCell::new(Vec::new());
+        let mut port = LogPort {
+            live: &live,
+            ops: &ops,
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+        port.fail_key = Some(next[0].hotkey);
+        ops.borrow_mut().clear();
+        let mut persisted = false;
+        let err = commit_hotkeys(&mut port, &current, &next, || {
+            persisted = true;
+            Ok::<(), &str>(())
+        })
+        .unwrap_err();
+        assert!(matches!(err, CommitError::Occupied(_)));
+        assert!(!persisted);
+        assert_eq!(
+            live.borrow().get(&SEARCH_HOTKEY_ID),
+            Some(&current[0].hotkey)
+        );
+        assert_eq!(ops.borrow().as_slice(), &[Op::Register(SEARCH_HOTKEY_ID)]);
+    }
+
+    #[test]
+    fn failed_save_restores_the_previous_hotkeys() {
+        let current = desired_bindings(&Config::default()).unwrap();
+        let changed = Config {
+            panel_hotkey: Some("Ctrl+Shift+P".into()),
+            ..Config::default()
+        };
+        let next = desired_bindings(&changed).unwrap();
+        let live = std::cell::RefCell::new(BTreeMap::new());
+        let ops = std::cell::RefCell::new(Vec::new());
+        let mut port = LogPort {
+            live: &live,
+            ops: &ops,
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+        ops.borrow_mut().clear();
+        let err = commit_hotkeys(&mut port, &current, &next, || Err("写盘失败")).unwrap_err();
+        assert!(matches!(err, CommitError::Persist("写盘失败")));
+        assert_eq!(*live.borrow(), live_map(&current));
+        assert!(!live.borrow().contains_key(&PANEL_HOTKEY_ID));
+        assert_eq!(
+            ops.borrow().as_slice(),
+            &[
+                Op::Register(PANEL_HOTKEY_ID),
+                Op::Unregister(PANEL_HOTKEY_ID),
+            ]
+        );
+    }
+
+    fn live_map(bindings: &[RegisteredHotkey]) -> BTreeMap<i32, Hotkey> {
+        bindings.iter().map(|item| (item.id, item.hotkey)).collect()
+    }
+
+    #[test]
+    fn save_hotkeys_writes_only_after_register_and_occupied_keeps_the_file() {
+        let (_temp, store, commands) = open_config();
+        commands.replace(commands.current()).unwrap();
+        let current = desired_bindings(&commands.current()).unwrap();
+        let path = store
+            .document_path(&crate::storage::DocumentId::Config)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+
+        let saved = save_hotkeys(&mut port, &commands, &current, "Ctrl+Alt+N", None).unwrap();
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+N");
+        assert_eq!(port.live.get(&SEARCH_HOTKEY_ID), Some(&saved[0].hotkey));
+        assert_ne!(std::fs::read(&path).unwrap(), before);
+
+        let occupied = saved[0].hotkey;
+        let written = std::fs::read(&path).unwrap();
+        port.fail_key = Some({
+            let mut again = commands.current();
+            again.search_hotkey = "Ctrl+Alt+K".into();
+            desired_bindings(&again).unwrap()[0].hotkey
+        });
+        let err = save_hotkeys(&mut port, &commands, &saved, "Ctrl+Alt+K", None).unwrap_err();
+        assert_eq!(err.to_string(), "热键已被占用");
+        assert_eq!(std::fs::read(&path).unwrap(), written);
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+N");
+        assert_eq!(port.live.get(&SEARCH_HOTKEY_ID), Some(&occupied));
+
+        let err = save_hotkeys(&mut port, &commands, &saved, "Ctrl+Nope", None).unwrap_err();
+        assert_eq!(err.to_string(), "热键无效");
+        assert_eq!(std::fs::read(&path).unwrap(), written);
+        assert_eq!(port.live.get(&SEARCH_HOTKEY_ID), Some(&occupied));
+    }
+
+    fn open_config() -> (TempDir, crate::storage::Store, ConfigCommands) {
+        let temp = TempDir::new();
+        let store = crate::storage::Store::open(crate::storage::StorePaths {
+            data_dir: temp.path.join("data"),
+            cache_dir: temp.path.join("cache"),
+            user_profile: temp.path.join("profile"),
+            local_app_data: temp.path.join("local"),
+        })
+        .unwrap();
+        let commands = ConfigCommands::open(store.clone()).unwrap();
+        (temp, store, commands)
+    }
+
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("lanwork-hotkey-{nanos}-{seq}"));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 }
