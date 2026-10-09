@@ -1,0 +1,300 @@
+// 技术验证窗口。计数表示按键到达了应用代码，不拦截输入法。
+
+import { ScrollView } from "std-widgets.slint";
+
+component SearchBox inherits Rectangle {
+    callback key-arrived(string, string);
+    callback accepted(string, string);
+    callback edited(string, string);
+    callback preedit-changed(string);
+
+    out property <string> preedit: input.preedit-text;
+    in-out property <string> text <=> input.text;
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    height: 40px;
+    background: white;
+    border-width: 1px;
+    border-color: #bdbdbd;
+    border-radius: 4px;
+    clip: true;
+
+    property <length> margin: 8px;
+
+    input := TextInput {
+        property <length> computed-x;
+
+        x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+        y: 0px;
+        width: max(parent.width - self.text-cursor-width, self.preferred-width);
+        height: 100%;
+        single-line: true;
+        font-size: 16px;
+        color: #111111;
+        vertical-alignment: center;
+        selection-background-color: #b3d7ff;
+
+        cursor-position-changed(cursor-position) => {
+            if cursor-position.x + self.computed-x < root.margin {
+                self.computed-x = -cursor-position.x + root.margin;
+            } else if cursor-position.x + self.computed-x > parent.width - root.margin - self.text-cursor-width {
+                self.computed-x = parent.width - cursor-position.x - root.margin - self.text-cursor-width;
+            }
+        }
+
+        key-pressed(event) => {
+            root.key-arrived(event.text, self.preedit-text);
+            reject
+        }
+
+        accepted => {
+            root.accepted(self.preedit-text, self.text);
+        }
+
+        edited => {
+            root.edited(self.preedit-text, self.text);
+        }
+
+        changed preedit-text => {
+            root.preedit-changed(self.preedit-text);
+        }
+    }
+}
+
+component NoteBox inherits Rectangle {
+    callback key-arrived(string, string);
+    callback edited(string, string);
+    callback preedit-changed(string);
+
+    out property <string> preedit: input.preedit-text;
+    in-out property <string> text <=> input.text;
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    height: 160px;
+    background: white;
+    border-width: 1px;
+    border-color: #bdbdbd;
+    border-radius: 4px;
+    clip: true;
+
+    scroll := ScrollView {
+        x: 8px;
+        y: 8px;
+        width: parent.width - 16px;
+        height: parent.height - 16px;
+        content-width: max(self.visible-width, input.preferred-width);
+        content-height: max(self.visible-height, input.preferred-height);
+
+        input := TextInput {
+            single-line: false;
+            wrap: word-wrap;
+            width: scroll.visible-width;
+            font-size: 16px;
+            color: #111111;
+            vertical-alignment: top;
+            page-height: scroll.visible-height;
+            selection-background-color: #b3d7ff;
+
+            cursor-position-changed(cursor-position) => {
+                if cursor-position.x + scroll.content-x < 0px {
+                    scroll.content-x = min(0px, max(scroll.visible-width - self.width, -cursor-position.x));
+                } else if cursor-position.x + scroll.content-x > scroll.visible-width {
+                    scroll.content-x = min(0px, max(scroll.visible-width - self.width, scroll.visible-width - cursor-position.x));
+                }
+
+                if cursor-position.y + scroll.content-y < 0px {
+                    scroll.content-y = min(0px, scroll.visible-height - cursor-position.y - 20px, max(scroll.visible-height - self.height, -cursor-position.y));
+                } else if cursor-position.y + scroll.content-y > scroll.visible-height - 20px {
+                    scroll.content-y = min(0px, max(scroll.visible-height - self.height, scroll.visible-height - cursor-position.y - 20px));
+                }
+            }
+
+            key-pressed(event) => {
+                root.key-arrived(event.text, self.preedit-text);
+                reject
+            }
+
+            edited => {
+                root.edited(self.preedit-text, self.text);
+            }
+
+            changed preedit-text => {
+                root.preedit-changed(self.preedit-text);
+            }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Lanwork IME";
+    no-frame: true;
+    width: 720px;
+    height: 760px;
+    background: #f3f3f3;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+
+    callback search-key(string, string);
+    callback search-accepted(string, string);
+    callback search-edited(string, string);
+    callback search-preedit(string);
+    callback note-key(string, string);
+    callback note-edited(string, string);
+    callback note-preedit(string);
+    callback request-close();
+
+    in-out property <int> search-accepted-count;
+    in-out property <int> search-enter-count;
+    in-out property <int> search-digit-count;
+    in-out property <int> note-enter-count;
+    in-out property <int> note-digit-count;
+    in-out property <string> log-text;
+    in-out property <string> log-path;
+
+    function preedit-label(value: string) -> string {
+        value == "" ? "（空）" : value
+    }
+
+    init => {
+        search-field.focus-input();
+    }
+
+    VerticalLayout {
+        spacing: 0;
+
+        WindowMoveArea {
+            height: 40px;
+
+            Rectangle {
+                background: #e4e4e4;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    alignment: space-between;
+
+                    Text {
+                        text: "中文输入法验证";
+                        vertical-alignment: center;
+                    }
+
+                    close-area := TouchArea {
+                        width: 64px;
+                        height: 28px;
+
+                        Rectangle {
+                            background: close-area.pressed ? #c8c8c8 : #d8d8d8;
+                            border-radius: 4px;
+
+                            Text {
+                                text: "关闭";
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        clicked => {
+                            root.request-close();
+                        }
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 6px;
+
+            Text {
+                text: "搜索条（单行 TextInput）";
+            }
+
+            search-field := SearchBox {
+                key-arrived(key, preedit) => {
+                    root.search-key(key, preedit);
+                }
+                accepted(preedit, text) => {
+                    root.search-accepted(preedit, text);
+                }
+                edited(preedit, text) => {
+                    root.search-edited(preedit, text);
+                }
+                preedit-changed(preedit) => {
+                    root.search-preedit(preedit);
+                }
+            }
+
+            Text {
+                text: "preedit：" + root.preedit-label(search-field.preedit);
+                color: search-field.preedit == "" ? #666666 : #0b57d0;
+            }
+
+            Text {
+                text: "accepted " + root.search-accepted-count + "    应用看到 Enter " + root.search-enter-count + "    应用看到 1–5 " + root.search-digit-count;
+                wrap: word-wrap;
+            }
+
+            Text {
+                text: "便签正文（多行 TextInput）";
+            }
+
+            note-field := NoteBox {
+                key-arrived(key, preedit) => {
+                    root.note-key(key, preedit);
+                }
+                edited(preedit, text) => {
+                    root.note-edited(preedit, text);
+                }
+                preedit-changed(preedit) => {
+                    root.note-preedit(preedit);
+                }
+            }
+
+            Text {
+                text: "preedit：" + root.preedit-label(note-field.preedit);
+                color: note-field.preedit == "" ? #666666 : #0b57d0;
+            }
+
+            Text {
+                text: "应用看到 Enter " + root.note-enter-count + "    应用看到 1–5 " + root.note-digit-count;
+                wrap: word-wrap;
+            }
+
+            Text {
+                text: "日志（最新在上，界面保留 40 行）";
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 140px;
+                background: white;
+                border-width: 1px;
+                border-color: #bdbdbd;
+                clip: true;
+
+                Text {
+                    x: 8px;
+                    y: 8px;
+                    width: parent.width - 16px;
+                    text: root.log-text;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+            }
+
+            Text {
+                text: root.log-path;
+                font-size: 12px;
+                color: #666666;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
