@@ -68,7 +68,10 @@ impl NoteService {
                 seq: AtomicU64::new(1),
             }),
         };
-        service.reload_cache()?;
+        reload_cache(&service.inner)?;
+        let reload: Arc<dyn crate::storage::MemoryReload> = service.inner.clone();
+        service.inner.store.watch_memory(&reload);
+        drop(reload);
         Ok(service)
     }
 
@@ -287,25 +290,30 @@ impl NoteService {
         }
         Err(NoteError::AllocateId)
     }
+}
 
-    fn reload_cache(&self) -> Result<(), NoteError> {
-        let _write = lock_mutex(&self.inner.write);
-        let loaded = self
-            .inner
-            .store
-            .read_collection::<NoteFile>(CollectionKind::Notes)?;
-        let mut cache = Cache::default();
-        for file in loaded.files {
-            match file.value.into_note(file.id.clone()) {
-                Ok(note) => {
-                    cache.notes.insert(note.id.clone(), note);
-                }
-                Err(reason) => {
-                    cache.skipped.insert(file.id, reason);
-                }
+impl crate::storage::MemoryReload for Inner {
+    fn reload_memory(&self) -> Result<(), String> {
+        reload_cache(self).map_err(|err| err.to_string())
+    }
+}
+
+fn reload_cache(inner: &Inner) -> Result<(), NoteError> {
+    let _write = lock_mutex(&inner.write);
+    let loaded = inner
+        .store
+        .read_collection::<NoteFile>(CollectionKind::Notes)?;
+    let mut cache = Cache::default();
+    for file in loaded.files {
+        match file.value.into_note(file.id.clone()) {
+            Ok(note) => {
+                cache.notes.insert(note.id.clone(), note);
+            }
+            Err(reason) => {
+                cache.skipped.insert(file.id, reason);
             }
         }
-        *lock_mutex(&self.inner.cache) = cache;
-        Ok(())
     }
+    *lock_mutex(&inner.cache) = cache;
+    Ok(())
 }

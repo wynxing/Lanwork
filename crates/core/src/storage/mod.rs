@@ -39,6 +39,17 @@ pub use store::{
 };
 
 pub(crate) use atomic::atomic_write;
+pub(crate) use fsutil::{
+    DirEntry as FsDirEntry, create_dir_all as fs_create_dir_all, exists as fs_exists,
+    read as fs_read, read_dir as fs_read_dir, remove_file as fs_remove_file,
+};
+
+/// 导入结束后，已打开的服务从磁盘重新载入内存。
+///
+/// 存储层只保存弱引用。服务丢掉之后，这次重载会跳过它。
+pub(crate) trait MemoryReload: Send + Sync {
+    fn reload_memory(&self) -> Result<(), String>;
+}
 
 pub(crate) fn lock_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex

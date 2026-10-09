@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已删除时回到默认清单、每月 31 日在小月落到月末、重复截止日当天不再生成，可见行为已写入产品规格；这些路径尚未按规格实现。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除、信号与筛选的可见行为已写入产品规格，服务尚未按规格实现。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已删除时回到默认清单、每月 31 日在小月落到月末、重复截止日当天不再生成，可见行为已写入产品规格；这些路径尚未按规格实现。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除、信号与筛选的可见行为已写入产品规格，服务尚未按规格实现。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。备份与导入 `backup`（`lanwork_core::backup`）已接入，见「数据」。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条宿主和面板宿主。搜索条和面板的可见内容还没有。见「程序外壳」。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
@@ -70,7 +70,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 
 模块分成两处。`lanwork_core::config` 和 `lanwork_core::shell` 不依赖 Slint，也不调用 Win32。互斥量、热键、注册表和窗口在 `crates/app`。非 Windows 进程打印「Lanwork 只支持 Windows 11 x64」并退出，退出码 1。
 
-启动顺序：先取得单实例，再解析数据目录并打开存储，然后加载配置、完成待办服务的 `boot`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条宿主、面板宿主和托盘。不打开便签和收纳。不建 GitHub 刷新定时器。`githubRefreshIntervalMs` 原样保存，包括 0，外壳不解释它。
+启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条宿主、面板宿主和托盘。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。不打开便签和收纳。不建 GitHub 刷新定时器。`githubRefreshIntervalMs` 原样保存，包括 0，外壳不解释它。
 
 - **单实例。** 命名互斥量 `Local\Lanwork.SingleInstance.Mutex`，加上信号量 `Local\Lanwork.SingleInstance.Activate`（初值 0）。第一个进程拥有互斥量并等待信号量。后来的进程发现互斥量已存在，就对信号量加一，然后退出，退出码 0。信号量的计数会留到第一个进程来取，所以通知发生在等待之前也不会丢。第一个进程收到通知后不打开窗口。产品规格没有写这时要显示什么。
 - **托盘。** 菜单顺序是「打开面板」「设置」「新建便签」「刷新 GitHub」「退出」。提示文字只有「Lanwork」。图标是 32×32 的图，底色不是产品规格。逾期数量来自 `TodoCommands::overdue_count`，今天的日期用 `GetLocalTime`。数量为 0 时不画数字。数字画不下时裁掉超出图标的笔画，不改成「99+」。待办变更消息到达后在界面线程重画。读数量或日期失败时不画数字，并写日志。左键和右键都由 Slint 打开同一份菜单，没有另加左键动作。
@@ -83,7 +83,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 - **开机启动。** `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值名 `Lanwork`，类型 `REG_SZ`，内容是带引号的 exe 路径。配置为真且与现有值不同就写；为假且值存在就删。路径为空、不是 Unicode 或含 `"` 时不写。写入或删除失败只记日志，不把配置里的开关改回去。读不到现有值时也不改注册表。
 - **隐藏窗口。** 搜索条宿主和面板宿主在 `Component::new` 时创建，不调用 `show`。Slint 1.18.1 在这时创建 winit 适配器，操作系统窗口要到事件循环恢复时才出现，并且不会把未显示的窗口设为可见。启动时有没有一个隐藏的 HWND，要在 Windows 上看。宿主里没有输入框，也没有亚克力。
 
-`import.pending` 仍按存储层处理：没有导入恢复钩子时 `boot` 失败，外壳记日志并以退出码 1 结束。导入恢复不在这个外壳里。
+外壳在 `boot` 前注册 `BackupCommands::register_boot_hooks`。有 `import.pending` 时先恢复，再加载待办和配置。`import_recovered` 为真时记日志「导入未完成」，并留在 `import_was_recovered`。界面尚未显示这句提示。读不到本地日期或自动备份失败时记日志，进程继续。没有恢复钩子时 `boot` 仍失败，外壳以退出码 1 结束。
 
 ## 通知
 
@@ -152,7 +152,7 @@ Lanwork/
 - 便签带递增的 `revision`。保存时带上加载时的 revision，与磁盘不一致则返回冲突错误，调用方保留正文。冲突之后的可见行为以产品规格为准。
 - 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。服务不做覆盖；冲突后的版本选择、关闭和退出时的未保存正文，以及便签删除的界面入口，仍以产品规格为准。
 - GitHub 通过本机 `gh` 读取。token 不进入配置、日志或导出包。
-- 导出包包含配置、待办、便签、收纳分组、GitHub watchlist，以及 `user-apps.json`（便携应用、别名和隐藏名单），缓存可选。不含日志、备份目录和 token。备份包含 `user-apps.json`。
+- 导出包包含配置、待办、便签、收纳分组、GitHub watchlist，以及 `user-apps.json`（便携应用、别名和隐藏名单），GitHub 缓存可选。导出省略缓存不等于清空本地 `github/cache`。不含日志、备份目录、`import.pending`、token 和环境变量。备份包含 `user-apps.json`，并且总是包含 GitHub 缓存。服务在 `lanwork_core::backup`，薄命令是 `BackupCommands`。包是只含存储法（compression method 0）的 ZIP。根上的 `manifest.json` 有 `packageSchemaVersion`（当前为 1）、`exportedAt`（调用方传入的 UTC 毫秒）、`appVersion` 和 `counts`。路径拒绝 `..` 和绝对路径，只接受上述白名单。每个 JSON 可解析；缺少 `schemaVersion` 按 1，高于 1 则整包拒绝。自动备份文件名是 `auto-年-月-日-毫秒.zip`，手动是 `manual-毫秒.zip`，导入前的备份是 `import-毫秒.zip`。`backups/auto-day.txt` 记下最近一次自动备份的公历日，不计入 7 份。同一天再次调用自动备份不再写新文件。自动和手动合计超过 7 份时按文件名里的毫秒删除最旧的，不删除 `import-` 和其他文件。手动备份不改 `auto-day.txt`。调用方传入公历日和毫秒，服务不读时钟，也不读环境变量。
 - 不实现 Focus 的聚合服务，也不实现从 MayDolist schema 的一次性迁移。
 
 ### GitHub 服务
@@ -186,9 +186,9 @@ Lanwork/
 - **切换当前待办**：先给新条目写上当前标记和 `currentSince` 时间，再清除旧条目的标记。中断后出现多条时，加载阶段保留 `currentSince` 最新的一条，其余清除后写回。`currentSince` 相等时保留清单 id 较小的一条；清单也相同则保留条目 id 较小的一条。没有 `currentSince` 的视为更旧。只有一条当前标记时不改写。
 
 进程仍在、同一批次里后面的写入失败时，先把本批次已经替换的文件写回内存里的操作前内容，然后返回错误。内存保持操作前状态，不发布 `EntityChanged`。这次回滚再失败时，重新读入清单，按上面的 `movedAt` 与 `currentSince` 规则修好后再返回，避免留下重复的条目 id 或两条当前标记。修复成功时返回的仍是原来的写入错误。重新读入失败则返回该读取错误。
-- **导入**：解压到临时目录并校验（白名单路径，拒绝 `..` 和绝对路径，每个 JSON 可解析，版本可识别）。通过后，先把当前数据完整备份到 `backups/`，再在数据目录写入 `import.pending`（内容是这份备份的路径），然后逐个替换文件、删除导入包中没有的数据文件，最后删除 `import.pending`。启动时发现 `import.pending`，就用其中记录的备份整体恢复，再删除该文件，并在界面显示导入未完成。
+- **导入**：由 `BackupCommands` 解压并校验（白名单路径，拒绝 `..` 和绝对路径，每个 JSON 可解析，版本可识别）。校验失败不写 `import.pending`，当前数据不变。通过后，先把当前数据完整备份到 `backups/import-<毫秒>.zip`，再在数据目录写入 `import.pending`（内容是这份备份的路径），然后逐个替换文件、删除导入包中没有的数据文件，最后删除 `import.pending`。包里没有 GitHub 缓存时不删除本地 `github/cache`。替换失败时用这份备份恢复；恢复没有成功则留下 `import.pending`。替换成功后，已打开的配置、待办、便签、收纳和 GitHub 服务从磁盘重新载入，然后才发布 `EntityChanged`。启动时外壳注册的恢复钩子发现 `import.pending`，就用其中记录的备份整体恢复，再删除该文件。`import_recovered` 为真时外壳记日志「导入未完成」，界面尚未显示这句提示。备份文件不存在时不删除 `import.pending`。
 
-加载修复和导入恢复在构建搜索索引、处理通知点击之前完成。`Store::boot` 的顺序是：若存在 `import.pending`，调用导入恢复钩子（备份与导入实现；未注册钩子则启动失败，不加载业务数据）；然后调用加载钩子；然后按注册顺序运行加载修复（`movedAt` 与 `currentSince` 由待办服务实现）。任一钩子返回错误则启动失败，不进入可建索引状态，也不写默认文档。成功之后 `build_index` 与 `handle_notification_click` 才执行调用方。恢复钩子成功且已删除 `import.pending` 时，`BootReport.import_recovered` 为真，界面据此显示「导入未完成」。变更消息只在整个操作完成后发出。永久删除待办后，收纳分组里残留的关联 id 在读取时视为无关联，并在下次写该分组时清除。该清除在永久删除落地时实现。永久删除通知是待办服务的领域事件，不是这一层的 `EntityChanged`。收纳服务订阅 `TodoNotice::Purged`，收到后解除关联，见「收纳」。产品规格已写明永久删除。在实现落地之前，待办服务不删除条目，也不发出这条事件。
+加载修复和导入恢复在构建搜索索引、处理通知点击之前完成。`Store::boot` 的顺序是：若存在 `import.pending`，调用导入恢复钩子（备份与导入实现；未注册钩子则启动失败，不加载业务数据）；然后调用加载钩子；然后按注册顺序运行加载修复（`movedAt` 与 `currentSince` 由待办服务实现）。任一钩子返回错误则启动失败，不进入可建索引状态，也不写默认文档。成功之后 `build_index` 与 `handle_notification_click` 才执行调用方。恢复钩子成功且已删除 `import.pending` 时，`BootReport.import_recovered` 为真。外壳记住这个结果并记日志「导入未完成」；界面尚未显示这句提示。导入的 `EntityChanged` 在整次替换完成、已打开的服务重新载入内存之后才发出。永久删除待办后，收纳分组里残留的关联 id 在读取时视为无关联，并在下次写该分组时清除。该清除在永久删除落地时实现。永久删除通知是待办服务的领域事件，不是这一层的 `EntityChanged`。收纳服务订阅 `TodoNotice::Purged`，收到后解除关联，见「收纳」。产品规格已写明永久删除。在实现落地之前，待办服务不删除条目，也不发出这条事件。
 
 待办服务把加载钩子和名为 `movedAt`、`currentSince` 的两条加载修复注册到 `Store::boot`。修复写回使用同一批次，`EntityChanged` 只在该批次提交后发出。永久删除的领域事件是 `TodoNotice::Purged`。产品规格已写明永久删除。在实现落地之前，服务不删除条目，也不发出这条事件。
 

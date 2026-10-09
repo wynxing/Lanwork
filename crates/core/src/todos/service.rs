@@ -103,6 +103,16 @@ impl NoticeBus {
     }
 }
 
+impl crate::storage::MemoryReload for Service {
+    fn reload_memory(&self) -> Result<(), String> {
+        let loaded = lock_mutex(&self.state).loaded;
+        if !loaded {
+            return Ok(());
+        }
+        self.load().map_err(|err| err.to_string())
+    }
+}
+
 pub(crate) struct Service {
     store: Store,
     op: Mutex<()>,
@@ -114,7 +124,7 @@ pub(crate) struct Service {
 
 impl Service {
     pub(crate) fn open(store: Store) -> Arc<Self> {
-        Arc::new(Self {
+        let service = Arc::new(Self {
             store,
             op: Mutex::new(()),
             state: Mutex::new(State {
@@ -126,7 +136,11 @@ impl Service {
             },
             #[cfg(test)]
             fault: Mutex::new(WriteFault::none()),
-        })
+        });
+        let reload: Arc<dyn crate::storage::MemoryReload> = service.clone();
+        service.store.watch_memory(&reload);
+        drop(reload);
+        service
     }
 
     #[cfg(test)]

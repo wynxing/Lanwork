@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use super::MemoryReload;
 use super::atomic::atomic_write;
 use super::boot::{BootHooks, BootReport, ImportPending};
 use super::change::{ChangeBus, ChangeMeta, EntityChanged, EntityKind};
@@ -134,6 +135,8 @@ struct Inner {
     phase: Mutex<Phase>,
     changes: ChangeBus,
     log: Log,
+    /// 已打开服务的弱引用。导入完成后重载，避免内存里的旧数据再写回磁盘。
+    reloaders: Mutex<Vec<std::sync::Weak<dyn MemoryReload>>>,
 }
 
 /// 进程内的单写者存储。
@@ -191,6 +194,7 @@ impl Store {
                 phase: Mutex::new(Phase::Init),
                 changes: ChangeBus::new(),
                 log,
+                reloaders: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -205,6 +209,11 @@ impl Store {
 
     pub fn backups_dir(&self) -> PathBuf {
         self.inner.data_dir.join("backups")
+    }
+
+    /// 便携应用、别名和隐藏名单。路径固定为数据目录下的 `user-apps.json`。
+    pub fn user_apps_path(&self) -> PathBuf {
+        self.inner.data_dir.join("user-apps.json")
     }
 
     pub fn log_path(&self) -> &Path {
@@ -313,6 +322,30 @@ impl Store {
         Ok(receipt)
     }
 
+    /// 记住一份已打开的服务。调用方必须继续持有强引用，否则重载时会跳过。
+    pub(crate) fn watch_memory(&self, reload: &Arc<dyn MemoryReload>) {
+        let mut slots = lock_mutex(&self.inner.reloaders);
+        slots.retain(|slot| slot.strong_count() > 0);
+        slots.push(Arc::downgrade(reload));
+    }
+
+    /// 把已打开的服务从磁盘重新载入。没有打开的服务时什么也不做。
+    pub(crate) fn reload_memories(&self) -> Result<(), Error> {
+        let slots = lock_mutex(&self.inner.reloaders).clone();
+        for slot in slots {
+            if let Some(reload) = slot.upgrade() {
+                reload
+                    .reload_memory()
+                    .map_err(|message| Error::Startup(StartupError::Load { message }))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn publish_change(&self, event: EntityChanged) {
+        self.inner.changes.publish(event);
+    }
+
     /// 测试用。在变更已经入队、`publish` 返回之前调用。
     #[cfg(test)]
     pub(crate) fn set_publish_probe(&self, probe: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
@@ -348,32 +381,39 @@ impl Store {
     }
 
     pub fn write_import_pending(&self, backup: &Path) -> Result<(), Error> {
-        if !backup.is_absolute() {
-            return Err(Error::ImportPending {
-                message: "备份路径不是绝对路径",
-            });
-        }
-        let text = backup.to_str().ok_or(Error::ImportPending {
-            message: "备份路径不是 UTF-8",
-        })?;
-        if text.is_empty() || text.contains('\n') || text.contains('\r') {
-            return Err(Error::ImportPending {
-                message: "备份路径无效",
-            });
-        }
-        let mut bytes = text.as_bytes().to_vec();
-        bytes.push(b'\n');
-        let path = self.import_pending_path();
+        let bytes = encode_import_pending(backup)?;
         let _guard = lock_mutex(&self.inner.write_lock);
+        self.write_import_pending_bytes(&bytes)
+    }
+
+    /// 调用方已经持有 [`Self::with_write_lock`]。不要再调用会获取写锁的方法。
+    pub(crate) fn write_import_pending_holding_lock(&self, backup: &Path) -> Result<(), Error> {
+        let bytes = encode_import_pending(backup)?;
+        self.write_import_pending_bytes(&bytes)
+    }
+
+    fn write_import_pending_bytes(&self, bytes: &[u8]) -> Result<(), Error> {
         self.inner.ensure_writable()?;
-        atomic_write(&path, &bytes).map_err(|source| Error::io(IoAction::Replace, path, source))
+        let path = self.import_pending_path();
+        atomic_write(&path, bytes).map_err(|source| Error::io(IoAction::Replace, path, source))
     }
 
     pub fn clear_import_pending(&self) -> Result<(), Error> {
-        let path = self.import_pending_path();
         let _guard = lock_mutex(&self.inner.write_lock);
+        self.clear_import_pending_holding_lock()
+    }
+
+    /// 调用方已经持有 [`Self::with_write_lock`]。
+    pub(crate) fn clear_import_pending_holding_lock(&self) -> Result<(), Error> {
         self.inner.ensure_writable()?;
+        let path = self.import_pending_path();
         fsutil::remove_file(&path).map_err(|source| Error::io(IoAction::Remove, path, source))
+    }
+
+    /// 持有写锁执行 `body`。`body` 不得再调用会获取这把写锁的方法。
+    pub(crate) fn with_write_lock<T>(&self, body: impl FnOnce() -> T) -> T {
+        let _guard = lock_mutex(&self.inner.write_lock);
+        body()
     }
 
     pub fn read_import_pending(&self) -> Result<Option<ImportPending>, Error> {
@@ -742,6 +782,25 @@ impl Drop for Batch<'_> {
     fn drop(&mut self) {
         self.guard.take();
     }
+}
+
+fn encode_import_pending(backup: &Path) -> Result<Vec<u8>, Error> {
+    if !backup.is_absolute() {
+        return Err(Error::ImportPending {
+            message: "备份路径不是绝对路径",
+        });
+    }
+    let text = backup.to_str().ok_or(Error::ImportPending {
+        message: "备份路径不是 UTF-8",
+    })?;
+    if text.is_empty() || text.contains('\n') || text.contains('\r') {
+        return Err(Error::ImportPending {
+            message: "备份路径无效",
+        });
+    }
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 fn document_path(data_dir: &Path, doc: &DocumentId) -> Result<PathBuf, Error> {
