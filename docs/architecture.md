@@ -8,8 +8,8 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已删除时回到默认清单、每月 31 日在小月落到月末、重复截止日当天不再生成，可见行为已写入产品规格；这些路径尚未按规格实现。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除、信号与筛选的可见行为已写入产品规格，服务尚未按规格实现。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。文件索引、查询调度与搜索索引尚未接入。 |
-| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。当前只弹出一个空窗口。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除、原清单已删除时回到默认清单、每月 31 日在小月落到月末、重复截止日当天不再生成，可见行为已写入产品规格；这些路径尚未按规格实现。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除、信号与筛选的可见行为已写入产品规格，服务尚未按规格实现。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引、查询调度与搜索索引尚未接入。 |
+| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条宿主和面板宿主。搜索条和面板的可见内容还没有。见「程序外壳」。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。产品渲染器见「运行时」。 |
@@ -27,10 +27,10 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务和应用索引已接入，这些还没有 |
-| 界面命令接线、Win32 集成、搜索条、面板和其他界面 | `crates/app`。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core` |
+| 文件索引、查询调度与搜索索引 | `crates/core`。匹配引擎、日期前缀解析、存储、便签服务、待办服务、收纳服务、GitHub 服务、应用索引和配置已接入，这些还没有 |
+| 搜索条、面板和其他界面 | `crates/app`。程序外壳已接入。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core`。热角的 50ms 轮询还没有接上 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
-| 渲染器 | 已写入「运行时」：默认 FemtoVG，初始化失败自动退回软件渲染 |
+| 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
 
 ## 技术验证
 
@@ -52,7 +52,7 @@
 ## 运行时
 
 - 只支持 Windows 11 x64。
-- 界面用 Slint。渲染器默认 FemtoVG。初始化失败时自动退回软件渲染。窗口外观用 Desktop Window Manager：无边框、圆角、暗色、Acrylic（`DWMWA_SYSTEMBACKDROP_TYPE` 的 transient backdrop）。透明不可用时用纯色背景。不做 CSS `backdrop-filter`，也不提供按百分比调节的玻璃透明度。
+- 界面用 Slint。渲染器默认 FemtoVG。初始化失败时自动退回软件渲染。外壳先 `BackendSelector::renderer_name("femtovg")`。这次 `select` 失败再用 `"software"`。不启用 Skia，因此窗口适配器的退路里也没有 Skia。`select` 成功之后，若 FemtoVG 在创建窗口适配器时失败（例如探测不到 OpenGL 2），Slint 1.18.1 的 winit 后端会再试已编译的渲染器，其中包含软件渲染。窗口已经显示之后，这一版不能再从 FemtoVG 换到软件渲染。窗口外观用 Desktop Window Manager：无边框、圆角、暗色、Acrylic（`DWMWA_SYSTEMBACKDROP_TYPE` 的 transient backdrop）。透明不可用时用纯色背景。不做 CSS `backdrop-filter`，也不提供按百分比调节的玻璃透明度。技术验证的渲染器一项仍未通过，这里的默认不是那一项的通过记录。
 - Slint crate 固定为 1.18.1。升级单独提交，并重跑依赖该版本行为的技术验证。
 - `DWMWA_SYSTEMBACKDROP_TYPE` 从 Windows 11 Build 22621 起可用。运行时检查 build 和调用返回值，不可用时不设置该属性，按纯色处理。产品支持的最低 build 尚未确定。
 - 进程内没有 Vue、Tauri、WebView2。
@@ -61,11 +61,30 @@
 - 中文输入法能在搜索条、面板搜索框、待办标题和便签正文中上屏。做不到这一点时，界面方案不成立，不能改用「只支持英文」通过验收。
 - 搜索条和面板在启动时创建并保持隐藏，以满足热召回目标；隐藏中不做整页重绘。快速收集是搜索条的一种输入状态，不另建窗口。便签悬浮窗、番茄钟在使用时创建，关闭时释放文本、图标和绘图资源。到期提醒的调度保留在主进程里。
 - Slint 1.18.1 编进本仓库的 winit 后端没有实现 `start_drag`（`i-slint-backend-winit` 1.18.1 的 `WinitWindowAdapter` 只实现了 `start_window_move`；`WindowAdapterInternal::start_drag` 的默认实现返回 false）。因此 `DragArea` 的拖动留在窗口内。`spikes/dnd` 用 `dispatch_event` 观察到：同一窗口里文件路径以复制放下，目标要求移动时放下被拒绝。winit 0.30.13 创建窗口时调用 `OleInitialize` 并 `RegisterDragDrop` 注册自己的 `FileDropHandler`；探针在我们注册之前得到 already-registered。资源管理器方向的手测见 [roadmap.md](roadmap.md)。`--slint` 拖放没有路径，外部拖放按「收纳」的原生 OLE 实现。
-- 托盘先用 Slint 自带的托盘图标；菜单或逾期徽标做不到时改用 Win32 `Shell_NotifyIcon`。
+- 托盘用 Slint 1.18.1 的 `SystemTrayIcon`。它有菜单，图标是一张图，逾期数字画在这张图上。因此没有改用 Win32 `Shell_NotifyIcon`。
 - 热角检测用 50ms 轮询读取光标位置，不用低级鼠标钩子。
 - `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。
 
 Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜索索引不写进界面回调里。
+
+## 程序外壳
+
+模块分成两处。`lanwork_core::config` 和 `lanwork_core::shell` 不依赖 Slint，也不调用 Win32。互斥量、热键、注册表和窗口在 `crates/app`。非 Windows 进程打印「Lanwork 只支持 Windows 11 x64」并退出，退出码 1。
+
+启动顺序：先取得单实例，再解析数据目录并打开存储，然后加载配置、完成待办服务的 `boot`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条宿主、面板宿主和托盘。不打开便签和收纳。不建 GitHub 刷新定时器。`githubRefreshIntervalMs` 原样保存，包括 0，外壳不解释它。
+
+- **单实例。** 命名互斥量 `Local\Lanwork.SingleInstance.Mutex`，加上信号量 `Local\Lanwork.SingleInstance.Activate`（初值 0）。第一个进程拥有互斥量并等待信号量。后来的进程发现互斥量已存在，就对信号量加一，然后退出，退出码 0。信号量的计数会留到第一个进程来取，所以通知发生在等待之前也不会丢。第一个进程收到通知后不打开窗口。产品规格没有写这时要显示什么。
+- **托盘。** 菜单顺序是「打开面板」「设置」「新建便签」「刷新 GitHub」「退出」。提示文字只有「Lanwork」。图标是 32×32 的图，底色不是产品规格。逾期数量来自 `TodoCommands::overdue_count`，今天的日期用 `GetLocalTime`。数量为 0 时不画数字。数字画不下时裁掉超出图标的笔画，不改成「99+」。待办变更消息到达后在界面线程重画。读数量或日期失败时不画数字，并写日志。左键和右键都由 Slint 打开同一份菜单，没有另加左键动作。
+- **打开面板、设置、新建便签。** 菜单项会触发对应命令。不创建便签，也不显示搜索条、面板或设置页。这些窗口分别属于后续界面。
+- **刷新 GitHub。** 在界面线程之外调用 `GithubCommands::load` 和 `refresh_all`。时间是 `SystemTime` 的 UTC 毫秒。设置取当前配置里的长期未更新天数、来源同步、关闭来源时自动完成待办和刷新间隔。失败写入日志，不包含 `gh` 的标准输出、标准错误或 token。已经有一次刷新在进行时，再次点击直接返回，不排队。没有另外的提示窗口。
+- **退出。** 当前没有便签编辑器，`quit_without_note_editors` 返回结束进程。先隐藏托盘，再退出事件循环，然后卸下热键并释放互斥量。`QuitDecision::Stay` 留给以后的便签界面：那种情况下不结束进程，也不丢弃正文。现在没有这条返回值，也不做重试或放弃的对话框。
+- **热键。** `RegisterHotKey` 带 `MOD_NOREPEAT`，注册在单独线程的一个不显示的顶层窗口上。这个窗口不带 `WS_VISIBLE`。不用 `HWND_MESSAGE`，否则收不到 `WM_SETTINGCHANGE`。搜索条 id 是 1，面板 id 是 2。字符串格式是实现选择：修饰键 `Ctrl`、`Alt`、`Shift`、`Win`，加一个键。键是 `A`–`Z`、`0`–`9` 或 `F1`–`F24`。比较和保存前收成 `Ctrl+Alt+Shift+Win+键`。其他键名是「热键无效」。没有修饰键的单个键当前可以保存。产品规格没有写键名表。搜索条热键为空是「搜索条热键不能为空」。两个热键相同是「搜索条热键与面板热键相同」，不写盘。运行中修改热键只走先注册、成功后写入配置、再卸掉不再使用的旧热键。注册失败时磁盘和当前注册都保持旧热键。本进程内两条热键互换，或把一条的组合改给另一条时，先卸掉本进程里与新组合冲突的注册，再注册；失败则全部恢复。内容没变时不调用系统。写入配置时先更新内存，再发布变更。第一次启动就占用时，不改 `config.json`，写日志，进程继续，热键保持未注册。热键按下后不显示搜索条或面板。
+- **配置。** 见「数据」。不认识的 `schemaVersion` 让进程以退出码 1 结束，不改文件，没有对话框。
+- **主题。** 明和暗直接写调色板。跟随系统时读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` 的 `AppsUseLightTheme`：0 是暗，其他值是明。读不到就不改调色板，也不猜测。`WM_SETTINGCHANGE` 且 `lParam` 为 `ImmersiveColorSet`（忽略 ASCII 大小写）时再读一次。调色板用 `ColorScheme.dark` 和 `ColorScheme.light` 这两个变体名。Slint 1.18.1 里这两个变体的注释文字和名字相反，以变体名为准。
+- **开机启动。** `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值名 `Lanwork`，类型 `REG_SZ`，内容是带引号的 exe 路径。配置为真且与现有值不同就写；为假且值存在就删。路径为空、不是 Unicode 或含 `"` 时不写。写入或删除失败只记日志，不把配置里的开关改回去。读不到现有值时也不改注册表。
+- **隐藏窗口。** 搜索条宿主和面板宿主在 `Component::new` 时创建，不调用 `show`。Slint 1.18.1 在这时创建 winit 适配器，操作系统窗口要到事件循环恢复时才出现，并且不会把未显示的窗口设为可见。启动时有没有一个隐藏的 HWND，要在 Windows 上看。宿主里没有输入框，也没有亚克力。
+
+`import.pending` 仍按存储层处理：没有导入恢复钩子时 `boot` 失败，外壳记日志并以退出码 1 结束。导入恢复不在这个外壳里。
 
 ## 通知
 
@@ -175,6 +194,12 @@ Lanwork/
 待办服务把加载钩子和名为 `movedAt`、`currentSince` 的两条加载修复注册到 `Store::boot`。修复写回使用同一批次，`EntityChanged` 只在该批次提交后发出。永久删除的领域事件是 `TodoNotice::Purged`。产品规格已写明永久删除。在实现落地之前，服务不删除条目，也不发出这条事件。
 
 配置至少包括：数据目录、热角、搜索条热键、面板热键（可空）、安静时段、主题、开机启动、GitHub 刷新间隔、长期未更新天数、来源同步、自动完成关联待办、处理模式顺延天数、番茄钟的工作时长、休息时长和长休息时长。不包括玻璃透明度。番茄钟不另存计时记录。GitHub 服务不读 `config.json`。刷新间隔、长期未更新天数和关闭来源时自动完成待办由调用方传入。
+
+配置模块是 `lanwork_core::config`。文件是 `config.json`，经存储层读写。字段用 camelCase，`schemaVersion` 当前为 1。缺少 `schemaVersion` 时按 1 读取。无法解析的 JSON 由存储层隔离，外壳改用默认值，不把默认值写回去。JSON 能解析但热键或范围不合法时不隔离、不覆盖，内存里用默认值。不认识的 `schemaVersion` 不隔离，调用方拒绝。
+
+`dataDir` 只是文件里的记录。启动目录仍按环境变量、引导文件、默认目录解析，不读这个字段。`quietHours` 只接受空。非空值返回「安静时段的格式尚未确定」，不写盘。起止格式产品规格没有写。
+
+下面的缺省不是产品规则，只是文件没写该字段时的值：主题跟随系统，开机启动关闭，来源同步关闭，关闭来源时自动完成待办关闭，刷新间隔 0 毫秒，`dataDir` 空字符串，安静时段空。产品规格已经写明的默认是：热角右上，搜索条热键 `Ctrl+Alt+M`，面板热键空，长期未更新天数 14（0 允许），处理模式顺延天数 3（1 至 30），番茄钟 25、5 和 15 分钟。工作时长 1 至 120，休息时长和长休息时长 1 至 60。错误文字是「工作时长只接受 1 至 120 分钟」「休息时长只接受 1 至 60 分钟」「长休息时长只接受 1 至 60 分钟」「处理模式顺延天数只接受 1 至 30」。
 
 ## 搜索
 

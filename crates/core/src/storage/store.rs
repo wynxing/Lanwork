@@ -218,6 +218,16 @@ impl Store {
         self.inner.log.info(message);
     }
 
+    /// 记一条警告。规则与 [`Self::log_info`] 相同。
+    pub fn log_warn(&self, message: &str) {
+        self.inner.log.warn(message);
+    }
+
+    /// 记一条错误。规则与 [`Self::log_info`] 相同。
+    pub fn log_error(&self, message: &str) {
+        self.inner.log.error(message);
+    }
+
     pub fn import_pending_path(&self) -> PathBuf {
         self.inner.data_dir.join("import.pending")
     }
@@ -255,16 +265,47 @@ impl Store {
         self.write_with(doc, value, ChangeMeta::default())
     }
 
+    /// 先写盘，再执行 `before_publish`，最后才发布变更。
+    ///
+    /// 调用方在 `before_publish` 里更新内存。订阅者读到事件时，内存已经是新值。
+    pub(crate) fn write_json_with_before_publish<T, F>(
+        &self,
+        doc: &DocumentId,
+        value: &T,
+        before_publish: F,
+    ) -> Result<WriteReceipt, Error>
+    where
+        T: Serialize,
+        F: FnOnce(),
+    {
+        self.write_with_before_publish(doc, value, ChangeMeta::default(), before_publish)
+    }
+
     pub fn write_with<T: Serialize>(
         &self,
         doc: &DocumentId,
         value: &T,
         meta: ChangeMeta,
     ) -> Result<WriteReceipt, Error> {
+        self.write_with_before_publish(doc, value, meta, || {})
+    }
+
+    fn write_with_before_publish<T, F>(
+        &self,
+        doc: &DocumentId,
+        value: &T,
+        meta: ChangeMeta,
+        before_publish: F,
+    ) -> Result<WriteReceipt, Error>
+    where
+        T: Serialize,
+        F: FnOnce(),
+    {
         let (receipt, event) = {
             let _guard = lock_mutex(&self.inner.write_lock);
             self.inner.write_json(doc, value, meta)?
         };
+        before_publish();
         self.inner.changes.publish(event);
         Ok(receipt)
     }
