@@ -73,7 +73,6 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     let platform = Platform::start(primary)?;
     let hotkeys = platform.control();
     apply_configured_hotkeys(&hotkeys, &config, store);
-    watch_config(hotkeys, &config, store);
     match std::env::current_exe() {
         Ok(executable) => {
             if let Err(err) = apply_startup(config.current().launch_at_startup, &executable) {
@@ -115,20 +114,6 @@ fn apply_configured_hotkeys(hotkeys: &HotkeyControl, config: &ConfigCommands, st
         }
         Err(err) => store.log_warn(&err.to_string()),
     }
-}
-
-fn watch_config(hotkeys: HotkeyControl, config: &ConfigCommands, store: &Store) {
-    let events = store.subscribe();
-    let config = config.clone();
-    let store = store.clone();
-    std::thread::spawn(move || {
-        while let Ok(event) = events.recv() {
-            if event.kind != EntityKind::Config {
-                continue;
-            }
-            apply_configured_hotkeys(&hotkeys, &config, &store);
-        }
-    });
 }
 
 fn select_renderer() -> Result<(), String> {

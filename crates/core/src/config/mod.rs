@@ -26,7 +26,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::storage::{DocumentId, Store, StorePaths};
+    use crate::storage::{DocumentId, EntityKind, Store, StorePaths};
 
     struct TempDir {
         path: PathBuf,
@@ -111,13 +111,26 @@ mod tests {
         commands.replace(saved).unwrap();
         let before = std::fs::read(store.document_path(&DocumentId::Config).unwrap()).unwrap();
 
-        let err = commands.set_hotkeys("Ctrl+Nope", None).unwrap_err();
+        let err = commands
+            .replace(Config {
+                search_hotkey: "Ctrl+Nope".into(),
+                ..commands.current()
+            })
+            .unwrap_err();
         assert_eq!(err.to_string(), "热键无效");
         let err = commands
-            .set_hotkeys("Ctrl+Alt+M", Some("alt+ctrl+m"))
+            .replace(Config {
+                panel_hotkey: Some("alt+ctrl+m".into()),
+                ..commands.current()
+            })
             .unwrap_err();
         assert_eq!(err.to_string(), "搜索条热键与面板热键相同");
-        let err = commands.set_hotkeys("   ", None).unwrap_err();
+        let err = commands
+            .replace(Config {
+                search_hotkey: "   ".into(),
+                ..commands.current()
+            })
+            .unwrap_err();
         assert_eq!(err.to_string(), "搜索条热键不能为空");
 
         let bytes = std::fs::read(store.document_path(&DocumentId::Config).unwrap()).unwrap();
@@ -214,6 +227,32 @@ mod tests {
         assert_eq!(commands.fallback(), Some(Fallback::Invalid));
         assert_eq!(commands.current().theme, Theme::System);
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn change_is_published_only_after_the_memory_callback() {
+        let (_temp, store, commands) = open();
+        let events = store.subscribe();
+        let next = commands.current();
+        let mut visible_during_callback = false;
+        store
+            .write_json_with_before_publish(&DocumentId::Config, &next, || {
+                visible_during_callback = events.try_recv().is_ok();
+            })
+            .unwrap();
+        assert!(!visible_during_callback);
+        assert_eq!(events.try_recv().unwrap().kind, EntityKind::Config);
+    }
+
+    #[test]
+    fn replace_has_the_new_config_when_the_change_is_visible() {
+        let (_temp, store, commands) = open();
+        let events = store.subscribe();
+        let mut next = commands.current();
+        next.search_hotkey = "Ctrl+Alt+N".into();
+        commands.replace(next).unwrap();
+        assert_eq!(events.try_recv().unwrap().kind, EntityKind::Config);
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+N");
     }
 
     #[test]

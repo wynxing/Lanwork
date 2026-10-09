@@ -70,15 +70,19 @@ impl ConfigService {
     }
 
     /// 校验后整份写入。失败时内存和磁盘都保持原样。
+    ///
+    /// 内存在发布变更之前更新。订阅者读到配置变更时，[`ConfigService::current`] 已是新值。
     pub fn replace(&self, next: Config) -> Result<Config, ConfigError> {
         let next = model::normalize(next)?;
+        let stored = next.clone();
         self.inner
             .store
-            .write_json(&DocumentId::Config, &next)
+            .write_json_with_before_publish(&DocumentId::Config, &stored, || {
+                *lock(&self.inner.config) = stored.clone();
+                *lock(&self.inner.fallback) = None;
+            })
             .map_err(ConfigError::from)?;
-        *lock(&self.inner.config) = next.clone();
-        *lock(&self.inner.fallback) = None;
-        Ok(next)
+        Ok(stored)
     }
 }
 

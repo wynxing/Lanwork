@@ -1,7 +1,7 @@
 //! 把一组热键注册到系统。
 //!
-//! 真正的 `RegisterHotKey` 在外壳。修改时先注册新热键。成功后再写入配置，
-//! 然后卸掉不再使用的旧热键。注册失败则保留旧热键，不写配置。
+//! 真正的 `RegisterHotKey` 在外壳。运行中修改只走先注册、成功后写盘、再卸旧。
+//! 本进程里与新组合冲突的注册要先卸掉再注册；失败则全部恢复。注册失败不写配置。
 
 use crate::config::{Config, ConfigCommands, ConfigError, Hotkey, normalize, parse_hotkey};
 
@@ -63,7 +63,8 @@ pub fn desired_bindings(config: &Config) -> Result<Vec<RegisteredHotkey>, Config
 
 /// 让端口上的热键变成 `next`。先注册新的，成功后再卸掉不再使用的旧 id。
 ///
-/// 内容相同时不调用端口。注册失败时恢复这次已经换上的热键，不卸掉还没替换的旧热键。
+/// 新组合若已被本进程的另一条热键占用，先卸掉那条再注册。内容相同时不调用端口。
+/// 注册失败时恢复这次动过的热键。
 pub fn apply_hotkeys<P: HotkeyPort>(
     port: &mut P,
     current: &[RegisteredHotkey],
@@ -99,9 +100,10 @@ impl std::error::Error for SaveHotkeyError {
     }
 }
 
-/// 先注册 `search` 和 `panel`。成功后再 [`ConfigCommands::replace`]，然后卸掉旧热键。
+/// 运行中修改热键的入口。先注册 `search` 和 `panel`，成功后再 [`ConfigCommands::replace`]，然后卸掉旧热键。
 ///
 /// 字符串不合法或注册失败时，端口和 `config.json` 都保持原样。
+/// 本进程内两条热键互换，或把一条的组合改给另一条时，先卸掉冲突的注册再注册。
 pub fn save_hotkeys<P: HotkeyPort>(
     port: &mut P,
     commands: &ConfigCommands,
@@ -174,22 +176,35 @@ fn prepare<P: HotkeyPort>(
         });
     }
     let mut undo = Vec::new();
+    let mut live = current.to_vec();
     for item in next {
-        if current
+        if live
             .iter()
             .any(|old| old.id == item.id && old.hotkey == item.hotkey)
         {
             continue;
         }
+        let conflicts: Vec<RegisteredHotkey> = live
+            .iter()
+            .filter(|old| old.id != item.id && old.hotkey == item.hotkey)
+            .cloned()
+            .collect();
+        for conflict in conflicts {
+            port.unregister(conflict.id);
+            undo.push(Undo::Restore(conflict.clone()));
+            live.retain(|old| old.id != conflict.id);
+        }
         if !port.register(item.id, &item.hotkey) {
             undo_hotkeys(port, &undo);
             return Err(BindError::Occupied { id: item.id });
         }
-        if let Some(old) = current.iter().find(|old| old.id == item.id) {
-            undo.push(Undo::Restore(old.clone()));
+        if let Some(old) = live.iter().find(|old| old.id == item.id).cloned() {
+            undo.push(Undo::Restore(old));
         } else {
             undo.push(Undo::DropNew(item.id));
         }
+        live.retain(|old| old.id != item.id);
+        live.push(item.clone());
     }
     let retired = current
         .iter()
@@ -241,7 +256,11 @@ mod tests {
 
     impl HotkeyPort for MapPort {
         fn register(&mut self, id: i32, hotkey: &Hotkey) -> bool {
-            if self.fail_key == Some(*hotkey) {
+            let taken = self
+                .live
+                .iter()
+                .any(|(other, key)| *other != id && key == hotkey);
+            if taken || self.fail_key == Some(*hotkey) {
                 return false;
             }
             self.live.insert(id, *hotkey);
@@ -307,7 +326,12 @@ mod tests {
     impl HotkeyPort for LogPort<'_> {
         fn register(&mut self, id: i32, hotkey: &Hotkey) -> bool {
             self.ops.borrow_mut().push(Op::Register(id));
-            if self.fail_key == Some(*hotkey) {
+            let taken = self
+                .live
+                .borrow()
+                .iter()
+                .any(|(other, key)| *other != id && key == hotkey);
+            if taken || self.fail_key == Some(*hotkey) {
                 return false;
             }
             self.live.borrow_mut().insert(id, *hotkey);
@@ -432,6 +456,126 @@ mod tests {
     }
 
     #[test]
+    fn swapping_our_hotkeys_is_not_reported_as_occupied() {
+        let current = desired_bindings(&Config {
+            panel_hotkey: Some("Ctrl+Alt+N".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let swapped = desired_bindings(&Config {
+            search_hotkey: "Ctrl+Alt+N".into(),
+            panel_hotkey: Some("Ctrl+Alt+M".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let live = std::cell::RefCell::new(BTreeMap::new());
+        let ops = std::cell::RefCell::new(Vec::new());
+        let mut port = LogPort {
+            live: &live,
+            ops: &ops,
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+        ops.borrow_mut().clear();
+        commit_hotkeys(&mut port, &current, &swapped, || {
+            assert_eq!(*live.borrow(), live_map(&swapped));
+            ops.borrow_mut().push(Op::Persist);
+            Ok::<(), &str>(())
+        })
+        .unwrap();
+        assert_eq!(
+            ops.borrow().as_slice(),
+            &[
+                Op::Unregister(PANEL_HOTKEY_ID),
+                Op::Register(SEARCH_HOTKEY_ID),
+                Op::Register(PANEL_HOTKEY_ID),
+                Op::Persist,
+            ]
+        );
+        assert_eq!(*live.borrow(), live_map(&swapped));
+    }
+
+    #[test]
+    fn moving_one_combo_onto_the_other_id_keeps_both_registered() {
+        let current = desired_bindings(&Config {
+            panel_hotkey: Some("Ctrl+Shift+P".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let next = desired_bindings(&Config {
+            search_hotkey: "Ctrl+Alt+N".into(),
+            panel_hotkey: Some("Ctrl+Alt+M".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let live = std::cell::RefCell::new(BTreeMap::new());
+        let ops = std::cell::RefCell::new(Vec::new());
+        let mut port = LogPort {
+            live: &live,
+            ops: &ops,
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+        ops.borrow_mut().clear();
+        commit_hotkeys(&mut port, &current, &next, || {
+            ops.borrow_mut().push(Op::Persist);
+            Ok::<(), &str>(())
+        })
+        .unwrap();
+        assert_eq!(*live.borrow(), live_map(&next));
+        let recorded = ops.borrow();
+        let persist = recorded
+            .iter()
+            .position(|op| *op == Op::Persist)
+            .expect("persist");
+        assert!(recorded[..persist].contains(&Op::Register(PANEL_HOTKEY_ID)));
+    }
+
+    #[test]
+    fn failed_swap_restores_both_hotkeys_and_does_not_persist() {
+        let current = desired_bindings(&Config {
+            panel_hotkey: Some("Ctrl+Alt+N".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let swapped = desired_bindings(&Config {
+            search_hotkey: "Ctrl+Alt+N".into(),
+            panel_hotkey: Some("Ctrl+Alt+K".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let live = std::cell::RefCell::new(BTreeMap::new());
+        let ops = std::cell::RefCell::new(Vec::new());
+        let mut port = LogPort {
+            live: &live,
+            ops: &ops,
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+        ops.borrow_mut().clear();
+        port.fail_key = Some(swapped[1].hotkey);
+        let mut persisted = false;
+        let err = commit_hotkeys(&mut port, &current, &swapped, || {
+            persisted = true;
+            Ok::<(), &str>(())
+        })
+        .unwrap_err();
+        assert!(matches!(err, CommitError::Occupied(_)));
+        assert!(!persisted);
+        assert_eq!(*live.borrow(), live_map(&current));
+        assert_eq!(
+            ops.borrow().as_slice(),
+            &[
+                Op::Unregister(PANEL_HOTKEY_ID),
+                Op::Register(SEARCH_HOTKEY_ID),
+                Op::Register(PANEL_HOTKEY_ID),
+                Op::Register(SEARCH_HOTKEY_ID),
+                Op::Register(PANEL_HOTKEY_ID),
+            ]
+        );
+    }
+
+    #[test]
     fn save_hotkeys_writes_only_after_register_and_occupied_keeps_the_file() {
         let (_temp, store, commands) = open_config();
         commands.replace(commands.current()).unwrap();
@@ -468,6 +612,45 @@ mod tests {
         assert_eq!(err.to_string(), "热键无效");
         assert_eq!(std::fs::read(&path).unwrap(), written);
         assert_eq!(port.live.get(&SEARCH_HOTKEY_ID), Some(&occupied));
+    }
+
+    #[test]
+    fn save_hotkeys_swaps_without_reporting_occupied() {
+        let (_temp, store, commands) = open_config();
+        let mut start = commands.current();
+        start.panel_hotkey = Some("Ctrl+Alt+N".into());
+        commands.replace(start).unwrap();
+        let current = desired_bindings(&commands.current()).unwrap();
+        let path = store
+            .document_path(&crate::storage::DocumentId::Config)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let events = store.subscribe();
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+
+        let saved = save_hotkeys(
+            &mut port,
+            &commands,
+            &current,
+            "Ctrl+Alt+N",
+            Some("Ctrl+Alt+M"),
+        )
+        .unwrap();
+        assert_eq!(
+            events.try_recv().unwrap().kind,
+            crate::storage::EntityKind::Config
+        );
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+N");
+        assert_eq!(
+            commands.current().panel_hotkey.as_deref(),
+            Some("Ctrl+Alt+M")
+        );
+        assert_eq!(port.live, live_map(&saved));
+        assert_ne!(std::fs::read(&path).unwrap(), before);
     }
 
     fn open_config() -> (TempDir, crate::storage::Store, ConfigCommands) {
