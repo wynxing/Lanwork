@@ -81,8 +81,7 @@ pub struct Sides<A, F, C, I> {
 ///
 /// 调用顺序：`TodoCommands::boot` 成功，再 `NoteCommands::open`（导入恢复会换文件），
 /// 然后 [`Dispatch::build`]。这两份服务必须就是正在写入的那一份；克隆仍共享内存。
-/// 查询时不读盘。便签在变更消息发出之后才更新内存，不要在该消息的订阅回调里调用
-/// [`Dispatch::submit`] 或 [`Dispatch::poll`]。
+/// 查询时不读盘。变更消息发出时，待办和便签的内存已经是新值。
 pub struct Dispatch {
     store: Store,
     inner: Mutex<Inner>,
@@ -821,4 +820,153 @@ fn latency_source(source: FileSource) -> Option<&'static str> {
 
 fn is_blank(text: &str) -> bool {
     !text.chars().any(|ch| !ch.is_whitespace())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use crate::apps::AppHit;
+    use crate::files::{EverythingStatus, FileQueryResult, FileSource, WindowsSearchStatus};
+    use crate::notes::{NoteCommands, NoteInput};
+    use crate::storage::{Store, StorePaths};
+    use crate::todos::TodoCommands;
+
+    use super::super::icon::MissingIcons;
+    use super::super::model::Surface;
+    use super::{AppLookup, Dispatch, FileLookup, Monotonic, Services, Sides};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("lanwork-dispatch-note-{nanos}-{seq}"));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    struct Clock;
+
+    impl Monotonic for Clock {
+        fn now_ns(&self) -> u64 {
+            0
+        }
+    }
+
+    struct NoApps;
+
+    impl AppLookup for NoApps {
+        fn query(&mut self, _text: &str) -> Vec<AppHit> {
+            Vec::new()
+        }
+    }
+
+    struct NoFiles;
+
+    impl FileLookup for NoFiles {
+        fn query(&mut self, sequence: u64, _text: &str) -> FileQueryResult {
+            FileQueryResult {
+                sequence,
+                everything: EverythingStatus::NotChecked,
+                windows_search: WindowsSearchStatus::NotChecked,
+                source: FileSource::Blank,
+                hits: Vec::new(),
+            }
+        }
+    }
+
+    fn input(title: &str) -> NoteInput {
+        NoteInput {
+            title: title.to_owned(),
+            body: String::new(),
+            tags: Vec::new(),
+            pinned: false,
+        }
+    }
+
+    #[test]
+    fn concurrent_query_sees_the_note_already_in_memory() {
+        let temp = TempDir::new();
+        let root = temp.path.clone();
+        let store = Store::open(StorePaths {
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            user_profile: root.join("profile"),
+            local_app_data: root.join("local"),
+        })
+        .unwrap();
+        let todos = TodoCommands::open(store.clone());
+        todos.boot().unwrap();
+        let notes = NoteCommands::open(store.clone()).unwrap();
+        let dispatch = Arc::new(Dispatch::new(
+            store.clone(),
+            Services {
+                todos,
+                notes: notes.clone(),
+            },
+            Sides {
+                apps: NoApps,
+                files: NoFiles,
+                clock: Clock,
+                icons: MissingIcons,
+            },
+        ));
+        dispatch.build().unwrap();
+        let created = notes.create(&input("旧标题")).unwrap();
+        let indexed = dispatch.submit(Surface::Panel, "旧标题").unwrap();
+        assert_eq!(indexed.rows.len(), 1);
+        assert_eq!(indexed.rows[0].label, "旧标题");
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let done_rx = Arc::new(Mutex::new(done_rx));
+        let wait_rx = Arc::clone(&done_rx);
+        let reader = {
+            let dispatch = Arc::clone(&dispatch);
+            std::thread::spawn(move || {
+                started_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("publish");
+                let view = dispatch.submit(Surface::Panel, "新标题").unwrap();
+                assert_eq!(
+                    view.rows
+                        .iter()
+                        .map(|row| row.label.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["新标题"]
+                );
+                done_tx.send(()).unwrap();
+            })
+        };
+        store.set_publish_probe(Some(Arc::new(move || {
+            let _ = started_tx.send(());
+            let _ = wait_rx
+                .lock()
+                .expect("done channel")
+                .recv_timeout(Duration::from_secs(2));
+        })));
+        notes
+            .save(&created.id, created.revision, &input("新标题"))
+            .unwrap();
+        store.set_publish_probe(None);
+        reader.join().unwrap();
+    }
 }

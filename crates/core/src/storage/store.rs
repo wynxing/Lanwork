@@ -290,7 +290,10 @@ impl Store {
         self.write_with_before_publish(doc, value, meta, || {})
     }
 
-    fn write_with_before_publish<T, F>(
+    /// 先写盘，再执行 `before_publish`，最后才发布变更。
+    ///
+    /// 调用方在 `before_publish` 里更新内存。订阅者读到事件时，内存已经是新值。
+    pub(crate) fn write_with_before_publish<T, F>(
         &self,
         doc: &DocumentId,
         value: &T,
@@ -308,6 +311,12 @@ impl Store {
         before_publish();
         self.inner.changes.publish(event);
         Ok(receipt)
+    }
+
+    /// 测试用。在变更已经入队、`publish` 返回之前调用。
+    #[cfg(test)]
+    pub(crate) fn set_publish_probe(&self, probe: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        self.inner.changes.set_probe(probe);
     }
 
     /// 文件不存在时返回 `Ok(false)`，不发布消息。

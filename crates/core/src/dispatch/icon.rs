@@ -217,6 +217,7 @@ mod shell {
         .ok()?;
         let bitmap = Bitmap(bitmap);
         let (width, height) = bitmap_size(bitmap.0)?;
+        // SAFETY: 参数是空的屏幕 DC。返回的句柄只交给下面的 Drop；失败时句柄无效。
         let dc = Dc(unsafe { CreateCompatibleDC(None) });
         if dc.0.is_invalid() {
             return None;
