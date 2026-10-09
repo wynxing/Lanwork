@@ -735,11 +735,12 @@ fn auto_complete_failure_keeps_that_todo_and_reports() {
             &inbox,
             NewTodo {
                 title: "月底周期".into(),
-                due: CivilDate::try_from_ymd(2026, 1, 31),
+                due: CivilDate::try_from_ymd(2026, 1, 30),
                 remind_at: None,
                 recurrence: Some(Recurrence {
                     rule: RecurrenceRule::Monthly,
                     until: None,
+                    month_day: None,
                 }),
                 source: Some(source(
                     SourceKind::GithubPr,

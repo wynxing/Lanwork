@@ -217,9 +217,24 @@ impl TodoCommands {
         self.service.restore(item_id)
     }
 
-    /// 永久删除尚未写入产品规格，调用不会改数据，也不会发出 [`TodoNotice::Purged`]。
+    /// 永久删除回收站中的一条。不在回收站时不改数据，也不发出 [`TodoNotice::Purged`]。
     pub fn purge(&self, item_id: &str) -> Result<(), TodoError> {
         self.service.purge(item_id)
+    }
+
+    /// 清除 `now_ms` 看来已经在回收站满 30 天的条目。启动加载也会用当时的时间做一次。
+    pub fn purge_expired(&self, now_ms: i64) -> Result<Vec<String>, TodoError> {
+        self.service.purge_expired(now_ms)
+    }
+
+    /// 清除记录里尚未确认的 id。收纳用来补解除，不给界面调用。
+    pub(crate) fn pending_purges(&self) -> Result<Vec<String>, TodoError> {
+        self.service.pending_purges()
+    }
+
+    /// 这些 id 的收纳关联已经解除。从清除记录去掉。
+    pub(crate) fn ack_purges(&self, ids: &[String]) -> Result<(), TodoError> {
+        self.service.ack_purges(ids)
     }
 
     /// 返回 `http` / `https` 来源 URL。其他协议拒绝。

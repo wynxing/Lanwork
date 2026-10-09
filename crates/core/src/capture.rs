@@ -277,7 +277,7 @@ fn is_leap_year(year: i32) -> bool {
     year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
 }
 
-fn days_in_month(year: i32, month: u8) -> u8 {
+pub(crate) fn days_in_month(year: i32, month: u8) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,

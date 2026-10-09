@@ -29,12 +29,12 @@ use super::model::{
 use super::repair::{repair_current_since, repair_moved_at};
 use super::schedule::{
     DeferError, NextOccurrence, ReminderInstant, deferred_due, next_occurrence, next_reminder,
-    overdue_count,
+    overdue_count, trash_expired,
 };
 
 /// 永久删除完成后给收纳服务的领域事件。不是 `EntityChanged`。
 ///
-/// #9 第 9 项写进产品规格之前，服务不会发出这条。
+/// 只在条目已经从清单文件里删掉之后发出。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TodoNotice {
     Purged { item_id: String },
@@ -95,8 +95,6 @@ impl NoticeBus {
         receiver
     }
 
-    /// 永久删除实现后，在写入完成时调用。
-    #[allow(dead_code)]
     fn publish(&self, notice: TodoNotice) {
         let mut senders = lock_mutex(&self.senders);
         senders.retain(|sender| sender.send(notice.clone()).is_ok());
@@ -116,6 +114,8 @@ impl crate::storage::MemoryReload for Service {
 pub(crate) struct Service {
     store: Store,
     op: Mutex<()>,
+    /// 清除记录的读改写。不和 `op` 嵌套，收纳线程可以在待办操作之外确认记录。
+    pending: Mutex<()>,
     state: Mutex<State>,
     notices: NoticeBus,
     #[cfg(test)]
@@ -127,6 +127,7 @@ impl Service {
         let service = Arc::new(Self {
             store,
             op: Mutex::new(()),
+            pending: Mutex::new(()),
             state: Mutex::new(State {
                 loaded: false,
                 lists: Vec::new(),
@@ -165,6 +166,14 @@ impl Service {
         let _op = lock_mutex(&self.op);
         let lists = self.read_disk()?;
         self.set_lists(lists);
+        // 记录读不出来时不覆盖、不删除。启动不因此失败，条目留到记录能合并再清。
+        if let Err(err) = self.purge_expired_locked(now_ms()) {
+            if matches!(err, TodoError::PurgeRecord) {
+                self.store.log_warn("待办清除记录无法读取，本次不自动清除");
+            } else {
+                return Err(err);
+            }
+        }
         Ok(())
     }
 
@@ -184,6 +193,34 @@ impl Service {
 
     pub(crate) fn subscribe_notices(&self) -> Receiver<TodoNotice> {
         self.notices.subscribe()
+    }
+
+    /// 已记入、尚未确认解除的永久删除 id。
+    pub(crate) fn pending_purges(&self) -> Result<Vec<String>, TodoError> {
+        let _pending = lock_mutex(&self.pending);
+        let ids = super::purge_record::read(&self.store)?;
+        Ok(ids.into_iter().collect())
+    }
+
+    /// 收纳已经解除这些 id 之后，从清除记录去掉。不在记录里的 id 忽略。
+    pub(crate) fn ack_purges(&self, ids: &[String]) -> Result<(), TodoError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _pending = lock_mutex(&self.pending);
+        let mut current = super::purge_record::read(&self.store)?;
+        let mut changed = false;
+        for id in ids {
+            changed |= current.remove(id);
+        }
+        if !changed {
+            return Ok(());
+        }
+        if current.is_empty() {
+            super::purge_record::remove(&self.store)
+        } else {
+            super::purge_record::write(&self.store, &current)
+        }
     }
 
     pub(crate) fn lists(&self) -> Result<Vec<TodoList>, TodoError> {
@@ -353,6 +390,11 @@ impl Service {
         self.ready_op(|| self.purge_locked(item_id))
     }
 
+    /// 清除进入回收站已满 30 天的条目。返回被清除的 id。没有这样的条目时不写盘。
+    pub(crate) fn purge_expired(&self, now_ms: i64) -> Result<Vec<String>, TodoError> {
+        self.ready_op(|| self.purge_expired_locked(now_ms))
+    }
+
     pub(crate) fn source_url(&self, item_id: &str) -> Result<String, TodoError> {
         self.ready_op(|| self.source_url_locked(item_id))
     }
@@ -498,6 +540,9 @@ impl Service {
         item.due = draft.due;
         item.remind_at = draft.remind_at;
         item.recurrence = draft.recurrence;
+        if let Some(recurrence) = item.recurrence.as_mut() {
+            recurrence.fill_missing_month_day(item.due);
+        }
         item.source = draft.source;
         lists[list_index].items.push(item);
         let changed = lists[list_index].clone();
@@ -528,6 +573,9 @@ impl Service {
     fn set_due_locked(&self, item_id: &str, due: Option<CivilDate>) -> Result<(), TodoError> {
         self.edit_active(item_id, |item| {
             item.due = due;
+            if let Some(recurrence) = item.recurrence.as_mut() {
+                recurrence.fill_missing_month_day(item.due);
+            }
             Ok(())
         })
     }
@@ -549,6 +597,10 @@ impl Service {
         recurrence: Option<super::model::Recurrence>,
     ) -> Result<(), TodoError> {
         self.edit_active(item_id, |item| {
+            let mut recurrence = recurrence;
+            if let Some(recurrence) = recurrence.as_mut() {
+                recurrence.fill_missing_month_day(item.due);
+            }
             item.recurrence = recurrence;
             Ok(())
         })
@@ -587,12 +639,11 @@ impl Service {
                     NextOccurrence::MonthlyMissingDay => {
                         return Err(TodoError::PendingSpec(PendingTopic::MonthlyMissingDay));
                     }
-                    NextOccurrence::OnUntil => {
-                        return Err(TodoError::PendingSpec(PendingTopic::CompleteOnUntil));
-                    }
                     NextOccurrence::Overflow => return Err(TodoError::DateOverflow),
                     NextOccurrence::Date(due) => Some(due),
-                    NextOccurrence::PastUntil | NextOccurrence::MissingDue => None,
+                    NextOccurrence::PastUntil
+                    | NextOccurrence::MissingDue
+                    | NextOccurrence::OnUntil => None,
                 }
             } else {
                 None
@@ -606,6 +657,10 @@ impl Service {
                     .any(|list| list.items.iter().any(|item| item.id == candidate))
             })?;
             next.completed = false;
+            let source_due = lists[list_index].items[item_index].due;
+            if let Some(recurrence) = next.recurrence.as_mut() {
+                recurrence.fill_missing_month_day(source_due);
+            }
             next.due = Some(due);
             next.current = false;
             next.current_since = None;
@@ -645,8 +700,9 @@ impl Service {
             .origin_list_id
             .clone()
             .unwrap_or_else(|| lists[list_index].id.clone());
-        let Some(origin_index) = find_list(&lists, &origin) else {
-            return Err(TodoError::PendingSpec(PendingTopic::RestoreWithoutOrigin));
+        let origin_index = match find_list(&lists, &origin) {
+            Some(index) => index,
+            None => inbox_index(&mut lists)?,
         };
         if origin_index == list_index {
             lists[list_index].items[item_index].deleted_at = None;
@@ -667,9 +723,74 @@ impl Service {
     }
 
     fn purge_locked(&self, item_id: &str) -> Result<(), TodoError> {
-        let lists = self.lists_vec()?;
-        find_item(&lists, item_id).ok_or_else(|| missing_item(item_id))?;
-        Err(TodoError::PendingSpec(PendingTopic::Purge))
+        let mut lists = self.lists_vec()?;
+        let (list_index, item_index) =
+            find_item(&lists, item_id).ok_or_else(|| missing_item(item_id))?;
+        if !lists[list_index].items[item_index].in_trash() {
+            return Err(TodoError::NotInTrash);
+        }
+        self.remember_purged(&[item_id.to_owned()])?;
+        lists[list_index].items.remove(item_index);
+        let changed = lists[list_index].clone();
+        self.persist(lists, vec![changed])?;
+        self.notices.publish(TodoNotice::Purged {
+            item_id: item_id.to_owned(),
+        });
+        Ok(())
+    }
+
+    fn purge_expired_locked(&self, now_ms: i64) -> Result<Vec<String>, TodoError> {
+        let mut lists = self.lists_vec()?;
+        let mut purged = Vec::new();
+        let mut changed_ids = BTreeSet::new();
+        for list in &mut lists {
+            let before = list.items.len();
+            list.items.retain(|item| {
+                let expired = item
+                    .deleted_at
+                    .is_some_and(|deleted_at| trash_expired(deleted_at, now_ms));
+                if expired {
+                    purged.push(item.id.clone());
+                }
+                !expired
+            });
+            if list.items.len() != before {
+                changed_ids.insert(list.id.clone());
+            }
+        }
+        if purged.is_empty() {
+            return Ok(purged);
+        }
+        self.remember_purged(&purged)?;
+        let writes = lists
+            .iter()
+            .filter(|list| changed_ids.contains(&list.id))
+            .cloned()
+            .collect();
+        self.persist(lists, writes)?;
+        for id in &purged {
+            self.notices.publish(TodoNotice::Purged {
+                item_id: id.clone(),
+            });
+        }
+        Ok(purged)
+    }
+
+    /// 在删除清单里的条目之前记下 id。失败时不改清单。
+    fn remember_purged(&self, ids: &[String]) -> Result<(), TodoError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _pending = lock_mutex(&self.pending);
+        let mut current = super::purge_record::read(&self.store)?;
+        let mut changed = false;
+        for id in ids {
+            changed |= current.insert(id.clone());
+        }
+        if changed {
+            super::purge_record::write(&self.store, &current)?;
+        }
+        Ok(())
     }
 
     fn source_url_locked(&self, item_id: &str) -> Result<String, TodoError> {
@@ -1113,6 +1234,23 @@ fn sort_lists(lists: &mut [TodoList]) {
     });
 }
 
+/// 默认清单是系统收件箱。没有收件箱时在这份内存里追加一个，调用方负责写盘。
+fn inbox_index(lists: &mut Vec<TodoList>) -> Result<usize, TodoError> {
+    if let Some(index) = lists
+        .iter()
+        .enumerate()
+        .filter(|(_, list)| list.kind == ListKind::Inbox)
+        .min_by(|(_, left), (_, right)| left.id.cmp(&right.id))
+        .map(|(index, _)| index)
+    {
+        return Ok(index);
+    }
+    let id = allocate_inbox_id(lists)?;
+    let order = next_order(lists.iter().map(|list| list.order))?;
+    lists.push(TodoList::new(id, "收件箱".into(), ListKind::Inbox, order));
+    Ok(lists.len() - 1)
+}
+
 fn allocate_inbox_id(lists: &[TodoList]) -> Result<String, TodoError> {
     let mut candidate = "inbox".to_owned();
     let mut suffix = 2u32;
@@ -1372,5 +1510,63 @@ mod tests {
         let err = ready.service.process_move(&item_id, &target).unwrap_err();
         assert!(err.to_string().contains("读取失败"), "{err}");
         assert!(ready.service.lists().is_err());
+    }
+
+    #[test]
+    fn failed_list_write_keeps_the_item_and_the_purge_record() {
+        let ready = Ready::new();
+        let list_id = ready.service.create_list("工作").unwrap();
+        let item_id = ready.service.create_item(&list_id, draft("回收")).unwrap();
+        ready.service.soft_delete(&item_id).unwrap();
+        ready.service.set_write_fault(Some(0), false, None);
+        let err = ready.service.purge(&item_id).unwrap_err();
+        assert!(err.to_string().contains("写入失败"), "{err}");
+        assert!(ready.service.item(&item_id).unwrap().item.in_trash());
+        let pending = ready
+            .store
+            .data_dir()
+            .join(crate::todos::PURGE_PENDING_FILE);
+        let recorded = std::fs::read_to_string(&pending).unwrap();
+        assert!(recorded.contains(&format!("\"{item_id}\"")), "{recorded}");
+        ready.service.set_write_fault(None, false, None);
+        ready.service.purge(&item_id).unwrap();
+        assert!(matches!(
+            ready.service.item(&item_id).unwrap_err(),
+            crate::todos::TodoError::ItemNotFound { .. }
+        ));
+        let recorded = std::fs::read_to_string(&pending).unwrap();
+        assert!(recorded.contains(&format!("\"{item_id}\"")), "{recorded}");
+        ready.service.ack_purges(&[item_id]).unwrap();
+        assert!(!pending.exists());
+    }
+
+    #[test]
+    fn unreadable_purge_record_skips_auto_purge_and_keeps_the_file() {
+        let ready = Ready::new();
+        let deleted_at = super::now_ms() - crate::todos::TRASH_RETENTION_MS;
+        let path = ready
+            .store
+            .document_path(&DocumentId::Todo("work".into()))
+            .unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{{"id":"old","title":"过期","deletedAt":{deleted_at}}}]}}"#
+            ),
+        )
+        .unwrap();
+        let pending = ready
+            .store
+            .data_dir()
+            .join(crate::todos::PURGE_PENDING_FILE);
+        std::fs::write(&pending, b"{").unwrap();
+        ready.service.load().unwrap();
+        assert_eq!(ready.service.item("old").unwrap().item.title, "过期");
+        assert_eq!(std::fs::read(&pending).unwrap(), b"{");
+        let err = ready.service.purge_expired(super::now_ms()).unwrap_err();
+        assert!(matches!(err, crate::todos::TodoError::PurgeRecord), "{err}");
+        assert_eq!(ready.service.item("old").unwrap().item.title, "过期");
+        assert_eq!(std::fs::read(&pending).unwrap(), b"{");
     }
 }

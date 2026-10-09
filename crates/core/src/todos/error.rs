@@ -8,18 +8,12 @@ use crate::storage::Error as StorageError;
 
 /// 产品规格还没写明、因此服务拒绝猜测的点。
 ///
-/// 见 GitHub issue #9 第 5 项和第 9 项。规格写进 `docs/product.md` 之前，
+/// 每月重复的 31 日已经落到小月月末，并在下一次回到锚点日。这里只留下日不是 31、目标月却没有这一天的情况。
 /// 这些分支不落盘。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingTopic {
-    /// 每月重复时，目标月没有这一天。
+    /// 每月重复的日不是 31，而目标月没有这一天。
     MonthlyMissingDay,
-    /// 正在完成的这条，到期日已经等于重复截止日。
-    CompleteOnUntil,
-    /// 永久删除。
-    Purge,
-    /// 恢复时原清单已经不存在。
-    RestoreWithoutOrigin,
 }
 
 /// 待办命令的失败。
@@ -59,6 +53,8 @@ pub enum TodoError {
     DuplicateId {
         id: String,
     },
+    /// `todo-purge-pending.json` 无法合并。不覆盖文件，也不删除待办。
+    PurgeRecord,
     PendingSpec(PendingTopic),
 }
 
@@ -99,15 +95,9 @@ impl fmt::Display for TodoError {
             }
             Self::IdMismatch { id } => write!(f, "清单标识与文件名不一致：{id}"),
             Self::DuplicateId { id } => write!(f, "标识重复：{id}"),
+            Self::PurgeRecord => write!(f, "待办清除记录无法读取"),
             Self::PendingSpec(PendingTopic::MonthlyMissingDay) => {
-                write!(f, "周期边界尚未写入产品规格")
-            }
-            Self::PendingSpec(PendingTopic::CompleteOnUntil) => {
-                write!(f, "周期边界尚未写入产品规格")
-            }
-            Self::PendingSpec(PendingTopic::Purge) => write!(f, "永久删除尚未写入产品规格"),
-            Self::PendingSpec(PendingTopic::RestoreWithoutOrigin) => {
-                write!(f, "原清单不存在时的恢复尚未写入产品规格")
+                write!(f, "每月这一天在目标月不存在，尚未规定落到哪一天")
             }
         }
     }

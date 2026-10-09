@@ -2,8 +2,10 @@
 //!
 //! 不读时钟，也不写盘。今天和当前时刻由调用方传入，供提醒调度使用。
 //!
-//! 两处边界等产品规格写明，这里返回 [`NextOccurrence::MonthlyMissingDay`] 和
-//! [`NextOccurrence::OnUntil`]，不把 31 日夹到月末，也不决定截止日当天是否再生成。
+//! 每月重复用 [`Recurrence::month_day`] 作为要回到的日子。缺字段或不是 1 至 31 时，用当前到期日的日子。
+//! 这个日子是 31、目标月没有 31 日时，下一次落到该月最后一天；再下一次仍按 31 日。
+//! 29 日、30 日在目标月不存在时仍返回 [`NextOccurrence::MonthlyMissingDay`]，不猜测。
+//! [`NextOccurrence::OnUntil`] 表示这条的到期日已经是重复截止日，完成时不再生成下一次。
 
 use crate::CivilDate;
 
@@ -23,12 +25,23 @@ pub enum NextOccurrence {
     PastUntil,
     /// 有周期但没有到期日，不发明一个日期。
     MissingDue,
-    /// 目标月没有这一天。#9 第 5 项。
+    /// 每月重复的日不是 31，而目标月没有这一天。不猜测落到哪一天。
     MonthlyMissingDay,
-    /// 这条的到期日已经是截止日。#9 第 5 项。
+    /// 这条的到期日已经是重复截止日。完成时不再生成下一次。
     OnUntil,
     /// 日期加减超出可表示范围。
     Overflow,
+}
+
+/// 回收站保留时间。进入回收站满这段时间后自动清除。
+///
+/// 一天按 86_400_000 毫秒，不按日历。30 天就是 30 个这样的长度。
+pub const TRASH_RETENTION_MS: i64 = 30 * 86_400_000;
+
+/// `deleted_at_ms` 到 `now_ms` 是否已经满 [`TRASH_RETENTION_MS`]。
+#[must_use]
+pub fn trash_expired(deleted_at_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(deleted_at_ms) >= TRASH_RETENTION_MS
 }
 
 /// 从当前到期日和周期规则推下一次。
@@ -44,13 +57,14 @@ pub fn next_occurrence(due: Option<CivilDate>, recurrence: &Recurrence) -> NextO
         RecurrenceRule::Daily => due.checked_add_days(1),
         RecurrenceRule::Weekly => due.checked_add_days(7),
         RecurrenceRule::Biweekly => due.checked_add_days(14),
-        RecurrenceRule::Monthly => add_one_month(due),
+        RecurrenceRule::Monthly => match add_one_month(due, recurrence.month_day) {
+            Ok(next) => Some(next),
+            Err(MonthShift::MissingDay) => return NextOccurrence::MonthlyMissingDay,
+            Err(MonthShift::Overflow) => return NextOccurrence::Overflow,
+        },
     };
     let Some(next) = next else {
-        return match recurrence.rule {
-            RecurrenceRule::Monthly => NextOccurrence::MonthlyMissingDay,
-            _ => NextOccurrence::Overflow,
-        };
+        return NextOccurrence::Overflow;
     };
     if let Some(until) = recurrence.until
         && next > until
@@ -128,13 +142,36 @@ pub fn next_reminder(
     }
 }
 
-fn add_one_month(date: CivilDate) -> Option<CivilDate> {
+enum MonthShift {
+    MissingDay,
+    Overflow,
+}
+
+fn monthly_anchor(due: CivilDate, month_day: Option<u8>) -> u8 {
+    match month_day {
+        Some(day) if (1..=31).contains(&day) => day,
+        _ => due.day(),
+    }
+}
+
+fn add_one_month(date: CivilDate, month_day: Option<u8>) -> Result<CivilDate, MonthShift> {
     let (year, month) = if date.month() == 12 {
-        (date.year().checked_add(1)?, 1)
+        let Some(year) = date.year().checked_add(1) else {
+            return Err(MonthShift::Overflow);
+        };
+        (year, 1)
     } else {
         (date.year(), date.month() + 1)
     };
-    CivilDate::try_from_ymd(year, month, date.day())
+    let day = monthly_anchor(date, month_day);
+    if let Some(next) = CivilDate::try_from_ymd(year, month, day) {
+        return Ok(next);
+    }
+    if day == 31 {
+        let last = crate::capture::days_in_month(year, month);
+        return CivilDate::try_from_ymd(year, month, last).ok_or(MonthShift::Overflow);
+    }
+    Err(MonthShift::MissingDay)
 }
 
 #[cfg(test)]
@@ -157,6 +194,7 @@ mod tests {
         let daily = Recurrence {
             rule: RecurrenceRule::Daily,
             until: None,
+            month_day: None,
         };
         assert_eq!(
             next_occurrence(Some(date(2026, 1, 31)), &daily),
@@ -169,6 +207,7 @@ mod tests {
         let weekly = Recurrence {
             rule: RecurrenceRule::Weekly,
             until: None,
+            month_day: None,
         };
         assert_eq!(
             next_occurrence(Some(date(2026, 1, 28)), &weekly),
@@ -181,6 +220,7 @@ mod tests {
         let biweekly = Recurrence {
             rule: RecurrenceRule::Biweekly,
             until: None,
+            month_day: None,
         };
         assert_eq!(
             next_occurrence(Some(date(2026, 1, 25)), &biweekly),
@@ -193,6 +233,7 @@ mod tests {
         let monthly = Recurrence {
             rule: RecurrenceRule::Monthly,
             until: None,
+            month_day: None,
         };
         assert_eq!(
             next_occurrence(Some(date(2026, 1, 15)), &monthly),
@@ -213,6 +254,7 @@ mod tests {
         let daily = Recurrence {
             rule: RecurrenceRule::Daily,
             until: Some(date(2026, 1, 31)),
+            month_day: None,
         };
         assert_eq!(
             next_occurrence(Some(date(2026, 1, 30)), &daily),
@@ -229,23 +271,81 @@ mod tests {
     }
 
     #[test]
-    fn monthly_missing_day_is_unspecified() {
+    fn monthly_31_lands_on_the_last_day_of_a_short_month() {
         let monthly = Recurrence {
             rule: RecurrenceRule::Monthly,
             until: None,
+            month_day: None,
         };
         assert_eq!(
             next_occurrence(Some(date(2026, 1, 31)), &monthly),
+            NextOccurrence::Date(date(2026, 2, 28))
+        );
+        assert_eq!(
+            next_occurrence(Some(date(2024, 1, 31)), &monthly),
+            NextOccurrence::Date(date(2024, 2, 29))
+        );
+        assert_eq!(
+            next_occurrence(Some(date(2026, 3, 31)), &monthly),
+            NextOccurrence::Date(date(2026, 4, 30))
+        );
+        assert_eq!(
+            next_occurrence(Some(date(2026, 2, 28)), &monthly),
+            NextOccurrence::Date(date(2026, 3, 28))
+        );
+        let anchored = Recurrence {
+            rule: RecurrenceRule::Monthly,
+            until: None,
+            month_day: Some(31),
+        };
+        assert_eq!(
+            next_occurrence(Some(date(2026, 1, 31)), &anchored),
+            NextOccurrence::Date(date(2026, 2, 28))
+        );
+        assert_eq!(
+            next_occurrence(Some(date(2026, 2, 28)), &anchored),
+            NextOccurrence::Date(date(2026, 3, 31))
+        );
+        assert_eq!(
+            next_occurrence(Some(date(2026, 3, 31)), &anchored),
+            NextOccurrence::Date(date(2026, 4, 30))
+        );
+        assert_eq!(
+            next_occurrence(Some(date(2026, 4, 30)), &anchored),
+            NextOccurrence::Date(date(2026, 5, 31))
+        );
+        assert_eq!(
+            next_occurrence(Some(date(2024, 2, 29)), &anchored),
+            NextOccurrence::Date(date(2024, 3, 31))
+        );
+        assert_eq!(
+            next_occurrence(Some(date(2026, 1, 30)), &monthly),
+            NextOccurrence::MonthlyMissingDay
+        );
+        let thirtieth = Recurrence {
+            rule: RecurrenceRule::Monthly,
+            until: None,
+            month_day: Some(30),
+        };
+        assert_eq!(
+            next_occurrence(Some(date(2026, 1, 30)), &thirtieth),
             NextOccurrence::MonthlyMissingDay
         );
         assert_eq!(
             next_occurrence(Some(date(2025, 1, 29)), &monthly),
             NextOccurrence::MonthlyMissingDay
         );
-        assert_eq!(
-            next_occurrence(Some(date(2026, 3, 31)), &monthly),
-            NextOccurrence::MonthlyMissingDay
-        );
+    }
+
+    #[test]
+    fn trash_expires_when_thirty_days_have_elapsed() {
+        let deleted_at = 1_000;
+        assert!(!trash_expired(
+            deleted_at,
+            deleted_at + TRASH_RETENTION_MS - 1
+        ));
+        assert!(trash_expired(deleted_at, deleted_at + TRASH_RETENTION_MS));
+        assert_eq!(TRASH_RETENTION_MS, 30 * 86_400_000);
     }
 
     #[test]

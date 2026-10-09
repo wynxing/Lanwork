@@ -39,6 +39,30 @@ pub struct Recurrence {
     pub rule: RecurrenceRule,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_date")]
     pub until: Option<CivilDate>,
+    /// 每月重复要回到的日子，1 至 31。小月落到月末后，下一次仍用这个日子。
+    ///
+    /// 缺字段时由调用方改用当前到期日的日子。不是每月重复时不使用。
+    #[serde(default, rename = "monthDay", skip_serializing_if = "Option::is_none")]
+    pub month_day: Option<u8>,
+}
+
+impl Recurrence {
+    /// 每月重复还没有锚点日时，用当前到期日的日子补上。不是 1 至 31 的值视为没有。
+    ///
+    /// 已经写过的锚点日不改。这样小月里的到期日不会把 31 日覆盖成 28 日或 29 日。
+    pub(crate) fn fill_missing_month_day(&mut self, due: Option<CivilDate>) {
+        if self.rule != RecurrenceRule::Monthly {
+            return;
+        }
+        if self.month_day.is_some_and(|day| !(1..=31).contains(&day)) {
+            self.month_day = None;
+        }
+        if self.month_day.is_none()
+            && let Some(due) = due
+        {
+            self.month_day = Some(due.day());
+        }
+    }
 }
 
 /// GitHub 来源种类。序列化值为 `github-pr` 与 `github-issue`。
@@ -377,6 +401,7 @@ mod tests {
         item.recurrence = Some(Recurrence {
             rule: RecurrenceRule::Monthly,
             until: CivilDate::try_from_ymd(2026, 12, 31),
+            month_day: Some(31),
         });
         item.source = Some(
             TodoSource::try_new(
@@ -405,6 +430,7 @@ mod tests {
         assert!(text.contains("\"due\":\"2026-01-31\""), "{text}");
         assert!(text.contains("\"type\":\"github-pr\""), "{text}");
         assert!(text.contains("\"rule\":\"monthly\""), "{text}");
+        assert!(text.contains("\"monthDay\":31"), "{text}");
         assert!(!text.contains("moved_at"), "{text}");
         let parsed: TodoList = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed, list);

@@ -8,7 +8,7 @@ use lanwork_core::CivilDate as Date;
 use lanwork_core::storage::{CollectionKind, DocumentId, EntityKind, Store, StorePaths};
 use lanwork_core::todos::{
     ClockTime, DEFAULT_DEFER_DAYS, ListKind, NewTodo, PendingTopic, Recurrence, RecurrenceRule,
-    SourceKind, TodoCommands, TodoError, TodoList, TodoSource,
+    SourceKind, TRASH_RETENTION_MS, TodoCommands, TodoError, TodoList, TodoSource,
 };
 
 struct TempDir {
@@ -79,6 +79,16 @@ impl Fixture {
     }
 }
 
+fn now_ms() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
 fn date(year: i32, month: u8, day: u8) -> Date {
     Date::try_from_ymd(year, month, day).unwrap()
 }
@@ -94,7 +104,11 @@ fn new_todo(title: &str) -> NewTodo {
 }
 
 fn recurrence(rule: RecurrenceRule, until: Option<Date>) -> Recurrence {
-    Recurrence { rule, until }
+    Recurrence {
+        rule,
+        until,
+        month_day: None,
+    }
 }
 
 fn source_pr() -> TodoSource {
@@ -379,11 +393,112 @@ fn complete_generates_the_until_day_and_stops_after_it() {
 }
 
 #[test]
-fn monthly_missing_day_does_not_guess() {
+fn monthly_31_in_a_short_month_lands_on_the_last_day() {
     let fixture = Fixture::new();
     let list_id = fixture.todos.create_list("工作").unwrap();
     let mut draft = new_todo("每月 31 日");
     draft.due = Some(date(2026, 1, 31));
+    draft.recurrence = Some(recurrence(RecurrenceRule::Monthly, None));
+    let item_id = fixture.todos.create_item(&list_id, draft).unwrap();
+    fixture.todos.complete_item(&item_id).unwrap();
+    let lists = fixture.todos.lists().unwrap();
+    let next = list(&lists, &list_id)
+        .items
+        .iter()
+        .find(|item| !item.completed)
+        .unwrap();
+    assert_eq!(next.due, Some(date(2026, 2, 28)));
+    assert_eq!(
+        next.recurrence.as_ref().and_then(|rule| rule.month_day),
+        Some(31)
+    );
+    let next_id = next.id.clone();
+    fixture.todos.complete_item(&next_id).unwrap();
+    let lists = fixture.todos.lists().unwrap();
+    let after = list(&lists, &list_id)
+        .items
+        .iter()
+        .find(|item| !item.completed)
+        .unwrap();
+    assert_eq!(after.due, Some(date(2026, 3, 31)));
+    assert_eq!(
+        after.recurrence.as_ref().and_then(|rule| rule.month_day),
+        Some(31)
+    );
+}
+
+#[test]
+fn monthly_without_saved_anchor_uses_the_current_due_day() {
+    let temp = TempDir::new();
+    let paths = StorePaths {
+        data_dir: temp.path().join("data"),
+        cache_dir: temp.path().join("cache"),
+        user_profile: temp.path().join("profile"),
+        local_app_data: temp.path().join("local"),
+    };
+    let store = Store::open(paths).unwrap();
+    write_raw(
+        &store,
+        "work",
+        r#"{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{"id":"clamped","title":"已在月末","due":"2026-02-28","recurrence":{"rule":"monthly"}},{"id":"jan","title":"仍是31","due":"2026-01-31","recurrence":{"rule":"monthly"}}]}"#,
+    );
+    let todos = TodoCommands::open(store);
+    todos.boot().unwrap();
+    assert!(
+        todos
+            .item("clamped")
+            .unwrap()
+            .item
+            .recurrence
+            .unwrap()
+            .month_day
+            .is_none()
+    );
+    todos.complete_item("clamped").unwrap();
+    let lists = todos.lists().unwrap();
+    let after_clamp = lists
+        .iter()
+        .flat_map(|list| &list.items)
+        .find(|item| !item.completed && item.title == "已在月末")
+        .unwrap();
+    assert_eq!(after_clamp.due, Some(date(2026, 3, 28)));
+    assert_eq!(
+        after_clamp
+            .recurrence
+            .as_ref()
+            .and_then(|rule| rule.month_day),
+        Some(28)
+    );
+
+    todos.complete_item("jan").unwrap();
+    let lists = todos.lists().unwrap();
+    let february = lists
+        .iter()
+        .flat_map(|list| &list.items)
+        .find(|item| !item.completed && item.title == "仍是31")
+        .unwrap();
+    assert_eq!(february.due, Some(date(2026, 2, 28)));
+    assert_eq!(
+        february.recurrence.as_ref().and_then(|rule| rule.month_day),
+        Some(31)
+    );
+    let february_id = february.id.clone();
+    todos.complete_item(&february_id).unwrap();
+    let lists = todos.lists().unwrap();
+    let march = lists
+        .iter()
+        .flat_map(|list| &list.items)
+        .find(|item| !item.completed && item.title == "仍是31")
+        .unwrap();
+    assert_eq!(march.due, Some(date(2026, 3, 31)));
+}
+
+#[test]
+fn monthly_non_31_missing_day_does_not_guess() {
+    let fixture = Fixture::new();
+    let list_id = fixture.todos.create_list("工作").unwrap();
+    let mut draft = new_todo("每月 30 日");
+    draft.due = Some(date(2026, 1, 30));
     draft.recurrence = Some(recurrence(RecurrenceRule::Monthly, None));
     let item_id = fixture.todos.create_item(&list_id, draft).unwrap();
     let path = fixture
@@ -404,45 +519,19 @@ fn monthly_missing_day_does_not_guess() {
 }
 
 #[test]
-#[ignore = "待 #9 第 5 项写入 product.md：每月 31 日在小月落到哪天"]
-fn pending_spec_gap_9_item_5_monthly_31_in_a_short_month() {
-    // 规格写明之后，这里断言 1 月 31 日的每月重复在 2 月落到哪一天。
-    // 在那之前，monthly_missing_day_does_not_guess 锁定「不猜测、不落盘」。
-    let _ = PendingTopic::MonthlyMissingDay;
-}
-
-#[test]
-fn complete_on_until_does_not_guess() {
+fn complete_on_until_does_not_generate_the_next() {
     let fixture = Fixture::new();
     let list_id = fixture.todos.create_list("工作").unwrap();
     let mut draft = new_todo("截止日当天");
     draft.due = Some(date(2026, 3, 2));
     draft.recurrence = Some(recurrence(RecurrenceRule::Daily, Some(date(2026, 3, 2))));
     let item_id = fixture.todos.create_item(&list_id, draft).unwrap();
-    let path = fixture
-        .store
-        .document_path(&DocumentId::Todo(list_id.clone()))
-        .unwrap();
-    let before = std::fs::read(&path).unwrap();
-    let err = fixture.todos.complete_item(&item_id).unwrap_err();
-    assert_eq!(
-        err.pending_topic(),
-        Some(PendingTopic::CompleteOnUntil),
-        "{err}"
-    );
-    assert!(!fixture.todos.item(&item_id).unwrap().item.completed);
-    assert_eq!(
-        list(&fixture.todos.lists().unwrap(), &list_id).items.len(),
-        1
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), before);
-}
-
-#[test]
-#[ignore = "待 #9 第 5 项写入 product.md：在重复截止日当天完成，还生成下一次吗"]
-fn pending_spec_gap_9_item_5_complete_on_until() {
-    // 规格写明之后，这里断言截止日当天完成后是否再生成下一次。
-    let _ = PendingTopic::CompleteOnUntil;
+    fixture.todos.complete_item(&item_id).unwrap();
+    let lists = fixture.todos.lists().unwrap();
+    let items = &list(&lists, &list_id).items;
+    assert_eq!(items.len(), 1);
+    assert!(items[0].completed);
+    assert_eq!(items[0].id, item_id);
 }
 
 #[test]
@@ -496,7 +585,7 @@ fn soft_delete_restores_to_the_origin_list() {
 }
 
 #[test]
-fn restore_without_origin_list_does_not_guess() {
+fn restore_without_origin_list_goes_to_the_inbox() {
     let temp = TempDir::new();
     let paths = StorePaths {
         data_dir: temp.path().join("data"),
@@ -505,66 +594,153 @@ fn restore_without_origin_list_does_not_guess() {
         local_app_data: temp.path().join("local"),
     };
     let store = Store::open(paths).unwrap();
+    let recent = now_ms();
     write_raw(
         &store,
         "hold",
-        r#"{"schemaVersion":1,"id":"hold","name":"暂存","kind":"normal","items":[{"id":"a","title":"无家可归","deletedAt":10,"originListId":"missing"}]}"#,
+        &format!(
+            r#"{{"schemaVersion":1,"id":"hold","name":"暂存","kind":"normal","items":[{{"id":"a","title":"无家可归","deletedAt":{recent},"originListId":"missing"}}]}}"#
+        ),
     );
-    let path = store
-        .document_path(&DocumentId::Todo("hold".into()))
-        .unwrap();
-    let before = std::fs::read(&path).unwrap();
     let todos = TodoCommands::open(store);
     todos.boot().unwrap();
-    let err = todos.restore("a").unwrap_err();
-    assert_eq!(
-        err.pending_topic(),
-        Some(PendingTopic::RestoreWithoutOrigin),
-        "{err}"
+    todos.restore("a").unwrap();
+    let stored = todos.item("a").unwrap();
+    assert_eq!(stored.list_name, "收件箱");
+    assert_eq!(stored.item.title, "无家可归");
+    assert!(stored.item.deleted_at.is_none());
+    assert!(stored.item.origin_list_id.is_none());
+    let lists = todos.lists().unwrap();
+    assert!(
+        lists.iter().any(
+            |list| list.kind == ListKind::Inbox && list.items.iter().any(|item| item.id == "a")
+        )
     );
-    assert!(todos.item("a").unwrap().item.deleted_at.is_some());
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(
+        lists
+            .iter()
+            .find(|list| list.id == "hold")
+            .unwrap()
+            .items
+            .is_empty()
+    );
 }
 
 #[test]
-#[ignore = "待 #9 第 9 项写入 product.md：恢复时原清单已被删除，条目回到哪里"]
-fn pending_spec_gap_9_item_9_restore_when_origin_list_is_gone() {
-    let _ = PendingTopic::RestoreWithoutOrigin;
-}
-
-#[test]
-fn purge_does_not_delete_or_emit_until_the_spec_lands() {
+fn purge_only_removes_trash_and_emits_after_the_write() {
     let fixture = Fixture::new();
     let list_id = fixture.todos.create_list("工作").unwrap();
-    let item_id = fixture
+    let active = fixture
         .todos
-        .create_item(&list_id, new_todo("仍在"))
+        .create_item(&list_id, new_todo("还在清单"))
         .unwrap();
-    fixture.todos.soft_delete(&item_id).unwrap();
+    let trashed = fixture
+        .todos
+        .create_item(&list_id, new_todo("在回收站"))
+        .unwrap();
+    fixture.todos.soft_delete(&trashed).unwrap();
     let rx = fixture.todos.subscribe_notices();
-    let changes = fixture.store.subscribe();
-    let err = fixture.todos.purge(&item_id).unwrap_err();
-    assert_eq!(err.pending_topic(), Some(PendingTopic::Purge), "{err}");
-    assert!(
-        fixture
-            .todos
-            .item(&item_id)
-            .unwrap()
-            .item
-            .deleted_at
-            .is_some()
-    );
+    let err = fixture.todos.purge(&active).unwrap_err();
+    assert!(matches!(err, TodoError::NotInTrash), "{err}");
     assert!(rx.try_recv().is_err());
-    assert!(changes.try_recv().is_err());
+    assert_eq!(fixture.todos.item(&active).unwrap().item.title, "还在清单");
+
+    let changes = fixture.store.subscribe();
+    fixture.todos.purge(&trashed).unwrap();
+    let notice = rx.try_recv().unwrap();
+    assert_eq!(
+        notice,
+        lanwork_core::todos::TodoNotice::Purged {
+            item_id: trashed.clone(),
+        }
+    );
+    assert!(changes.try_recv().is_ok());
+    assert!(matches!(
+        fixture.todos.item(&trashed).unwrap_err(),
+        TodoError::ItemNotFound { .. }
+    ));
+    assert!(
+        list(&fixture.todos.lists().unwrap(), &list_id)
+            .items
+            .iter()
+            .all(|item| item.id != trashed)
+    );
 }
 
 #[test]
-#[ignore = "待 #9 第 9 项写入 product.md：永久删除的入口，以及回收站保留多久"]
-fn pending_spec_gap_9_item_9_permanent_delete() {
-    // 规格写明之后：永久删除去掉条目，并在写入完成后发出 TodoNotice::Purged。
-    let _ = lanwork_core::todos::TodoNotice::Purged {
-        item_id: String::new(),
+fn trash_older_than_thirty_days_is_purged_on_boot() {
+    let temp = TempDir::new();
+    let paths = StorePaths {
+        data_dir: temp.path().join("data"),
+        cache_dir: temp.path().join("cache"),
+        user_profile: temp.path().join("profile"),
+        local_app_data: temp.path().join("local"),
     };
+    let store = Store::open(paths).unwrap();
+    let deleted_at = now_ms() - TRASH_RETENTION_MS;
+    write_raw(
+        &store,
+        "work",
+        &format!(
+            r#"{{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{{"id":"old","title":"过期","deletedAt":{deleted_at}}},{{"id":"fresh","title":"还在","deletedAt":{fresh}}}]}}"#,
+            fresh = deleted_at + TRASH_RETENTION_MS
+        ),
+    );
+    let todos = TodoCommands::open(store.clone());
+    let rx = todos.subscribe_notices();
+    todos.boot().unwrap();
+    assert!(matches!(
+        todos.item("old").unwrap_err(),
+        TodoError::ItemNotFound { .. }
+    ));
+    assert!(todos.item("fresh").unwrap().item.deleted_at.is_some());
+    let notice = rx.try_recv().unwrap();
+    assert_eq!(
+        notice,
+        lanwork_core::todos::TodoNotice::Purged {
+            item_id: "old".into()
+        }
+    );
+    let disk: TodoList = store
+        .read_json(&DocumentId::Todo("work".into()))
+        .unwrap()
+        .unwrap();
+    assert!(disk.items.iter().all(|item| item.id != "old"));
+    assert!(disk.items.iter().any(|item| item.id == "fresh"));
+    let pending = store
+        .data_dir()
+        .join(lanwork_core::todos::PURGE_PENDING_FILE);
+    let recorded = std::fs::read_to_string(&pending).unwrap();
+    assert!(recorded.contains("\"old\""), "{recorded}");
+    assert!(!recorded.contains("\"fresh\""), "{recorded}");
+}
+
+#[test]
+fn unreadable_purge_record_does_not_fail_boot_or_drop_the_file() {
+    let temp = TempDir::new();
+    let paths = StorePaths {
+        data_dir: temp.path().join("data"),
+        cache_dir: temp.path().join("cache"),
+        user_profile: temp.path().join("profile"),
+        local_app_data: temp.path().join("local"),
+    };
+    let store = Store::open(paths).unwrap();
+    let deleted_at = now_ms() - TRASH_RETENTION_MS;
+    write_raw(
+        &store,
+        "work",
+        &format!(
+            r#"{{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{{"id":"old","title":"过期","deletedAt":{deleted_at}}}]}}"#
+        ),
+    );
+    let pending = store
+        .data_dir()
+        .join(lanwork_core::todos::PURGE_PENDING_FILE);
+    std::fs::write(&pending, b"{").unwrap();
+    let todos = TodoCommands::open(store);
+    todos.boot().unwrap();
+    assert_eq!(todos.item("old").unwrap().item.title, "过期");
+    assert_eq!(std::fs::read(&pending).unwrap(), b"{");
 }
 
 #[test]
