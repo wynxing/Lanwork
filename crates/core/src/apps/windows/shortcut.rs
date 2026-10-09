@@ -8,19 +8,32 @@ use std::path::{Path, PathBuf};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
 };
-use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+use windows::Win32::UI::Shell::{
+    IShellItem, IShellLinkW, SHCreateItemFromParsingName, SIGDN_NORMALDISPLAY, ShellLink,
+};
 use windows::core::Interface;
 
 use super::comutil::{self, expand_env, unquote};
+use super::store::take_pwstr;
+use crate::apps::model::push_alternate;
+use crate::apps::rules::{indexed_game_url, internet_shortcut_url, is_uninstaller};
 use crate::apps::{AppEntry, AppSource, LaunchTarget};
+
+pub(crate) fn read_indexed_file(path: &Path) -> Option<AppEntry> {
+    let ext = path.extension()?.to_str()?;
+    if ext.eq_ignore_ascii_case("lnk") {
+        read_shortcut(path)
+    } else if ext.eq_ignore_ascii_case("url") {
+        read_url_shortcut(path)
+    } else {
+        None
+    }
+}
 
 pub(crate) fn read_shortcut(path: &Path) -> Option<AppEntry> {
     comutil::ensure_com().ok()?;
-    let name = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().trim().to_owned())
-        .unwrap_or_default();
-    if name.is_empty() {
+    let stem = file_stem(path);
+    if stem.is_empty() {
         return None;
     }
     let wide = comutil::wide_path(path);
@@ -46,18 +59,58 @@ pub(crate) fn read_shortcut(path: &Path) -> Option<AppEntry> {
     };
 
     let file = existing_target(&target)?;
-    let launch = LaunchTarget::Path {
-        path: file,
-        args,
-        working_directory,
-    };
-
+    let name = localized_display_name(path).unwrap_or(stem);
+    if name.trim().is_empty() {
+        return None;
+    }
+    let shortcut_name = file_name(path);
+    let target_name = file_name(&file);
+    if is_uninstaller(&name, &target_name, &shortcut_name) {
+        return None;
+    }
+    let mut alternate_names = Vec::new();
+    push_alternate(&mut alternate_names, &name, &shortcut_name);
+    push_alternate(&mut alternate_names, &name, &target_name);
     Some(AppEntry {
         name,
         source: AppSource::StartMenu,
-        target: launch,
+        target: LaunchTarget::Path {
+            path: file,
+            args,
+            working_directory,
+        },
         icon_path,
         icon_index,
+        alternate_names,
+    })
+}
+
+fn read_url_shortcut(path: &Path) -> Option<AppEntry> {
+    comutil::ensure_com().ok()?;
+    let stem = file_stem(path);
+    if stem.is_empty() {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let raw = internet_shortcut_url(&bytes)?;
+    let url = indexed_game_url(&raw)?;
+    let name = localized_display_name(path).unwrap_or(stem);
+    if name.trim().is_empty() {
+        return None;
+    }
+    let shortcut_name = file_name(path);
+    if is_uninstaller(&name, "", &shortcut_name) {
+        return None;
+    }
+    let mut alternate_names = Vec::new();
+    push_alternate(&mut alternate_names, &name, &shortcut_name);
+    Some(AppEntry {
+        name,
+        source: AppSource::StartMenu,
+        target: LaunchTarget::Url { url },
+        icon_path: None,
+        icon_index: 0,
+        alternate_names,
     })
 }
 
@@ -101,6 +154,32 @@ enum LinkField {
     Path,
     Arguments,
     WorkingDirectory,
+}
+
+fn localized_display_name(path: &Path) -> Option<String> {
+    let wide = comutil::wide_path(path);
+    let item: IShellItem =
+        unsafe { SHCreateItemFromParsingName(comutil::pcwstr(&wide), None) }.ok()?;
+    let raw = unsafe { item.GetDisplayName(SIGDN_NORMALDISPLAY) }.ok()?;
+    let text = take_pwstr(raw);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+fn file_stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().trim().to_owned())
+        .unwrap_or_default()
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().trim().to_owned())
+        .unwrap_or_default()
 }
 
 fn read_text(link: &IShellLinkW, field: LinkField) -> String {

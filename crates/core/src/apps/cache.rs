@@ -69,6 +69,12 @@ struct CacheEntry {
     icon_path: Option<String>,
     #[serde(default, rename = "iconIndex")]
     icon_index: i32,
+    #[serde(
+        default,
+        rename = "alternateNames",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    alternate_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -78,6 +84,8 @@ enum SourceName {
     AppPaths,
     Path,
     Store,
+    Portable,
+    Alias,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,6 +100,9 @@ enum TargetDto {
     },
     Aumid {
         aumid: String,
+    },
+    Url {
+        url: String,
     },
 }
 
@@ -197,6 +208,7 @@ impl CacheEntry {
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
             icon_index: entry.icon_index,
+            alternate_names: entry.alternate_names.clone(),
         }
     }
 
@@ -220,6 +232,13 @@ impl CacheEntry {
                 .filter(|path| !path.is_empty())
                 .map(PathBuf::from),
             icon_index: self.icon_index,
+            alternate_names: self
+                .alternate_names
+                .iter()
+                .map(|name| name.trim())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .collect(),
         })
     }
 }
@@ -231,6 +250,8 @@ impl From<AppSource> for SourceName {
             AppSource::AppPaths => Self::AppPaths,
             AppSource::Path => Self::Path,
             AppSource::Store => Self::Store,
+            AppSource::Portable => Self::Portable,
+            AppSource::Alias => Self::Alias,
         }
     }
 }
@@ -242,6 +263,8 @@ impl From<SourceName> for AppSource {
             SourceName::AppPaths => Self::AppPaths,
             SourceName::Path => Self::Path,
             SourceName::Store => Self::Store,
+            SourceName::Portable => Self::Portable,
+            SourceName::Alias => Self::Alias,
         }
     }
 }
@@ -264,6 +287,7 @@ impl From<&LaunchTarget> for TargetDto {
             LaunchTarget::Aumid { aumid } => Self::Aumid {
                 aumid: aumid.clone(),
             },
+            LaunchTarget::Url { url } => Self::Url { url: url.clone() },
         }
     }
 }
@@ -301,6 +325,16 @@ impl TargetDto {
                     })
                 }
             }
+            Self::Url { url } => {
+                let url = url.trim();
+                if url.is_empty() {
+                    None
+                } else {
+                    Some(LaunchTarget::Url {
+                        url: url.to_owned(),
+                    })
+                }
+            }
         }
     }
 }
@@ -321,6 +355,7 @@ mod tests {
             },
             icon_path: Some(PathBuf::from(r"C:\App\tool.exe")),
             icon_index: 2,
+            alternate_names: vec!["tool.exe".into()],
         }
     }
 
@@ -336,19 +371,34 @@ mod tests {
             },
             icon_path: None,
             icon_index: 0,
+            alternate_names: Vec::new(),
         };
-        save_cache(&path, &[sample(), aumid.clone()]).unwrap();
+        let game = AppEntry {
+            name: "游戏".into(),
+            source: AppSource::StartMenu,
+            target: LaunchTarget::Url {
+                url: "steam://rungameid/570".into(),
+            },
+            icon_path: None,
+            icon_index: 0,
+            alternate_names: vec!["Game.url".into()],
+        };
+        save_cache(&path, &[sample(), aumid.clone(), game.clone()]).unwrap();
         let CacheLoad::Loaded(entries) = load_cache_logged(&path, None) else {
             panic!("cache should load");
         };
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].target, sample().target);
         assert_eq!(entries[0].icon_index, 2);
+        assert_eq!(entries[0].alternate_names, vec!["tool.exe".to_owned()]);
         assert_eq!(entries[1], aumid);
+        assert_eq!(entries[2], game);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"schemaVersion\":1"));
         assert!(text.contains("\"workingDirectory\":\"C:\\\\Work\""));
         assert!(text.contains("\"kind\":\"aumid\""));
+        assert!(text.contains("\"kind\":\"url\""));
+        assert!(text.contains("\"alternateNames\""));
         assert!(!temp.path().join("apps.json.tmp").exists());
     }
 

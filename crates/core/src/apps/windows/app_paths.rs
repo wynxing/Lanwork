@@ -138,6 +138,13 @@ fn read_default(key: &OpenKey, child: &str) -> Option<AppEntry> {
         .map(|stem| stem.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| child.trim_end_matches(".exe").to_owned());
+    let target_name = file
+        .file_name()
+        .map(|file_name| file_name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if crate::apps::rules::is_uninstaller(&name, &target_name, "") {
+        return None;
+    }
     Some(AppEntry {
         name,
         source: AppSource::AppPaths,
@@ -148,6 +155,7 @@ fn read_default(key: &OpenKey, child: &str) -> Option<AppEntry> {
         },
         icon_path: None,
         icon_index: 0,
+        alternate_names: Vec::new(),
     })
 }
 

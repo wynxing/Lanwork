@@ -35,14 +35,30 @@ impl std::fmt::Display for LaunchError {
 impl std::error::Error for LaunchError {}
 
 pub fn launch(target: &LaunchTarget) -> Result<(), LaunchError> {
-    launch_inner(target, SW_SHOWNORMAL, false)?;
+    launch_inner(target, SW_SHOWNORMAL, false, Verb::Open)?;
     Ok(())
+}
+
+/// 有本地 exe 时用动词 `runas`。商店应用和协议链接返回错误，不调用 Shell。
+pub fn launch_elevated(target: &LaunchTarget) -> Result<(), LaunchError> {
+    if !crate::apps::supports_run_as_admin(target) {
+        return Err(LaunchError {
+            message: "这个应用不能以管理员身份运行".to_owned(),
+        });
+    }
+    launch_inner(target, SW_SHOWNORMAL, false, Verb::RunAs)?;
+    Ok(())
+}
+
+enum Verb {
+    Open,
+    RunAs,
 }
 
 /// 测试用。隐藏窗口并等待进程退出。不要拿它启动图形界面程序。
 #[cfg(test)]
 pub(crate) fn launch_and_wait(target: &LaunchTarget, timeout_ms: u32) -> Result<u32, LaunchError> {
-    let handle = launch_inner(target, SW_HIDE, true)?;
+    let handle = launch_inner(target, SW_HIDE, true, Verb::Open)?;
     let handle = handle.ok_or_else(|| LaunchError {
         message: "启动没有返回进程".to_owned(),
     })?;
@@ -70,6 +86,7 @@ fn launch_inner(
     target: &LaunchTarget,
     show: i32,
     wait: bool,
+    verb: Verb,
 ) -> Result<Option<windows::Win32::Foundation::HANDLE>, LaunchError> {
     comutil::ensure_com().map_err(|message| LaunchError { message })?;
     let (file, args, directory) = command_line(target);
@@ -83,7 +100,10 @@ fn launch_inner(
     if wait {
         info.fMask |= SEE_MASK_NOCLOSEPROCESS;
     }
-    info.lpVerb = w!("open");
+    info.lpVerb = match verb {
+        Verb::Open => w!("open"),
+        Verb::RunAs => w!("runas"),
+    };
     info.lpFile = pcwstr(&file_wide);
     info.lpParameters = if args.is_empty() {
         windows::core::PCWSTR::null()
@@ -120,5 +140,6 @@ fn command_line(target: &LaunchTarget) -> (String, String, Option<&Path>) {
         LaunchTarget::Aumid { aumid } => {
             (format!(r"shell:AppsFolder\{aumid}"), String::new(), None)
         }
+        LaunchTarget::Url { url } => (url.clone(), String::new(), None),
     }
 }

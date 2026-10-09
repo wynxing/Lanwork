@@ -50,6 +50,13 @@ fn read_dir_exes(dir: &Path) -> Result<Vec<AppEntry>, ()> {
         if name.is_empty() {
             continue;
         }
+        let target_name = path
+            .file_name()
+            .map(|file_name| file_name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if crate::apps::rules::is_uninstaller(&name, &target_name, "") {
+            continue;
+        }
         entries.push(AppEntry {
             name,
             source: AppSource::Path,
@@ -60,6 +67,7 @@ fn read_dir_exes(dir: &Path) -> Result<Vec<AppEntry>, ()> {
             },
             icon_path: None,
             icon_index: 0,
+            alternate_names: Vec::new(),
         });
     }
     Ok(entries)
