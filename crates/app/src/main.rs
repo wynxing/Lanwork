@@ -1,6 +1,6 @@
 //! Lanwork 程序外壳。
 //!
-//! 面板的可见界面还没有。非 Windows 上只说明平台并退出。
+//! 非 Windows 上只说明平台并退出。
 
 use lanwork_core as _;
 
@@ -12,6 +12,8 @@ mod bar_win;
 mod host;
 #[cfg(windows)]
 mod instance;
+#[cfg(windows)]
+mod panel;
 #[cfg(windows)]
 mod platform;
 #[cfg(windows)]
@@ -50,5 +52,16 @@ mod tests {
         }
         assert!(source.contains("tooltip: \"Lanwork\""));
         assert!(source.contains("title: \"退出\""));
+    }
+
+    #[test]
+    fn panel_has_no_today_or_focus_page() {
+        let source = include_str!("../ui/panel.slint");
+        for forbidden in ["今日", "focus-page", "FocusPage"] {
+            assert!(
+                !source.contains(forbidden),
+                "panel.slint mentions {forbidden}"
+            );
+        }
     }
 }

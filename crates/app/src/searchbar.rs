@@ -1,6 +1,6 @@
 //! 搜索条窗口：热键显示与收起、输入交给查询调度、结果列表和打开动作。
 //!
-//! 待办和便签的落点在面板与便签悬浮窗里，这两个窗口还没有。快速收集的预览和提交也不在这里。
+//! 待办结果的落点是面板（`panel`）。便签的落点在便签页与悬浮窗里，这两个还没有。快速收集的预览和提交也不在这里。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,6 +17,7 @@ use lanwork_core::dispatch::{
     QueryView, RgbaImage, RowDetail, SearchGroup, SearchRow, Surface, SystemClock, UsageKey,
     ViewPhase,
 };
+use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
     BAR_WIDTH, Backdrop, EnterChord, EscapeAction, ROW_HEIGHT, RowAction, WorkArea, bar_origin,
@@ -583,9 +584,15 @@ impl Bar {
     }
 }
 
-/// 面板（#23）和便签悬浮窗（#26）还没有。这里只占住调用点，不显示任何东西。
+/// 待办结果打开面板并定位。便签悬浮窗（#26）和便签页还没有，这两类结果仍只占住调用点。
 fn hand_off(action: RowAction) {
-    let _ = action;
+    match action {
+        RowAction::PanelTodo { item_id, .. } => {
+            crate::panel::open_target(PanelTarget::Todo { item_id });
+        }
+        RowAction::PanelNote { .. } | RowAction::FloatNote { .. } => {}
+        _ => {}
+    }
 }
 
 fn run_shell(action: &RowAction) -> Result<(), LaunchError> {

@@ -1,0 +1,963 @@
+// 面板。标题栏是产品名、标签和关闭，下面是当前标签的内容。版式由这里决定，数据和动作在 Rust。
+// 风格与搜索条一致：亚克力时客户区透明，纯色时由这里画满；深浅两套配色。
+
+import { ListView, Palette } from "std-widgets.slint";
+
+export struct PanelRow {
+    title: string,
+    completed: bool,
+    current: bool,
+    due: string,
+    overdue: bool,
+    recurrence: string,
+    source: string,
+    // 回收站里：还剩几天被清除。
+    note: string,
+}
+
+export struct PanelList {
+    name: string,
+    count: int,
+}
+
+export struct PanelDetail {
+    title: string,
+    due: string,
+    remind: string,
+    // 0 无，1 每天，2 每周，3 每两周，4 每月。
+    recurrence: int,
+    until: string,
+    has-source: bool,
+    current: bool,
+    can-up: bool,
+    can-down: bool,
+}
+
+export struct Ink {
+    ink: color,
+    secondary: color,
+    tertiary: color,
+    divider: color,
+    hover: color,
+    selection: color,
+    field: color,
+    accent: color,
+    critical: color,
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <color> tone;
+    in property <bool> filled: false;
+    in property <color> on-fill: #ffffff;
+
+    width: label.preferred-width + 12px;
+    background: transparent;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: parent.width;
+        height: 20px;
+        border-radius: 4px;
+        background: filled ? tone : transparent;
+        border-width: filled ? 0px : 1px;
+        border-color: tone;
+
+        label := Text {
+            x: 6px;
+            text: root.text;
+            color: root.filled ? root.on-fill : root.tone;
+            font-size: 11px;
+            vertical-alignment: center;
+            height: 100%;
+        }
+    }
+}
+
+component Btn inherits Rectangle {
+    in property <string> text;
+    in property <Ink> c;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    callback clicked();
+
+    height: 30px;
+    width: label.preferred-width + 20px;
+    border-radius: 6px;
+    background: enabled && touch.has-hover ? c.hover : transparent;
+    border-width: 1px;
+    border-color: c.divider;
+
+    label := Text {
+        x: 10px;
+        text: root.text;
+        color: !enabled ? c.tertiary : danger ? c.critical : c.ink;
+        font-size: 13px;
+        vertical-alignment: center;
+        height: 100%;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// 单行输入。用 TextInput 而不是 LineEdit，因为要读 preedit-text：组合输入期间 Enter 不提交。
+component Field inherits Rectangle {
+    in property <string> source-text;
+    // 换了条目或写入成功后加一，输入框回到 source-text。
+    in property <int> reset;
+    in property <string> name;
+    in property <Ink> c;
+    in property <bool> enabled: true;
+    callback committed(string);
+    callback escape();
+
+    out property <bool> has-focus: input.has-focus;
+
+    public function clear() {
+        input.text = "";
+    }
+    public function focus-field() {
+        input.focus();
+    }
+
+    height: 30px;
+    border-radius: 6px;
+    background: c.field;
+    border-width: 1px;
+    border-color: input.has-focus ? c.accent : c.divider;
+    clip: true;
+
+    init => {
+        input.text = root.source-text;
+    }
+    changed source-text => {
+        input.text = root.source-text;
+    }
+    changed reset => {
+        input.text = root.source-text;
+    }
+
+    if input.text == "" && input.preedit-text == "" && name != "": Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: name;
+        color: c.tertiary;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    clip-box := Rectangle {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        clip: true;
+
+        input := TextInput {
+            property <length> computed-x;
+
+            x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+            width: max(parent.width - self.text-cursor-width, self.preferred-width);
+            height: 100%;
+            single-line: true;
+            font-size: 13px;
+            color: root.enabled ? c.ink : c.tertiary;
+            read-only: !root.enabled;
+            vertical-alignment: center;
+            selection-background-color: c.accent.with-alpha(0.35);
+            selection-foreground-color: c.ink;
+
+            cursor-position-changed(cursor-position) => {
+                if cursor-position.x + self.computed-x < 0px {
+                    self.computed-x = -cursor-position.x;
+                } else if cursor-position.x + self.computed-x > parent.width - self.text-cursor-width {
+                    self.computed-x = parent.width - cursor-position.x - self.text-cursor-width;
+                }
+            }
+
+            key-pressed(event) => {
+                if self.preedit-text != "" {
+                    return reject;
+                }
+                if event.text == Key.Escape {
+                    root.escape();
+                    return accept;
+                }
+                if event.text == Key.Return {
+                    root.committed(self.text);
+                    return accept;
+                }
+                reject
+            }
+        }
+    }
+}
+
+component Check inherits Rectangle {
+    in property <bool> checked;
+    in property <Ink> c;
+    callback toggled();
+
+    width: 28px;
+    height: 28px;
+    background: transparent;
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        border-width: 1.5px;
+        border-color: checked ? c.accent : c.secondary;
+        background: checked ? c.accent : touch.has-hover ? c.hover : transparent;
+
+        if checked: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 18;
+            viewbox-height: 18;
+            fill: transparent;
+            stroke: #ffffff;
+            stroke-width: 1.6px;
+            commands: "M5 9.3l2.7 2.7 5.2-5.4";
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+component Segments inherits Rectangle {
+    in property <[string]> items;
+    in property <int> current;
+    in property <Ink> c;
+    callback chosen(int);
+
+    height: 30px;
+    width: row.preferred-width;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: c.divider;
+    clip: true;
+
+    row := HorizontalLayout {
+        for item[index] in items: Rectangle {
+            width: label.preferred-width + 20px;
+            background: index == root.current ? c.selection : touch.has-hover ? c.hover : transparent;
+
+            label := Text {
+                x: 10px;
+                text: item;
+                color: index == root.current ? c.accent : c.ink;
+                font-size: 13px;
+                font-weight: index == root.current ? 600 : 400;
+                vertical-alignment: center;
+                height: 100%;
+            }
+
+            touch := TouchArea {
+                clicked => {
+                    root.chosen(index);
+                }
+            }
+        }
+    }
+}
+
+export component Panel inherits Window {
+    title: "Lanwork";
+    no-frame: true;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+
+    in property <bool> dark;
+    // 亚克力时客户区透明，DWM 画背景。
+    in property <bool> acrylic;
+    in property <color> solid-color: #f3f3f3;
+    in property <length> panel-width: 760px;
+    in property <length> panel-height: 560px;
+
+    in property <[string]> tab-titles;
+    in-out property <int> tab;
+    in property <string> empty-label;
+
+    in property <[PanelList]> lists;
+    // 回收站被选中时是 -1。
+    in property <int> selected-list;
+    in property <bool> trash-selected;
+    in property <int> trash-count;
+    in property <bool> can-delete-list;
+    in property <[PanelRow]> rows;
+    in property <int> selected-row: -1;
+    in property <PanelDetail> detail;
+    in property <int> detail-version;
+    in property <string> error;
+
+    callback tab-selected(int);
+    callback close-panel();
+    callback escape();
+    callback drag-window();
+    callback select-list(int);
+    callback select-trash();
+    callback create-list(string);
+    callback delete-list();
+    callback add-item(string);
+    callback select-row(int);
+    callback toggle-complete(int);
+    callback toggle-current();
+    callback open-source();
+    callback move-item(bool);
+    callback delete-item();
+    callback restore-item();
+    callback purge-item();
+    callback commit-title(string);
+    callback commit-due(string);
+    callback commit-remind(string);
+    callback choose-recurrence(int);
+    callback commit-until(string);
+
+    property <length> title-height: 48px;
+    property <length> rail-width: 168px;
+    property <length> row-height: 44px;
+    property <bool> has-selection: selected-row >= 0 && selected-row < rows.length;
+
+    property <Ink> c: {
+        ink: dark ? #ffffff : #1b1b1b,
+        secondary: dark ? #c5c5c5 : #5d5d5d,
+        tertiary: dark ? #9a9a9a : #767676,
+        divider: dark ? #ffffff17 : #00000014,
+        hover: dark ? #ffffff0d : #00000008,
+        selection: dark ? #ffffff14 : #0000000d,
+        field: dark ? #ffffff0a : #ffffff80,
+        accent: dark ? #60cdff : #005fb8,
+        critical: dark ? #ff99a4 : #c42b1c,
+    };
+
+    width: panel-width;
+    height: panel-height;
+    background: acrylic ? transparent : solid-color;
+
+    init => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    public function focus-root() {
+        scope.focus();
+    }
+
+    public function clear-new-item() {
+        new-item.clear();
+    }
+
+    public function clear-new-list() {
+        new-list.clear();
+    }
+
+    // 让某一行留在可见范围里。
+    public function ensure-row-visible(index: int) {
+        if index < 0 {
+            return;
+        }
+        if -list.content-y > index * row-height {
+            list.content-y = -(index * row-height);
+        } else if -list.content-y + list.visible-height < (index + 1) * row-height {
+            list.content-y = -((index + 1) * row-height - list.visible-height);
+        }
+    }
+
+    public function scroll-to-top() {
+        list.content-y = 0px;
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.escape();
+                return accept;
+            }
+            reject
+        }
+
+        Rectangle {
+            // 标题栏：产品名、标签、关闭。空白处可以拖动窗口。
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: title-height;
+
+                TouchArea {
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                            root.drag-window();
+                        }
+                    }
+                }
+
+                Text {
+                    x: 20px;
+                    width: 80px;
+                    height: parent.height;
+                    text: "Lanwork";
+                    color: c.ink;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                HorizontalLayout {
+                    x: 108px;
+                    height: parent.height;
+                    spacing: 4px;
+
+                    for name[index] in tab-titles: Rectangle {
+                        width: tab-label.preferred-width + 24px;
+                        background: tab-touch.has-hover && index != root.tab ? c.hover : transparent;
+                        border-radius: 6px;
+
+                        tab-label := Text {
+                            x: 12px;
+                            height: parent.height;
+                            text: name;
+                            color: index == root.tab ? c.accent : c.secondary;
+                            font-size: 14px;
+                            font-weight: index == root.tab ? 600 : 400;
+                            vertical-alignment: center;
+                        }
+
+                        if index == root.tab: Rectangle {
+                            x: 12px;
+                            y: parent.height - 3px;
+                            width: parent.width - 24px;
+                            height: 2px;
+                            border-radius: 1px;
+                            background: c.accent;
+                        }
+
+                        tab-touch := TouchArea {
+                            clicked => {
+                                root.tab-selected(index);
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    x: parent.width - 48px;
+                    width: 48px;
+                    height: parent.height;
+                    background: close-touch.has-hover ? c.hover : transparent;
+
+                    Path {
+                        x: 17px;
+                        y: 17px;
+                        width: 14px;
+                        height: 14px;
+                        viewbox-width: 14;
+                        viewbox-height: 14;
+                        fill: transparent;
+                        stroke: c.secondary;
+                        stroke-width: 1.4px;
+                        commands: "M2 2l10 10 M12 2l-10 10";
+                    }
+
+                    close-touch := TouchArea {
+                        clicked => {
+                            root.close-panel();
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                x: 0px;
+                y: title-height;
+                width: parent.width;
+                height: 1px;
+                background: c.divider;
+            }
+
+            // 标签内容。只有待办有内容，其他标签只显示一行对象名。
+            if root.tab != 0: Text {
+                x: 24px;
+                y: title-height + 20px;
+                width: parent.width - 48px;
+                text: empty-label;
+                color: c.secondary;
+                font-size: 14px;
+                overflow: elide;
+            }
+
+            Rectangle {
+                visible: root.tab == 0;
+                x: 0px;
+                y: title-height + 1px;
+                width: parent.width;
+                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+
+                // 左侧清单。
+                Rectangle {
+                    x: 0px;
+                    width: rail-width;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+
+                        for entry[index] in lists: Rectangle {
+                            height: 36px;
+                            border-radius: 6px;
+                            background: !trash-selected && index == selected-list ? c.selection : list-touch.has-hover ? c.hover : transparent;
+
+                            Text {
+                                x: 12px;
+                                width: parent.width - 24px - 28px;
+                                height: parent.height;
+                                text: entry.name;
+                                color: c.ink;
+                                font-size: 13px;
+                                font-weight: !trash-selected && index == selected-list ? 600 : 400;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            if entry.count > 0: Text {
+                                x: parent.width - 12px - 28px;
+                                width: 28px;
+                                height: parent.height;
+                                text: entry.count;
+                                color: c.tertiary;
+                                font-size: 12px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+
+                            list-touch := TouchArea {
+                                clicked => {
+                                    root.select-list(index);
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 36px;
+                            border-radius: 6px;
+                            background: trash-selected ? c.selection : trash-touch.has-hover ? c.hover : transparent;
+
+                            Text {
+                                x: 12px;
+                                width: parent.width - 24px - 28px;
+                                height: parent.height;
+                                text: "回收站";
+                                color: c.ink;
+                                font-size: 13px;
+                                font-weight: trash-selected ? 600 : 400;
+                                vertical-alignment: center;
+                            }
+
+                            if trash-count > 0: Text {
+                                x: parent.width - 12px - 28px;
+                                width: 28px;
+                                height: parent.height;
+                                text: trash-count;
+                                color: c.tertiary;
+                                font-size: 12px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+
+                            trash-touch := TouchArea {
+                                clicked => {
+                                    root.select-trash();
+                                }
+                            }
+                        }
+                    }
+
+                    new-list := Field {
+                        x: 8px;
+                        y: parent.height - self.height - 8px;
+                        width: parent.width - 16px;
+                        name: "新建清单";
+                        c: root.c;
+                        committed(text) => {
+                            root.create-list(text);
+                        }
+                        escape => {
+                            root.escape();
+                        }
+                    }
+                }
+
+                Rectangle {
+                    x: rail-width;
+                    width: 1px;
+                    height: parent.height;
+                    background: c.divider;
+                }
+
+                // 右侧内容。
+                Rectangle {
+                    x: rail-width + 1px;
+                    width: parent.width - rail-width - 1px;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        HorizontalLayout {
+                            visible: !trash-selected;
+                            padding: 12px;
+                            padding-bottom: 8px;
+                            spacing: 8px;
+                            height: trash-selected ? 0px : 50px;
+
+                            new-item := Field {
+                                name: "新建待办";
+                                c: root.c;
+                                committed(text) => {
+                                    root.add-item(text);
+                                }
+                                escape => {
+                                    root.escape();
+                                }
+                            }
+
+                            if can-delete-list: Btn {
+                                text: "删除清单";
+                                c: root.c;
+                                danger: true;
+                                clicked => {
+                                    root.delete-list();
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            vertical-stretch: 1;
+
+                            if rows.length == 0: Text {
+                                x: 16px;
+                                y: 12px;
+                                text: "没有待办";
+                                color: c.secondary;
+                                font-size: 14px;
+                            }
+
+                            list := ListView {
+                                visible: rows.length > 0;
+
+                                for row[index] in rows: Rectangle {
+                                    property <bool> is-selected: index == root.selected-row;
+
+                                    height: row-height;
+
+                                    Rectangle {
+                                        x: 6px;
+                                        width: parent.width - 12px;
+                                        border-radius: 6px;
+                                        background: is-selected ? c.selection : row-touch.has-hover ? c.hover : transparent;
+                                    }
+
+                                    if is-selected: Rectangle {
+                                        x: 6px;
+                                        y: (parent.height - 16px) / 2;
+                                        width: 3px;
+                                        height: 16px;
+                                        border-radius: 1.5px;
+                                        background: c.accent;
+                                    }
+
+                                    row-touch := TouchArea {
+                                        clicked => {
+                                            root.select-row(index);
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: 14px;
+                                        padding-right: 14px;
+                                        spacing: 8px;
+
+                                        if !trash-selected: Check {
+                                            c: root.c;
+                                            checked: row.completed;
+                                            toggled => {
+                                                root.toggle-complete(index);
+                                            }
+                                        }
+
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: row.title;
+                                            color: row.completed || trash-selected ? c.tertiary : c.ink;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+
+                                        if row.current: Chip {
+                                            text: "当前";
+                                            tone: c.accent;
+                                            filled: true;
+                                            on-fill: dark ? #000000 : #ffffff;
+                                        }
+
+                                        if row.due != "": Chip {
+                                            text: row.overdue ? "逾期 " + row.due : row.due;
+                                            tone: row.overdue ? c.critical : c.secondary;
+                                        }
+
+                                        if row.recurrence != "": Chip {
+                                            text: row.recurrence;
+                                            tone: c.secondary;
+                                        }
+
+                                        if row.source != "": Chip {
+                                            text: row.source;
+                                            tone: c.secondary;
+                                        }
+
+                                        if row.note != "": Chip {
+                                            text: row.note;
+                                            tone: c.secondary;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if has-selection: Rectangle {
+                            height: 1px;
+                            background: c.divider;
+                        }
+
+                        // 选中条目的字段和动作。
+                        if has-selection: VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                height: 30px;
+
+                                if !trash-selected: Field {
+                                    source-text: detail.title;
+                                    reset: detail-version;
+                                    c: root.c;
+                                    committed(text) => {
+                                        root.commit-title(text);
+                                    }
+                                    escape => {
+                                        root.escape();
+                                    }
+                                }
+
+                                if trash-selected: Text {
+                                    horizontal-stretch: 1;
+                                    text: detail.title;
+                                    color: c.secondary;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                if trash-selected && detail.current: Btn {
+                                    text: "清除当前";
+                                    c: root.c;
+                                    clicked => {
+                                        root.toggle-current();
+                                    }
+                                }
+
+                                if trash-selected: Btn {
+                                    text: "恢复";
+                                    c: root.c;
+                                    clicked => {
+                                        root.restore-item();
+                                    }
+                                }
+
+                                if trash-selected: Btn {
+                                    text: "永久删除";
+                                    c: root.c;
+                                    danger: true;
+                                    clicked => {
+                                        root.purge-item();
+                                    }
+                                }
+
+                                if !trash-selected: Btn {
+                                    text: detail.current ? "清除当前" : "设为当前";
+                                    c: root.c;
+                                    clicked => {
+                                        root.toggle-current();
+                                    }
+                                }
+
+                                if !trash-selected && detail.has-source: Btn {
+                                    text: "打开来源";
+                                    c: root.c;
+                                    clicked => {
+                                        root.open-source();
+                                    }
+                                }
+
+                                if !trash-selected: Btn {
+                                    text: "上移";
+                                    c: root.c;
+                                    enabled: detail.can-up;
+                                    clicked => {
+                                        root.move-item(true);
+                                    }
+                                }
+
+                                if !trash-selected: Btn {
+                                    text: "下移";
+                                    c: root.c;
+                                    enabled: detail.can-down;
+                                    clicked => {
+                                        root.move-item(false);
+                                    }
+                                }
+
+                                if !trash-selected: Btn {
+                                    text: "删除";
+                                    c: root.c;
+                                    danger: true;
+                                    clicked => {
+                                        root.delete-item();
+                                    }
+                                }
+                            }
+
+                            if !trash-selected: HorizontalLayout {
+                                spacing: 8px;
+                                height: 30px;
+                                alignment: start;
+
+                                Text {
+                                    text: "到期";
+                                    color: c.secondary;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+
+                                Field {
+                                    width: 104px;
+                                    source-text: detail.due;
+                                    reset: detail-version;
+                                    c: root.c;
+                                    committed(text) => {
+                                        root.commit-due(text);
+                                    }
+                                    escape => {
+                                        root.escape();
+                                    }
+                                }
+
+                                Text {
+                                    text: "提醒";
+                                    color: c.secondary;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+
+                                Field {
+                                    width: 64px;
+                                    source-text: detail.remind;
+                                    reset: detail-version;
+                                    c: root.c;
+                                    committed(text) => {
+                                        root.commit-remind(text);
+                                    }
+                                    escape => {
+                                        root.escape();
+                                    }
+                                }
+
+                                Text {
+                                    text: "周期";
+                                    color: c.secondary;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+
+                                Segments {
+                                    items: ["无", "每天", "每周", "每两周", "每月"];
+                                    current: detail.recurrence;
+                                    c: root.c;
+                                    chosen(index) => {
+                                        root.choose-recurrence(index);
+                                    }
+                                }
+                            }
+
+                            if !trash-selected && detail.recurrence > 0: HorizontalLayout {
+                                spacing: 8px;
+                                height: 30px;
+                                alignment: start;
+
+                                Text {
+                                    text: "重复截止";
+                                    color: c.secondary;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+
+                                Field {
+                                    width: 104px;
+                                    source-text: detail.until;
+                                    reset: detail-version;
+                                    c: root.c;
+                                    committed(text) => {
+                                        root.commit-until(text);
+                                    }
+                                    escape => {
+                                        root.escape();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.error != "": Rectangle {
+                x: 0px;
+                y: parent.height - 32px;
+                width: parent.width;
+                height: 32px;
+
+                Rectangle {
+                    width: parent.width;
+                    height: 1px;
+                    background: c.divider;
+                }
+
+                Text {
+                    x: 20px;
+                    width: parent.width - 40px;
+                    height: parent.height;
+                    text: root.error;
+                    color: c.critical;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
