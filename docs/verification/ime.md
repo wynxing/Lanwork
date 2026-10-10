@@ -1,6 +1,6 @@
 # 技术验证记录：中文输入法
 
-日期：2026-10-08。人工测试是 2026-10-08～09。
+日期：2026-10-08。人工测试是 2026-10-08～09。条件 5 的失败观察是 2026-10-10。
 
 被测代码 commit：`da42398c94a79bdbf336af5548fe0ca45f689dc5`（`spikes/ime` 与变基前的 `93b01dba5a0bc64524d49ed45c6c07fd7d286c8e` 相同）。窗口标题是 `Lanwork IME`。
 
@@ -24,7 +24,7 @@ GPU 与驱动：
 
 构建配置：debug。编译器 `rustc 1.99.0 (b940084d7 2026-09-28)`。并入当前 `origin/main` 之后又跑了 `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` 和 `cargo test`。没有设置 `SLINT_BACKEND`。
 
-该项尚未通过。条件 5 仍是「未测」。按 architecture.md，全部条件都通过才算这项通过。
+该项尚未通过。条件 5 在 2026-10-10 记为「未通过待复测」。按 architecture.md，全部条件都通过才算这项通过。
 
 ## 通过条件
 
@@ -36,7 +36,7 @@ GPU 与驱动：
 | 2 | 微软拼音在多行框里能组合并上屏，包括中英文混排、长句和翻页选词 | 通过 | 用户报告多行框输入没有问题 |
 | 3 | 两个框的候选窗都贴在光标处，翻页时也贴着 | 通过 | 用户报告候选窗位置没有问题 |
 | 4 | 拖动窗口后，候选窗仍贴在光标处 | 通过 | 用户报告拖动窗口后候选窗位置没有问题 |
-| 5 | 窗口在 100% 与 150% 缩放的两块显示器之间移动后，组合和候选窗仍然正确 | 未测 | 150% 缩放未测 |
+| 5 | 窗口在 100% 与 150% 缩放的两块显示器之间移动后，组合和候选窗仍然正确 | 未通过待复测 | 2026-10-10，`DESKTOP-HDJS01V`，主屏 100%、副屏 150%。100%→150% 时组合和候选窗都在。150%→100% 时窗口被拉大，内容缩在左上角，候选窗消失，只剩拼音 preedit。绕过已写进 spike，还没有在这台机器上复测 |
 | 6 | 组合未上屏时按 Enter，搜索条的 `accepted` 不增加 | 通过 | 用户报告 Enter 没有问题 |
 | 7 | 组合未上屏时按数字键 1 到 5，两个框的「应用看到 1–5」都不增加，候选由输入法处理 | 通过 | 用户报告数字键选词没有问题 |
 
@@ -92,7 +92,32 @@ cargo run -p ime
 
 ### 条件 5
 
-这次会话只有一块 100% 的显示器，所以这一项现在不能测。准备好一块 100% 和一块 150% 的显示器后再测：在搜索条保持 `nihao` 未上屏，把窗口拖到另一块显示器上。组合应仍在，候选窗仍贴着光标，文字大小应跟着那块屏幕的缩放。两块缩放都看过才把结果从「未测」改掉。建议截图 `docs/verification/ime/candidate-after-dpi.png`。
+2026-10-10，在 `DESKTOP-HDJS01V`（Windows 11 build 26300）上，主屏 100%、副屏 150%。搜索条保持 `nihao` 未上屏，拖标题为「中文输入法验证」的窗口。这次没有把截图放进仓库。当时的日志在 `C:\Users\yumiw\AppData\Local\Temp\lanwork-ime-spike.log`。
+
+| 方向 | 观察 |
+| --- | --- |
+| 100% → 150% | 组合还在，候选窗也在 |
+| 150% → 100% | 整个窗口被拉大拉长，内容缩在左上角，外框没有按新的 DPI 缩小。候选窗消失，只剩拼音 preedit |
+
+结果是「未通过待复测」。两个方向都要再看过，才能改成通过。
+
+窗口逻辑尺寸固定为 720×760。变大之后缩放已是 1.0，所以内容画在客户区左上角，其余是空的。
+
+原因在 winit 0.30.13，由 `i-slint-backend-winit` 1.18.1 带进来。`WM_DPICHANGED` 的处理自己用旧物理尺寸乘新缩放、除旧缩放来算外框，`lParam` 里的建议矩形没有参加这次计算。拖动过程中 `MonitorFromWindow` 仍返回正在离开的显示器，窗口被推回去，系统再发一次 DPI 消息。从 150% 回到 100% 时，第二次计算看见的缩放已经是 96，物理像素还是上一档的。720 逻辑像素在 144 DPI 上是 1080 物理像素；这 1080 再按从 96 到 144 乘回去，得到 1620，窗口变大。winit 问题 [4041](https://github.com/rust-windowing/winit/issues/4041) 和 [4600](https://github.com/rust-windowing/winit/issues/4600) 记的是同一条路径，0.30.13 里仍在。
+
+Slint 1.18.1 的 `WinitWindowAdapter` 收到 `ScaleFactorChanged` 后不调用 `set_ime_cursor_area`。源码里留着保持逻辑尺寸的 TODO。输入法光标还停在旧的物理坐标上，微软拼音就不再显示候选窗。预编辑由 `TextInput` 自己画，所以还在。固定尺寸窗口在两块缩放不同的屏幕之间被拖大，也记在 Slint 问题 [11073](https://github.com/slint-ui/slint/issues/11073)。
+
+绕过只在 `spikes/ime`，winit 仍是 0.30.13，`Cargo.lock` 里已有的版本没有因此改动。窗口装上 `SetWindowSubclass`。拖动期间，最外层的 `WM_DPICHANGED` 锁住建议矩形，在 `WM_WINDOWPOSCHANGING` 里用它换掉 winit 算出的外框。外框仍对不上时再 `SetWindowPos`，带 `SWP_NOACTIVATE`，避免输入法失焦。这次消息返回之后，拖动还没结束时只保住该尺寸，位置仍跟着光标。松手后按当前 DPI 再收一次外框，并用逻辑光标乘 `dpi/96`（四舍五入，与 winit 的 `to_physical` 相同）调用 `ImmSetCompositionWindow`（`CFS_POINT`）和 `ImmSetCandidateWindow`（`CFS_EXCLUDE`）。`HIMC` 只 `ImmReleaseContext`。windows 0.62 里 `HIMC` 的 `Free` 会调用 `ImmDestroyContext`，这里不走那条路。事件循环回到 Slint 之后再做一次，并在 50 毫秒后再做一次，躲开拖动模态循环里被缓住的缩放和尺寸事件。
+
+复测仍用下面的 `cargo run -p ime`，不要设置 `SLINT_BACKEND`。启动日志应有一行 `DPI 子类已装上`。若出现 `DPI 子类未装上`，把那一行原文记下来，不要把条件 5 写成通过。
+
+1. 主屏 100%，副屏 150%。微软拼音，指示器是「中」。
+2. 搜索条输入 `nihao`，不要上屏。从 100% 拖到 150%。组合和候选窗都要还在，文字大小跟着那块屏幕，内容铺满窗口。
+3. 再从 150% 拖回 100%。外框应随新 DPI 缩小，内容铺满窗口。候选窗仍贴着光标，preedit 仍在。
+4. 便签框同样做这两个方向。
+5. 日志里应能看到 `DPI 拖动` 和 `IME 光标`。把这两行原文留在观察栏。
+
+两个方向都由人看过，才把结果从「未通过待复测」改成通过。建议截图 `docs/verification/ime/candidate-after-dpi.png`。
 
 ### 条件 6
 
@@ -141,10 +166,10 @@ cargo run -p ime
 
 单行 `TextInput` 收到 `KeyPressed` 且文本是换行（`U+000A`）时调用 `accepted`。这段代码不看 `preedit-text`。组合期间 `Enter` 会不会变成这次按键，取决于 Windows 和 winit 是否把按键交给应用。spike 只计数，不吞掉按键。数字键 1 到 5 同样没有在组合期间被 Slint 滤掉。
 
-winit 后端在 `input_method_request` 里调用 `set_ime_cursor_area`，传入光标矩形。条件 3 和 4 的用户报告是候选窗位置没有问题。条件 5 的 150% 缩放未测。
+winit 后端在 `input_method_request` 里调用 `set_ime_cursor_area`，传入光标矩形。条件 3 和 4 的用户报告是候选窗位置没有问题。条件 5 里，缩放变化后 Slint 1.18.1 不更新这块区域；spike 在拖动跨 DPI 之后自己重设组合窗和候选窗。这一项仍是未通过待复测。
 
 ## 架构文档
 
-没有改 `docs/architecture.md`。条件 5 未测，这项还没有通过，不能据此把某个 Slint 版本或后端写成必需设置。
+没有改 `docs/architecture.md`。条件 5 未通过待复测，这项还没有通过，不能据此把某个 Slint 版本或后端写成必需设置。
 
 条件 6 的用户报告是 Enter 没有问题，所以仍然不把文本框写法写进架构文档。若以后观察到组合期间 Enter 增加了 `accepted`，再写搜索条如何读到组合状态。`LineEdit` 没有转发 `preedit-text`。

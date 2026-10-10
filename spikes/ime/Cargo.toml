@@ -8,7 +8,17 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
-slint.workspace = true
+slint = { workspace = true, features = ["raw-window-handle-06"] }
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6.2"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [build-dependencies]
 slint-build.workspace = true

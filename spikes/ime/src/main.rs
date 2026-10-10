@@ -5,6 +5,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+mod dpi;
+
 slint::include_modules!();
 
 const UI_LOG_LINES: usize = 40;
@@ -23,6 +25,15 @@ fn main() -> Result<(), slint::PlatformError> {
     };
     log.line(&startup_line());
     wire(&ui, &log);
+    dpi::set_logger({
+        let log = log.clone();
+        move |line| log.line(line)
+    });
+    match dpi::install(ui.window()) {
+        Ok(true) => log.line("DPI 子类已装上"),
+        Ok(false) => {}
+        Err(error) => log.line(&format!("DPI 子类未装上: {error}")),
+    }
 
     if std::env::var_os("LANWORK_IME_SPIKE_SMOKE").is_some() {
         slint::Timer::single_shot(std::time::Duration::from_millis(400), || {
@@ -88,6 +99,10 @@ fn wire(ui: &MainWindow, log: &Log) {
     let log_note_preedit = log.clone();
     ui.on_note_preedit(move |preedit| {
         log_note_preedit.line(&format!("便签 preedit 变为 {}", show_preedit(&preedit)));
+    });
+
+    ui.on_ime_caret(move |x, y, w, h| {
+        dpi::set_logical_caret(x, y, w, h);
     });
 }
 
