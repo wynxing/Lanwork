@@ -1,0 +1,426 @@
+// 面板的便签页：左侧是便签列表（或回收站），右侧是标题、标签和正文。版式由这里决定，数据和动作在 Rust。
+// 数据和回调放在 NotesPageData 里，面板窗口只负责把这个页面摆在标签内容区。
+
+import { ListView } from "std-widgets.slint";
+import { Btn, Chip, Field, Ink } from "widgets.slint";
+import { NoteEditor } from "noteeditor.slint";
+
+export struct NoteListRow {
+    title: string,
+    pinned: bool,
+    // 标签用顿号连成一行。
+    tags: string,
+    // 回收站里：还剩几天被清除。
+    note: string,
+}
+
+export struct TagFilter {
+    name: string,
+    active: bool,
+}
+
+export global NotesPageData {
+    in property <[NoteListRow]> rows;
+    in property <[TagFilter]> filters;
+    in property <int> selected: -1;
+    // 正在看回收站。
+    in property <bool> trash;
+    in property <int> list-count;
+    in property <int> trash-count;
+    // 选中的便签已经载入编辑区。
+    in property <bool> has-note;
+    in property <string> title;
+    // 换了便签或需要把输入框还原时加一。
+    in property <int> version;
+    in-out property <string> body;
+    in property <[string]> tags;
+    in property <bool> pinned;
+    // 新标签输入框清空时加一。
+    in property <int> tag-reset;
+    // 0 没有问题，1 保存失败，2 磁盘上的版本比加载时新。
+    in property <int> problem;
+    in property <string> problem-text;
+    in property <bool> closing;
+    in property <int> focus-ticket;
+    // 编辑区里还没上屏的输入法组合文字。
+    in-out property <string> preedit;
+
+    callback show-list();
+    callback show-trash();
+    callback new-note();
+    callback select-note(int);
+    callback toggle-filter(string);
+    callback title-edited(string);
+    callback body-edited(string);
+    callback add-tag(string);
+    callback remove-tag(string);
+    callback toggle-pin();
+    callback float-note();
+    callback delete-note();
+    callback restore-note();
+    callback purge-note();
+    callback retry();
+    callback discard();
+    callback keep-mine();
+    callback keep-saved();
+}
+
+export component NotesPage inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> dark;
+    callback escape();
+
+    property <length> rail-width: 232px;
+    property <length> row-height: 52px;
+    property <bool> rows-empty: NotesPageData.rows.length == 0;
+
+    // 左侧：便签与回收站两个视图、标签筛选、列表、新建。
+    Rectangle {
+        x: 0px;
+        width: rail-width;
+        height: parent.height;
+
+        VerticalLayout {
+            padding: 8px;
+            spacing: 6px;
+
+            HorizontalLayout {
+                height: 32px;
+                spacing: 4px;
+
+                for name[index] in ["便签", "回收站"]: Rectangle {
+                    property <bool> active: (index == 1) == NotesPageData.trash;
+                    property <int> count: index == 1 ? NotesPageData.trash-count : NotesPageData.list-count;
+
+                    horizontal-stretch: 1;
+                    border-radius: 6px;
+                    background: active ? c.selection : view-touch.has-hover ? c.hover : transparent;
+
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: count > 0 ? name + " " + count : name;
+                        color: active ? c.accent : c.ink;
+                        font-size: 13px;
+                        font-weight: active ? 600 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    view-touch := TouchArea {
+                        clicked => {
+                            if index == 1 {
+                                NotesPageData.show-trash();
+                            } else {
+                                NotesPageData.show-list();
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !NotesPageData.trash && NotesPageData.filters.length > 0: Flickable {
+                height: 28px;
+                content-width: filter-row.preferred-width;
+                interactive: true;
+
+                filter-row := HorizontalLayout {
+                    spacing: 4px;
+
+                    for filter in NotesPageData.filters: Rectangle {
+                        width: filter-label.preferred-width + 16px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: filter.active ? c.accent : c.divider;
+                        background: filter.active ? c.selection : filter-touch.has-hover ? c.hover : transparent;
+
+                        filter-label := Text {
+                            x: 8px;
+                            height: parent.height;
+                            text: filter.name;
+                            color: filter.active ? c.accent : c.secondary;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+
+                        filter-touch := TouchArea {
+                            clicked => {
+                                NotesPageData.toggle-filter(filter.name);
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                if rows-empty: Text {
+                    x: 8px;
+                    y: 6px;
+                    text: "没有便签";
+                    color: c.secondary;
+                    font-size: 14px;
+                }
+
+                ListView {
+                    visible: !rows-empty;
+
+                    for row[index] in NotesPageData.rows: Rectangle {
+                        property <bool> is-selected: index == NotesPageData.selected;
+
+                        height: row-height;
+
+                        Rectangle {
+                            width: parent.width;
+                            border-radius: 6px;
+                            background: is-selected ? c.selection : row-touch.has-hover ? c.hover : transparent;
+                        }
+
+                        if is-selected: Rectangle {
+                            x: 0px;
+                            y: (parent.height - 16px) / 2;
+                            width: 3px;
+                            height: 16px;
+                            border-radius: 1.5px;
+                            background: c.accent;
+                        }
+
+                        row-touch := TouchArea {
+                            clicked => {
+                                NotesPageData.select-note(index);
+                            }
+                        }
+
+                        VerticalLayout {
+                            padding-left: 12px;
+                            padding-right: 8px;
+                            padding-top: 7px;
+                            padding-bottom: 7px;
+                            spacing: 2px;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: row.title;
+                                    color: c.ink;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                if row.pinned: Chip {
+                                    text: "置顶";
+                                    tone: c.accent;
+                                }
+
+                                if row.note != "": Chip {
+                                    text: row.note;
+                                    tone: c.secondary;
+                                }
+                            }
+
+                            Text {
+                                text: row.tags;
+                                color: c.tertiary;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !NotesPageData.trash: Btn {
+                text: "新建便签";
+                c: root.c;
+                clicked => {
+                    NotesPageData.new-note();
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: rail-width;
+        width: 1px;
+        height: parent.height;
+        background: c.divider;
+    }
+
+    // 右侧：标题、标签、动作和正文。
+    Rectangle {
+        x: rail-width + 1px;
+        width: parent.width - rail-width - 1px;
+        height: parent.height;
+
+        if NotesPageData.has-note: VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                height: 30px;
+                spacing: 8px;
+
+                if !NotesPageData.trash: Field {
+                    source-text: NotesPageData.title;
+                    reset: NotesPageData.version;
+                    c: root.c;
+                    edited(text) => {
+                        NotesPageData.title-edited(text);
+                    }
+                    committed(text) => {
+                        editor.focus-body();
+                    }
+                    escape => {
+                        root.escape();
+                    }
+                }
+
+                if NotesPageData.trash: Text {
+                    horizontal-stretch: 1;
+                    text: NotesPageData.title;
+                    color: c.secondary;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                if !NotesPageData.trash: Btn {
+                    text: NotesPageData.pinned ? "取消置顶" : "置顶";
+                    c: root.c;
+                    clicked => {
+                        NotesPageData.toggle-pin();
+                    }
+                }
+
+                if !NotesPageData.trash: Btn {
+                    text: "悬浮";
+                    c: root.c;
+                    clicked => {
+                        NotesPageData.float-note();
+                    }
+                }
+
+                if !NotesPageData.trash: Btn {
+                    text: "删除";
+                    c: root.c;
+                    danger: true;
+                    clicked => {
+                        NotesPageData.delete-note();
+                    }
+                }
+
+                if NotesPageData.trash: Btn {
+                    text: "恢复";
+                    c: root.c;
+                    clicked => {
+                        NotesPageData.restore-note();
+                    }
+                }
+
+                if NotesPageData.trash: Btn {
+                    text: "永久删除";
+                    c: root.c;
+                    danger: true;
+                    clicked => {
+                        NotesPageData.purge-note();
+                    }
+                }
+            }
+
+            if !NotesPageData.trash: HorizontalLayout {
+                height: 30px;
+                spacing: 6px;
+
+                for tag in NotesPageData.tags: Rectangle {
+                    width: tag-label.preferred-width + 30px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: c.divider;
+
+                    tag-label := Text {
+                        x: 8px;
+                        height: parent.height;
+                        text: tag;
+                        color: c.secondary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        x: parent.width - 22px;
+                        width: 22px;
+                        height: parent.height;
+                        background: remove-touch.has-hover ? c.hover : transparent;
+
+                        Path {
+                            x: 7px;
+                            y: (parent.height - 8px) / 2;
+                            width: 8px;
+                            height: 8px;
+                            viewbox-width: 8;
+                            viewbox-height: 8;
+                            fill: transparent;
+                            stroke: c.secondary;
+                            stroke-width: 1.1px;
+                            commands: "M1 1l6 6 M7 1l-6 6";
+                        }
+
+                        remove-touch := TouchArea {
+                            clicked => {
+                                NotesPageData.remove-tag(tag);
+                            }
+                        }
+                    }
+                }
+
+                Field {
+                    horizontal-stretch: 1;
+                    min-width: 96px;
+                    name: "新标签";
+                    source-text: "";
+                    reset: NotesPageData.tag-reset;
+                    c: root.c;
+                    committed(text) => {
+                        NotesPageData.add-tag(text);
+                    }
+                    escape => {
+                        root.escape();
+                    }
+                }
+            }
+
+            editor := NoteEditor {
+                vertical-stretch: 1;
+                c: root.c;
+                editable: !NotesPageData.trash;
+                problem: NotesPageData.problem;
+                problem-text: NotesPageData.problem-text;
+                closing: NotesPageData.closing;
+                focus-ticket: NotesPageData.focus-ticket;
+                body <=> NotesPageData.body;
+                changed preedit => {
+                    NotesPageData.preedit = self.preedit;
+                }
+                body-edited(text) => {
+                    NotesPageData.body-edited(text);
+                }
+                retry => {
+                    NotesPageData.retry();
+                }
+                discard => {
+                    NotesPageData.discard();
+                }
+                keep-mine => {
+                    NotesPageData.keep-mine();
+                }
+                keep-saved => {
+                    NotesPageData.keep-saved();
+                }
+            }
+        }
+    }
+}

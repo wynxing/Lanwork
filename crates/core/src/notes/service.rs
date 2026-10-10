@@ -13,8 +13,8 @@ use crate::storage::{ChangeMeta, CollectionKind, DocumentId, Store, lock_mutex};
 
 use super::error::NoteError;
 use super::model::{
-    Note, NoteFile, NoteInput, SkipReason, TimestampMillis, normalize_query_tag, normalize_tags,
-    sort_for_list,
+    FloatGeometry, Note, NoteFile, NoteInput, SkipReason, TimestampMillis, normalize_query_tag,
+    normalize_tags, sort_for_list,
 };
 
 #[derive(Default)]
@@ -97,6 +97,7 @@ impl NoteService {
             updated_at: now,
             deleted_at: None,
             revision: 1,
+            float: None,
         };
         self.persist(note)
     }
@@ -127,6 +128,21 @@ impl NoteService {
             next.pinned = pinned;
             Ok(next)
         })
+    }
+
+    /// 记下这一篇悬浮窗的位置和大小。
+    ///
+    /// 不带 `revision`，也不改 `revision` 和 `updatedAt`：编辑区手里的版本号不会因此过期，
+    /// 列表顺序也不变。回收站里的便签同样可以记。
+    pub fn set_float(&self, id: &str, geometry: FloatGeometry) -> Result<Note, NoteError> {
+        self.check_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        let mut next = self.cached(id)?;
+        if next.float == Some(geometry) {
+            return Ok(next);
+        }
+        next.float = Some(geometry);
+        self.persist(next)
     }
 
     /// 替换标签列表。规则与保存时相同。

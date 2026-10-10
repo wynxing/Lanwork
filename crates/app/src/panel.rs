@@ -1,7 +1,7 @@
 //! 面板窗口：标签框架、待办页和定位接口。
 //!
 //! 窗口启动时创建并保持隐藏。待办页调用 `TodoCommands`，规则在服务里，这里只把命令结果
-//! 排成界面要的行。面板搜索框、热角、便签页、收纳页、GitHub 页和设置页还没有。
+//! 排成界面要的行。便签页在 `notes_page`。面板搜索框、热角、收纳页、GitHub 页和设置页还没有。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use lanwork_core::CivilDate;
 use lanwork_core::apps::{LaunchTarget, launch};
+use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::{
     self, PanelTab, PanelTarget, RECURRENCE_CHOICES, Row, TodoView, format_date, panel_origin,
     panel_size, parse_due, parse_remind, recurrence_from_choice, recurrence_index, reordered_ids,
@@ -21,6 +22,7 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::bar_win;
 use crate::host::{local_today, unix_now_ms};
+use crate::notes_page::NotesPage;
 use crate::{Panel, PanelDetail, PanelList, PanelRow};
 
 /// 显示后这段时间内的失焦不收起。托盘菜单关闭时焦点会迟到地变化一次。
@@ -31,7 +33,7 @@ thread_local! {
 }
 
 /// 在界面线程上取面板。回调里可能已经借用着，这时放到下一轮事件循环。
-fn with_panel(action: impl FnOnce(&mut Controller) + 'static) {
+pub(crate) fn with_panel(action: impl FnOnce(&mut Controller) + 'static) {
     let deferred = PANEL.with(|cell| match cell.try_borrow_mut() {
         Ok(mut slot) => {
             if let Some(panel) = slot.as_mut() {
@@ -46,8 +48,13 @@ fn with_panel(action: impl FnOnce(&mut Controller) + 'static) {
     }
 }
 
+/// 便签页的动作。和面板共用同一个借用，所以也走 [`with_panel`]。
+pub(crate) fn with_notes(action: impl FnOnce(&mut NotesPage, &Panel) + 'static) {
+    with_panel(move |panel| action(&mut panel.notes, &panel.ui));
+}
+
 /// 启动时调用一次。窗口保持隐藏，直到托盘或搜索结果打开它。
-pub(crate) fn install(ui: Panel, todos: TodoCommands, store: Store) {
+pub(crate) fn install(ui: Panel, todos: TodoCommands, notes: Option<NoteCommands>, store: Store) {
     let tab_titles: Vec<slint::SharedString> =
         PanelTab::ALL.iter().map(|tab| tab.title().into()).collect();
     ui.set_tab_titles(ModelRc::from(Rc::new(VecModel::from(tab_titles))));
@@ -80,6 +87,7 @@ pub(crate) fn install(ui: Panel, todos: TodoCommands, store: Store) {
     }
 
     let controller = Controller {
+        notes: NotesPage::new(&ui, notes, store.clone()),
         ui,
         todos,
         store,
@@ -109,6 +117,48 @@ pub(crate) fn show(tab: Option<PanelTab>) {
 /// 打开面板并定位到目标。搜索结果和到期通知都走这里。
 pub(crate) fn open_target(target: PanelTarget) {
     with_panel(move |panel| panel.open_target(&target));
+}
+
+/// 面板外的动作失败时，把原因显示在面板上。
+pub(crate) fn show_error(message: &str) {
+    let message = message.to_owned();
+    with_panel(move |panel| {
+        panel.show(None);
+        panel.error = Some(message);
+        panel.push_error();
+    });
+}
+
+/// 托盘「新建便签」：创建一篇，打开面板的便签页并选中它。
+pub(crate) fn new_note() {
+    with_panel(Controller::new_note);
+}
+
+/// 便签有变更消息时调用。面板隐藏时不重画，下次显示再读。
+pub(crate) fn on_notes_changed() {
+    with_panel(|panel| {
+        if panel.visible && panel.tab == PanelTab::Notes {
+            panel.notes.reload(&panel.ui);
+            panel.notes.refresh_editor(&panel.ui);
+        }
+    });
+}
+
+/// 退出前保存便签页里没写盘的修改。返回保存之后仍没写盘的窗口数，有的话面板显示出来，让用户选择。
+pub(crate) fn flush_notes_for_quit() -> usize {
+    PANEL.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return 1;
+        };
+        let Some(panel) = slot.as_mut() else {
+            return 0;
+        };
+        let blocked = panel.notes.flush_for_quit(&panel.ui);
+        if blocked > 0 {
+            panel.show(Some(PanelTab::Notes));
+        }
+        blocked
+    })
 }
 
 pub(crate) fn apply_theme(dark: bool) {
@@ -175,8 +225,9 @@ fn wire(ui: &Panel) {
     });
 }
 
-struct Controller {
+pub(crate) struct Controller {
     ui: Panel,
+    notes: NotesPage,
     todos: TodoCommands,
     store: Store,
     lists_model: Rc<VecModel<PanelList>>,
@@ -234,11 +285,22 @@ impl Controller {
     }
 
     fn open_target(&mut self, target: &PanelTarget) {
-        self.tab = PanelTab::Todo;
+        self.tab = match target {
+            PanelTarget::Todo { .. } => PanelTab::Todo,
+            PanelTarget::Note { .. } => PanelTab::Notes,
+        };
         self.prepare();
         match target {
             PanelTarget::Todo { item_id } => self.locate(item_id),
+            PanelTarget::Note { note_id } => self.notes.locate(&self.ui, note_id),
         }
+        self.present();
+    }
+
+    fn new_note(&mut self) {
+        self.tab = PanelTab::Notes;
+        self.prepare();
+        self.notes.create_new(&self.ui);
         self.present();
     }
 
@@ -253,6 +315,9 @@ impl Controller {
             .set_tab(i32::try_from(self.tab.index()).unwrap_or(0));
         self.ui.set_empty_label(self.tab.empty_label().into());
         self.push_error();
+        if self.tab == PanelTab::Notes {
+            self.notes.entered(&self.ui);
+        }
     }
 
     fn present(&mut self) {
@@ -318,6 +383,11 @@ impl Controller {
         self.tab = tab;
         self.ui.set_tab(i32::try_from(tab.index()).unwrap_or(0));
         self.ui.set_empty_label(tab.empty_label().into());
+        if tab == PanelTab::Notes {
+            self.notes.entered(&self.ui);
+        } else {
+            self.push_error();
+        }
         self.ui.invoke_focus_root();
     }
 

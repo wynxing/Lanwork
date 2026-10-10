@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::notes::{
-    EMPTY_TITLE_DISPLAY, NoteCommands, NoteError, NoteInput, TimestampMillis,
+    EMPTY_TITLE_DISPLAY, FloatGeometry, NoteCommands, NoteError, NoteInput, TimestampMillis,
 };
 use lanwork_core::storage::{CollectionKind, DocumentId, EntityKind, Store, StorePaths};
 
@@ -504,6 +504,7 @@ fn old_file_missing_fields_loads_and_saves() {
     assert!(!loaded.pinned);
     assert!(loaded.deleted_at.is_none());
     assert_eq!(loaded.revision, 0);
+    assert!(loaded.float.is_none());
     assert_eq!(loaded.created_at.as_millis(), 0);
     let missing = commands.get("other").unwrap_err();
     assert!(matches!(missing, NoteError::NotFound { .. }), "{missing}");
@@ -915,4 +916,50 @@ fn open_skips_expired_note_that_cannot_be_deleted() {
 #[ignore = "版本选择和未保存正文的关闭、退出是界面行为，不在便签服务里实现"]
 fn note_conflict_choice_and_unsaved_close_are_ui() {
     panic!("界面行为，不在便签服务里实现");
+}
+
+#[test]
+fn float_geometry_survives_restart_without_touching_revision_or_order() {
+    let fix = fixture();
+    let clock = ManualClock::new(1_000);
+    let clock_for_open = Arc::clone(&clock);
+    let commands = NoteCommands::open_at(fix.store.clone(), move || clock_for_open.now()).unwrap();
+    let note = commands.create(&input("悬浮", "正文")).unwrap();
+    assert!(note.float.is_none());
+    assert!(json_file(&fix.store, &note.id).get("floatWindow").is_none());
+
+    clock.set(9_000);
+    let geometry = FloatGeometry {
+        x: -1200,
+        y: 40,
+        width: 480,
+        height: 360,
+    };
+    let after = commands.set_float(&note.id, geometry).unwrap();
+    assert_eq!(after.revision, note.revision);
+    assert_eq!(after.updated_at, note.updated_at);
+    assert_eq!(after.float, Some(geometry));
+    assert_eq!(json_file(&fix.store, &note.id)["floatWindow"]["x"], -1200);
+
+    let saved = commands
+        .save(&note.id, note.revision, &input("悬浮", "改过"))
+        .unwrap();
+    assert_eq!(saved.float, Some(geometry));
+
+    let reopened = NoteCommands::open(fix.store.clone()).unwrap();
+    let loaded = reopened.get(&note.id).unwrap();
+    assert_eq!(loaded.float, Some(geometry));
+    assert_eq!(loaded.body, "改过");
+
+    let trashed = reopened.soft_delete(&note.id, loaded.revision).unwrap();
+    let other = FloatGeometry { x: 5, ..geometry };
+    assert_eq!(
+        reopened.set_float(&note.id, other).unwrap().float,
+        Some(other)
+    );
+    assert_eq!(
+        reopened.get(&note.id).unwrap().revision,
+        trashed.revision,
+        "记位置不让编辑区的版本号过期"
+    );
 }
