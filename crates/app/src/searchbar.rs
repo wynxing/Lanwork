@@ -20,8 +20,8 @@ use lanwork_core::dispatch::{
 use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
     BAR_WIDTH, Backdrop, EnterChord, EscapeAction, ROW_HEIGHT, RowAction, WorkArea, bar_origin,
-    escape_action, group_label, max_results_height, move_selection, path_target, reselect,
-    row_action, row_offsets, solid_rgb, status_line, text_after_hide, to_physical,
+    escape_action, group_label, max_results_height, move_selection, path_target, pointed_row,
+    reselect, row_action, row_offsets, solid_rgb, status_line, text_after_hide, to_physical,
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
@@ -85,6 +85,8 @@ pub(crate) fn install(ui: SearchBar, dispatch: Arc<Dispatch>, store: Store) {
         let chord = EnterChord::from_modifiers(ctrl, shift, alt, meta);
         with_bar(move |bar| bar.enter(chord));
     });
+    ui.on_hover(|index| with_bar(move |bar| bar.hover(index)));
+    ui.on_activate(|index| with_bar(move |bar| bar.activate(index)));
 
     let render_marks = Rc::clone(&marks);
     let notifier = ui.window().set_rendering_notifier(move |state, _| {
@@ -401,6 +403,23 @@ impl Bar {
         self.ui
             .set_selected(i32::try_from(self.selected).unwrap_or(0));
         self.ui.invoke_ensure_visible();
+    }
+
+    fn hover(&mut self, index: i32) {
+        if let Some(index) = pointed_row(index, self.results.len()) {
+            self.selected = index;
+            self.ui
+                .set_selected(i32::try_from(self.selected).unwrap_or(0));
+        }
+    }
+
+    fn activate(&mut self, index: i32) {
+        if let Some(index) = pointed_row(index, self.results.len()) {
+            self.selected = index;
+            self.ui
+                .set_selected(i32::try_from(self.selected).unwrap_or(0));
+            self.enter(EnterChord::Plain);
+        }
     }
 
     fn enter(&mut self, chord: EnterChord) {

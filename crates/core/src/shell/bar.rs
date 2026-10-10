@@ -306,6 +306,12 @@ pub fn move_selection(current: usize, len: usize, down: bool) -> usize {
     }
 }
 
+/// 鼠标悬停或单击的行号。界面传来的行号可能来自已经被替换的列表，越界时不选。
+#[must_use]
+pub fn pointed_row(index: i32, len: usize) -> Option<usize> {
+    usize::try_from(index).ok().filter(|index| *index < len)
+}
+
 /// 新结果到达后的选中行。同一段输入的后续结果（例如文件结果合并进来）保留原来选中的那一条；
 /// 输入变了，或那一条已经不在，回到第一条。
 #[must_use]
@@ -639,6 +645,15 @@ mod tests {
         assert_eq!(move_selection(2, 3, true), 2);
         assert_eq!(move_selection(5, 3, false), 2);
         assert_eq!(move_selection(0, 0, true), 0);
+    }
+
+    #[test]
+    fn pointed_row_ignores_stale_indexes() {
+        assert_eq!(pointed_row(0, 3), Some(0));
+        assert_eq!(pointed_row(2, 3), Some(2));
+        assert_eq!(pointed_row(3, 3), None);
+        assert_eq!(pointed_row(-1, 3), None);
+        assert_eq!(pointed_row(0, 0), None);
     }
 
     #[test]

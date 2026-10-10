@@ -62,6 +62,10 @@ export component SearchBar inherits Window {
     callback escape();
     callback move-selection(bool);
     callback enter(bool, bool, bool, bool);
+    // 鼠标移到某行上。只响应指针移动，列表在静止的指针下滚动时不改选择。
+    callback hover(int);
+    // 单击某行，等同在该行上按 Enter。
+    callback activate(int);
 
     out property <string> preedit: input.preedit-text;
     in-out property <string> text <=> input.text;
@@ -281,6 +285,17 @@ export component SearchBar inherits Window {
                 font-size: 12px;
                 horizontal-alignment: right;
                 vertical-alignment: center;
+            }
+
+            TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.move && !is-selected {
+                        root.hover(index);
+                    }
+                }
+                clicked => {
+                    root.activate(index);
+                }
             }
         }
     }
