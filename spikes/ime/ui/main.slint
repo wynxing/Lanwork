@@ -7,6 +7,8 @@ component SearchBox inherits Rectangle {
     callback accepted(string, string);
     callback edited(string, string);
     callback preedit-changed(string);
+    // 光标相对本框的位置、宽度和高度，单位是逻辑像素。
+    callback caret-moved(length, length, length, length);
 
     out property <string> preedit: input.preedit-text;
     in-out property <string> text <=> input.text;
@@ -43,6 +45,7 @@ component SearchBox inherits Rectangle {
             } else if cursor-position.x + self.computed-x > parent.width - root.margin - self.text-cursor-width {
                 self.computed-x = parent.width - cursor-position.x - root.margin - self.text-cursor-width;
             }
+            root.caret-moved(self.x + cursor-position.x, self.y + cursor-position.y, self.text-cursor-width, self.font-size);
         }
 
         key-pressed(event) => {
@@ -68,6 +71,8 @@ component NoteBox inherits Rectangle {
     callback key-arrived(string, string);
     callback edited(string, string);
     callback preedit-changed(string);
+    // 光标相对本框的位置、宽度和高度，单位是逻辑像素。
+    callback caret-moved(length, length, length, length);
 
     out property <string> preedit: input.preedit-text;
     in-out property <string> text <=> input.text;
@@ -113,6 +118,12 @@ component NoteBox inherits Rectangle {
                 } else if cursor-position.y + scroll.content-y > scroll.visible-height - 20px {
                     scroll.content-y = min(0px, max(scroll.visible-height - self.height, scroll.visible-height - cursor-position.y - 20px));
                 }
+                root.caret-moved(
+                    scroll.x + self.x + cursor-position.x + scroll.content-x,
+                    scroll.y + self.y + cursor-position.y + scroll.content-y,
+                    self.text-cursor-width,
+                    self.font-size,
+                );
             }
 
             key-pressed(event) => {
@@ -134,6 +145,7 @@ component NoteBox inherits Rectangle {
 export component MainWindow inherits Window {
     title: "Lanwork IME";
     no-frame: true;
+    // 逻辑尺寸。spikes/ime/src/dpi.rs 的 LOGICAL_WIDTH / LOGICAL_HEIGHT 与这里相同。
     width: 720px;
     height: 760px;
     background: #f3f3f3;
@@ -148,6 +160,8 @@ export component MainWindow inherits Window {
     callback note-edited(string, string);
     callback note-preedit(string);
     callback request-close();
+    // 当前焦点框的光标，相对窗口客户区，逻辑像素。
+    callback ime-caret(length, length, length, length);
 
     in-out property <int> search-accepted-count;
     in-out property <int> search-enter-count;
@@ -208,7 +222,7 @@ export component MainWindow inherits Window {
             }
         }
 
-        VerticalLayout {
+        body := VerticalLayout {
             padding: 12px;
             spacing: 6px;
 
@@ -217,6 +231,9 @@ export component MainWindow inherits Window {
             }
 
             search-field := SearchBox {
+                caret-moved(x, y, w, h) => {
+                    root.ime-caret(body.x + search-field.x + x, body.y + search-field.y + y, w, h);
+                }
                 key-arrived(key, preedit) => {
                     root.search-key(key, preedit);
                 }
@@ -246,6 +263,9 @@ export component MainWindow inherits Window {
             }
 
             note-field := NoteBox {
+                caret-moved(x, y, w, h) => {
+                    root.ime-caret(body.x + note-field.x + x, body.y + note-field.y + y, w, h);
+                }
                 key-arrived(key, preedit) => {
                     root.note-key(key, preedit);
                 }

@@ -5,6 +5,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+mod dpi;
+
 slint::include_modules!();
 
 const UI_LOG_LINES: usize = 40;
@@ -23,14 +25,79 @@ fn main() -> Result<(), slint::PlatformError> {
     };
     log.line(&startup_line());
     wire(&ui, &log);
+    dpi::set_logger({
+        let log = log.clone();
+        move |line| log.line(line)
+    });
 
-    if std::env::var_os("LANWORK_IME_SPIKE_SMOKE").is_some() {
-        slint::Timer::single_shot(std::time::Duration::from_millis(400), || {
+    // Slint 1.18.1 的 winit 窗口在事件循环 resumed 的 ensure_window 里才创建。
+    // show() 之后用定时器重试 window_handle，和 spikes/render 的 schedule_boot 一样。
+    let subclass_installed = std::rc::Rc::new(std::cell::Cell::new(false));
+    ui.show()?;
+    schedule_dpi_subclass(ui.as_weak(), log, subclass_installed.clone(), 0);
+    if smoke_requested() {
+        slint::Timer::single_shot(std::time::Duration::from_secs(8), || {
             let _ = slint::quit_event_loop();
         });
     }
 
-    ui.run()
+    ui.run()?;
+    #[cfg(windows)]
+    if smoke_requested() && !subclass_installed.get() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `attempt` 从 0 计。小于 25 时继续等，到 25 仍没有句柄就停。次数与 `spikes/render` 的 `schedule_boot` 相同。
+fn schedule_dpi_subclass(
+    weak: slint::Weak<MainWindow>,
+    log: Log,
+    installed: std::rc::Rc<std::cell::Cell<bool>>,
+    attempt: u32,
+) {
+    slint::Timer::single_shot(std::time::Duration::from_millis(200), move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if installed.get() {
+            return;
+        }
+        match dpi::install(ui.window()) {
+            Ok(true) => {
+                installed.set(true);
+                log.line("DPI 子类已装上");
+                quit_if_smoke();
+            }
+            Ok(false) => quit_if_smoke(),
+            Err(error) if dpi_handle_not_ready(&error) && attempt < 25 => {
+                log.line(&format!(
+                    "DPI 子类等待窗口句柄，第 {} 次：{error}",
+                    attempt + 1
+                ));
+                schedule_dpi_subclass(weak, log, installed, attempt + 1);
+            }
+            Err(error) => {
+                log.line(&format!("DPI 子类未装上: {error}"));
+                quit_if_smoke();
+            }
+        }
+    });
+}
+
+fn smoke_requested() -> bool {
+    std::env::var_os("LANWORK_IME_SPIKE_SMOKE").is_some()
+}
+
+fn quit_if_smoke() {
+    if smoke_requested() {
+        let _ = slint::quit_event_loop();
+    }
+}
+
+/// 窗口还没创建时，Slint 1.18.1 会落到 `HandleError::NotSupported` 或 `Unavailable`。
+fn dpi_handle_not_ready(error: &str) -> bool {
+    error.contains("not available") || error.contains("cannot be represented")
 }
 
 fn wire(ui: &MainWindow, log: &Log) {
@@ -88,6 +155,10 @@ fn wire(ui: &MainWindow, log: &Log) {
     let log_note_preedit = log.clone();
     ui.on_note_preedit(move |preedit| {
         log_note_preedit.line(&format!("便签 preedit 变为 {}", show_preedit(&preedit)));
+    });
+
+    ui.on_ime_caret(move |x, y, w, h| {
+        dpi::set_logical_caret(x, y, w, h);
     });
 }
 
@@ -229,6 +300,18 @@ mod tests {
     fn empty_preedit_is_visible() {
         assert_eq!(show_preedit(""), "（空）");
         assert_eq!(show_preedit("ni"), "「ni」");
+    }
+
+    #[test]
+    fn missing_handle_is_retried() {
+        assert!(super::dpi_handle_not_ready(
+            "the underlying handle is not available"
+        ));
+        assert!(super::dpi_handle_not_ready(
+            "the underlying handle cannot be represented using the types in this crate"
+        ));
+        assert!(!super::dpi_handle_not_ready("SetWindowSubclass 返回 false"));
+        assert!(!super::dpi_handle_not_ready("窗口句柄不是 Win32: ()"));
     }
 
     #[test]
