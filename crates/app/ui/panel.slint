@@ -699,6 +699,14 @@ export component Panel inherits Window {
                                             }
                                         }
 
+                                        if !trash-selected && row.completed: Btn {
+                                            text: "取消完成";
+                                            c: root.c;
+                                            clicked => {
+                                                root.toggle-complete(index);
+                                            }
+                                        }
+
                                         Text {
                                             horizontal-stretch: 1;
                                             text: row.title;
