@@ -13,6 +13,10 @@ fn default_schema_version() -> u32 {
     SCHEMA_VERSION
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 use super::error::TodoError;
 
 /// 清单种类。收件箱由 `kind` 识别，不由名称识别。
@@ -44,6 +48,42 @@ pub struct Recurrence {
     /// 缺字段时由调用方改用当前到期日的日子。不是每月重复时不使用。
     #[serde(default, rename = "monthDay", skip_serializing_if = "Option::is_none")]
     pub month_day: Option<u8>,
+}
+
+/// 完成重复待办时生成的下一次。记在被完成的那一条上。
+///
+/// 只保存当时写入下一次的身份和字段，用来在取消完成时认出它。
+/// 服务以前不记这条关系。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneratedNext {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_date")]
+    pub due: Option<CivilDate>,
+    #[serde(
+        default,
+        rename = "remindAt",
+        skip_serializing_if = "Option::is_none",
+        with = "opt_time"
+    )]
+    pub remind_at: Option<ClockTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurrence: Option<Recurrence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<TodoSource>,
+}
+
+impl GeneratedNext {
+    pub(crate) fn from_item(item: &TodoItem) -> Self {
+        Self {
+            id: item.id.clone(),
+            title: item.title.clone(),
+            due: item.due,
+            remind_at: item.remind_at,
+            recurrence: item.recurrence.clone(),
+            source: item.source.clone(),
+        }
+    }
 }
 
 impl Recurrence {
@@ -170,6 +210,23 @@ pub struct TodoItem {
     pub title: String,
     #[serde(default)]
     pub completed: bool,
+    /// 曾经被标为完成。取消完成不清这个标记，用来认出「下一次已经完成过」。
+    #[serde(default, rename = "everCompleted", skip_serializing_if = "is_false")]
+    pub ever_completed: bool,
+    /// 这条是完成重复待办时生成的下一次，并且之后没有被改过。
+    #[serde(
+        default,
+        rename = "generatedUntouched",
+        skip_serializing_if = "is_false"
+    )]
+    pub generated_untouched: bool,
+    /// 完成这条重复待办时生成的下一次。没有生成、或取消完成之后为空。
+    #[serde(
+        default,
+        rename = "generatedNext",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub generated_next: Option<GeneratedNext>,
     #[serde(default)]
     pub order: i64,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_date")]
@@ -211,6 +268,9 @@ impl TodoItem {
             id,
             title,
             completed: false,
+            ever_completed: false,
+            generated_untouched: false,
+            generated_next: None,
             order,
             due: None,
             remind_at: None,
@@ -377,6 +437,9 @@ mod tests {
         assert_eq!(list.order, 0);
         let item = &list.items[0];
         assert!(!item.completed);
+        assert!(!item.ever_completed);
+        assert!(!item.generated_untouched);
+        assert!(item.generated_next.is_none());
         assert!(item.due.is_none());
         assert!(item.remind_at.is_none());
         assert!(item.recurrence.is_none());
@@ -393,6 +456,16 @@ mod tests {
         let mut item = TodoItem::new("a".into(), "标题".into(), 1);
         item.due = CivilDate::try_from_ymd(2026, 1, 31);
         item.remind_at = ClockTime::try_new(9, 5);
+        item.ever_completed = true;
+        item.generated_untouched = true;
+        item.generated_next = Some(GeneratedNext {
+            id: "n".into(),
+            title: "下一次".into(),
+            due: CivilDate::try_from_ymd(2026, 2, 28),
+            remind_at: None,
+            recurrence: None,
+            source: None,
+        });
         item.current = true;
         item.current_since = Some(10);
         item.deleted_at = Some(11);
@@ -431,6 +504,10 @@ mod tests {
         assert!(text.contains("\"type\":\"github-pr\""), "{text}");
         assert!(text.contains("\"rule\":\"monthly\""), "{text}");
         assert!(text.contains("\"monthDay\":31"), "{text}");
+        assert!(text.contains("\"everCompleted\":true"), "{text}");
+        assert!(text.contains("\"generatedUntouched\":true"), "{text}");
+        assert!(text.contains("\"generatedNext\""), "{text}");
+        assert!(text.contains("\"id\":\"n\""), "{text}");
         assert!(!text.contains("moved_at"), "{text}");
         let parsed: TodoList = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed, list);

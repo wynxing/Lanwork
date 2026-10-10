@@ -571,10 +571,16 @@ impl Controller {
         let Some(id) = self.row_id(index) else {
             return;
         };
-        if self.rows[usize::try_from(index).unwrap_or(0)].completed {
-            return;
+        let completed = self
+            .rows
+            .get(usize::try_from(index).unwrap_or(0))
+            .is_some_and(|row| row.completed);
+        let result = if completed {
+            self.todos.uncomplete_item(&id)
+        } else {
+            self.todos.complete_item(&id)
         }
-        let result = self.todos.complete_item(&id).map_err(|err| err.to_string());
+        .map_err(|err| err.to_string());
         self.finish(result, true);
     }
 

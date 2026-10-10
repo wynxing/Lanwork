@@ -216,6 +216,14 @@ impl TodoCommands {
         self.service.complete_item(item_id)
     }
 
+    /// 已完成的条目标回未完成，不改它的顺序。
+    ///
+    /// 重复待办在完成时记下的下一次，只有仍是当时生成的那一条才从清单移除。
+    /// 下一次已被改过或已经完成时留下。回收站里的条目拒绝。
+    pub fn uncomplete_item(&self, item_id: &str) -> Result<(), TodoError> {
+        self.service.uncomplete_item(item_id)
+    }
+
     pub fn soft_delete(&self, item_id: &str) -> Result<(), TodoError> {
         self.service.soft_delete(item_id)
     }

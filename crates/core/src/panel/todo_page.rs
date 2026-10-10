@@ -3,8 +3,9 @@
 //! 输入是 [`TodoCommands::lists`](crate::todos::TodoCommands::lists) 的快照。这里不读写盘，
 //! 不读时钟，今天和当前时间由调用方传入。规则仍在待办服务里。
 //!
-//! 已完成的条目是否留在清单里、顺序怎么排，产品规格没有写。这里的做法：未完成在前，
-//! 已完成在后，各自保持服务里的 `order`。回收站里的条目只在回收站视图里出现。
+//! 已完成的条目留在清单里。显示时未完成在前、已完成在后，各自保持服务里的 `order`。
+//! 这个先后不是产品规则。取消完成不改 `order`，所以该条回到未完成条目之间原来的位置。
+//! 回收站里的条目只在回收站视图里出现。
 
 use std::fmt;
 
@@ -515,6 +516,31 @@ mod tests {
         assert_eq!(trash_days_left(deleted, deleted + 29 * DAY_MS + 1), 1);
         assert_eq!(trash_days_left(deleted, deleted + 30 * DAY_MS), 0);
         assert_eq!(trash_days_left(deleted, deleted + 31 * DAY_MS), 0);
+    }
+
+    #[test]
+    fn clearing_completed_puts_the_item_back_among_open_items_by_order() {
+        let mut done = item("b", 1);
+        done.completed = true;
+        let completed = vec![list(
+            "inbox",
+            ListKind::Inbox,
+            vec![item("a", 0), done, item("c", 2)],
+        )];
+        let today = Some(date(2026, 10, 10));
+        assert_eq!(
+            ids(&rows(&completed, &TodoView::List("inbox".into()), today, 0)),
+            ["a", "c", "b"]
+        );
+        let reopened = vec![list(
+            "inbox",
+            ListKind::Inbox,
+            vec![item("a", 0), item("b", 1), item("c", 2)],
+        )];
+        assert_eq!(
+            ids(&rows(&reopened, &TodoView::List("inbox".into()), today, 0)),
+            ["a", "b", "c"]
+        );
     }
 
     #[test]

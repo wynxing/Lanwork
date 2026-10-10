@@ -532,6 +532,419 @@ fn complete_on_until_does_not_generate_the_next() {
     assert_eq!(items.len(), 1);
     assert!(items[0].completed);
     assert_eq!(items[0].id, item_id);
+    assert!(items[0].generated_next.is_none());
+    fixture.todos.uncomplete_item(&item_id).unwrap();
+    let stored = fixture.todos.item(&item_id).unwrap();
+    assert!(!stored.item.completed);
+    assert!(stored.item.ever_completed);
+    assert_eq!(
+        list(&fixture.todos.lists().unwrap(), &list_id).items.len(),
+        1
+    );
+}
+
+fn item_ids(lists: &[TodoList], list_id: &str) -> Vec<String> {
+    list(lists, list_id)
+        .items
+        .iter()
+        .map(|item| item.id.clone())
+        .collect()
+}
+
+#[test]
+fn uncomplete_puts_the_item_back_in_its_previous_place() {
+    let fixture = Fixture::new();
+    let list_id = fixture.todos.create_list("工作").unwrap();
+    let before = fixture
+        .todos
+        .create_item(&list_id, new_todo("前面"))
+        .unwrap();
+    let item_id = fixture
+        .todos
+        .create_item(&list_id, new_todo("这条"))
+        .unwrap();
+    let after = fixture
+        .todos
+        .create_item(&list_id, new_todo("后面"))
+        .unwrap();
+    fixture.todos.complete_item(&item_id).unwrap();
+    assert!(fixture.todos.item(&item_id).unwrap().item.completed);
+    assert_eq!(
+        item_ids(&fixture.todos.lists().unwrap(), &list_id),
+        [before.clone(), item_id.clone(), after.clone()]
+    );
+    fixture.todos.uncomplete_item(&item_id).unwrap();
+    let stored = fixture.todos.item(&item_id).unwrap();
+    assert!(!stored.item.completed);
+    assert!(stored.item.generated_next.is_none());
+    let fixture = fixture.reboot();
+    assert_eq!(
+        item_ids(&fixture.todos.lists().unwrap(), &list_id),
+        [before, item_id, after]
+    );
+}
+
+#[test]
+fn uncomplete_recurring_drops_only_the_untouched_generated_next() {
+    let fixture = Fixture::new();
+    let list_id = fixture.todos.create_list("工作").unwrap();
+    let before = fixture
+        .todos
+        .create_item(&list_id, new_todo("前面"))
+        .unwrap();
+    let mut draft = new_todo("周期");
+    draft.due = Some(date(2026, 3, 1));
+    draft.remind_at = ClockTime::try_new(9, 0);
+    draft.recurrence = Some(recurrence(RecurrenceRule::Daily, None));
+    draft.source = Some(source_pr());
+    let item_id = fixture.todos.create_item(&list_id, draft).unwrap();
+    let after = fixture
+        .todos
+        .create_item(&list_id, new_todo("后面"))
+        .unwrap();
+    fixture.todos.complete_item(&item_id).unwrap();
+    let recorded = fixture
+        .todos
+        .item(&item_id)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap();
+    let next_id = recorded.id.clone();
+    assert_eq!(recorded.title, "周期");
+    assert_eq!(recorded.due, Some(date(2026, 3, 2)));
+    assert_eq!(recorded.remind_at, ClockTime::try_new(9, 0));
+    assert_eq!(recorded.source, Some(source_pr()));
+    let next = fixture.todos.item(&next_id).unwrap();
+    assert!(next.item.generated_untouched);
+    assert!(!next.item.ever_completed);
+    assert_eq!(next.item.due, Some(date(2026, 3, 2)));
+    fixture.todos.rename_item(&item_id, "完成后改标题").unwrap();
+    assert_eq!(
+        item_ids(&fixture.todos.lists().unwrap(), &list_id),
+        [
+            before.clone(),
+            item_id.clone(),
+            next_id.clone(),
+            after.clone()
+        ]
+    );
+    let open = fixture
+        .todos
+        .index_snapshot()
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.item_id)
+        .collect::<Vec<_>>();
+    assert!(open.contains(&next_id));
+    assert!(!open.contains(&item_id));
+    fixture.todos.uncomplete_item(&item_id).unwrap();
+    assert!(matches!(
+        fixture.todos.item(&next_id).unwrap_err(),
+        TodoError::ItemNotFound { .. }
+    ));
+    let stored = fixture.todos.item(&item_id).unwrap();
+    assert!(!stored.item.completed);
+    assert!(stored.item.ever_completed);
+    assert!(stored.item.generated_next.is_none());
+    assert_eq!(stored.item.title, "完成后改标题");
+    let fixture = fixture.reboot();
+    assert_eq!(
+        item_ids(&fixture.todos.lists().unwrap(), &list_id),
+        [before, item_id.clone(), after]
+    );
+    let indexed = fixture
+        .todos
+        .index_snapshot()
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.item_id)
+        .collect::<Vec<_>>();
+    assert!(indexed.contains(&item_id));
+    fixture.todos.complete_item(&item_id).unwrap();
+    let again = fixture
+        .todos
+        .item(&item_id)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    assert_ne!(again, next_id);
+    assert_eq!(
+        fixture.todos.item(&again).unwrap().item.due,
+        Some(date(2026, 3, 2))
+    );
+}
+
+#[test]
+fn uncomplete_keeps_a_generated_next_that_was_edited_or_finished() {
+    let fixture = Fixture::new();
+    let list_id = fixture.todos.create_list("工作").unwrap();
+    let mut draft = new_todo("周期");
+    draft.due = Some(date(2026, 3, 1));
+    draft.recurrence = Some(recurrence(RecurrenceRule::Daily, None));
+    let item_id = fixture.todos.create_item(&list_id, draft).unwrap();
+    fixture.todos.complete_item(&item_id).unwrap();
+    let next_id = fixture
+        .todos
+        .item(&item_id)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    fixture.todos.rename_item(&next_id, "改了").unwrap();
+    fixture.todos.rename_item(&next_id, "周期").unwrap();
+    fixture.todos.uncomplete_item(&item_id).unwrap();
+    assert!(!fixture.todos.item(&item_id).unwrap().item.completed);
+    assert!(
+        fixture
+            .todos
+            .item(&item_id)
+            .unwrap()
+            .item
+            .generated_next
+            .is_none()
+    );
+    assert_eq!(fixture.todos.item(&next_id).unwrap().item.title, "周期");
+    assert!(
+        !fixture
+            .todos
+            .item(&next_id)
+            .unwrap()
+            .item
+            .generated_untouched
+    );
+
+    fixture.todos.complete_item(&item_id).unwrap();
+    let next_id = fixture
+        .todos
+        .item(&item_id)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    fixture.todos.complete_item(&next_id).unwrap();
+    let grandchild = fixture
+        .todos
+        .item(&next_id)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    fixture.todos.uncomplete_item(&item_id).unwrap();
+    assert!(fixture.todos.item(&next_id).unwrap().item.completed);
+    assert_eq!(
+        fixture.todos.item(&grandchild).unwrap().item.due,
+        Some(date(2026, 3, 3))
+    );
+
+    fixture.todos.uncomplete_item(&next_id).unwrap();
+    assert!(matches!(
+        fixture.todos.item(&grandchild).unwrap_err(),
+        TodoError::ItemNotFound { .. }
+    ));
+    assert!(fixture.todos.item(&next_id).unwrap().item.ever_completed);
+    assert!(!fixture.todos.item(&next_id).unwrap().item.completed);
+    fixture.todos.complete_item(&item_id).unwrap();
+    let third = fixture
+        .todos
+        .item(&item_id)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    fixture.todos.complete_item(&third).unwrap();
+    fixture.todos.uncomplete_item(&third).unwrap();
+    fixture.todos.uncomplete_item(&item_id).unwrap();
+    assert_eq!(fixture.todos.item(&third).unwrap().item.title, "周期");
+}
+
+#[test]
+fn uncomplete_keeps_a_generated_next_that_was_moved_reordered_or_trashed() {
+    let fixture = Fixture::new();
+    let inbox = fixture.todos.ensure_inbox().unwrap();
+    let other = fixture.todos.create_list("其他").unwrap();
+    let mut draft = new_todo("周期");
+    draft.due = Some(date(2026, 3, 1));
+    draft.recurrence = Some(recurrence(RecurrenceRule::Daily, None));
+    let moved_parent = fixture.todos.create_item(&inbox, draft.clone()).unwrap();
+    fixture.todos.complete_item(&moved_parent).unwrap();
+    let moved_next = fixture
+        .todos
+        .item(&moved_parent)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    fixture.todos.process_move(&moved_next, &other).unwrap();
+    fixture.todos.uncomplete_item(&moved_parent).unwrap();
+    assert_eq!(fixture.todos.item(&moved_next).unwrap().list_id, other);
+
+    let current_parent = fixture.todos.create_item(&inbox, draft.clone()).unwrap();
+    fixture.todos.complete_item(&current_parent).unwrap();
+    let current_next = fixture
+        .todos
+        .item(&current_parent)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    fixture.todos.set_current(&current_next).unwrap();
+    fixture.todos.clear_current().unwrap();
+    fixture.todos.uncomplete_item(&current_parent).unwrap();
+    assert!(!fixture.todos.item(&current_next).unwrap().item.current);
+
+    let trash_parent = fixture.todos.create_item(&inbox, draft.clone()).unwrap();
+    fixture.todos.complete_item(&trash_parent).unwrap();
+    let trash_next = fixture
+        .todos
+        .item(&trash_parent)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    fixture.todos.soft_delete(&trash_next).unwrap();
+    fixture.todos.uncomplete_item(&trash_parent).unwrap();
+    assert!(fixture.todos.item(&trash_next).unwrap().item.in_trash());
+
+    let reorder_parent = fixture.todos.create_item(&inbox, draft).unwrap();
+    let tail = fixture.todos.create_item(&inbox, new_todo("尾")).unwrap();
+    fixture.todos.complete_item(&reorder_parent).unwrap();
+    let reorder_next = fixture
+        .todos
+        .item(&reorder_parent)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    let mut order = item_ids(&fixture.todos.lists().unwrap(), &inbox);
+    let next_at = order.iter().position(|id| id == &reorder_next).unwrap();
+    order.remove(next_at);
+    order.push(reorder_next.clone());
+    let parent_at = order.iter().position(|id| id == &reorder_parent).unwrap();
+    assert_ne!(order[parent_at + 1], reorder_next);
+    fixture.todos.reorder_items(&inbox, &order).unwrap();
+    fixture.todos.uncomplete_item(&reorder_parent).unwrap();
+    assert!(!fixture.todos.item(&reorder_parent).unwrap().item.completed);
+    assert_eq!(
+        fixture.todos.item(&reorder_next).unwrap().item.title,
+        "周期"
+    );
+    assert!(item_ids(&fixture.todos.lists().unwrap(), &inbox).contains(&tail));
+}
+
+#[test]
+fn uncomplete_without_a_generation_record_does_not_guess() {
+    let temp = TempDir::new();
+    let paths = StorePaths {
+        data_dir: temp.path().join("data"),
+        cache_dir: temp.path().join("cache"),
+        user_profile: temp.path().join("profile"),
+        local_app_data: temp.path().join("local"),
+    };
+    let store = Store::open(paths).unwrap();
+    write_raw(
+        &store,
+        "work",
+        r#"{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{"id":"done","title":"旧","completed":true,"due":"2026-03-01","recurrence":{"rule":"daily"}},{"id":"next","title":"旧","due":"2026-03-02","recurrence":{"rule":"daily"}}]}"#,
+    );
+    let todos = TodoCommands::open(store);
+    todos.boot().unwrap();
+    todos.uncomplete_item("done").unwrap();
+    assert!(!todos.item("done").unwrap().item.completed);
+    assert!(todos.item("done").unwrap().item.generated_next.is_none());
+    assert_eq!(todos.item("next").unwrap().item.due, Some(date(2026, 3, 2)));
+}
+
+#[test]
+fn uncomplete_rejects_open_and_trashed_items_without_writing() {
+    let fixture = Fixture::new();
+    let list_id = fixture.todos.create_list("工作").unwrap();
+    let open = fixture
+        .todos
+        .create_item(&list_id, new_todo("未完成"))
+        .unwrap();
+    let path = fixture
+        .store
+        .document_path(&DocumentId::Todo(list_id.clone()))
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let rx = fixture.store.subscribe();
+    let err = fixture.todos.uncomplete_item(&open).unwrap_err();
+    assert!(matches!(err, TodoError::NotComplete), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(rx.try_recv().is_err());
+
+    let done = fixture
+        .todos
+        .create_item(&list_id, new_todo("已完成"))
+        .unwrap();
+    fixture.todos.complete_item(&done).unwrap();
+    fixture.todos.soft_delete(&done).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let rx = fixture.store.subscribe();
+    let err = fixture.todos.uncomplete_item(&done).unwrap_err();
+    assert!(matches!(err, TodoError::AlreadyInTrash), "{err}");
+    assert!(fixture.todos.item(&done).unwrap().item.completed);
+    assert!(fixture.todos.item(&done).unwrap().item.in_trash());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn uncomplete_write_failure_rolls_back() {
+    let fixture = Fixture::new();
+    let list_id = fixture.todos.create_list("工作").unwrap();
+    let mut draft = new_todo("周期");
+    draft.due = Some(date(2026, 3, 1));
+    draft.recurrence = Some(recurrence(RecurrenceRule::Daily, None));
+    let item_id = fixture.todos.create_item(&list_id, draft).unwrap();
+    fixture.todos.complete_item(&item_id).unwrap();
+    let next_id = fixture
+        .todos
+        .item(&item_id)
+        .unwrap()
+        .item
+        .generated_next
+        .unwrap()
+        .id;
+    let path = fixture
+        .store
+        .document_path(&DocumentId::Todo(list_id))
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let rx = fixture.store.subscribe();
+    let _block = BlockReplace::on(&path);
+    let err = fixture.todos.uncomplete_item(&item_id).unwrap_err();
+    assert!(err.to_string().contains("写入失败"), "{err}");
+    assert!(fixture.todos.item(&item_id).unwrap().item.completed);
+    assert_eq!(
+        fixture
+            .todos
+            .item(&item_id)
+            .unwrap()
+            .item
+            .generated_next
+            .unwrap()
+            .id,
+        next_id
+    );
+    assert_eq!(
+        fixture.todos.item(&next_id).unwrap().item.due,
+        Some(date(2026, 3, 2))
+    );
+    assert!(rx.try_recv().is_err());
+    drop(_block);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
 #[test]

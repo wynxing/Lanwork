@@ -7,6 +7,8 @@
 //! 每月重复的 31 日在没有 31 日的月份落到该月最后一天，下一次仍按原来的日子。
 //! 锚点日在周期的 `monthDay`。旧记录没有该字段时，用当前到期日的日子。
 //! 在重复截止日当天完成不再生成下一次。
+//! 已完成的条目可以取消完成，排序不变。重复待办完成时把下一次记在 `generatedNext`。
+//! 取消完成只删除仍是当时生成的那一条。下一次已被改过或已经完成时不删除，该处理仍待定。
 //! 永久删除只作用于回收站中的条目。进入回收站满 30 天后，[`command::TodoCommands::purge_expired`]
 //! 以及启动加载会清除它们。删除前把 id 写入 [`PURGE_PENDING_FILE`]。
 //! 原清单已删除时，恢复写入系统收件箱。
@@ -23,8 +25,8 @@ mod service;
 pub use command::TodoCommands;
 pub use error::{PendingTopic, TodoError};
 pub use model::{
-    ClockTime, ListKind, NewTodo, Recurrence, RecurrenceRule, SourceKind, TodoItem, TodoList,
-    TodoSource, is_http_source_url,
+    ClockTime, GeneratedNext, ListKind, NewTodo, Recurrence, RecurrenceRule, SourceKind, TodoItem,
+    TodoList, TodoSource, is_http_source_url,
 };
 pub use purge_record::PURGE_PENDING_FILE;
 pub use schedule::{
