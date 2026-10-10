@@ -222,7 +222,7 @@ Lanwork/
 
 应用来源：当前用户和公共开始菜单、注册表 App Paths、PATH、商店应用、用户添加的便携应用和别名。按启动目标去重。快捷方式保留参数和工作目录。启动时先加载缓存，再在后台更新。目录变化合并后再重建；注册表、商店应用和手动刷新按来源更新。
 
-应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用、别名、隐藏和手动刷新的可见入口已写入产品规格。设置页、右键菜单和快捷键尚未实现。`AppIndex::refresh` 仍只是进程内重建。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
+应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用、别名、隐藏和手动刷新的可见入口已写入产品规格。设置页、右键菜单和快捷键尚未实现。`AppIndex::refresh` 仍只是进程内重建。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。`shell:AppsFolder` 也列出开始菜单快捷方式带来的桌面应用，它们的解析名是 `Chrome` 这类自定 AUMID 或 `{已知文件夹 GUID}\…\chrome.exe`，不是快捷方式的目标路径，按启动目标去重合不上，同一个应用会出现两条。商店来源因此只收打包应用的 AUMID，形如 `<包名>_<13 位发布者 ID>!<应用 ID>`（`rules::is_package_aumid`）；其余项由开始菜单来源收录，被开始菜单过滤掉的（卸载程序、目标不存在、启动文件夹）也不会从这里回来。商店应用的图标键是 `shell:AppsFolder\<AUMID>`，取图仍走 `SHCreateItemFromParsingName` 和 `IShellItemImageFactory`，得到包里的图标。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
 
 下面是当前实现选择，不是产品规则。PATH 上的 UNC 目录跳过，避免一个断开的网络路径挡住其余来源。开始菜单目录变化的安静时间是 400ms，另有 2 秒上限，到点就重建开始菜单来源。`apps.json` 的 `schemaVersion` 不是 1 时，和无法解析一样隔离成 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，日志不含文件内容。这和数据目录里不认识的 `schemaVersion` 不隔离不同，因为这份缓存可以重建。读取缓存时的 IO 错误只记日志，不改名。`apps.json` 仍是 schemaVersion 1，新增可选字段 `alternateNames`，来源值 `portable` 与 `alias`，以及目标种类 `url`。旧缓存没有这些字段时按空值读取。
 

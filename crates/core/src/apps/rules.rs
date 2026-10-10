@@ -90,6 +90,28 @@ pub(crate) fn indexed_game_url(url: &str) -> Option<String> {
     None
 }
 
+/// 打包应用的 AUMID：`<包名>_<13 位发布者 ID>!<应用 ID>`。
+///
+/// `shell:AppsFolder` 也列出开始菜单快捷方式带来的桌面应用，解析名是 `Chrome`
+/// 这类自定 AUMID 或已知文件夹路径，不是快捷方式的目标路径，按启动目标去重合不上。
+/// 这些应用已由开始菜单来源收录，商店来源只收这里返回 `true` 的条目。
+#[must_use]
+pub(crate) fn is_package_aumid(aumid: &str) -> bool {
+    let Some((family, app)) = aumid.trim().split_once('!') else {
+        return false;
+    };
+    let Some((name, publisher)) = family.rsplit_once('_') else {
+        return false;
+    };
+    !app.is_empty()
+        && !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
+        && publisher.len() == 13
+        && publisher.chars().all(|ch| ch.is_ascii_alphanumeric())
+}
+
 /// 读 `.url` 正文。只取 `[InternetShortcut]` 段内的第一条非空 `URL=`。
 /// UTF-16 LE/BE 带 BOM 时按对应端序解码，其余按 UTF-8。
 #[must_use]
@@ -262,6 +284,24 @@ mod tests {
             r"D:\App\helper.exe",
             "helper.lnk"
         ));
+    }
+
+    #[test]
+    fn only_package_aumids_count_as_store_apps() {
+        assert!(is_package_aumid(
+            "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+        ));
+        assert!(is_package_aumid(
+            "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPT"
+        ));
+        assert!(!is_package_aumid("Chrome"));
+        assert!(!is_package_aumid("Chrome._crx_abcdefghijklmnop"));
+        assert!(!is_package_aumid(
+            r"{6D809377-6AF0-444B-8957-A3773F02200E}\Google\Chrome\Application\chrome.exe"
+        ));
+        assert!(!is_package_aumid("Microsoft.Windows.Explorer"));
+        assert!(!is_package_aumid("Name_8wekyb3d8bbwe!"));
+        assert!(!is_package_aumid("Name_short!App"));
     }
 
     #[test]

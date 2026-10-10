@@ -1,4 +1,5 @@
-//! `shell:AppsFolder` 里的 AUMID。显示名用 Shell 的普通显示名。
+//! `shell:AppsFolder` 里打包应用的 AUMID。显示名用 Shell 的普通显示名。
+//! 同一文件夹里的桌面应用来自开始菜单快捷方式，由开始菜单来源收录，这里跳过。
 
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
@@ -8,6 +9,7 @@ use windows::Win32::UI::Shell::{
 use windows::core::{PWSTR, w};
 
 use super::comutil;
+use crate::apps::rules::is_package_aumid;
 use crate::apps::{AppEntry, AppSource, LaunchTarget};
 
 pub(crate) fn read_store() -> Result<Vec<AppEntry>, String> {
@@ -60,7 +62,7 @@ fn push_store_item<T>(
 fn read_item(item: &IShellItem) -> Option<AppEntry> {
     let aumid = display_name(item, SIGDN_PARENTRELATIVEPARSING)?;
     let aumid = aumid.trim().to_owned();
-    if aumid.is_empty() {
+    if !is_package_aumid(&aumid) {
         return None;
     }
     let name = display_name(item, SIGDN_NORMALDISPLAY)
