@@ -1,7 +1,7 @@
 //! 外壳里不依赖窗口 API 的决定。
 //!
 //! 单实例的互斥量、托盘菜单、热键注册、主题和开机启动的系统调用在 `crates/app`。
-//! 这里固定菜单文字、热键修改顺序、图标像素、主题解析，以及退出时还不存在便签编辑器的情况。
+//! 这里固定菜单文字、热键修改顺序、图标像素、主题解析，以及退出时是否还有没写盘的便签窗口。
 
 mod bar;
 mod bind;
@@ -78,19 +78,22 @@ pub const TRAY_MENU: [TrayItem; 5] = [
 pub const RENDERER_ORDER: [&str; 2] = ["femtovg", "software"];
 
 /// 退出决定。
-///
-/// 便签窗口还不在这个外壳里，因此没有未保存正文。
-/// [`QuitDecision::Stay`] 留给以后的便签界面：那种情况下不结束进程，也不丢弃正文。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuitDecision {
     Exit,
+    /// 还有便签窗口里的修改没有写盘。不结束进程，也不丢弃正文。
     Stay,
 }
 
-/// 当前没有便签编辑器，退出可以结束进程。
+/// 退出前先按「便签」保存未写入的修改。`unsaved` 是保存之后仍然没有写盘的便签窗口数：
+/// 为 0 才结束进程，否则留下，由用户在那些窗口里选择重试或放弃修改。
 #[must_use]
-pub fn quit_without_note_editors() -> QuitDecision {
-    QuitDecision::Exit
+pub fn quit_decision(unsaved: usize) -> QuitDecision {
+    if unsaved == 0 {
+        QuitDecision::Exit
+    } else {
+        QuitDecision::Stay
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +109,7 @@ mod tests {
             ["打开面板", "设置", "新建便签", "刷新 GitHub", "退出"]
         );
         assert_eq!(RENDERER_ORDER, ["femtovg", "software"]);
-        assert_eq!(quit_without_note_editors(), QuitDecision::Exit);
+        assert_eq!(quit_decision(0), QuitDecision::Exit);
+        assert_eq!(quit_decision(1), QuitDecision::Stay);
     }
 }
