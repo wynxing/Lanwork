@@ -1,13 +1,5 @@
-import { Palette } from "std-widgets.slint";
 export { SearchBar, BarRow } from "searchbar.slint";
-
-// 面板的宿主。可见内容由面板界面实现。这里不放输入框，也不放说明文字。
-export component PanelHost inherits Window {
-    title: "Lanwork";
-    public function apply-theme(dark: bool) {
-        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
-    }
-}
+export { Panel, PanelRow, PanelList, PanelDetail } from "panel.slint";
 
 export component Tray inherits SystemTrayIcon {
     // 逾期数字画在这张图上。数量为 0 时图里没有数字。

@@ -1,7 +1,7 @@
 //! 启动顺序：先占住单实例，再打开数据目录，完成导入恢复和待办加载，加载配置，按本地日期自动备份，然后选渲染器、注册热键、创建隐藏窗口和托盘。
 //! 便签服务、应用索引和文件索引在存储启动之后打开，交给搜索条的查询调度。
 //!
-//! 面板、设置和便签的可见内容不在这里绘制。搜索条在 `searchbar`。
+//! 面板在 `panel`，搜索条在 `searchbar`。设置页和便签的可见内容还没有。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +15,7 @@ use lanwork_core::dispatch::{Dispatch, Services};
 use lanwork_core::files::FileCommands;
 use lanwork_core::github::{GithubCommands, GithubError, ProcessGh, RefreshReport, RepoResult};
 use lanwork_core::notes::NoteCommands;
+use lanwork_core::panel::PanelTab;
 use lanwork_core::shell::{
     PANEL_HOTKEY_ID, QuitDecision, SEARCH_HOTKEY_ID, ShellCommand, SystemLight, TRAY_ICON_PX,
     desired_bindings, quit_without_note_editors, resolve_theme, tray_icon_rgba,
@@ -25,10 +26,11 @@ use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 use crate::instance::{self, Claim};
+use crate::panel;
 use crate::platform::{HotkeyControl, Platform};
 use crate::registry::{apply_startup, read_system_theme};
 use crate::searchbar;
-use crate::{PanelHost, SearchBar, Tray};
+use crate::{Panel, SearchBar, Tray};
 
 pub(crate) fn run() -> i32 {
     let claim = match instance::claim(instance::MUTEX_NAME, instance::ACTIVATE_NAME) {
@@ -98,30 +100,28 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     }
 
     let search = SearchBar::new().map_err(|err| err.to_string())?;
-    let panel = PanelHost::new().map_err(|err| err.to_string())?;
+    let panel_ui = Panel::new().map_err(|err| err.to_string())?;
     let tray = Tray::new().map_err(|err| err.to_string())?;
     if let Some(dispatch) = open_dispatch(store, &todos) {
         dispatch.set_web_search_engine(config.current().web_search_engine);
         searchbar::install(search.clone_strong(), dispatch, store.clone());
     }
-    refresh_theme(&panel, &config, store);
+    panel::install(panel_ui.clone_strong(), todos.clone(), store.clone());
+    refresh_theme(&config, store);
     refresh_badge(&tray, &todos, store);
     wire_tray(&tray, &config, store, &todos);
     watch_todos(&tray, &todos, store);
-    let panel_weak = panel.as_weak();
     let config_theme = config.clone();
     let store_theme = store.clone();
     platform.set_theme_callback(Box::new(move || {
-        let Some(panel) = panel_weak.upgrade() else {
-            return;
-        };
-        refresh_theme(&panel, &config_theme, &store_theme);
+        refresh_theme(&config_theme, &store_theme);
     }));
 
     // 搜索条收起时所有窗口都隐藏，事件循环不能因此结束。
     let run = slint::run_event_loop_until_quit().map_err(|err| err.to_string());
     searchbar::shutdown();
     drop(search);
+    drop(panel_ui);
     platform.shutdown();
     run
 }
@@ -191,8 +191,8 @@ fn select_renderer() -> Result<(), String> {
 }
 
 fn wire_tray(tray: &Tray, config: &ConfigCommands, store: &Store, todos: &TodoCommands) {
-    tray.on_open_panel(move || pending_visible(ShellCommand::OpenPanel));
-    tray.on_open_settings(move || pending_visible(ShellCommand::OpenSettings));
+    tray.on_open_panel(|| panel::show(None));
+    tray.on_open_settings(|| panel::show(Some(PanelTab::Settings)));
     tray.on_new_note(move || pending_visible(ShellCommand::NewNote));
 
     let busy = Arc::new(AtomicBool::new(false));
@@ -236,6 +236,7 @@ fn watch_todos(tray: &Tray, todos: &TodoCommands, store: &Store) {
                     return;
                 };
                 refresh_badge(&tray, &todos, &store);
+                panel::on_todos_changed();
             });
         }
     });
@@ -260,7 +261,7 @@ fn backup_if_due(store: &Store) {
     }
 }
 
-fn unix_now_ms() -> i64 {
+pub(crate) fn unix_now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
@@ -332,7 +333,7 @@ fn tray_image(overdue: u32) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-fn refresh_theme(panel: &PanelHost, config: &ConfigCommands, store: &Store) {
+fn refresh_theme(config: &ConfigCommands, store: &Store) {
     let system = read_system_theme();
     if config.current().theme == Theme::System && system == SystemLight::Unknown {
         static LOGGED: AtomicBool = AtomicBool::new(false);
@@ -344,10 +345,10 @@ fn refresh_theme(panel: &PanelHost, config: &ConfigCommands, store: &Store) {
         return;
     };
     searchbar::apply_theme(dark);
-    panel.invoke_apply_theme(dark);
+    panel::apply_theme(dark);
 }
 
-fn local_today() -> Option<CivilDate> {
+pub(crate) fn local_today() -> Option<CivilDate> {
     // SAFETY: GetLocalTime 只读系统时钟，没有输出缓冲区。
     let time = unsafe { GetLocalTime() };
     CivilDate::try_from_ymd(
@@ -374,7 +375,7 @@ pub(crate) fn on_hotkey(id: i32, received_ns: u64) {
     if id == SEARCH_HOTKEY_ID {
         searchbar::toggle(received_ns);
     } else if id == PANEL_HOTKEY_ID {
-        pending_visible(ShellCommand::PanelHotkey);
+        panel::show(None);
     }
 }
 
