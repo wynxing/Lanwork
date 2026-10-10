@@ -14,7 +14,7 @@ mod service;
 pub use command::NoteCommands;
 pub use error::NoteError;
 pub use model::{
-    EMPTY_TITLE_DISPLAY, Note, NoteInput, TRASH_RETENTION_MS, TimestampMillis, display_title,
-    normalize_tags,
+    EMPTY_TITLE_DISPLAY, FloatGeometry, Note, NoteInput, TRASH_RETENTION_MS, TimestampMillis,
+    display_title, normalize_tags,
 };
 pub use service::NoteService;

@@ -3,7 +3,7 @@
 //! 输入是 [`NoteCommands`](crate::notes::NoteCommands) 的快照。这里不读写盘，不读时钟。
 //! 规则仍在便签服务里。列表顺序（置顶在前，其后按更新时间从新到旧）由服务给出，这里不重排回收站以外的顺序。
 
-use crate::notes::Note;
+use crate::notes::{FloatGeometry, Note};
 use crate::shell::WorkArea;
 
 use super::todo_page::trash_days_left;
@@ -119,6 +119,65 @@ pub fn float_default_origin(
     )
 }
 
+/// 记住的悬浮窗放回屏幕上的结果，物理像素。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloatPlacement {
+    pub origin: (i32, i32),
+    pub size: (u32, u32),
+    /// 记住的值放不回原处，已经被拉回工作区或改了大小。
+    pub adjusted: bool,
+}
+
+/// 把记住的位置和大小放回工作区。
+///
+/// 产品规格没有写屏幕变化后位置不在任何工作区内怎么办，这是保守的实现选择：
+/// 取与窗口重叠面积最大的工作区；都不重叠时用 `fallback`（光标所在显示器）。
+/// 然后让窗口整个落在那个工作区内：大小先收到不超过工作区、不小于 `min`，再把位置拉回。
+#[must_use]
+pub fn restore_float(
+    saved: FloatGeometry,
+    areas: &[WorkArea],
+    fallback: WorkArea,
+    min: (u32, u32),
+) -> FloatPlacement {
+    let width = saved.width.max(min.0);
+    let height = saved.height.max(min.1);
+    let area = areas
+        .iter()
+        .copied()
+        .map(|area| (overlap(saved.x, saved.y, width, height, area), area))
+        .filter(|(shared, _)| *shared > 0)
+        .max_by_key(|(shared, _)| *shared)
+        .map_or(fallback, |(_, area)| area);
+    let width = width.min(u32::try_from(area.width()).unwrap_or(0).max(min.0));
+    let height = height.min(u32::try_from(area.height()).unwrap_or(0).max(min.1));
+    let x = clamp_start(saved.x, width, area.left, area.right);
+    let y = clamp_start(saved.y, height, area.top, area.bottom);
+    FloatPlacement {
+        origin: (x, y),
+        size: (width, height),
+        adjusted: (x, y) != (saved.x, saved.y) || (width, height) != (saved.width, saved.height),
+    }
+}
+
+fn overlap(x: i32, y: i32, width: u32, height: u32, area: WorkArea) -> i64 {
+    let right = i64::from(x) + i64::from(width);
+    let bottom = i64::from(y) + i64::from(height);
+    let shared_w = right.min(i64::from(area.right)) - i64::from(x).max(i64::from(area.left));
+    let shared_h = bottom.min(i64::from(area.bottom)) - i64::from(y).max(i64::from(area.top));
+    if shared_w <= 0 || shared_h <= 0 {
+        0
+    } else {
+        shared_w * shared_h
+    }
+}
+
+fn clamp_start(start: i32, length: u32, low: i32, high: i32) -> i32 {
+    let last = i64::from(high) - i64::from(length);
+    let clamped = i64::from(start).min(last).max(i64::from(low));
+    i32::try_from(clamped).unwrap_or(low)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +194,7 @@ mod tests {
             updated_at: TimestampMillis::from_millis(0),
             deleted_at: deleted.map(TimestampMillis::from_millis),
             revision: 1,
+            float: None,
         }
     }
 
@@ -216,5 +276,91 @@ mod tests {
             float_default_origin(work, 400, 300, 96, 0)
         );
         assert_eq!(float_default_origin(work, 400, 300, 192, 1), (356, 306));
+    }
+
+    const MIN: (u32, u32) = (200, 120);
+
+    fn area(left: i32, top: i32, right: i32, bottom: i32) -> WorkArea {
+        WorkArea {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    fn geometry(x: i32, y: i32, width: u32, height: u32) -> FloatGeometry {
+        FloatGeometry {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn a_window_inside_a_work_area_stays_where_it_was() {
+        let primary = area(0, 0, 1920, 1040);
+        let placed = restore_float(geometry(300, 200, 400, 300), &[primary], primary, MIN);
+        assert_eq!(placed.origin, (300, 200));
+        assert_eq!(placed.size, (400, 300));
+        assert!(!placed.adjusted);
+    }
+
+    #[test]
+    fn a_window_on_a_second_monitor_is_kept_when_that_monitor_is_still_there() {
+        let primary = area(0, 0, 1920, 1040);
+        let left = area(-1280, 0, 0, 984);
+        let placed = restore_float(
+            geometry(-1000, 100, 400, 300),
+            &[primary, left],
+            primary,
+            MIN,
+        );
+        assert_eq!(placed.origin, (-1000, 100));
+        assert!(!placed.adjusted);
+    }
+
+    #[test]
+    fn a_window_on_a_removed_monitor_is_pulled_into_the_fallback_area() {
+        let primary = area(0, 0, 1920, 1040);
+        let placed = restore_float(geometry(-1000, 100, 400, 300), &[primary], primary, MIN);
+        assert_eq!(placed.origin, (0, 100));
+        assert!(placed.adjusted);
+        let far = restore_float(geometry(9000, 9000, 400, 300), &[primary], primary, MIN);
+        assert_eq!(far.origin, (1520, 740));
+    }
+
+    #[test]
+    fn a_window_hanging_over_an_edge_is_pulled_back_in_full() {
+        let primary = area(0, 0, 1920, 1040);
+        let placed = restore_float(geometry(1800, 1000, 400, 300), &[primary], primary, MIN);
+        assert_eq!(placed.origin, (1520, 740));
+        assert!(placed.adjusted);
+    }
+
+    #[test]
+    fn the_biggest_overlap_picks_the_work_area() {
+        let left = area(-1280, 0, 0, 984);
+        let primary = area(0, 0, 1920, 1040);
+        let placed = restore_float(geometry(-100, 50, 400, 300), &[left, primary], left, MIN);
+        assert_eq!(placed.origin, (0, 50));
+    }
+
+    #[test]
+    fn a_window_bigger_than_the_area_shrinks_but_not_below_the_minimum() {
+        let small = area(0, 0, 800, 600);
+        let placed = restore_float(geometry(0, 0, 3000, 2000), &[small], small, MIN);
+        assert_eq!(placed.size, (800, 600));
+        let tiny = restore_float(geometry(10, 10, 5, 5), &[small], small, MIN);
+        assert_eq!(tiny.size, MIN);
+        assert!(tiny.adjusted);
+    }
+
+    #[test]
+    fn no_work_areas_at_all_uses_the_fallback() {
+        let fallback = area(0, 0, 1024, 768);
+        let placed = restore_float(geometry(5000, 5000, 400, 300), &[], fallback, MIN);
+        assert_eq!(placed.origin, (624, 468));
     }
 }

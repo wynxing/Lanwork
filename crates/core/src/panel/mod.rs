@@ -10,8 +10,8 @@ mod todo_page;
 pub use note_edit::{AUTOSAVE_IDLE_MS, EditSession, SaveOutcome, SaveProblem};
 pub use note_page::{
     FLOAT_CASCADE, FLOAT_CASCADE_STEPS, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH,
-    FLOAT_WIDTH, NoteRow, NoteView, float_default_origin, list_rows, locate_note, tag_names,
-    trash_rows,
+    FLOAT_WIDTH, FloatPlacement, NoteRow, NoteView, float_default_origin, list_rows, locate_note,
+    restore_float, tag_names, trash_rows,
 };
 
 pub use todo_page::{

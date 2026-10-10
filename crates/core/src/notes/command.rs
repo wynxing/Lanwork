@@ -5,7 +5,7 @@
 use crate::storage::Store;
 
 use super::error::NoteError;
-use super::model::{Note, NoteInput, TimestampMillis};
+use super::model::{FloatGeometry, Note, NoteInput, TimestampMillis};
 use super::service::NoteService;
 
 /// 界面调用的便签命令。克隆与对应的 [`NoteService`] 共享状态。
@@ -41,6 +41,11 @@ impl NoteCommands {
     pub fn save(&self, id: &str, revision: u64, input: &NoteInput) -> Result<Note, NoteError> {
         self.service.check_id(id)?;
         self.service.save(id, revision, input)
+    }
+
+    /// 记下悬浮窗的位置和大小。不改 `revision`，见 [`NoteService::set_float`]。
+    pub fn set_float(&self, id: &str, geometry: FloatGeometry) -> Result<Note, NoteError> {
+        self.service.set_float(id, geometry)
     }
 
     pub fn set_pinned(&self, id: &str, revision: u64, pinned: bool) -> Result<Note, NoteError> {

@@ -40,6 +40,17 @@ impl TimestampMillis {
     }
 }
 
+/// 悬浮窗的位置和大小，物理像素，位置是虚拟屏幕坐标。
+///
+/// 存在便签文件的 `floatWindow` 里。这是界面记下的值，服务不判断它是否还在某个显示器内。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FloatGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// 一篇便签。文件名是 [`Self::id`]，路径为 `notes/<id>.json`。
 ///
 /// 标题按调用方给的原文保存。空标题不会改写成「无标题」，显示时用 [`Self::display_title`]。
@@ -54,6 +65,8 @@ pub struct Note {
     pub updated_at: TimestampMillis,
     pub deleted_at: Option<TimestampMillis>,
     pub revision: u64,
+    /// 这一篇的悬浮窗上次关闭时的位置和大小。没有记录时为 `None`。
+    pub float: Option<FloatGeometry>,
 }
 
 impl Note {
@@ -193,6 +206,12 @@ pub(crate) struct NoteFile {
     deleted_at: Option<TimestampMillis>,
     #[serde(default)]
     revision: u64,
+    #[serde(
+        rename = "floatWindow",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    float: Option<FloatGeometry>,
 }
 
 impl NoteFile {
@@ -208,6 +227,7 @@ impl NoteFile {
             updated_at: note.updated_at,
             deleted_at: note.deleted_at,
             revision: note.revision,
+            float: note.float,
         }
     }
 
@@ -228,6 +248,7 @@ impl NoteFile {
             updated_at: self.updated_at,
             deleted_at: self.deleted_at,
             revision: self.revision,
+            float: self.float,
         })
     }
 }
@@ -249,6 +270,7 @@ mod tests {
             updated_at: TimestampMillis::from_millis(updated_at),
             deleted_at: None,
             revision: 1,
+            float: None,
         }
     }
 

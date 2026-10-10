@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
 use lanwork_core::backup::{BackupCommands, LaunchBackup};
-use lanwork_core::notes::{NoteCommands, NoteError, NoteInput};
+use lanwork_core::notes::{FloatGeometry, NoteCommands, NoteError, NoteInput};
 use lanwork_core::storage::{BootHooks, EntityKind, Store, StorePaths};
 
 struct TempDir {
@@ -404,4 +404,35 @@ fn zip_names(store: &Store) -> Vec<String> {
     }
     names.sort();
     names
+}
+
+#[test]
+fn float_geometry_goes_through_export_and_import() {
+    let fx = fixture();
+    let notes = NoteCommands::open(fx.store.clone()).unwrap();
+    let note = notes
+        .create(&NoteInput {
+            title: "悬浮".to_owned(),
+            body: "正文".to_owned(),
+            tags: Vec::new(),
+            pinned: false,
+        })
+        .unwrap();
+    let geometry = FloatGeometry {
+        x: 120,
+        y: 80,
+        width: 420,
+        height: 300,
+    };
+    notes.set_float(&note.id, geometry).unwrap();
+
+    let commands = BackupCommands::open(fx.store.clone());
+    let package = fx._temp.path().join("float.zip");
+    commands.export(&package, true, 30).unwrap();
+    notes
+        .set_float(&note.id, FloatGeometry { x: 0, ..geometry })
+        .unwrap();
+
+    commands.import(&package, 40).unwrap();
+    assert_eq!(notes.get(&note.id).unwrap().float, Some(geometry));
 }
