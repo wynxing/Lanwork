@@ -1,6 +1,6 @@
 # 技术验证记录：中文输入法
 
-日期：2026-10-08。人工测试是 2026-10-08～09。条件 5 的失败观察是 2026-10-10。
+日期：2026-10-08。人工测试是 2026-10-08～09。条件 5 的失败观察是 2026-10-10，同日在外框绕过合入后做过一次复测。
 
 被测代码 commit：`da42398c94a79bdbf336af5548fe0ca45f689dc5`（`spikes/ime` 与变基前的 `93b01dba5a0bc64524d49ed45c6c07fd7d286c8e` 相同）。窗口标题是 `Lanwork IME`。
 
@@ -36,7 +36,7 @@ GPU 与驱动：
 | 2 | 微软拼音在多行框里能组合并上屏，包括中英文混排、长句和翻页选词 | 通过 | 用户报告多行框输入没有问题 |
 | 3 | 两个框的候选窗都贴在光标处，翻页时也贴着 | 通过 | 用户报告候选窗位置没有问题 |
 | 4 | 拖动窗口后，候选窗仍贴在光标处 | 通过 | 用户报告拖动窗口后候选窗位置没有问题 |
-| 5 | 窗口在 100% 与 150% 缩放的两块显示器之间移动后，组合和候选窗仍然正确 | 未通过待复测 | 2026-10-10，`DESKTOP-HDJS01V`，主屏 100%、副屏 150%。100%→150% 时组合和候选窗都在。150%→100% 时窗口被拉大，内容缩在左上角，候选窗消失，只剩拼音 preedit。绕过已写进 spike，还没有在这台机器上复测 |
+| 5 | 窗口在 100% 与 150% 缩放的两块显示器之间移动后，组合和候选窗仍然正确 | 未通过待复测 | 2026-10-10，`DESKTOP-HDJS01V`，主屏 100%、副屏 150%。外框绕过合入 `55b1554` 后复测：窗口不再变形，preedit 还在，拖回 100% 后候选窗不在。重新打开候选窗的绕过已写进 spike，还没有在这台机器上复测 |
 | 6 | 组合未上屏时按 Enter，搜索条的 `accepted` 不增加 | 通过 | 用户报告 Enter 没有问题 |
 | 7 | 组合未上屏时按数字键 1 到 5，两个框的「应用看到 1–5」都不增加，候选由输入法处理 | 通过 | 用户报告数字键选词没有问题 |
 
@@ -101,23 +101,29 @@ cargo run -p ime
 
 结果是「未通过待复测」。两个方向都要再看过，才能改成通过。
 
-窗口逻辑尺寸固定为 720×760。变大之后缩放已是 1.0，所以内容画在客户区左上角，其余是空的。
+同日，外框绕过合入 main `55b15545d19b9013fe9ebedb0e6712b7e5ef2592`（PR #73）之后，在同一台机器上用 `cargo build -p ime` 的 debug 版复测。启动日志有「DPI 子类已装上」。搜索条保持 `nihao` 未上屏，在两屏之间来回拖。窗口不再变形：日志里 `DPI 拖动` 的建议、放置前、放置后尺寸一致，144 时是 1080×1140，96 时是 720×760。preedit 仍是 `ni'hao`。拖回 100% 主屏后候选窗不在，用户确认拖动后候选窗不在。日志在 96 时反复出现「IME 光标 dpi=96 客户区 59,86 1x16」，144 时是「客户区 89,129 2x24」。59×144/96 四舍五入是 89，86×144/96 是 129。
+
+窗口逻辑尺寸固定为 720×760。变大之后缩放已是 1.0，所以内容画在客户区左上角，其余是空的。上面这次复测里外框已经不再变大。
 
 原因在 winit 0.30.13，由 `i-slint-backend-winit` 1.18.1 带进来。`WM_DPICHANGED` 的处理自己用旧物理尺寸乘新缩放、除旧缩放来算外框，`lParam` 里的建议矩形没有参加这次计算。拖动过程中 `MonitorFromWindow` 仍返回正在离开的显示器，窗口被推回去，系统再发一次 DPI 消息。从 150% 回到 100% 时，第二次计算看见的缩放已经是 96，物理像素还是上一档的。720 逻辑像素在 144 DPI 上是 1080 物理像素；这 1080 再按从 96 到 144 乘回去，得到 1620，窗口变大。winit 问题 [4041](https://github.com/rust-windowing/winit/issues/4041) 和 [4600](https://github.com/rust-windowing/winit/issues/4600) 记的是同一条路径，0.30.13 里仍在。
 
-Slint 1.18.1 的 `WinitWindowAdapter` 收到 `ScaleFactorChanged` 后不调用 `set_ime_cursor_area`。源码里留着保持逻辑尺寸的 TODO。输入法光标还停在旧的物理坐标上，微软拼音就不再显示候选窗。预编辑由 `TextInput` 自己画，所以还在。固定尺寸窗口在两块缩放不同的屏幕之间被拖大，也记在 Slint 问题 [11073](https://github.com/slint-ui/slint/issues/11073)。
+Slint 1.18.1 的 `WinitWindowAdapter` 收到 `ScaleFactorChanged` 后不调用 `set_ime_cursor_area`。源码里留着保持逻辑尺寸的 TODO。固定尺寸窗口在两块缩放不同的屏幕之间被拖大，也记在 Slint 问题 [11073](https://github.com/slint-ui/slint/issues/11073)。预编辑由 `TextInput` 自己画，所以 DPI 变化后 preedit 还在。
 
-绕过只在 `spikes/ime`，winit 仍是 0.30.13，`Cargo.lock` 里已有的版本没有因此改动。窗口装上 `SetWindowSubclass`。拖动期间，最外层的 `WM_DPICHANGED` 锁住建议矩形，在 `WM_WINDOWPOSCHANGING` 里用它换掉 winit 算出的外框。外框仍对不上时再 `SetWindowPos`，带 `SWP_NOACTIVATE`，避免输入法失焦。这次消息返回之后，拖动还没结束时只保住该尺寸，位置仍跟着光标。松手后按当前 DPI 再收一次外框，并用逻辑光标乘 `dpi/96`（四舍五入，与 winit 的 `to_physical` 相同）调用 `ImmSetCompositionWindow`（`CFS_POINT`）和 `ImmSetCandidateWindow`（`CFS_EXCLUDE`）。`HIMC` 只 `ImmReleaseContext`。windows 0.62 里 `HIMC` 的 `Free` 会调用 `ImmDestroyContext`，这里不走那条路。事件循环回到 Slint 之后再做一次，并在 50 毫秒后再做一次，躲开拖动模态循环里被缓住的缩放和尺寸事件。
+`55b1554` 的复测说明，候选窗消失不是因为客户区坐标还停在旧 DPI 上。日志里的客户区点随 `dpi/96` 成比例，和 winit 的 `to_physical` 一样是四舍五入。IMM 的组合窗和候选窗用客户区坐标，不是屏幕坐标。`CFS_EXCLUDE` 的矩形只包住光标（96 时 1×16，144 时 2×24），没有盖住候选窗该出现的区域。winit 只在 Slint 发出 `input_method_request` 时调用 `set_ime_cursor_area`。Slint 1.18.1 在 `ScaleFactorChanged` 里不发这次请求，winit 0.30.13 的 `WM_DPICHANGED` 也不重写这块区域。日志里的「IME 光标」是 spike 在 winit 那次写入之后自己打的。
 
-复测仍用下面的 `cargo run -p ime`，不要设置 `SLINT_BACKEND`。启动日志应有一行 `DPI 子类已装上`。若出现 `DPI 子类未装上`，把那一行原文记下来，不要把条件 5 写成通过。
+微软拼音是 TSF 输入法。`ImmSetCandidateWindow` 只更新候选窗的位置记录。DPI 变化时，候选 UI 会被关掉；拖动还没结束、窗口还跨在两块屏幕上时重设位置，也会把它关掉。位置记录改对之后，不会把已经关掉的候选 UI 再打开。所以复测里同一组客户区坐标打了很多次，候选窗仍然不在。
+
+绕过只在 `spikes/ime`，winit 仍是 0.30.13，`Cargo.lock` 里已有的版本没有因此改动。窗口装上 `SetWindowSubclass`。拖动期间，最外层的 `WM_DPICHANGED` 锁住建议矩形，在 `WM_WINDOWPOSCHANGING` 里用它换掉 winit 算出的外框。外框仍对不上时再 `SetWindowPos`，带 `SWP_NOACTIVATE`，避免输入法失焦。这次消息返回之后，拖动还没结束时只保住该尺寸，位置仍跟着光标，并且不调用输入法。松手后按当前 DPI 再收一次外框。然后用逻辑光标乘 `dpi/96`（四舍五入）写三样东西：`ImmSetCompositionWindow` 用 `CFS_POINT | CFS_FORCE_POSITION`，点在光标下沿；`ImmSetCandidateWindow` 先用 `CFS_CANDIDATEPOS`（中文 TSF 输入法读的是这个样式），再写 `CFS_EXCLUDE`，最后留下的记录与 winit 相同。`HIMC` 只 `ImmReleaseContext`。windows 0.62 里 `HIMC` 的 `Free` 会调用 `ImmDestroyContext`，这里不走那条路。写这两次 IMM 之前，先 `CreateCaret` 和 `SetCaretPos` 放一个不调用 `ShowCaret` 的系统光标，给用 `GetCaretPos` 的路径，这样位置通知到达时客户区坐标已经是新的。然后用 `TF_GetThreadMgr` 取本线程已经存在的 `ITfThreadMgr`，不调用 `Activate`。对焦点文档调用 `ITfContextOwnerServices::OnLayoutChange`，让输入法重新读取文字范围并打开候选 UI。枚举到的 `ITfCandidateListUIElement` 再 `Show(true)`。不调用 `ImmNotifyIME` 的 `CPS_CANCEL` 或 `CPS_COMPLETE`，以免清掉 preedit。`TF_GetThreadMgr` 失败时再 `CoCreateInstance(CLSID_TF_ThreadMgr)`，同样不 `Activate`。事件循环回到 Slint 之后再做一次，并在 50 毫秒后再做一次，躲开拖动模态循环里被缓住的缩放和尺寸事件。
+
+复测仍用下面的 `cargo run -p ime`，不要设置 `SLINT_BACKEND`。这是 debug 构建。启动日志应有一行 `DPI 子类已装上`。若出现 `DPI 子类未装上`，把那一行原文记下来，不要把条件 5 写成通过。
 
 1. 主屏 100%，副屏 150%。微软拼音，指示器是「中」。
-2. 搜索条输入 `nihao`，不要上屏。从 100% 拖到 150%。组合和候选窗都要还在，文字大小跟着那块屏幕，内容铺满窗口。
-3. 再从 150% 拖回 100%。外框应随新 DPI 缩小，内容铺满窗口。候选窗仍贴着光标，preedit 仍在。
+2. 搜索条输入 `nihao`，不要上屏。候选窗先要出现在光标旁边。从 100% 拖到 150%。窗口还跨在两块屏幕上时，候选窗可以暂时不在。松手后组合和候选窗都要还在，文字大小跟着那块屏幕，内容铺满窗口，候选窗贴着光标，并且在窗口所在的这块屏幕上。
+3. 再从 150% 拖回 100%。外框应随新 DPI 缩小，内容铺满窗口。拖的过程中候选窗同样可以暂时不在。松手后候选窗仍贴着光标，并且出现在窗口所在的这块屏幕上。preedit 仍在，文字还是没上屏。
 4. 便签框同样做这两个方向。
-5. 日志里应能看到 `DPI 拖动` 和 `IME 光标`。把这两行原文留在观察栏。
+5. 日志里应能看到 `DPI 拖动`，以及松手之后的 `IME 光标`。`IME 光标` 这一行应带 `屏幕`、`布局通知 成功` 和 `候选元素`。把这两行原文留在观察栏。`布局通知 失败` 时把整行留下，结果仍写「未通过待复测」。拖动过程中可以只有 `DPI 拖动`，`IME 光标` 出现在松手之后。
 
-两个方向都由人看过，才把结果从「未通过待复测」改成通过。建议截图 `docs/verification/ime/candidate-after-dpi.png`。
+两个方向都由人看过，候选窗在松手后仍贴着光标，才把结果从「未通过待复测」改成通过。建议截图 `docs/verification/ime/candidate-after-dpi.png`。
 
 ### 条件 6
 
@@ -166,7 +172,7 @@ Slint 1.18.1 的 `WinitWindowAdapter` 收到 `ScaleFactorChanged` 后不调用 `
 
 单行 `TextInput` 收到 `KeyPressed` 且文本是换行（`U+000A`）时调用 `accepted`。这段代码不看 `preedit-text`。组合期间 `Enter` 会不会变成这次按键，取决于 Windows 和 winit 是否把按键交给应用。spike 只计数，不吞掉按键。数字键 1 到 5 同样没有在组合期间被 Slint 滤掉。
 
-winit 后端在 `input_method_request` 里调用 `set_ime_cursor_area`，传入光标矩形。条件 3 和 4 的用户报告是候选窗位置没有问题。条件 5 里，缩放变化后 Slint 1.18.1 不更新这块区域；spike 在拖动跨 DPI 之后自己重设组合窗和候选窗。这一项仍是未通过待复测。
+winit 后端在 `input_method_request` 里调用 `set_ime_cursor_area`，传入光标矩形。条件 3 和 4 的用户报告是候选窗位置没有问题。条件 5 里，缩放变化后 Slint 1.18.1 不更新这块区域。`55b1554` 的复测里，spike 已经按新 DPI 重设了组合窗和候选窗，客户区坐标是对的，候选窗仍不显示。随后的绕过在松手后通知 TSF 重新打开候选 UI。这一项仍是未通过待复测。
 
 ## 架构文档
 
