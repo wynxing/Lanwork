@@ -169,10 +169,15 @@ Write-Output "记录: $record"
 
 ## 延迟汇总
 
-#20 写结果延迟的起点和查询序号，#21 写热召回的起点，并在 `AfterRendering` 写同序号的终点。两边都把原始记录追加成 JSONL，本工具只读这个文件：
+#20 写结果延迟的起点和查询序号，#21 写热召回的起点，并在 `AfterRendering` 写同序号的终点。两边都把原始记录追加成 JSONL，本工具只读这个文件。`lanwork.exe` 在环境变量 `LANWORK_LATENCY_OUT` 非空时把这些记录追加到它指向的文件；搜索条每次收起时写出结果记录，热召回在渲染后立即写出。进程启动后的第一次热召回和第一个查询序号标为 `warmup: true`。
+
+```powershell
+$env:LANWORK_LATENCY_OUT = "$PWD\measurements-out\raw.jsonl"
+.\target\release\lanwork.exe
+```
 
 ```text
-cargo run -p lanwork-sample -- latency --input raw.jsonl --out summary.json
+cargo run -p lanwork-sample -- latency --input measurements-out\raw.jsonl --out summary.json
 ```
 
 一行一条。不认识的字段会忽略。时间戳用同一种时钟的纳秒，工具只做减法，不把它当成 Unix 时间。

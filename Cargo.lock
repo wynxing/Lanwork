@@ -2694,6 +2694,7 @@ name = "lanwork"
 version = "0.1.0"
 dependencies = [
  "lanwork-core",
+ "raw-window-handle",
  "slint",
  "slint-build",
  "windows",
@@ -4346,6 +4347,7 @@ dependencies = [
  "const-field-offset",
  "i-slint-backend-linuxkms",
  "i-slint-backend-selector",
+ "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",

@@ -19,11 +19,21 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "Lanwork";
 const THEME_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 const THEME_VALUE: &str = "AppsUseLightTheme";
+const TRANSPARENCY_VALUE: &str = "EnableTransparency";
 
 pub(crate) fn read_system_theme() -> SystemLight {
     match read_dword(THEME_KEY, THEME_VALUE) {
         Ok(value) => system_light_from_dword(value),
         Err(_) => SystemLight::Unknown,
+    }
+}
+
+/// 「透明效果」。值不存在时是系统默认的开启；读取失败时按关闭处理。
+pub(crate) fn read_transparency_enabled() -> bool {
+    match read_dword(THEME_KEY, TRANSPARENCY_VALUE) {
+        Ok(Some(value)) => value != 0,
+        Ok(None) => true,
+        Err(_) => false,
     }
 }
 

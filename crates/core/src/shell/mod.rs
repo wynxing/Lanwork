@@ -3,11 +3,19 @@
 //! 单实例的互斥量、托盘菜单、热键注册、主题和开机启动的系统调用在 `crates/app`。
 //! 这里固定菜单文字、热键修改顺序、图标像素、主题解析，以及退出时还不存在便签编辑器的情况。
 
+mod bar;
 mod bind;
 mod icon;
 mod startup;
 mod theme;
 
+pub use bar::{
+    BAR_WIDTH, BASE_DPI, Backdrop, BackdropInput, DARK_SOLID_RGB, EnterChord, EscapeAction,
+    GROUP_GAP, LIGHT_SOLID_RGB, LIST_PAD, MIN_BACKDROP_BUILD, NO_RESULTS, ROW_HEIGHT, RowAction,
+    WorkArea, bar_origin, choose_backdrop, escape_action, group_label, max_results_height,
+    move_selection, path_target, reselect, row_action, row_offsets, solid_rgb, status_line,
+    text_after_hide, to_logical, to_physical,
+};
 pub use bind::{
     BindError, HotkeyPort, PANEL_HOTKEY_ID, RegisteredHotkey, SEARCH_HOTKEY_ID, SaveHotkeyError,
     apply_hotkeys, desired_bindings, save_hotkeys,

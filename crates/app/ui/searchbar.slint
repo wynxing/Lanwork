@@ -1,0 +1,299 @@
+// 搜索条。只有一个输入框，结果在它下方展开。版式由这里决定，数据和动作在 Rust。
+
+export struct BarRow {
+    label: string,
+    // 类型：应用、待办、便签、文件、文件夹、浏览器。
+    kind: string,
+    // 选中后才显示。
+    location: string,
+    icon: image,
+    has-icon: bool,
+    // 没有壳层图标时画的图形。0 应用，1 待办，2 便签，3 文件，4 文件夹，5 浏览器。
+    glyph: int,
+    y: length,
+    // 与上一行不在同一组。
+    group-start: bool,
+}
+
+component Glyph inherits Rectangle {
+    in property <int> glyph;
+    in property <color> ink;
+    in property <color> accent;
+
+    width: 24px;
+    height: 24px;
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        fill: transparent;
+        stroke: glyph == 0 || glyph == 4 ? accent : ink;
+        stroke-width: 1.5px;
+        commands: glyph == 0 ? "M4.5 4.5h6v6h-6z M13.5 4.5h6v6h-6z M4.5 13.5h6v6h-6z M13.5 13.5h6v6h-6z"
+            : glyph == 1 ? "M12 3.5a8.5 8.5 0 1 0 0.01 0z M8 12.3l2.8 2.8 5.4-5.6"
+            : glyph == 2 ? "M5.5 3.5h13v17h-13z M8.5 8h7 M8.5 11.5h7 M8.5 15h4.5"
+            : glyph == 3 ? "M6 3.5h8l4.5 4.5v12.5h-12.5z M14 3.5v4.5h4.5"
+            : glyph == 4 ? "M3.5 6.5v12h17v-10h-9l-2-2z"
+            : "M12 3.5a8.5 8.5 0 1 0 0.01 0z M3.5 12h17 M12 3.5c-3 3-3 14 0 17 M12 3.5c3 3 3 14 0 17";
+    }
+}
+
+export component SearchBar inherits Window {
+    title: "Lanwork";
+    no-frame: true;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+
+    in property <bool> dark;
+    // 亚克力时客户区透明，DWM 画背景。
+    in property <bool> acrylic;
+    in property <color> solid-color: #f3f3f3;
+    in property <[BarRow]> rows;
+    in property <int> selected;
+    in property <length> list-content-height;
+    in property <length> max-list-height: 432px;
+    // 结果区下方的一行：错误、「文件索引不可用」或「没有结果」。
+    in property <string> status;
+    in property <bool> status-is-error;
+
+    callback edited(string);
+    callback escape();
+    callback move-selection(bool);
+    callback enter(bool, bool, bool, bool);
+
+    out property <string> preedit: input.preedit-text;
+    in-out property <string> text <=> input.text;
+
+    property <length> input-height: 56px;
+    property <length> pad: 6px;
+    property <length> row-height: 48px;
+    property <bool> has-list: rows.length > 0;
+    property <bool> has-status: status != "";
+    property <length> list-height: min(list-content-height, max-list-height);
+    property <length> results-height: (has-list || has-status) ? 1px + (has-list ? list-height : 0px) + (has-status ? 36px : 0px) : 0px;
+
+    property <color> ink: dark ? #ffffff : #1b1b1b;
+    property <color> ink-secondary: dark ? #c5c5c5 : #5d5d5d;
+    property <color> ink-tertiary: dark ? #9a9a9a : #767676;
+    property <color> divider: dark ? #ffffff17 : #00000014;
+    property <color> selection-fill: dark ? #ffffff14 : #0000000d;
+    property <color> accent: dark ? #60cdff : #005fb8;
+    property <color> critical: dark ? #ff99a4 : #c42b1c;
+
+    width: 680px;
+    height: input-height + results-height;
+    background: acrylic ? transparent : solid-color;
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    public function select-all() {
+        input.select-all();
+    }
+
+    // 让选中行留在可见范围里。
+    public function ensure-visible() {
+        if selected < 0 || selected >= rows.length {
+            return;
+        }
+        if rows[selected].y - pad + list.content-y < 0px {
+            list.content-y = -(rows[selected].y - pad);
+        } else if rows[selected].y + row-height + pad + list.content-y > list.height {
+            list.content-y = list.height - rows[selected].y - row-height - pad;
+        }
+    }
+
+    public function scroll-to-top() {
+        list.content-y = 0px;
+    }
+
+    Path {
+        x: 20px;
+        y: (input-height - 18px) / 2;
+        width: 18px;
+        height: 18px;
+        viewbox-width: 18;
+        viewbox-height: 18;
+        fill: transparent;
+        stroke: ink-secondary;
+        stroke-width: 1.6px;
+        commands: "M7.5 1.5a6 6 0 1 0 0.01 0z M11.9 11.9l4.6 4.6";
+    }
+
+    input-clip := Rectangle {
+        x: 52px;
+        y: 0px;
+        width: parent.width - 52px - 20px;
+        height: input-height;
+        clip: true;
+
+        input := TextInput {
+            property <length> computed-x;
+
+            x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+            y: 0px;
+            width: max(parent.width - self.text-cursor-width, self.preferred-width);
+            height: 100%;
+            single-line: true;
+            font-size: 18px;
+            color: ink;
+            vertical-alignment: center;
+            selection-background-color: dark ? #60cdff66 : #005fb855;
+            selection-foreground-color: ink;
+
+            cursor-position-changed(cursor-position) => {
+                if cursor-position.x + self.computed-x < 0px {
+                    self.computed-x = -cursor-position.x;
+                } else if cursor-position.x + self.computed-x > parent.width - self.text-cursor-width {
+                    self.computed-x = parent.width - cursor-position.x - self.text-cursor-width;
+                }
+            }
+
+            key-pressed(event) => {
+                if self.preedit-text != "" {
+                    return reject;
+                }
+                if event.text == Key.Escape {
+                    root.escape();
+                    return accept;
+                }
+                if event.text == Key.UpArrow {
+                    root.move-selection(false);
+                    return accept;
+                }
+                if event.text == Key.DownArrow {
+                    root.move-selection(true);
+                    return accept;
+                }
+                if event.text == Key.Return {
+                    root.enter(event.modifiers.control, event.modifiers.shift, event.modifiers.alt, event.modifiers.meta);
+                    return accept;
+                }
+                reject
+            }
+
+            edited => {
+                root.edited(self.text);
+            }
+        }
+    }
+
+    if has-list || has-status: Rectangle {
+        x: 0px;
+        y: input-height;
+        width: parent.width;
+        height: 1px;
+        background: divider;
+    }
+
+    list := Flickable {
+        x: 0px;
+        y: input-height + 1px;
+        width: parent.width;
+        height: has-list ? list-height : 0px;
+        content-width: self.width;
+        content-height: root.list-content-height;
+        visible: has-list;
+
+        for row[index] in rows: Rectangle {
+            property <bool> is-selected: index == selected;
+
+            x: 0px;
+            y: row.y;
+            width: parent.width;
+            height: row-height;
+
+            if row.group-start && index > 0: Rectangle {
+                x: 20px;
+                y: -5px;
+                width: parent.width - 40px;
+                height: 1px;
+                background: divider;
+            }
+
+            Rectangle {
+                x: 6px;
+                width: parent.width - 12px;
+                height: parent.height;
+                border-radius: 6px;
+                background: is-selected ? selection-fill : transparent;
+            }
+
+            if is-selected: Rectangle {
+                x: 6px;
+                y: (parent.height - 16px) / 2;
+                width: 3px;
+                height: 16px;
+                border-radius: 1.5px;
+                background: accent;
+            }
+
+            if row.has-icon: Image {
+                x: 20px;
+                y: (parent.height - 24px) / 2;
+                width: 24px;
+                height: 24px;
+                source: row.icon;
+                image-fit: contain;
+            }
+
+            if !row.has-icon: Glyph {
+                x: 20px;
+                y: (parent.height - 24px) / 2;
+                glyph: row.glyph;
+                ink: ink-secondary;
+                accent: accent;
+            }
+
+            Text {
+                x: 56px;
+                y: is-selected && row.location != "" ? 6px : 0px;
+                width: parent.width - 56px - 88px;
+                height: is-selected && row.location != "" ? 20px : parent.height;
+                text: row.label;
+                color: ink;
+                font-size: 14px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if is-selected && row.location != "": Text {
+                x: 56px;
+                y: 26px;
+                width: parent.width - 56px - 88px;
+                height: 16px;
+                text: row.location;
+                color: ink-secondary;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Text {
+                x: parent.width - 20px - 64px;
+                width: 64px;
+                height: parent.height;
+                text: row.kind;
+                color: ink-tertiary;
+                font-size: 12px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    if has-status: Text {
+        x: 20px;
+        y: input-height + 1px + (has-list ? list-height : 0px);
+        width: parent.width - 40px;
+        height: 36px;
+        text: status;
+        color: status-is-error ? critical : ink-secondary;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}

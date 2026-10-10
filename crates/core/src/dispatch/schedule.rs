@@ -69,7 +69,7 @@ pub struct Services {
     pub notes: NoteCommands,
 }
 
-/// 可替换的来源和时钟。搜索条界面还没有，测试用它换掉文件查询和时钟。
+/// 可替换的来源和时钟。测试用它换掉文件查询和时钟。
 pub struct Sides<A, F, C, I> {
     pub apps: A,
     pub files: F,
@@ -566,8 +566,9 @@ impl Inner {
             return;
         };
         let sequence = state.sequence;
+        // 已经画出来的结果不算被取代：新输入在它之后才到。
         for record in &mut self.latency {
-            if record.seq == sequence {
+            if record.seq == sequence && record.end_ns.is_none() {
                 record.superseded = true;
             }
         }

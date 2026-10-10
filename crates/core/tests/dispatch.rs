@@ -428,6 +428,33 @@ fn rapid_input_keeps_only_the_last_query() {
 }
 
 #[test]
+fn rendered_results_are_not_superseded_by_later_input() {
+    let (_temp, store) = open_store();
+    let (files, _calls) = script(file_result(FileSource::Everything, Vec::new()));
+    let (dispatch, _now, _) = ready(store, EchoApps, files);
+    let first = dispatch
+        .submit(Surface::SearchBar, "ab")
+        .unwrap()
+        .sequence
+        .unwrap();
+    assert!(dispatch.mark_rendered(first, "local", 7));
+    dispatch.submit(Surface::SearchBar, "abc").unwrap();
+    dispatch.submit(Surface::SearchBar, "").unwrap();
+    let records = dispatch.latency_records();
+    let local = records
+        .iter()
+        .find(|record| record.seq == first && record.source == Some("local"))
+        .unwrap();
+    assert_eq!(local.end_ns, Some(7));
+    assert!(!local.superseded);
+    let second = records
+        .iter()
+        .find(|record| record.seq != first && record.source == Some("local"))
+        .unwrap();
+    assert!(second.superseded);
+}
+
+#[test]
 fn capture_drops_late_results_and_the_panel_still_searches() {
     let (_temp, store) = open_store();
     let (started_tx, started_rx) = std::sync::mpsc::channel();

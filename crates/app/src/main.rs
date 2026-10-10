@@ -1,11 +1,13 @@
 //! Lanwork 程序外壳。
 //!
-//! 搜索条和面板的可见界面不在这里。非 Windows 上只说明平台并退出。
+//! 面板的可见界面还没有。非 Windows 上只说明平台并退出。
 
 use lanwork_core as _;
 
 slint::include_modules!();
 
+#[cfg(windows)]
+mod bar_win;
 #[cfg(windows)]
 mod host;
 #[cfg(windows)]
@@ -14,6 +16,8 @@ mod instance;
 mod platform;
 #[cfg(windows)]
 mod registry;
+#[cfg(windows)]
+mod searchbar;
 #[cfg(windows)]
 mod winutil;
 
