@@ -17,8 +17,8 @@
 | 项 | 记录 |
 | --- | --- |
 | 中文输入法 | [记录](verification/ime.md)。100% 缩放下用户报告单行、多行、候选窗、拖动后的候选窗、Enter 和数字键没有问题。150% 未测，该项未通过 |
-| 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，FemtoVG、软件渲染、Skia 软件、Skia OpenGL 的窗口都是磨砂、能透出背景、没有黑色客户区。系统浅色/深色主题切换通过，深色下也清楚。关闭/打开「透明效果」通过。节电模式通过。默认渲染器已写入 architecture.md「运行时」。这一项仍未通过。真实透明渲染失败没有新的记录。独立显卡机器未测。观察（不是失败判定）：自定义标题栏导致窗口拖不动；有两个关闭按钮 |
-| 渲染器 | 部分记录，未通过。同上。2026-10-09 四种窗口的文字清楚（含中文和 0OIl1）。默认 FemtoVG，初始化失败自动退回软件渲染，已写入 architecture.md「运行时」。外壳按此选择。这一项仍未通过。独立显卡机器未测 |
+| 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，FemtoVG、软件渲染、Skia 软件、Skia OpenGL 的窗口都是磨砂、能透出背景、没有黑色客户区。系统浅色/深色主题切换通过，深色下也清楚。关闭/打开「透明效果」通过。节电模式通过。默认渲染器已写入 architecture.md「运行时」。2026-10-10 在 DESKTOP-HDJS01V（Windows 11 build 26300，Intel UHD + NVIDIA GeForce RTX 4050 Laptop GPU，当时为远程控制）上，FemtoVG 场景 A：用户确认亚克力正常、无黑框，`graphics_api=NativeOpenGL`，`render_failed=false`，`backdrop_hresult=0`。进程 GPU Engine 含 ofa、vr、两个 videoencode，用户确认为 NVIDIA。没有采样，没有测主题、透明效果开关、节电和失败回退。这一项仍未通过。真实透明渲染失败没有新的记录。观察（不是失败判定）：自定义标题栏导致窗口拖不动；有两个关闭按钮 |
+| 渲染器 | 部分记录，未通过。同上。2026-10-09 四种窗口的文字清楚（含中文和 0OIl1）。默认 FemtoVG，初始化失败自动退回软件渲染，已写入 architecture.md「运行时」。外壳按此选择。2026-10-10 独显只补了 FemtoVG 场景 A 的目视（中文和 0OIl1 清楚），没有内存采样，场景 B 和另外三种渲染器没有在这台机器上做。这一项仍未通过 |
 | 外部拖放 | 通过条件表七条都通过，产品用 OLE。`--slint` 拖放仍失败，没有路径。2026-10-09 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。见下方「外部拖放」。 |
 | Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
 | Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。2026-10-09 14:24（UTC+8）停止 `WSearch` 后，`fileidx.exe wsearch --text notepad` 的 `ok` 为 false，`hresult` 为 2147614729（`0x80020009`，`DISP_E_EXCEPTION`），`message` 为空字符串，约 5.3 ms，`returned` 为 0，没有崩溃或卡住。随后服务恢复为 Running/Manual。错误提示文案不能依赖空的 `message`，列为后续。 |
