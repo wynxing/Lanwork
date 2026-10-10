@@ -12,9 +12,9 @@ mod theme;
 pub use bar::{
     BAR_WIDTH, BASE_DPI, Backdrop, BackdropInput, DARK_SOLID_RGB, EnterChord, EscapeAction,
     GROUP_GAP, LIGHT_SOLID_RGB, LIST_PAD, MIN_BACKDROP_BUILD, NO_RESULTS, ROW_HEIGHT, RowAction,
-    WorkArea, bar_origin, choose_backdrop, escape_action, group_label, max_results_height,
-    move_selection, path_target, pointed_row, reselect, row_action, row_offsets, solid_rgb,
-    status_line, text_after_hide, to_logical, to_physical,
+    WorkArea, bar_origin, choose_backdrop, escape_action, group_label, location_always_shown,
+    match_span, max_results_height, move_selection, path_target, pointed_row, reselect, row_action,
+    row_offsets, solid_rgb, status_line, text_after_hide, to_logical, to_physical,
 };
 pub use bind::{
     BindError, HotkeyPort, PANEL_HOTKEY_ID, RegisteredHotkey, SEARCH_HOTKEY_ID, SaveHotkeyError,

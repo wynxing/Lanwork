@@ -1,11 +1,15 @@
 // 搜索条。只有一个输入框，结果在它下方展开。版式由这里决定，数据和动作在 Rust。
 
 export struct BarRow {
-    label: string,
+    // 名称拆成三段，中间一段是与输入相同的部分，加粗。没有匹配时只有 head。
+    label-head: string,
+    label-match: string,
+    label-tail: string,
     // 类型：应用、待办、便签、文件、文件夹、浏览器。
     kind: string,
-    // 选中后才显示。
+    // 路径或所属位置。location-always 为真时总是显示，否则选中后才显示。
     location: string,
+    location-always: bool,
     icon: image,
     has-icon: bool,
     // 没有壳层图标时画的图形。0 应用，1 待办，2 便签，3 文件，4 文件夹，5 浏览器。
@@ -204,6 +208,7 @@ export component SearchBar inherits Window {
 
         for row[index] in rows: Rectangle {
             property <bool> is-selected: index == selected;
+            property <bool> two-line: row.location != "" && (row.location-always || is-selected);
 
             x: 0px;
             y: row.y;
@@ -252,19 +257,43 @@ export component SearchBar inherits Window {
                 accent: accent;
             }
 
-            Text {
+            HorizontalLayout {
                 x: 56px;
-                y: is-selected && row.location != "" ? 6px : 0px;
+                y: two-line ? 6px : 0px;
                 width: parent.width - 56px - 88px;
-                height: is-selected && row.location != "" ? 20px : parent.height;
-                text: row.label;
-                color: ink;
-                font-size: 14px;
-                vertical-alignment: center;
-                overflow: elide;
+                height: two-line ? 20px : parent.height;
+                spacing: 0px;
+
+                if row.label-head != "": Text {
+                    horizontal-stretch: 0;
+                    text: row.label-head;
+                    color: ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                if row.label-match != "": Text {
+                    horizontal-stretch: 0;
+                    text: row.label-match;
+                    color: ink;
+                    font-size: 14px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: row.label-tail;
+                    color: ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
 
-            if is-selected && row.location != "": Text {
+            if two-line: Text {
                 x: 56px;
                 y: 26px;
                 width: parent.width - 56px - 88px;

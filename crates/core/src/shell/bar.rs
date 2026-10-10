@@ -127,6 +127,43 @@ pub fn group_label(group: SearchGroup) -> &'static str {
     }
 }
 
+/// 文件和文件夹在名称下方总是显示路径。其它结果选中后才显示。
+#[must_use]
+pub fn location_always_shown(group: SearchGroup) -> bool {
+    matches!(group, SearchGroup::File | SearchGroup::Folder)
+}
+
+/// 名称里与输入相同的第一段，返回字节范围。逐字符比较，不区分大小写；
+/// 输入去掉首尾空白。名称里没有这段原文时（拼音、首字母、模糊或备用名命中）返回 `None`。
+#[must_use]
+pub fn match_span(label: &str, input: &str) -> Option<(usize, usize)> {
+    let needle: Vec<char> = input.trim().chars().map(fold_case).collect();
+    if needle.is_empty() {
+        return None;
+    }
+    'start: for (start, _) in label.char_indices() {
+        let mut end = start;
+        let mut rest = label[start..].chars();
+        for wanted in &needle {
+            match rest.next() {
+                Some(ch) if fold_case(ch) == *wanted => end += ch.len_utf8(),
+                _ => continue 'start,
+            }
+        }
+        return Some((start, end));
+    }
+    None
+}
+
+/// 小写恰好是一个字符时取小写，否则保留原字符，字节长度对应关系不变。
+fn fold_case(ch: char) -> char {
+    let mut lower = ch.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(single), None) => single,
+        _ => ch,
+    }
+}
+
 /// 每行的纵坐标和列表总高。换组时多留 [`GROUP_GAP`]，分隔线画在空隙中间。
 #[must_use]
 pub fn row_offsets(groups: &[SearchGroup]) -> (Vec<u32>, u32) {
@@ -329,6 +366,35 @@ mod tests {
     use super::*;
     use crate::apps::{AppEntry, AppHit, AppSource};
     use crate::search::HitKind;
+
+    #[test]
+    fn match_span_is_the_first_case_insensitive_occurrence() {
+        assert_eq!(match_span("ChatGPT", "chat"), Some((0, 4)));
+        assert_eq!(match_span("my chats", " CHAT "), Some((3, 7)));
+        assert_eq!(match_span("abab", "ab"), Some((0, 2)));
+        assert_eq!(match_span("微信", "信"), Some((3, 6)));
+        assert_eq!(match_span("Google Chrome", "e c"), Some((5, 8)));
+        assert_eq!(match_span("微信", "wx"), None);
+        assert_eq!(match_span("Visual Studio Code", "vsc"), None);
+        assert_eq!(match_span("ChatGPT", "   "), None);
+        assert_eq!(match_span("Chat", "chatgpt"), None);
+        let (start, end) = match_span("İstanbul", "stan").unwrap();
+        assert_eq!(&"İstanbul"[start..end], "stan");
+    }
+
+    #[test]
+    fn only_files_and_folders_always_show_the_path() {
+        assert!(location_always_shown(SearchGroup::File));
+        assert!(location_always_shown(SearchGroup::Folder));
+        for group in [
+            SearchGroup::Browser,
+            SearchGroup::Application,
+            SearchGroup::Todo,
+            SearchGroup::Note,
+        ] {
+            assert!(!location_always_shown(group));
+        }
+    }
 
     #[test]
     fn labels_cover_every_group() {

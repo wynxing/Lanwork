@@ -20,8 +20,9 @@ use lanwork_core::dispatch::{
 use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
     BAR_WIDTH, Backdrop, EnterChord, EscapeAction, ROW_HEIGHT, RowAction, WorkArea, bar_origin,
-    escape_action, group_label, max_results_height, move_selection, path_target, pointed_row,
-    reselect, row_action, row_offsets, solid_rgb, status_line, text_after_hide, to_physical,
+    escape_action, group_label, location_always_shown, match_span, max_results_height,
+    move_selection, path_target, pointed_row, reselect, row_action, row_offsets, solid_rgb,
+    status_line, text_after_hide, to_physical,
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
@@ -366,10 +367,21 @@ impl Bar {
             .enumerate()
             .map(|(index, (row, y))| {
                 let icon = row.icon.as_ref().and_then(|key| self.icons.get(key));
+                let (head, matched, tail) = match match_span(&row.label, &self.view_text) {
+                    Some((start, end)) => (
+                        &row.label[..start],
+                        &row.label[start..end],
+                        &row.label[end..],
+                    ),
+                    None => (row.label.as_str(), "", ""),
+                };
                 BarRow {
-                    label: row.label.clone().into(),
+                    label_head: head.into(),
+                    label_match: matched.into(),
+                    label_tail: tail.into(),
                     kind: group_label(row.group).into(),
                     location: row.location.clone().into(),
+                    location_always: location_always_shown(row.group),
                     icon: icon.cloned().unwrap_or_default(),
                     has_icon: icon.is_some(),
                     glyph: glyph(&row.detail),
