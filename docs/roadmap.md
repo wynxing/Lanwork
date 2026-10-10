@@ -23,7 +23,7 @@
 | Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
 | Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。2026-10-09 14:24（UTC+8）停止 `WSearch` 后，`fileidx.exe wsearch --text notepad` 的 `ok` 为 false，`hresult` 为 2147614729（`0x80020009`，`DISP_E_EXCEPTION`），`message` 为空字符串，约 5.3 ms，`returned` 为 0，没有崩溃或卡住。随后服务恢复为 Running/Manual。错误提示文案不能依赖空的 `message`，列为后续。 |
 | 通知 | 有记录，未通过。见下方「通知（#7）」 |
-| 热角 | 2026-10-08，`spikes/hotcorner`，release。停留一次、离开约 340ms、离开后再进入，以及静止 5 分钟的三种采样，在 1920×1200 的屏幕上有记录。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，钩子和 50ms 轮询各做了 5 分钟鼠标正常移动的采样（各 300 行）；100ms 轮询未测。检测用 50ms 轮询，不用鼠标钩子。拖动窗口、多显示器、全屏未测，不算通过。见 [measurements/2026-10-08-hotcorner.md](measurements/2026-10-08-hotcorner.md) |
+| 热角 | 2026-10-08，`spikes/hotcorner`，release。停留一次、离开约 340ms、离开后再进入，以及静止 5 分钟的三种采样，在 1920×1200 的屏幕上有记录。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，钩子和 50ms 轮询各做了 5 分钟鼠标正常移动的采样（各 300 行）；100ms 轮询未测。检测用 50ms 轮询，不用鼠标钩子。2026-10-10 在 DESKTOP-HDJS01V、main `0a42c74` 的 release 上补了 #8 剩余人工项：主屏 0,0–2560,1440（100%），副屏在右 2560,0–3520,1707（150%）。50ms 轮询的 cursor 模式在副屏右上角通过（自测瞄准点 (3504, 15)，移入到触发约 396ms；人工移入触发 1 次 (3519, 0)）。钩子方案同一自测项无触发，仅记录，已不采用。primary 模式在副屏角触发 0 次。人手按住标题栏拖到副屏右上角停留，触发 1 次 (3519, 15)；规格未定拖动时是否应触发，待定。自动拖动窗口矩形未变，未测。主屏全屏视频时停在右上角触发 1 次 (2559, 0)：spike 未实现全屏抑制，产品规则是有全屏应用时不触发，未通过，待产品实现后再测。此前在主屏误做的 3 次 (2559, 0) 不计。热角仍不算通过。见 [measurements/2026-10-08-hotcorner.md](measurements/2026-10-08-hotcorner.md) |
 
 ## 通知（#7）
 
