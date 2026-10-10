@@ -101,6 +101,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     let panel = PanelHost::new().map_err(|err| err.to_string())?;
     let tray = Tray::new().map_err(|err| err.to_string())?;
     if let Some(dispatch) = open_dispatch(store, &todos) {
+        dispatch.set_web_search_engine(config.current().web_search_engine);
         searchbar::install(search.clone_strong(), dispatch, store.clone());
     }
     refresh_theme(&panel, &config, store);

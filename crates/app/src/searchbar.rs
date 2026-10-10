@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use lanwork_core::apps::{LaunchError, launch, launch_elevated};
+use lanwork_core::apps::{LaunchError, LaunchTarget, launch, launch_elevated};
 use lanwork_core::dispatch::{
     Dispatch, FILE_QUERY_DELAY_MS, FileProgress, IconKey, LATENCY_SOURCE_LOCAL, Monotonic,
     QueryView, RgbaImage, RowDetail, SearchGroup, SearchRow, Surface, SystemClock, UsageKey,
@@ -459,7 +459,10 @@ impl Bar {
         };
         let usage = row.usage.clone();
         match action {
-            RowAction::Shell(_) | RowAction::Elevated(_) | RowAction::OpenFolder(_) => {
+            RowAction::Shell(_)
+            | RowAction::Elevated(_)
+            | RowAction::OpenFolder(_)
+            | RowAction::WebSearch { .. } => {
                 self.launch(action, usage);
             }
             RowAction::PanelTodo { .. }
@@ -542,6 +545,7 @@ fn run_shell(action: &RowAction) -> Result<(), LaunchError> {
         RowAction::Shell(target) => launch(target),
         RowAction::Elevated(target) => launch_elevated(target),
         RowAction::OpenFolder(folder) => launch(&path_target(&folder.to_string_lossy())),
+        RowAction::WebSearch { url } => launch(&LaunchTarget::Url { url: url.clone() }),
         RowAction::PanelTodo { .. } | RowAction::PanelNote { .. } | RowAction::FloatNote { .. } => {
             Ok(())
         }
@@ -556,6 +560,7 @@ fn glyph(detail: &RowDetail) -> i32 {
         RowDetail::File { .. } => 3,
         RowDetail::Folder { .. } => 4,
         RowDetail::Browser { .. } => 5,
+        RowDetail::WebSearch { .. } => 6,
     }
 }
 

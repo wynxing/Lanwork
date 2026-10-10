@@ -124,6 +124,7 @@ pub fn group_label(group: SearchGroup) -> &'static str {
         SearchGroup::Note => "便签",
         SearchGroup::File => "文件",
         SearchGroup::Folder => "文件夹",
+        SearchGroup::WebSearch => "网页搜索",
     }
 }
 
@@ -245,13 +246,15 @@ pub enum RowAction {
     PanelNote { id: String },
     /// 悬浮该便签。
     FloatNote { id: String },
+    /// 用默认浏览器打开搜索页。不计使用次数。
+    WebSearch { url: String },
 }
 
 impl RowAction {
     /// 打开了这一项本身时次数加 1。打开所在目录不算打开这一项。
     #[must_use]
     pub fn counts_as_open(&self) -> bool {
-        !matches!(self, Self::OpenFolder(_))
+        !matches!(self, Self::OpenFolder(_) | Self::WebSearch { .. })
     }
 }
 
@@ -284,6 +287,9 @@ pub fn row_action(detail: &RowDetail, chord: EnterChord) -> Option<RowAction> {
             Some(RowAction::PanelNote { id: id.clone() })
         }
         (RowDetail::Note { id }, EnterChord::Ctrl) => Some(RowAction::FloatNote { id: id.clone() }),
+        (RowDetail::WebSearch { url }, EnterChord::Plain) => {
+            Some(RowAction::WebSearch { url: url.clone() })
+        }
         _ => None,
     }
 }
@@ -366,6 +372,25 @@ mod tests {
     use super::*;
     use crate::apps::{AppEntry, AppHit, AppSource};
     use crate::search::HitKind;
+
+    #[test]
+    fn web_search_opens_only_with_plain_enter_and_does_not_count() {
+        let detail = RowDetail::WebSearch {
+            url: "https://www.google.com/search?q=chat".to_owned(),
+        };
+        let action = row_action(&detail, EnterChord::Plain).unwrap();
+        assert_eq!(
+            action,
+            RowAction::WebSearch {
+                url: "https://www.google.com/search?q=chat".to_owned()
+            }
+        );
+        assert!(!action.counts_as_open());
+        assert_eq!(row_action(&detail, EnterChord::Ctrl), None);
+        assert_eq!(row_action(&detail, EnterChord::CtrlShift), None);
+        assert_eq!(group_label(SearchGroup::WebSearch), "网页搜索");
+        assert!(!location_always_shown(SearchGroup::WebSearch));
+    }
 
     #[test]
     fn match_span_is_the_first_case_insensitive_occurrence() {

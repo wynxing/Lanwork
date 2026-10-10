@@ -129,6 +129,8 @@ pub enum SearchGroup {
     File,
     /// 文件夹。
     Folder,
+    /// 用默认搜索引擎搜输入。调度在有输入时放在最后，不经 [`allocate_display`]，不占 20 条名额。
+    WebSearch,
 }
 
 const SEARCH_GROUPS: [SearchGroup; 6] = [
@@ -141,14 +143,15 @@ const SEARCH_GROUPS: [SearchGroup; 6] = [
 ];
 
 impl SearchGroup {
-    const fn index(self) -> usize {
+    const fn index(self) -> Option<usize> {
         match self {
-            Self::Browser => 0,
-            Self::Application => 1,
-            Self::Todo => 2,
-            Self::Note => 3,
-            Self::File => 4,
-            Self::Folder => 5,
+            Self::Browser => Some(0),
+            Self::Application => Some(1),
+            Self::Todo => Some(2),
+            Self::Note => Some(3),
+            Self::File => Some(4),
+            Self::Folder => Some(5),
+            Self::WebSearch => None,
         }
     }
 }
@@ -157,12 +160,14 @@ impl SearchGroup {
 ///
 /// 每组先取至多 [`GROUP_FIRST_TAKE`] 条。名额还有剩余时，按组顺序把前面组剩下的结果取完，再取后面的组。
 /// 同一组入选的条目挨在一起，并保持传入时的先后。组内顺序由调用方用 [`rank_hits`] 排好。
-/// 同一个 [`SearchGroup`] 出现多次时，条目按传入顺序接在后面。
+/// 同一个 [`SearchGroup`] 出现多次时，条目按传入顺序接在后面。[`SearchGroup::WebSearch`] 被忽略。
 #[must_use]
 pub fn allocate_display<T: Clone>(groups: &[RankedGroup<T>]) -> Vec<(SearchGroup, T)> {
     let mut buckets: [Vec<T>; 6] = std::array::from_fn(|_| Vec::new());
     for grouped in groups {
-        buckets[grouped.group.index()].extend(grouped.items.iter().cloned());
+        if let Some(index) = grouped.group.index() {
+            buckets[index].extend(grouped.items.iter().cloned());
+        }
     }
 
     let mut take = [0usize; 6];

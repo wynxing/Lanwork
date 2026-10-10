@@ -56,6 +56,8 @@ pub enum UsageKey {
     Note(String),
     File(String),
     Folder(String),
+    /// 网页搜索那一条。打开它不计使用次数，这个键只用来保持选中。
+    WebSearch,
 }
 
 /// 壳层图标的键。`index` 来自快捷方式；取图接口没有这一参数时仍用它区分缓存项。
@@ -80,12 +82,27 @@ pub struct SearchRow {
 /// 打开这一条时界面还需要的标识。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowDetail {
-    Browser { url: String },
+    Browser {
+        url: String,
+    },
     App(AppHit),
-    Todo { list_id: String, item_id: String },
-    Note { id: String },
-    File { path: String },
-    Folder { path: String },
+    Todo {
+        list_id: String,
+        item_id: String,
+    },
+    Note {
+        id: String,
+    },
+    File {
+        path: String,
+    },
+    Folder {
+        path: String,
+    },
+    /// 搜索页的完整地址。
+    WebSearch {
+        url: String,
+    },
 }
 
 /// 界面可以画的当前结果。序号不是当前序号时，不要再画这份旧结果。
