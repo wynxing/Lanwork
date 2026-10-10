@@ -139,7 +139,11 @@ impl NotesPage {
             .map_or(-1, count)
     }
 
-    fn refresh_editor(&mut self, ui: &Panel) {
+    /// 编辑区没有未保存的修改、输入法也没有在组合时，换成磁盘上更新的内容。
+    pub(crate) fn refresh_editor(&mut self, ui: &Panel) {
+        if !ui.global::<NotesPageData>().get_preedit().is_empty() {
+            return;
+        }
         let Some(notes) = self.notes.clone() else {
             return;
         };

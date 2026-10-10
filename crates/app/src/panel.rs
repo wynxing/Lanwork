@@ -139,6 +139,7 @@ pub(crate) fn on_notes_changed() {
     with_panel(|panel| {
         if panel.visible && panel.tab == PanelTab::Notes {
             panel.notes.reload(&panel.ui);
+            panel.notes.refresh_editor(&panel.ui);
         }
     });
 }

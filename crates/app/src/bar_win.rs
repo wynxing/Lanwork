@@ -11,7 +11,8 @@ use windows::Win32::Graphics::Dwm::{
     DWMWINDOWATTRIBUTE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint,
 };
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
@@ -76,6 +77,48 @@ pub(crate) fn cursor_monitor() -> Option<(WorkArea, u32)> {
         },
         dpi,
     ))
+}
+
+/// 所有显示器的工作区，物理像素，虚拟屏幕坐标。枚举失败时返回空表。
+pub(crate) fn work_areas() -> Vec<WorkArea> {
+    // SAFETY: 系统只在下面 EnumDisplayMonitors 调用期间、同一线程上调用它，data 是该调用传入的指针。
+    unsafe extern "system" fn collect(
+        monitor: HMONITOR,
+        _: HDC,
+        _: *mut RECT,
+        data: LPARAM,
+    ) -> windows::core::BOOL {
+        let mut info = MONITORINFO {
+            cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).unwrap_or(0),
+            ..Default::default()
+        };
+        // SAFETY: cbSize 已设为结构体大小，指针指向局部变量。
+        if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+            // SAFETY: data 是下面 EnumDisplayMonitors 调用传入的 `Vec<WorkArea>` 的地址，
+            // 回调只在那次调用返回之前、在同一线程上执行。
+            let areas = unsafe { &mut *(data.0 as *mut Vec<WorkArea>) };
+            let work = info.rcWork;
+            areas.push(WorkArea {
+                left: work.left,
+                top: work.top,
+                right: work.right,
+                bottom: work.bottom,
+            });
+        }
+        true.into()
+    }
+
+    let mut areas: Vec<WorkArea> = Vec::new();
+    // SAFETY: 回调只借用 `areas`，枚举在本调用内同步结束，`areas` 在此期间不会被移动。
+    let _ = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect),
+            LPARAM(std::ptr::from_mut(&mut areas) as isize),
+        )
+    };
+    areas
 }
 
 pub(crate) fn window_origin(hwnd: HWND) -> Option<(i32, i32)> {

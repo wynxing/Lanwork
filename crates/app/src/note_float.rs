@@ -1,14 +1,18 @@
 //! 便签悬浮窗：只含正文的独立窗口，使用时创建，关闭时释放。
 //!
-//! 同一篇已经有悬浮窗时只聚焦它。每篇记住自己的位置和大小，记在本进程里：同一篇关闭后再悬浮用这个值。
+//! 同一篇已经有悬浮窗时只聚焦它。每篇记住自己的位置和大小：关闭和退出时写进便签文件的 `floatWindow`，
+//! 重启后再悬浮时放回；写不成时，本进程里还记着这个值。屏幕变了、位置不在任何工作区内时拉回工作区。
 //! 保存流程在 `note_editor`，规则在 `lanwork_core::panel`。版式在 `ui/notefloat.slint`。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use lanwork_core::notes::NoteCommands;
-use lanwork_core::panel::{FLOAT_HEIGHT, FLOAT_WIDTH, float_default_origin};
+use lanwork_core::notes::{FloatGeometry, NoteCommands};
+use lanwork_core::panel::{
+    FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH, FLOAT_WIDTH, float_default_origin,
+    restore_float,
+};
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
 use slint::winit_030::WinitWindowAccessor;
@@ -23,7 +27,7 @@ enum After {
     Quit,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Geometry {
     origin: (i32, i32),
     size: (u32, u32),
@@ -44,6 +48,7 @@ struct Floats {
     store: Store,
     dark: bool,
     windows: HashMap<String, FloatWindow>,
+    /// 写进便签文件没有成功的位置和大小，本进程里先用这个。
     remembered: HashMap<String, Geometry>,
 }
 
@@ -99,6 +104,21 @@ struct Ctx<'a> {
     dark: bool,
 }
 
+fn persist_geometry(notes: &NoteCommands, note_id: &str, geometry: Geometry) -> Result<(), String> {
+    notes
+        .set_float(
+            note_id,
+            FloatGeometry {
+                x: geometry.origin.0,
+                y: geometry.origin.1,
+                width: geometry.size.0,
+                height: geometry.size.1,
+            },
+        )
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
 fn rgb(value: u32) -> slint::Color {
     let [_, r, g, b] = value.to_be_bytes();
     slint::Color::from_rgb_u8(r, g, b)
@@ -134,6 +154,11 @@ pub(crate) fn apply_theme(dark: bool) {
     });
 }
 
+/// 别处保存了这一篇之后调用。这个悬浮窗没有未保存的修改、输入法也没在组合时，换成最新正文。
+pub(crate) fn on_note_changed(note_id: &str) {
+    with_window(note_id, FloatWindow::adopt_latest);
+}
+
 /// 退出前保存所有悬浮窗里没写盘的修改。返回保存之后仍没写盘的窗口数，这些窗口会被显示出来。
 pub(crate) fn flush_for_quit() -> usize {
     FLOATS.with(|cell| {
@@ -147,6 +172,14 @@ pub(crate) fn flush_for_quit() -> usize {
         let mut blocked = 0;
         for window in floats.windows.values_mut() {
             if window.editor.flush(&notes) {
+                if let Some(geometry) = window.geometry()
+                    && let Err(message) =
+                        persist_geometry(&notes, window.editor.session.id(), geometry)
+                {
+                    floats
+                        .store
+                        .log_warn(&format!("悬浮窗位置没有写进便签：{message}"));
+                }
                 continue;
             }
             window.editor.after = Some(After::Quit);
@@ -171,7 +204,20 @@ impl Floats {
         if let Some(window) = self.windows.remove(note_id)
             && let Some(last) = window.last
         {
-            self.remembered.insert(note_id.to_owned(), last);
+            self.remember(note_id, last);
+        }
+    }
+
+    fn remember(&mut self, note_id: &str, geometry: Geometry) {
+        match persist_geometry(&self.notes, note_id, geometry) {
+            Ok(()) => {
+                self.remembered.remove(note_id);
+            }
+            Err(message) => {
+                self.store
+                    .log_warn(&format!("悬浮窗位置没有写进便签：{message}"));
+                self.remembered.insert(note_id.to_owned(), geometry);
+            }
         }
     }
 
@@ -202,20 +248,49 @@ impl Floats {
             },
             lanwork_core::shell::BASE_DPI,
         ));
-        let geometry = self.remembered.get(note_id).copied().unwrap_or_else(|| {
-            let size = (
-                u32::try_from(to_physical(FLOAT_WIDTH, dpi)).unwrap_or(FLOAT_WIDTH),
-                u32::try_from(to_physical(FLOAT_HEIGHT, dpi)).unwrap_or(FLOAT_HEIGHT),
-            );
-            let origin = float_default_origin(
-                work,
-                i32::try_from(size.0).unwrap_or(i32::MAX),
-                i32::try_from(size.1).unwrap_or(i32::MAX),
-                dpi,
-                self.windows.len(),
-            );
-            Geometry { origin, size }
+        let saved = self.remembered.get(note_id).copied().or_else(|| {
+            note.float.map(|float| Geometry {
+                origin: (float.x, float.y),
+                size: (float.width, float.height),
+            })
         });
+        let min = (
+            u32::try_from(to_physical(FLOAT_MIN_WIDTH, dpi)).unwrap_or(FLOAT_MIN_WIDTH),
+            u32::try_from(to_physical(FLOAT_MIN_HEIGHT, dpi)).unwrap_or(FLOAT_MIN_HEIGHT),
+        );
+        let geometry = saved.map_or_else(
+            || {
+                let size = (
+                    u32::try_from(to_physical(FLOAT_WIDTH, dpi)).unwrap_or(FLOAT_WIDTH),
+                    u32::try_from(to_physical(FLOAT_HEIGHT, dpi)).unwrap_or(FLOAT_HEIGHT),
+                );
+                let origin = float_default_origin(
+                    work,
+                    i32::try_from(size.0).unwrap_or(i32::MAX),
+                    i32::try_from(size.1).unwrap_or(i32::MAX),
+                    dpi,
+                    self.windows.len(),
+                );
+                Geometry { origin, size }
+            },
+            |saved| {
+                let placed = restore_float(
+                    FloatGeometry {
+                        x: saved.origin.0,
+                        y: saved.origin.1,
+                        width: saved.size.0,
+                        height: saved.size.1,
+                    },
+                    &bar_win::work_areas(),
+                    work,
+                    min,
+                );
+                Geometry {
+                    origin: placed.origin,
+                    size: placed.size,
+                }
+            },
+        );
         ui.window()
             .set_size(slint::PhysicalSize::new(geometry.size.0, geometry.size.1));
         ui.window().set_position(slint::PhysicalPosition::new(
@@ -309,6 +384,9 @@ fn tick(id: &str) -> impl Fn() + 'static {
 
 impl FloatWindow {
     fn ready(&mut self, ctx: &Ctx<'_>) {
+        if self.closed {
+            return;
+        }
         self.hwnd_ready = true;
         if let Some(hwnd) = self.hwnd() {
             if !bar_win::remove_caption_buttons(hwnd) {
@@ -330,6 +408,18 @@ impl FloatWindow {
             bar_win::hwnd_of(self.ui.window())
         } else {
             None
+        }
+    }
+
+    fn adopt_latest(&mut self, ctx: &Ctx<'_>) {
+        if self.closed || !self.ui.get_preedit().is_empty() {
+            return;
+        }
+        let Ok(latest) = ctx.notes.get(self.editor.session.id()) else {
+            return;
+        };
+        if self.editor.session.adopt_if_clean(&latest) {
+            self.ui.set_body(latest.body.as_str().into());
         }
     }
 
@@ -423,16 +513,20 @@ impl FloatWindow {
         }
     }
 
+    fn geometry(&self) -> Option<Geometry> {
+        let origin = self.hwnd().and_then(bar_win::window_origin).or(self.origin);
+        let size = self.ui.window().size();
+        origin.map(|origin| Geometry {
+            origin,
+            size: (size.width, size.height),
+        })
+    }
+
     /// 记下位置和大小，隐藏窗口，然后在下一轮把它从表里去掉，释放文本和绘图资源。
     /// 正文留在便签列表里；这里不删除便签。
     fn finish_close(&mut self) {
         let id = self.editor.session.id().to_owned();
-        let origin = self.hwnd().and_then(bar_win::window_origin).or(self.origin);
-        let size = self.ui.window().size();
-        self.last = origin.map(|origin| Geometry {
-            origin,
-            size: (size.width, size.height),
-        });
+        self.last = self.geometry();
         self.closed = true;
         let _ = self.ui.hide();
         slint::Timer::single_shot(Duration::ZERO, move || {
