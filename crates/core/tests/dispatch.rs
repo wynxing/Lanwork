@@ -391,6 +391,41 @@ fn file_rows_appear_only_after_the_query_returns() {
     );
 }
 
+struct StoreAndPathApps;
+
+impl AppLookup for StoreAndPathApps {
+    fn query(&mut self, _text: &str) -> Vec<AppHit> {
+        let mut store = app_named("ChatGPT", HitKind::Prefix);
+        store.entry.source = AppSource::Store;
+        store.entry.target = LaunchTarget::Aumid {
+            aumid: "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPT".to_owned(),
+        };
+        vec![store, app_named("Chrome", HitKind::Prefix)]
+    }
+}
+
+#[test]
+fn store_apps_take_their_icon_from_the_apps_folder_item() {
+    let (_temp, store) = open_store();
+    let (files, _) = script(file_result(FileSource::Everything, Vec::new()));
+    let (dispatch, _now, _) = ready(store, StoreAndPathApps, files);
+    let view = dispatch.submit(Surface::SearchBar, "ch").unwrap();
+    let icons: Vec<_> = view.rows.iter().map(|row| row.icon.clone()).collect();
+    assert_eq!(
+        icons,
+        vec![
+            Some(IconKey {
+                path: r"shell:AppsFolder\OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPT".to_owned(),
+                index: 0,
+            }),
+            Some(IconKey {
+                path: r"C:\apps\Chrome.exe".to_owned(),
+                index: 0,
+            }),
+        ]
+    );
+}
+
 #[test]
 fn rapid_input_keeps_only_the_last_query() {
     let (_temp, store) = open_store();

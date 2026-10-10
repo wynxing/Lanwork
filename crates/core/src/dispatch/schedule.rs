@@ -754,13 +754,20 @@ fn app_icon(hit: &AppHit) -> Option<super::model::IconKey> {
             });
         }
     }
-    if let LaunchTarget::Path { path, .. } = &hit.entry.target {
-        let path = path.to_string_lossy().to_string();
-        if !path.is_empty() {
-            return Some(super::model::IconKey { path, index: 0 });
+    match &hit.entry.target {
+        LaunchTarget::Path { path, .. } => {
+            let path = path.to_string_lossy().to_string();
+            (!path.is_empty()).then_some(super::model::IconKey { path, index: 0 })
         }
+        LaunchTarget::Aumid { aumid } => {
+            let aumid = aumid.trim();
+            (!aumid.is_empty()).then(|| super::model::IconKey {
+                path: format!(r"shell:AppsFolder\{aumid}"),
+                index: 0,
+            })
+        }
+        LaunchTarget::Url { .. } => None,
     }
-    None
 }
 
 fn file_rows(hits: &[FileHit]) -> (Vec<SearchRow>, Vec<SearchRow>) {
