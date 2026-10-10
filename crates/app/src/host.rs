@@ -1,12 +1,12 @@
 //! 启动顺序：先占住单实例，再打开数据目录，完成导入恢复和待办加载，加载配置，按本地日期自动备份，然后选渲染器、注册热键、创建隐藏窗口和托盘。
 //! 便签服务、应用索引和文件索引在存储启动之后打开，交给搜索条的查询调度。
 //!
-//! 面板在 `panel`，搜索条在 `searchbar`。设置页和便签的可见内容还没有。
+//! 面板在 `panel`，搜索条在 `searchbar`。设置页还没有。
 
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
 use lanwork_core::apps::{AppIndex, load_user_catalog};
@@ -18,8 +18,9 @@ use lanwork_core::github::{GithubCommands, GithubError, ProcessGh, RefreshReport
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::PanelTab;
 use lanwork_core::shell::{
-    PANEL_HOTKEY_ID, QuitDecision, SEARCH_HOTKEY_ID, ShellCommand, SystemLight, TRAY_ICON_PX,
-    desired_bindings, quit_decision, resolve_theme, tray_icon_rgba,
+    PANEL_HOTKEY_ID, QuitDecision, QuitGate, SEARCH_HOTKEY_ID, ShellCommand, SystemLight,
+    TRAY_ICON_PX, desired_bindings, quit_decision, resolve_theme, resume_quit_later,
+    tray_icon_rgba,
 };
 use lanwork_core::storage::{BootHooks, EntityKind, Store, resolve_from_process};
 use lanwork_core::todos::TodoCommands;
@@ -244,7 +245,11 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
     std::thread::spawn(move || {
         while let Ok(event) = events.recv() {
             if event.kind == EntityKind::Note {
-                let _ = slint::invoke_from_event_loop(panel::on_notes_changed);
+                let id = event.id.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    panel::on_notes_changed();
+                    note_float::on_note_changed(&id);
+                });
                 continue;
             }
             if event.kind != EntityKind::Todo {
@@ -385,27 +390,29 @@ thread_local! {
     static TRAY: RefCell<Option<slint::Weak<Tray>>> = const { RefCell::new(None) };
 }
 
-static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+static QUIT: QuitGate = QuitGate::new();
 
 /// 先保存便签窗口里没写盘的修改。都写成了才结束进程；有写不成的，留下，等用户在那个窗口里
-/// 重试或放弃修改，之后由 [`continue_quit`] 接着退出。
+/// 重试、放弃修改或选定冲突版本，之后由 [`continue_quit`] 接着退出。
 fn request_quit() {
-    QUIT_REQUESTED.store(true, Ordering::Release);
+    QUIT.request();
     attempt_quit();
 }
 
-/// 便签窗口里的保存问题解决之后调用。没有在退出时什么也不做。
+/// 便签窗口里的保存问题解决之后调用。调用方还借用着窗口表，所以下一轮事件循环才再尝试退出。
 pub(crate) fn continue_quit() {
-    if QUIT_REQUESTED.load(Ordering::Acquire) {
-        attempt_quit();
-    }
+    resume_quit_later(
+        &QUIT,
+        |task| slint::Timer::single_shot(Duration::ZERO, task),
+        attempt_quit,
+    );
 }
 
 fn attempt_quit() {
     let unsaved = panel::flush_notes_for_quit() + note_float::flush_for_quit();
     match quit_decision(unsaved) {
         QuitDecision::Exit => {
-            QUIT_REQUESTED.store(false, Ordering::Release);
+            QUIT.clear();
             let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
             if let Some(tray) = tray {
                 let _ = tray.hide();
