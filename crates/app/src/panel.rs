@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lanwork_core::CivilDate;
 use lanwork_core::apps::{LaunchTarget, launch};
@@ -22,6 +22,9 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 use crate::bar_win;
 use crate::host::{local_today, unix_now_ms};
 use crate::{Panel, PanelDetail, PanelList, PanelRow};
+
+/// 显示后这段时间内的失焦不收起。托盘菜单关闭时焦点会迟到地变化一次。
+const BLUR_GRACE: Duration = Duration::from_millis(400);
 
 thread_local! {
     static PANEL: RefCell<Option<Controller>> = const { RefCell::new(None) };
@@ -90,6 +93,7 @@ pub(crate) fn install(ui: Panel, todos: TodoCommands, store: Store) {
         detail_version: 0,
         error: None,
         visible: false,
+        shown_at: None,
         focused: false,
         dark: false,
         hwnd_ready: false,
@@ -185,6 +189,7 @@ struct Controller {
     detail_version: i32,
     error: Option<String>,
     visible: bool,
+    shown_at: Option<Instant>,
     /// 这次显示之后窗口拿到过焦点。显示瞬间的 `Focused(false)` 不收起。
     focused: bool,
     dark: bool,
@@ -272,6 +277,7 @@ impl Controller {
         }
         self.refresh_backdrop();
         self.visible = true;
+        self.shown_at = Some(Instant::now());
         if let Err(err) = self.ui.show() {
             self.visible = false;
             self.store.log_warn(&format!("面板没有显示：{err}"));
@@ -294,7 +300,10 @@ impl Controller {
     }
 
     fn blur(&mut self) {
-        if self.visible && self.focused {
+        let settling = self
+            .shown_at
+            .is_some_and(|shown| shown.elapsed() < BLUR_GRACE);
+        if self.visible && self.focused && !settling {
             self.hide();
         }
     }
@@ -427,7 +436,6 @@ impl Controller {
                 .into(),
             has_source: item.source.is_some(),
             current: item.current,
-            completed: item.completed,
             can_up: reordered_ids(&self.lists, &list.id, &item.id, true).is_some(),
             can_down: reordered_ids(&self.lists, &list.id, &item.id, false).is_some(),
         };

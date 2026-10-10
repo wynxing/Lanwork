@@ -29,7 +29,6 @@ export struct PanelDetail {
     until: string,
     has-source: bool,
     current: bool,
-    completed: bool,
     can-up: bool,
     can-down: bool,
 }
@@ -754,7 +753,7 @@ export component Panel inherits Window {
                                 spacing: 8px;
                                 height: 30px;
 
-                                if !trash-selected && !detail.completed: Field {
+                                if !trash-selected: Field {
                                     source-text: detail.title;
                                     reset: detail-version;
                                     c: root.c;
@@ -766,13 +765,21 @@ export component Panel inherits Window {
                                     }
                                 }
 
-                                if trash-selected || detail.completed: Text {
+                                if trash-selected: Text {
                                     horizontal-stretch: 1;
                                     text: detail.title;
                                     color: c.secondary;
                                     font-size: 13px;
                                     vertical-alignment: center;
                                     overflow: elide;
+                                }
+
+                                if trash-selected && detail.current: Btn {
+                                    text: "清除当前";
+                                    c: root.c;
+                                    clicked => {
+                                        root.toggle-current();
+                                    }
                                 }
 
                                 if trash-selected: Btn {
@@ -792,7 +799,7 @@ export component Panel inherits Window {
                                     }
                                 }
 
-                                if !trash-selected && !detail.completed: Btn {
+                                if !trash-selected: Btn {
                                     text: detail.current ? "清除当前" : "设为当前";
                                     c: root.c;
                                     clicked => {
@@ -808,7 +815,7 @@ export component Panel inherits Window {
                                     }
                                 }
 
-                                if !trash-selected && !detail.completed: Btn {
+                                if !trash-selected: Btn {
                                     text: "上移";
                                     c: root.c;
                                     enabled: detail.can-up;
@@ -817,7 +824,7 @@ export component Panel inherits Window {
                                     }
                                 }
 
-                                if !trash-selected && !detail.completed: Btn {
+                                if !trash-selected: Btn {
                                     text: "下移";
                                     c: root.c;
                                     enabled: detail.can-down;
@@ -836,7 +843,7 @@ export component Panel inherits Window {
                                 }
                             }
 
-                            if !trash-selected && !detail.completed: HorizontalLayout {
+                            if !trash-selected: HorizontalLayout {
                                 spacing: 8px;
                                 height: 30px;
                                 alignment: start;
@@ -898,7 +905,7 @@ export component Panel inherits Window {
                                 }
                             }
 
-                            if !trash-selected && !detail.completed && detail.recurrence > 0: HorizontalLayout {
+                            if !trash-selected && detail.recurrence > 0: HorizontalLayout {
                                 spacing: 8px;
                                 height: 30px;
                                 alignment: start;
