@@ -192,6 +192,12 @@ struct Bar {
 impl Bar {
     fn window_ready(&mut self) {
         self.hwnd_ready = true;
+        if let Some(hwnd) = self.hwnd()
+            && !bar_win::remove_caption_buttons(hwnd)
+        {
+            self.store
+                .log_warn("搜索条样式子类没有装上，显示时可能出现标题栏按钮");
+        }
         self.refresh_backdrop();
     }
 

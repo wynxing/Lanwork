@@ -4,7 +4,7 @@ use std::ffi::c_void;
 
 use lanwork_core::shell::{Backdrop, BackdropInput, WorkArea, choose_backdrop};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWM_SYSTEMBACKDROP_TYPE, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
     DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -17,9 +17,11 @@ use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowRect, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
-    SetWindowPos,
+    GWL_STYLE, GetCursorPos, GetWindowLongPtrW, GetWindowRect, STYLESTRUCT, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, WM_NCDESTROY, WM_STYLECHANGING, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
 
 use crate::registry::read_transparency_enabled;
@@ -96,6 +98,60 @@ pub(crate) fn move_window(hwnd: HWND, x: i32, y: i32) {
             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
+}
+
+/// 系统菜单和最小化、最大化框。winit 每次改可见性都按自己的标志重写 `GWL_STYLE`，
+/// 总带 `WS_SYSMENU`；边框扩展到整个客户区后，DWM 会在右上角画出这三个按钮。
+const CAPTION_BUTTONS: u32 = WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
+const CAPTION_SUBCLASS_ID: usize = 1;
+
+/// 去掉标题栏按钮，并在之后每次改样式时继续去掉。保留 `WS_CAPTION`，DWM 仍画阴影和圆角。
+pub(crate) fn remove_caption_buttons(hwnd: HWND) -> bool {
+    // SAFETY: 在创建窗口的线程上调用。回调是本模块的函数，不带引用数据；窗口销毁时由回调自己移除。
+    let installed =
+        unsafe { SetWindowSubclass(hwnd, Some(strip_caption_buttons), CAPTION_SUBCLASS_ID, 0) }
+            .as_bool();
+    // SAFETY: hwnd 是本进程的窗口，只读写样式位。
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+    let stripped = style & !(CAPTION_BUTTONS as isize);
+    if stripped != style {
+        // SAFETY: 同上。SWP_FRAMECHANGED 让系统按新样式重算边框，不移动、不激活。
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, stripped);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+    installed
+}
+
+unsafe extern "system" fn strip_caption_buttons(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if message == WM_STYLECHANGING && wparam.0 as i32 == GWL_STYLE.0 && lparam.0 != 0 {
+        // SAFETY: WM_STYLECHANGING 的 lParam 指向系统传来的 STYLESTRUCT，处理期间可写。
+        let change = unsafe { &mut *(lparam.0 as *mut STYLESTRUCT) };
+        change.styleNew &= !CAPTION_BUTTONS;
+    } else if message == WM_NCDESTROY {
+        // SAFETY: 窗口正在销毁，移除本模块装上的子类。之后的消息直接交给下一层。
+        unsafe {
+            let _ = RemoveWindowSubclass(hwnd, Some(strip_caption_buttons), CAPTION_SUBCLASS_ID);
+        }
+    }
+    // SAFETY: 参数原样交给子类链的下一层。
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
 pub(crate) fn bring_to_front(hwnd: HWND) {
