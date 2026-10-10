@@ -1,16 +1,20 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
-//! 拖动跨 DPI 时保住窗口逻辑尺寸，并按新 DPI 重设输入法光标。
+//! 拖动跨 DPI 时保住窗口逻辑尺寸，并在松手后重新打开输入法候选窗。
 //!
 //! winit 0.30.13 在 `WM_DPICHANGED` 里自己算外框，并用 `MonitorFromWindow`
 //! 判断目标显示器。拖动过程中这个调用仍返回正在离开的显示器，于是窗口被推回去，
 //! 再收到一次 DPI 变化。从 150% 回到 100% 时，第二次计算仍拿着旧的物理像素，
 //! 窗口会变大。Slint 1.18.1 收到缩放变化后不调用 `set_ime_cursor_area`。
-//! 候选窗留在旧的物理坐标上，微软拼音就不再显示它。预编辑由文本框自己画，所以还在。
+//!
+//! 外框按系统建议矩形保住之后，客户区坐标已经随 DPI 更新，候选窗仍会消失。
+//! 微软拼音走 TSF。`ImmSetCandidateWindow` 只改位置记录，不重新打开已经关掉的候选 UI。
+//! 拖动还没结束时窗口跨在两块屏幕上，这时改位置会把候选 UI 关掉。
 //!
 //! 绕过只在这个 spike 里：拖动期间把 `WM_WINDOWPOSCHANGING` 改成系统建议矩形，
-//! 松手后再按该 DPI 的外框收一次，并用逻辑光标乘 `dpi/96` 重设组合窗和候选窗。
-//! 上游是 winit 0.30.13（`i-slint-backend-winit` 1.18.1 带进来的）和 Slint 1.18.1。
+//! 并且先不碰输入法。松手后按该 DPI 收外框，用逻辑光标乘 `dpi/96` 重设组合窗和候选窗，
+//! 再通知 TSF 布局变了。上游是 winit 0.30.13（`i-slint-backend-winit` 1.18.1 带进来的）
+//! 和 Slint 1.18.1。
 
 use std::cell::RefCell;
 
@@ -156,6 +160,54 @@ pub fn size_mismatch(actual_w: i32, actual_h: i32, expected_w: i32, expected_h: 
     (actual_w - expected_w).abs() > 1 || (actual_h - expected_h).abs() > 1
 }
 
+/// 与 `windows` 0.62 里 `CFS_*` 的数值相同。Win32 头文件里的值。
+pub const STYLE_POINT: u32 = 0x0002;
+pub const STYLE_FORCE_POSITION: u32 = 0x0020;
+pub const STYLE_CANDIDATEPOS: u32 = 0x0040;
+pub const STYLE_EXCLUDE: u32 = 0x0080;
+
+/// 客户区里要写给 IMM 的两份位置。坐标都是客户区像素。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImeForms {
+    pub composition_style: u32,
+    pub composition_x: i32,
+    pub composition_y: i32,
+    pub exclude_style: u32,
+    pub area_left: i32,
+    pub area_top: i32,
+    pub area_right: i32,
+    pub area_bottom: i32,
+    pub candidate_style: u32,
+    pub candidate_x: i32,
+    pub candidate_y: i32,
+}
+
+/// 组合窗用 `CFS_POINT | CFS_FORCE_POSITION`，点在光标下沿，和 winit 的 y 相同，并强制使用该点。
+/// 候选窗先按 `CFS_CANDIDATEPOS` 放在光标下沿，再写 `CFS_EXCLUDE`，最后留下的记录与 winit 一样。
+/// `CFS_EXCLUDE` 的矩形只包住光标。
+pub fn ime_forms(caret: CaretPx) -> ImeForms {
+    let bottom = caret.y.saturating_add(caret.height);
+    let right = caret.x.saturating_add(caret.width);
+    ImeForms {
+        composition_style: STYLE_POINT | STYLE_FORCE_POSITION,
+        composition_x: caret.x,
+        composition_y: bottom,
+        exclude_style: STYLE_EXCLUDE,
+        area_left: caret.x,
+        area_top: caret.y,
+        area_right: right,
+        area_bottom: bottom,
+        candidate_style: STYLE_CANDIDATEPOS,
+        candidate_x: caret.x,
+        candidate_y: bottom,
+    }
+}
+
+/// 拖动还在进行时，这次 DPI 消息只改外框。松手或非拖动的 DPI 变化才重设输入法。
+pub fn refresh_ime_on_this_dpi_message(dragging: bool) -> bool {
+    !dragging
+}
+
 #[derive(Clone, Copy, Debug)]
 struct LogicalCaret {
     x: f64,
@@ -241,22 +293,33 @@ pub fn install(window: &slint::Window) -> Result<bool, String> {
 #[cfg(windows)]
 mod win {
     use super::{
-        CaretPx, OuterRect, caret_at_dpi, flush_notes, logical_caret, note, size_mismatch, with_fix,
+        CaretPx, OuterRect, caret_at_dpi, flush_notes, ime_forms, logical_caret, note,
+        refresh_ime_on_this_dpi_message, size_mismatch, with_fix,
     };
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::cell::Cell;
+    use std::ffi::c_void;
+    use std::mem::{size_of, size_of_val};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::Input::Ime::{
-        CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext,
-        ImmSetCandidateWindow, ImmSetCompositionWindow,
+        CANDIDATEFORM, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
+        ImmSetCompositionWindow,
     };
     use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-        SetWindowPos, WINDOWPOS, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY,
-        WM_WINDOWPOSCHANGING,
+    use windows::Win32::UI::TextServices::{
+        CLSID_TF_ThreadMgr, IEnumTfUIElements, ITfCandidateListUIElement, ITfContextOwnerServices,
+        ITfThreadMgr, ITfUIElementMgr,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateCaret, GetWindowRect, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SetCaretPos, SetWindowPos, WINDOWPOS, WM_DPICHANGED, WM_ENTERSIZEMOVE,
+        WM_EXITSIZEMOVE, WM_NCDESTROY, WM_WINDOWPOSCHANGING,
+    };
+    use windows::core::{Interface, s, w};
 
     const SUBCLASS_ID: usize = 1;
 
@@ -371,45 +434,198 @@ mod win {
             return;
         };
         let px: CaretPx = caret_at_dpi(caret.x, caret.y, caret.w, caret.h, dpi);
+        let forms = ime_forms(px);
+        let area = RECT {
+            left: forms.area_left,
+            top: forms.area_top,
+            right: forms.area_right,
+            bottom: forms.area_bottom,
+        };
+        // 先放系统光标。部分路径在收到位置通知时读 GetCaretPos，那时客户区坐标要已经是新的。
+        let caret_note = place_system_caret(hwnd, px);
         // SAFETY: ImmGetContext 与下面的 ImmReleaseContext 成对。HIMC 在 windows 0.62 里是 Copy，
         // 它的 Free 会调用 ImmDestroyContext。这里不要 free，只 ImmReleaseContext。
         let himc = unsafe { ImmGetContext(hwnd) };
         if himc.is_invalid() {
+            note(&format!(
+                "IME 光标 dpi={dpi} 客户区 {x},{y} {w}x{h} 没有 HIMC {caret_note}",
+                x = px.x,
+                y = px.y,
+                w = px.width,
+                h = px.height,
+            ));
             return;
         }
-        let area = RECT {
-            left: px.x,
-            top: px.y,
-            right: px.x.saturating_add(px.width),
-            bottom: px.y.saturating_add(px.height),
-        };
         let composition = COMPOSITIONFORM {
-            dwStyle: CFS_POINT,
+            dwStyle: forms.composition_style,
             ptCurrentPos: POINT {
-                x: px.x,
-                y: px.y.saturating_add(px.height),
+                x: forms.composition_x,
+                y: forms.composition_y,
             },
             rcArea: area,
         };
-        let candidate = CANDIDATEFORM {
+        let candidate_pos = CANDIDATEFORM {
             dwIndex: 0,
-            dwStyle: CFS_EXCLUDE,
+            dwStyle: forms.candidate_style,
+            ptCurrentPos: POINT {
+                x: forms.candidate_x,
+                y: forms.candidate_y,
+            },
+            rcArea: area,
+        };
+        let exclude = CANDIDATEFORM {
+            dwIndex: 0,
+            dwStyle: forms.exclude_style,
             ptCurrentPos: POINT { x: px.x, y: px.y },
             rcArea: area,
         };
-        // SAFETY: himc 刚从本窗口取得。两个结构体都是局部变量，调用期间有效。
+        // SAFETY: himc 刚从本窗口取得。结构体都是局部变量，调用期间有效。
+        // 先写 CFS_CANDIDATEPOS，再写 CFS_EXCLUDE，最后留下的记录与 winit 相同。
+        // 不调用 ImmNotifyIME：CPS_CANCEL 和 CPS_COMPLETE 会清掉还没上屏的组合。
         unsafe {
             let _ = ImmSetCompositionWindow(himc, &composition);
-            let _ = ImmSetCandidateWindow(himc, &candidate);
+            let _ = ImmSetCandidateWindow(himc, &candidate_pos);
+            let _ = ImmSetCandidateWindow(himc, &exclude);
             let _ = ImmReleaseContext(hwnd, himc);
         }
+        let screen = screen_point(hwnd, px.x, px.y);
+        let layout = reopen_candidate();
         note(&format!(
-            "IME 光标 dpi={dpi} 客户区 {x},{y} {w}x{h}",
+            "IME 光标 dpi={dpi} 客户区 {x},{y} {w}x{h} 屏幕 {screen} {layout} {caret_note}",
             x = px.x,
             y = px.y,
             w = px.width,
             h = px.height,
         ));
+    }
+
+    fn screen_point(hwnd: HWND, x: i32, y: i32) -> String {
+        let mut point = POINT { x, y };
+        // SAFETY: point 是局部变量。hwnd 是本窗口。传入的是客户区坐标。
+        let ok = unsafe { ClientToScreen(hwnd, &mut point) };
+        if ok.as_bool() {
+            format!("{},{}", point.x, point.y)
+        } else {
+            "未知".to_string()
+        }
+    }
+
+    fn place_system_caret(hwnd: HWND, caret: CaretPx) -> &'static str {
+        // SAFETY: hwnd 是本窗口。None 用系统默认光标形状。不调用 ShowCaret，避免在 Slint 光标上再画一条。
+        // 微软拼音在部分路径上用 GetCaretPos，而不是只看候选窗记录。
+        let created = unsafe { CreateCaret(hwnd, None, caret.width.max(1), caret.height.max(1)) };
+        if created.is_err() {
+            return "系统光标 失败";
+        }
+        // SAFETY: 光标属于本窗口。坐标是客户区像素，取光标左上角。
+        if unsafe { SetCaretPos(caret.x, caret.y) }.is_err() {
+            return "系统光标 失败";
+        }
+        "系统光标 已设"
+    }
+
+    fn reopen_candidate() -> String {
+        let mgr = match thread_mgr() {
+            Ok(mgr) => mgr,
+            Err(error) => return format!("布局通知 失败 {error}"),
+        };
+        let layout = match notify_layout(&mgr) {
+            Ok(()) => "布局通知 成功".to_string(),
+            Err(error) => format!("布局通知 失败 {error}"),
+        };
+        let shown = match show_candidate_elements(&mgr) {
+            Ok(count) => format!("候选元素 {count}"),
+            Err(error) => format!("候选元素 失败 {error}"),
+        };
+        format!("{layout} {shown}")
+    }
+
+    fn thread_mgr() -> Result<ITfThreadMgr, String> {
+        match thread_mgr_from_msctf() {
+            Ok(mgr) => Ok(mgr),
+            Err(first) => co_create_thread_mgr().map_err(|second| format!("{first}；{second}")),
+        }
+    }
+
+    fn thread_mgr_from_msctf() -> Result<ITfThreadMgr, String> {
+        // SAFETY: msctf.dll 是系统库。GetModuleHandleW 不增加引用计数。名字以 0 结尾。
+        let module =
+            unsafe { GetModuleHandleW(w!("msctf.dll")) }.map_err(|_| "msctf 未加载".to_string())?;
+        // SAFETY: 模块句柄仍然有效。s! 是静态 C 字符串。
+        let proc = unsafe { GetProcAddress(module, s!("TF_GetThreadMgr")) }
+            .ok_or_else(|| "msctf 没有 TF_GetThreadMgr".to_string())?;
+        type GetMgr = unsafe extern "system" fn(*mut *mut c_void) -> windows::core::HRESULT;
+        if size_of::<GetMgr>() != size_of_val(&proc) {
+            return Err("TF_GetThreadMgr 指针大小不一致".to_string());
+        }
+        // SAFETY: 非空的 GetProcAddress 结果，类型与 msctf!TF_GetThreadMgr 相同。
+        let get_mgr: GetMgr = unsafe { std::mem::transmute_copy(&proc) };
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: raw 是局部输出参数。成功时接口指针由 from_raw 接管并 Release。
+        let hr = unsafe { get_mgr(&mut raw) };
+        if hr.is_err() || raw.is_null() {
+            if !raw.is_null() {
+                // SAFETY: 失败时若仍给出接口指针，由 from_raw 接管，丢弃时 Release。
+                drop(unsafe { ITfThreadMgr::from_raw(raw) });
+            }
+            return Err(format!("TF_GetThreadMgr 0x{:08X}", hr.0 as u32));
+        }
+        // SAFETY: TF_GetThreadMgr 成功返回的指针由调用方释放。不调用 Activate，以免动到已有的 TSF 焦点。
+        Ok(unsafe { ITfThreadMgr::from_raw(raw) })
+    }
+
+    fn co_create_thread_mgr() -> Result<ITfThreadMgr, String> {
+        // SAFETY: 取本线程的 TSF 线程管理器。不聚合，也不 Activate。
+        let mgr: ITfThreadMgr =
+            unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) }
+                .map_err(|err| hresult_text("CoCreateInstance", &err))?;
+        Ok(mgr)
+    }
+
+    fn notify_layout(mgr: &ITfThreadMgr) -> Result<(), String> {
+        // SAFETY: GetFocus 读取本线程当前的文档管理器，不改变焦点。
+        let doc = unsafe { mgr.GetFocus() }.map_err(|err| hresult_text("GetFocus", &err))?;
+        // SAFETY: GetTop 读取该文档最上面的上下文。
+        let context = unsafe { doc.GetTop() }.map_err(|err| hresult_text("GetTop", &err))?;
+        let services: ITfContextOwnerServices = context
+            .cast()
+            .map_err(|err| hresult_text("ITfContextOwnerServices", &err))?;
+        // SAFETY: 通知文本服务布局已经变了，让它重新读取文字范围并打开候选窗。不改组合字符串。
+        unsafe { services.OnLayoutChange() }.map_err(|err| hresult_text("OnLayoutChange", &err))
+    }
+
+    fn show_candidate_elements(mgr: &ITfThreadMgr) -> Result<u32, String> {
+        let ui: ITfUIElementMgr = mgr
+            .cast()
+            .map_err(|err| hresult_text("ITfUIElementMgr", &err))?;
+        // SAFETY: 枚举当前线程已经存在的 UI 元素。
+        let enumerator: IEnumTfUIElements =
+            unsafe { ui.EnumUIElements() }.map_err(|err| hresult_text("EnumUIElements", &err))?;
+        let mut shown = 0u32;
+        for _ in 0..8 {
+            let mut element = [None];
+            let mut fetched = 0u32;
+            // SAFETY: element 是本函数的一格缓冲区。fetched 是局部变量。
+            let next = unsafe { enumerator.Next(&mut element, &mut fetched) };
+            if next.is_err() || fetched == 0 {
+                break;
+            }
+            let Some(element) = element[0].take() else {
+                break;
+            };
+            let Ok(candidate) = element.cast::<ITfCandidateListUIElement>() else {
+                continue;
+            };
+            // SAFETY: 这是候选列表元素。Show(true) 让文本服务显示它，不改组合字符串。
+            if unsafe { candidate.Show(true) }.is_ok() {
+                shown = shown.saturating_add(1);
+            }
+        }
+        Ok(shown)
+    }
+
+    fn hresult_text(label: &str, err: &windows::core::Error) -> String {
+        format!("{label} 0x{:08X}", err.code().0 as u32)
     }
 
     fn correct_size(hwnd: HWND) {
@@ -474,6 +690,7 @@ mod win {
     fn handle_dpi(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         let dpi = (wparam.0 & 0xFFFF) as u32;
         let suggested = suggested_rect(lparam);
+        let dragging = with_fix(|fix| fix.dragging);
         let force = with_fix(|fix| {
             fix.begin_dpi(
                 dpi,
@@ -500,10 +717,14 @@ mod win {
                 fmt_size(before),
                 fmt_size(after),
             ));
-            refresh_ime(hwnd, dpi);
-            queue_settle();
         }
         with_fix(|fix| fix.end_dpi());
+        // 拖动还没结束时不改输入法。窗口还跨在两块屏幕上，这时重设会让微软拼音关掉候选窗。
+        if refresh_ime_on_this_dpi_message(dragging) {
+            apply_geometry();
+            queue_settle();
+            queue_settle_after_drag();
+        }
         result
     }
 
@@ -644,5 +865,52 @@ mod tests {
     fn one_pixel_is_not_a_mismatch() {
         assert!(!size_mismatch(720, 760, 721, 760));
         assert!(size_mismatch(1080, 1140, 720, 760));
+    }
+
+    #[test]
+    fn drag_dpi_message_does_not_touch_ime() {
+        assert!(!super::refresh_ime_on_this_dpi_message(true));
+        assert!(super::refresh_ime_on_this_dpi_message(false));
+    }
+
+    #[test]
+    fn ime_forms_follow_the_client_caret() {
+        let forms = super::ime_forms(super::CaretPx {
+            x: 59,
+            y: 86,
+            width: 1,
+            height: 16,
+        });
+        assert_eq!(
+            forms.composition_style,
+            super::STYLE_POINT | super::STYLE_FORCE_POSITION
+        );
+        assert_eq!((forms.composition_x, forms.composition_y), (59, 102));
+        assert_eq!(forms.exclude_style, super::STYLE_EXCLUDE);
+        assert_eq!(
+            (
+                forms.area_left,
+                forms.area_top,
+                forms.area_right,
+                forms.area_bottom
+            ),
+            (59, 86, 60, 102)
+        );
+        assert_eq!(forms.candidate_style, super::STYLE_CANDIDATEPOS);
+        assert_eq!((forms.candidate_x, forms.candidate_y), (59, 102));
+        assert_eq!(forms.area_right - forms.area_left, 1);
+        assert_eq!(forms.area_bottom - forms.area_top, 16);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn style_numbers_match_the_windows_crate() {
+        use windows::Win32::UI::Input::Ime::{
+            CFS_CANDIDATEPOS, CFS_EXCLUDE, CFS_FORCE_POSITION, CFS_POINT,
+        };
+        assert_eq!(super::STYLE_POINT, CFS_POINT);
+        assert_eq!(super::STYLE_FORCE_POSITION, CFS_FORCE_POSITION);
+        assert_eq!(super::STYLE_CANDIDATEPOS, CFS_CANDIDATEPOS);
+        assert_eq!(super::STYLE_EXCLUDE, CFS_EXCLUDE);
     }
 }
