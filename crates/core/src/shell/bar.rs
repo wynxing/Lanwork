@@ -349,6 +349,38 @@ pub fn move_selection(current: usize, len: usize, down: bool) -> usize {
     }
 }
 
+/// Alt+1 至 Alt+9 的个数。
+pub const SHORTCUT_COUNT: usize = 9;
+
+/// 结果区里完整可见的前几行，最多 [`SHORTCUT_COUNT`] 行，返回 `start..end`。
+/// `offsets` 来自 [`row_offsets`]；`scroll_top` 是列表向上滚过的逻辑像素，`viewport` 是结果区高度。
+#[must_use]
+pub fn shortcut_rows(offsets: &[u32], scroll_top: f32, viewport: u32) -> std::ops::Range<usize> {
+    let top = f64::from(scroll_top.max(0.0).round());
+    let bottom = top + f64::from(viewport);
+    let visible = |y: u32| f64::from(y) >= top && f64::from(y) + f64::from(ROW_HEIGHT) <= bottom;
+    let Some(start) = offsets.iter().position(|y| visible(*y)) else {
+        return 0..0;
+    };
+    let count = offsets[start..]
+        .iter()
+        .take(SHORTCUT_COUNT)
+        .take_while(|y| visible(**y))
+        .count();
+    start..start + count
+}
+
+/// Alt+数字对应的行号。`digit` 是 1 至 9；超出完整可见的行时没有动作。
+#[must_use]
+pub fn shortcut_target(rows: std::ops::Range<usize>, digit: u32) -> Option<usize> {
+    let offset = usize::try_from(digit.checked_sub(1)?).ok()?;
+    if offset >= SHORTCUT_COUNT {
+        return None;
+    }
+    let index = rows.start.checked_add(offset)?;
+    rows.contains(&index).then_some(index)
+}
+
 /// 鼠标悬停或单击的行号。界面传来的行号可能来自已经被替换的列表，越界时不选。
 #[must_use]
 pub fn pointed_row(index: i32, len: usize) -> Option<usize> {
@@ -372,6 +404,33 @@ mod tests {
     use super::*;
     use crate::apps::{AppEntry, AppHit, AppSource};
     use crate::search::HitKind;
+
+    #[test]
+    fn shortcuts_number_the_fully_visible_rows_up_to_nine() {
+        let groups = vec![SearchGroup::Application; 12];
+        let (offsets, height) = row_offsets(&groups);
+        assert_eq!(shortcut_rows(&offsets, 0.0, height), 0..9);
+        assert_eq!(shortcut_rows(&offsets[..3], 0.0, height), 0..3);
+        let viewport = 5 * ROW_HEIGHT + 2 * LIST_PAD;
+        assert_eq!(shortcut_rows(&offsets, 0.0, viewport), 0..5);
+        // 滚过一行半：第 0、1 行不完整可见，从第 2 行起编号。
+        let half = f32::from(u16::try_from(LIST_PAD + ROW_HEIGHT + ROW_HEIGHT / 2).unwrap());
+        assert_eq!(shortcut_rows(&offsets, half, viewport), 2..6);
+        let one_row = f32::from(u16::try_from(LIST_PAD + ROW_HEIGHT).unwrap());
+        assert_eq!(shortcut_rows(&offsets, one_row, viewport), 1..6);
+        assert_eq!(shortcut_rows(&[], 0.0, viewport), 0..0);
+    }
+
+    #[test]
+    fn alt_digit_maps_into_the_numbered_rows_only() {
+        assert_eq!(shortcut_target(2..6, 1), Some(2));
+        assert_eq!(shortcut_target(2..6, 4), Some(5));
+        assert_eq!(shortcut_target(2..6, 5), None);
+        assert_eq!(shortcut_target(0..9, 9), Some(8));
+        assert_eq!(shortcut_target(0..12, 10), None);
+        assert_eq!(shortcut_target(0..9, 0), None);
+        assert_eq!(shortcut_target(0..0, 1), None);
+    }
 
     #[test]
     fn web_search_opens_only_with_plain_enter_and_does_not_count() {

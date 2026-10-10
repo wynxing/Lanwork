@@ -21,8 +21,8 @@ use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
     BAR_WIDTH, Backdrop, EnterChord, EscapeAction, ROW_HEIGHT, RowAction, WorkArea, bar_origin,
     escape_action, group_label, location_always_shown, match_span, max_results_height,
-    move_selection, path_target, pointed_row, reselect, row_action, row_offsets, solid_rgb,
-    status_line, text_after_hide, to_physical,
+    move_selection, path_target, pointed_row, reselect, row_action, row_offsets, shortcut_rows,
+    shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
@@ -88,6 +88,8 @@ pub(crate) fn install(ui: SearchBar, dispatch: Arc<Dispatch>, store: Store) {
     });
     ui.on_hover(|index| with_bar(move |bar| bar.hover(index)));
     ui.on_activate(|index| with_bar(move |bar| bar.activate(index)));
+    ui.on_shortcut(|digit| with_bar(move |bar| bar.shortcut(digit)));
+    ui.on_scrolled(|top| with_bar(move |bar| bar.scrolled(top)));
 
     let render_marks = Rc::clone(&marks);
     let notifier = ui.window().set_rendering_notifier(move |state, _| {
@@ -128,6 +130,10 @@ pub(crate) fn install(ui: SearchBar, dispatch: Arc<Dispatch>, store: Store) {
         marks,
         results: Vec::new(),
         selected: 0,
+        offsets: Vec::new(),
+        content_height: 0,
+        max_list: LIST_CAP,
+        scroll_top: 0.0,
         phase: ViewPhase::Empty,
         view_text: String::new(),
         sequence: None,
@@ -176,6 +182,10 @@ struct Bar {
     marks: Rc<RefCell<Marks>>,
     results: Vec<SearchRow>,
     selected: usize,
+    offsets: Vec<u32>,
+    content_height: u32,
+    max_list: u32,
+    scroll_top: f32,
     phase: ViewPhase,
     view_text: String,
     sequence: Option<u64>,
@@ -231,7 +241,9 @@ impl Bar {
         ));
         let origin = bar_origin(work, to_physical(BAR_WIDTH, dpi));
         let room = max_results_height(work, dpi, INPUT_HEIGHT, BOTTOM_GAP);
-        self.ui.set_max_list_height(px(room.min(LIST_CAP)));
+        self.max_list = room.min(LIST_CAP);
+        self.ui.set_max_list_height(px(self.max_list));
+        self.push_shortcuts();
         self.ui
             .window()
             .set_position(slint::PhysicalPosition::new(origin.0, origin.1));
@@ -350,6 +362,8 @@ impl Bar {
         self.push_status();
         if !same_text {
             self.ui.invoke_scroll_to_top();
+            self.scroll_top = 0.0;
+            self.push_shortcuts();
         }
         self.ui.invoke_ensure_visible();
         self.marks.borrow_mut().result = self
@@ -363,7 +377,7 @@ impl Bar {
         let rows: Vec<BarRow> = self
             .results
             .iter()
-            .zip(offsets)
+            .zip(offsets.iter().copied())
             .enumerate()
             .map(|(index, (row, y))| {
                 let icon = row.icon.as_ref().and_then(|key| self.icons.get(key));
@@ -402,6 +416,40 @@ impl Bar {
         self.ui.set_list_content_height(px(height));
         self.ui
             .set_selected(i32::try_from(self.selected).unwrap_or(0));
+        self.offsets = offsets;
+        self.content_height = height;
+        self.push_shortcuts();
+    }
+
+    fn shortcut_range(&self) -> std::ops::Range<usize> {
+        let viewport = self.content_height.min(self.max_list);
+        shortcut_rows(&self.offsets, self.scroll_top, viewport)
+    }
+
+    fn push_shortcuts(&mut self) {
+        let range = self.shortcut_range();
+        self.ui
+            .set_first_shortcut(i32::try_from(range.start).unwrap_or(0));
+        self.ui
+            .set_end_shortcut(i32::try_from(range.end).unwrap_or(0));
+    }
+
+    fn scrolled(&mut self, top: f32) {
+        self.scroll_top = top;
+        self.push_shortcuts();
+    }
+
+    /// Alt+数字。和 Enter 一样，组合输入期间、快速收集前缀下不打开。
+    fn shortcut(&mut self, digit: i32) {
+        let Ok(digit) = u32::try_from(digit) else {
+            return;
+        };
+        if let Some(index) = shortcut_target(self.shortcut_range(), digit) {
+            self.selected = index;
+            self.ui
+                .set_selected(i32::try_from(self.selected).unwrap_or(0));
+            self.enter(EnterChord::Plain);
+        }
     }
 
     fn push_status(&mut self) {
