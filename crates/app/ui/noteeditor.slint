@@ -1,0 +1,128 @@
+// 便签正文编辑区，面板的便签页和悬浮窗共用。版式由这里决定，数据和动作在 Rust。
+// 用 TextInput 而不是 TextEdit，因为要读 preedit-text：组合输入期间不保存。
+
+import { ScrollView } from "std-widgets.slint";
+import { Btn, Ink } from "widgets.slint";
+
+export component NoteEditor inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> editable: true;
+    // 0 没有问题，1 保存失败，2 磁盘上的版本比加载时新。
+    in property <int> problem;
+    in property <string> problem-text;
+    // 正在关闭窗口、切换便签或退出：失败时可以放弃修改。
+    in property <bool> closing;
+    // 加一就把光标放进正文。新建便签之后用。
+    in property <int> focus-ticket;
+    in-out property <string> body <=> input.text;
+    out property <string> preedit: input.preedit-text;
+
+    callback body-edited(string);
+    callback retry();
+    callback discard();
+    callback keep-mine();
+    callback keep-saved();
+
+    property <length> bar-height: problem == 0 ? 0px : 40px;
+
+    changed focus-ticket => {
+        input.focus();
+    }
+
+    public function focus-body() {
+        input.focus();
+    }
+
+    scroll := ScrollView {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height - bar-height;
+
+        input := TextInput {
+            width: scroll.visible-width;
+            height: max(self.preferred-height, scroll.visible-height);
+            wrap: word-wrap;
+            font-size: 14px;
+            color: c.ink;
+            read-only: !root.editable;
+            single-line: false;
+            selection-background-color: c.accent.with-alpha(0.35);
+            selection-foreground-color: c.ink;
+
+            edited => {
+                root.body-edited(self.text);
+            }
+
+            cursor-position-changed(position) => {
+                if position.y + scroll.content-y < 0px {
+                    scroll.content-y = -position.y;
+                } else if position.y + 24px + scroll.content-y > scroll.visible-height {
+                    scroll.content-y = scroll.visible-height - position.y - 24px;
+                }
+            }
+        }
+    }
+
+    if problem != 0: Rectangle {
+        y: parent.height - bar-height;
+        width: parent.width;
+        height: bar-height;
+
+        Rectangle {
+            width: parent.width;
+            height: 1px;
+            background: c.divider;
+        }
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 5px;
+            padding-bottom: 5px;
+            spacing: 8px;
+
+            Text {
+                horizontal-stretch: 1;
+                text: problem == 2 ? "便签已在别处保存" : "保存失败：" + problem-text;
+                color: c.critical;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if problem == 1: Btn {
+                text: "重试";
+                c: root.c;
+                clicked => {
+                    root.retry();
+                }
+            }
+
+            if problem == 1 && closing: Btn {
+                text: "放弃修改";
+                c: root.c;
+                danger: true;
+                clicked => {
+                    root.discard();
+                }
+            }
+
+            if problem == 2: Btn {
+                text: "保留我的版本";
+                c: root.c;
+                clicked => {
+                    root.keep-mine();
+                }
+            }
+
+            if problem == 2: Btn {
+                text: "保留已保存的版本";
+                c: root.c;
+                clicked => {
+                    root.keep-saved();
+                }
+            }
+        }
+    }
+}

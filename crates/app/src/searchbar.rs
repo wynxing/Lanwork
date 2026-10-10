@@ -1,6 +1,6 @@
 //! 搜索条窗口：热键显示与收起、输入交给查询调度、结果列表和打开动作。
 //!
-//! 待办结果的落点是面板（`panel`）。便签的落点在便签页与悬浮窗里，这两个还没有。快速收集的预览和提交也不在这里。
+//! 待办和便签结果的落点是面板（`panel`）；便签结果的 Ctrl+Enter 悬浮（`note_float`）。快速收集的预览和提交不在这里。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -584,13 +584,20 @@ impl Bar {
     }
 }
 
-/// 待办结果打开面板并定位。便签悬浮窗（#26）和便签页还没有，这两类结果仍只占住调用点。
+/// 待办和便签结果打开面板并定位；便签结果的 Ctrl+Enter 悬浮该便签。
 fn hand_off(action: RowAction) {
     match action {
         RowAction::PanelTodo { item_id, .. } => {
             crate::panel::open_target(PanelTarget::Todo { item_id });
         }
-        RowAction::PanelNote { .. } | RowAction::FloatNote { .. } => {}
+        RowAction::PanelNote { id } => {
+            crate::panel::open_target(PanelTarget::Note { note_id: id });
+        }
+        RowAction::FloatNote { id } => {
+            if let Err(message) = crate::note_float::open(&id) {
+                crate::panel::show_error(&message);
+            }
+        }
         _ => {}
     }
 }

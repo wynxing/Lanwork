@@ -3,6 +3,7 @@
 //!
 //! 面板在 `panel`，搜索条在 `searchbar`。设置页和便签的可见内容还没有。
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,7 +19,7 @@ use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::PanelTab;
 use lanwork_core::shell::{
     PANEL_HOTKEY_ID, QuitDecision, SEARCH_HOTKEY_ID, ShellCommand, SystemLight, TRAY_ICON_PX,
-    desired_bindings, quit_without_note_editors, resolve_theme, tray_icon_rgba,
+    desired_bindings, quit_decision, resolve_theme, tray_icon_rgba,
 };
 use lanwork_core::storage::{BootHooks, EntityKind, Store, resolve_from_process};
 use lanwork_core::todos::TodoCommands;
@@ -26,6 +27,7 @@ use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 use crate::instance::{self, Claim};
+use crate::note_float;
 use crate::panel;
 use crate::platform::{HotkeyControl, Platform};
 use crate::registry::{apply_startup, read_system_theme};
@@ -102,15 +104,21 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     let search = SearchBar::new().map_err(|err| err.to_string())?;
     let panel_ui = Panel::new().map_err(|err| err.to_string())?;
     let tray = Tray::new().map_err(|err| err.to_string())?;
-    if let Some(dispatch) = open_dispatch(store, &todos) {
+    let notes = open_notes(store);
+    if let Some(notes) = &notes {
+        note_float::install(notes.clone(), store.clone());
+    }
+    if let Some(notes) = notes.clone()
+        && let Some(dispatch) = open_dispatch(store, &todos, notes)
+    {
         dispatch.set_web_search_engine(config.current().web_search_engine);
         searchbar::install(search.clone_strong(), dispatch, store.clone());
     }
-    panel::install(panel_ui.clone_strong(), todos.clone(), store.clone());
+    panel::install(panel_ui.clone_strong(), todos.clone(), notes, store.clone());
     refresh_theme(&config, store);
     refresh_badge(&tray, &todos, store);
     wire_tray(&tray, &config, store, &todos);
-    watch_todos(&tray, &todos, store);
+    watch_changes(&tray, &todos, store);
     let config_theme = config.clone();
     let store_theme = store.clone();
     platform.set_theme_callback(Box::new(move || {
@@ -126,15 +134,25 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     run
 }
 
-/// 便签服务、应用索引和文件索引，然后建内存索引。失败时写日志，搜索条按热键不出现。
-fn open_dispatch(store: &Store, todos: &TodoCommands) -> Option<Arc<Dispatch>> {
-    let notes = match NoteCommands::open(store.clone()) {
-        Ok(notes) => notes,
+/// 便签服务。面板的便签页、悬浮窗和搜索条共用这一份。打不开时写日志，这三处都没有便签。
+fn open_notes(store: &Store) -> Option<NoteCommands> {
+    match NoteCommands::open(store.clone()) {
+        Ok(notes) => Some(notes),
         Err(err) => {
-            store.log_error(&format!("便签服务没有打开，搜索条不可用：{err}"));
-            return None;
+            store.log_error(&format!(
+                "便签服务没有打开，便签页、悬浮窗和搜索条不可用：{err}"
+            ));
+            None
         }
-    };
+    }
+}
+
+/// 应用索引和文件索引，然后建内存索引。失败时写日志，搜索条按热键不出现。
+fn open_dispatch(
+    store: &Store,
+    todos: &TodoCommands,
+    notes: NoteCommands,
+) -> Option<Arc<Dispatch>> {
     let apps = match AppIndex::open_from_process() {
         Ok(apps) => apps,
         Err(err) => {
@@ -193,7 +211,7 @@ fn select_renderer() -> Result<(), String> {
 fn wire_tray(tray: &Tray, config: &ConfigCommands, store: &Store, todos: &TodoCommands) {
     tray.on_open_panel(|| panel::show(None));
     tray.on_open_settings(|| panel::show(Some(PanelTab::Settings)));
-    tray.on_new_note(move || pending_visible(ShellCommand::NewNote));
+    tray.on_new_note(panel::new_note);
 
     let busy = Arc::new(AtomicBool::new(false));
     let github = GithubCommands::open(store.clone(), Arc::new(ProcessGh::system()), todos.clone());
@@ -214,17 +232,21 @@ fn wire_tray(tray: &Tray, config: &ConfigCommands, store: &Store, todos: &TodoCo
         });
     });
 
-    let tray_quit = tray.as_weak();
-    tray.on_quit(move || request_quit(&tray_quit));
+    TRAY.with(|cell| *cell.borrow_mut() = Some(tray.as_weak()));
+    tray.on_quit(request_quit);
 }
 
-fn watch_todos(tray: &Tray, todos: &TodoCommands, store: &Store) {
+fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
     let weak = tray.as_weak();
     let todos = todos.clone();
     let store = store.clone();
     let events = store.subscribe();
     std::thread::spawn(move || {
         while let Ok(event) = events.recv() {
+            if event.kind == EntityKind::Note {
+                let _ = slint::invoke_from_event_loop(panel::on_notes_changed);
+                continue;
+            }
             if event.kind != EntityKind::Todo {
                 continue;
             }
@@ -346,6 +368,7 @@ fn refresh_theme(config: &ConfigCommands, store: &Store) {
     };
     searchbar::apply_theme(dark);
     panel::apply_theme(dark);
+    note_float::apply_theme(dark);
 }
 
 pub(crate) fn local_today() -> Option<CivilDate> {
@@ -358,10 +381,33 @@ pub(crate) fn local_today() -> Option<CivilDate> {
     )
 }
 
-fn request_quit(tray: &slint::Weak<Tray>) {
-    match quit_without_note_editors() {
+thread_local! {
+    static TRAY: RefCell<Option<slint::Weak<Tray>>> = const { RefCell::new(None) };
+}
+
+static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// 先保存便签窗口里没写盘的修改。都写成了才结束进程；有写不成的，留下，等用户在那个窗口里
+/// 重试或放弃修改，之后由 [`continue_quit`] 接着退出。
+fn request_quit() {
+    QUIT_REQUESTED.store(true, Ordering::Release);
+    attempt_quit();
+}
+
+/// 便签窗口里的保存问题解决之后调用。没有在退出时什么也不做。
+pub(crate) fn continue_quit() {
+    if QUIT_REQUESTED.load(Ordering::Acquire) {
+        attempt_quit();
+    }
+}
+
+fn attempt_quit() {
+    let unsaved = panel::flush_notes_for_quit() + note_float::flush_for_quit();
+    match quit_decision(unsaved) {
         QuitDecision::Exit => {
-            if let Some(tray) = tray.upgrade() {
+            QUIT_REQUESTED.store(false, Ordering::Release);
+            let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
+            if let Some(tray) = tray {
                 let _ = tray.hide();
             }
             let _ = slint::quit_event_loop();

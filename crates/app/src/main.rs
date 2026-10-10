@@ -13,6 +13,12 @@ mod host;
 #[cfg(windows)]
 mod instance;
 #[cfg(windows)]
+mod note_editor;
+#[cfg(windows)]
+mod note_float;
+#[cfg(windows)]
+mod notes_page;
+#[cfg(windows)]
 mod panel;
 #[cfg(windows)]
 mod platform;
@@ -56,12 +62,25 @@ mod tests {
 
     #[test]
     fn panel_has_no_today_or_focus_page() {
-        let source = include_str!("../ui/panel.slint");
-        for forbidden in ["今日", "focus-page", "FocusPage"] {
-            assert!(
-                !source.contains(forbidden),
-                "panel.slint mentions {forbidden}"
-            );
+        let sources = [
+            ("panel.slint", include_str!("../ui/panel.slint")),
+            ("notespage.slint", include_str!("../ui/notespage.slint")),
+            ("notefloat.slint", include_str!("../ui/notefloat.slint")),
+        ];
+        for (name, source) in sources {
+            for forbidden in ["今日", "focus-page", "FocusPage"] {
+                assert!(!source.contains(forbidden), "{name} mentions {forbidden}");
+            }
+        }
+    }
+
+    #[test]
+    fn note_inputs_expose_the_ime_composition_text() {
+        for (name, source) in [
+            ("noteeditor.slint", include_str!("../ui/noteeditor.slint")),
+            ("widgets.slint", include_str!("../ui/widgets.slint")),
+        ] {
+            assert!(source.contains("preedit-text"), "{name} ignores preedit");
         }
     }
 }

@@ -1,0 +1,128 @@
+// 便签悬浮窗。只有正文：上沿一条可拖动的细条，右侧是关闭，下面是正文。没有说明文字。
+// 风格与面板一致：亚克力时客户区透明，纯色时由这里画满；深浅两套配色。
+
+import { Palette } from "std-widgets.slint";
+import { Ink } from "widgets.slint";
+import { NoteEditor } from "noteeditor.slint";
+
+export component NoteFloat inherits Window {
+    title: "Lanwork";
+    no-frame: true;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+    preferred-width: 320px;
+    preferred-height: 360px;
+    min-width: 200px;
+    min-height: 120px;
+    resize-border-width: 6px;
+
+    in property <bool> dark;
+    // 亚克力时客户区透明，DWM 画背景。
+    in property <bool> acrylic;
+    in property <color> solid-color: #f3f3f3;
+    in property <int> problem;
+    in property <string> problem-text;
+    in property <bool> closing;
+    in-out property <string> body <=> editor.body;
+    out property <string> preedit: editor.preedit;
+
+    callback body-edited(string);
+    callback close-clicked();
+    callback drag-window();
+    callback retry();
+    callback discard();
+    callback keep-mine();
+    callback keep-saved();
+
+    property <Ink> c: {
+        ink: dark ? #ffffff : #1b1b1b,
+        secondary: dark ? #c5c5c5 : #5d5d5d,
+        tertiary: dark ? #9a9a9a : #767676,
+        divider: dark ? #ffffff17 : #00000014,
+        hover: dark ? #ffffff0d : #00000008,
+        selection: dark ? #ffffff14 : #0000000d,
+        field: dark ? #ffffff0a : #ffffff80,
+        accent: dark ? #60cdff : #005fb8,
+        critical: dark ? #ff99a4 : #c42b1c,
+    };
+
+    background: acrylic ? transparent : solid-color;
+
+    init => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    public function focus-body() {
+        editor.focus-body();
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: 28px;
+
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.drag-window();
+                }
+            }
+        }
+
+        Rectangle {
+            x: parent.width - 28px;
+            width: 28px;
+            height: parent.height;
+            background: close-touch.has-hover ? c.hover : transparent;
+
+            Path {
+                x: 9px;
+                y: 9px;
+                width: 10px;
+                height: 10px;
+                viewbox-width: 10;
+                viewbox-height: 10;
+                fill: transparent;
+                stroke: c.secondary;
+                stroke-width: 1.2px;
+                commands: "M1 1l8 8 M9 1l-8 8";
+            }
+
+            close-touch := TouchArea {
+                clicked => {
+                    root.close-clicked();
+                }
+            }
+        }
+    }
+
+    editor := NoteEditor {
+        x: 10px;
+        y: 28px;
+        width: parent.width - 20px;
+        height: parent.height - 28px - 8px;
+        c: root.c;
+        problem: root.problem;
+        problem-text: root.problem-text;
+        closing: root.closing;
+        body-edited(text) => {
+            root.body-edited(text);
+        }
+        retry => {
+            root.retry();
+        }
+        discard => {
+            root.discard();
+        }
+        keep-mine => {
+            root.keep-mine();
+        }
+        keep-saved => {
+            root.keep-saved();
+        }
+    }
+}

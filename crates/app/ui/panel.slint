@@ -2,6 +2,8 @@
 // 风格与搜索条一致：亚克力时客户区透明，纯色时由这里画满；深浅两套配色。
 
 import { ListView, Palette } from "std-widgets.slint";
+import { Btn, Chip, Field, Ink } from "widgets.slint";
+import { NotesPage } from "notespage.slint";
 
 export struct PanelRow {
     title: string,
@@ -31,172 +33,6 @@ export struct PanelDetail {
     current: bool,
     can-up: bool,
     can-down: bool,
-}
-
-export struct Ink {
-    ink: color,
-    secondary: color,
-    tertiary: color,
-    divider: color,
-    hover: color,
-    selection: color,
-    field: color,
-    accent: color,
-    critical: color,
-}
-
-component Chip inherits Rectangle {
-    in property <string> text;
-    in property <color> tone;
-    in property <bool> filled: false;
-    in property <color> on-fill: #ffffff;
-
-    width: label.preferred-width + 12px;
-    background: transparent;
-
-    Rectangle {
-        y: (parent.height - self.height) / 2;
-        width: parent.width;
-        height: 20px;
-        border-radius: 4px;
-        background: filled ? tone : transparent;
-        border-width: filled ? 0px : 1px;
-        border-color: tone;
-
-        label := Text {
-            x: 6px;
-            text: root.text;
-            color: root.filled ? root.on-fill : root.tone;
-            font-size: 11px;
-            vertical-alignment: center;
-            height: 100%;
-        }
-    }
-}
-
-component Btn inherits Rectangle {
-    in property <string> text;
-    in property <Ink> c;
-    in property <bool> enabled: true;
-    in property <bool> danger: false;
-    callback clicked();
-
-    height: 30px;
-    width: label.preferred-width + 20px;
-    border-radius: 6px;
-    background: enabled && touch.has-hover ? c.hover : transparent;
-    border-width: 1px;
-    border-color: c.divider;
-
-    label := Text {
-        x: 10px;
-        text: root.text;
-        color: !enabled ? c.tertiary : danger ? c.critical : c.ink;
-        font-size: 13px;
-        vertical-alignment: center;
-        height: 100%;
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => {
-            root.clicked();
-        }
-    }
-}
-
-// 单行输入。用 TextInput 而不是 LineEdit，因为要读 preedit-text：组合输入期间 Enter 不提交。
-component Field inherits Rectangle {
-    in property <string> source-text;
-    // 换了条目或写入成功后加一，输入框回到 source-text。
-    in property <int> reset;
-    in property <string> name;
-    in property <Ink> c;
-    in property <bool> enabled: true;
-    callback committed(string);
-    callback escape();
-
-    out property <bool> has-focus: input.has-focus;
-
-    public function clear() {
-        input.text = "";
-    }
-    public function focus-field() {
-        input.focus();
-    }
-
-    height: 30px;
-    border-radius: 6px;
-    background: c.field;
-    border-width: 1px;
-    border-color: input.has-focus ? c.accent : c.divider;
-    clip: true;
-
-    init => {
-        input.text = root.source-text;
-    }
-    changed source-text => {
-        input.text = root.source-text;
-    }
-    changed reset => {
-        input.text = root.source-text;
-    }
-
-    if input.text == "" && input.preedit-text == "" && name != "": Text {
-        x: 10px;
-        width: parent.width - 20px;
-        height: parent.height;
-        text: name;
-        color: c.tertiary;
-        font-size: 13px;
-        vertical-alignment: center;
-        overflow: elide;
-    }
-
-    clip-box := Rectangle {
-        x: 10px;
-        width: parent.width - 20px;
-        height: parent.height;
-        clip: true;
-
-        input := TextInput {
-            property <length> computed-x;
-
-            x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
-            width: max(parent.width - self.text-cursor-width, self.preferred-width);
-            height: 100%;
-            single-line: true;
-            font-size: 13px;
-            color: root.enabled ? c.ink : c.tertiary;
-            read-only: !root.enabled;
-            vertical-alignment: center;
-            selection-background-color: c.accent.with-alpha(0.35);
-            selection-foreground-color: c.ink;
-
-            cursor-position-changed(cursor-position) => {
-                if cursor-position.x + self.computed-x < 0px {
-                    self.computed-x = -cursor-position.x;
-                } else if cursor-position.x + self.computed-x > parent.width - self.text-cursor-width {
-                    self.computed-x = parent.width - cursor-position.x - self.text-cursor-width;
-                }
-            }
-
-            key-pressed(event) => {
-                if self.preedit-text != "" {
-                    return reject;
-                }
-                if event.text == Key.Escape {
-                    root.escape();
-                    return accept;
-                }
-                if event.text == Key.Return {
-                    root.committed(self.text);
-                    return accept;
-                }
-                reject
-            }
-        }
-    }
 }
 
 component Check inherits Rectangle {
@@ -490,8 +326,8 @@ export component Panel inherits Window {
                 background: c.divider;
             }
 
-            // 标签内容。只有待办有内容，其他标签只显示一行对象名。
-            if root.tab != 0: Text {
+            // 标签内容。待办和便签有内容，其他标签只显示一行对象名。
+            if root.tab >= 2: Text {
                 x: 24px;
                 y: title-height + 20px;
                 width: parent.width - 48px;
@@ -499,6 +335,18 @@ export component Panel inherits Window {
                 color: c.secondary;
                 font-size: 14px;
                 overflow: elide;
+            }
+
+            if root.tab == 1: NotesPage {
+                x: 0px;
+                y: title-height + 1px;
+                width: parent.width;
+                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                c: root.c;
+                dark: root.dark;
+                escape => {
+                    root.escape();
+                }
             }
 
             Rectangle {
