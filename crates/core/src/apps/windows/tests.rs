@@ -9,6 +9,7 @@ use super::shortcut::save_shortcut;
 use super::start_menu::read_shortcut_dir_excluding;
 use super::store::read_store;
 use crate::apps::index::SourceEnumerator;
+use crate::apps::rules::is_package_aumid;
 use crate::apps::{AppSource, LaunchTarget, OpenOptions, launch_and_wait, launch_key, open_with};
 use crate::storage::test_temp::TempDir;
 
@@ -31,7 +32,9 @@ fn store_entries_are_aumids_and_include_calculator_when_installed() {
         assert_eq!(entry.source, AppSource::Store);
         assert!(!entry.name.is_empty(), "商店应用应该有显示名");
         match &entry.target {
-            LaunchTarget::Aumid { aumid } => assert!(!aumid.is_empty(), "商店应用应该有 AUMID"),
+            LaunchTarget::Aumid { aumid } => {
+                assert!(is_package_aumid(aumid), "商店来源只收打包应用: {aumid}");
+            }
             LaunchTarget::Path { .. } | LaunchTarget::Url { .. } => {
                 panic!("商店应用不应该用路径或协议目标")
             }

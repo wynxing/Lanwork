@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use lanwork_core::config::Hotkey;
+use lanwork_core::dispatch::{Monotonic, SystemClock};
 use lanwork_core::shell::{
     BindError, HotkeyPort, RegisteredHotkey, apply_hotkeys, is_immersive_color_set,
 };
@@ -368,7 +369,9 @@ fn lparam_text(lparam: LPARAM) -> Option<String> {
 }
 
 fn signal_hotkey(id: i32) {
-    let _ = slint::invoke_from_event_loop(move || crate::host::on_hotkey(id));
+    // 热召回的起点是收到热键消息的这一刻，不是界面线程开始处理的时刻。
+    let received_ns = SystemClock.now_ns();
+    let _ = slint::invoke_from_event_loop(move || crate::host::on_hotkey(id, received_ns));
 }
 
 fn signal_second_instance() {

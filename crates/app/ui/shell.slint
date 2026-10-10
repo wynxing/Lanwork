@@ -1,13 +1,7 @@
 import { Palette } from "std-widgets.slint";
+export { SearchBar, BarRow } from "searchbar.slint";
 
-// 搜索条和面板的宿主。可见内容分别由后续界面实现。这里不放输入框，也不放说明文字。
-export component SearchHost inherits Window {
-    title: "Lanwork";
-    public function apply-theme(dark: bool) {
-        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
-    }
-}
-
+// 面板的宿主。可见内容由面板界面实现。这里不放输入框，也不放说明文字。
 export component PanelHost inherits Window {
     title: "Lanwork";
     public function apply-theme(dark: bool) {

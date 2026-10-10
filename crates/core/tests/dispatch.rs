@@ -16,7 +16,7 @@ use lanwork_core::files::{
     WindowsSearchStatus,
 };
 use lanwork_core::notes::{EMPTY_TITLE_DISPLAY, NoteCommands, NoteInput};
-use lanwork_core::search::HitKind;
+use lanwork_core::search::{HitKind, WebSearchEngine};
 use lanwork_core::storage::{DocumentId, Store, StorePaths};
 use lanwork_core::todos::{NewTodo, TodoCommands};
 
@@ -255,12 +255,19 @@ fn new_todo(title: &str) -> NewTodo {
     }
 }
 
+/// 网页搜索那一条之外的结果。网页搜索单独测。
+fn results(view: &QueryView) -> impl Iterator<Item = &SearchRow> {
+    view.rows
+        .iter()
+        .filter(|row| row.group != SearchGroup::WebSearch)
+}
+
 fn labels(view: &QueryView) -> Vec<&str> {
-    view.rows.iter().map(|row| row.label.as_str()).collect()
+    results(view).map(|row| row.label.as_str()).collect()
 }
 
 fn groups(view: &QueryView) -> Vec<SearchGroup> {
-    view.rows.iter().map(|row| row.group).collect()
+    results(view).map(|row| row.group).collect()
 }
 
 type FileCalls = Arc<Mutex<Vec<(u64, String)>>>;
@@ -391,6 +398,93 @@ fn file_rows_appear_only_after_the_query_returns() {
     );
 }
 
+struct StoreAndPathApps;
+
+impl AppLookup for StoreAndPathApps {
+    fn query(&mut self, _text: &str) -> Vec<AppHit> {
+        let mut store = app_named("ChatGPT", HitKind::Prefix);
+        store.entry.source = AppSource::Store;
+        store.entry.target = LaunchTarget::Aumid {
+            aumid: "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPT".to_owned(),
+        };
+        vec![store, app_named("Chrome", HitKind::Prefix)]
+    }
+}
+
+#[test]
+fn store_apps_take_their_icon_from_the_apps_folder_item() {
+    let (_temp, store) = open_store();
+    let (files, _) = script(file_result(FileSource::Everything, Vec::new()));
+    let (dispatch, _now, _) = ready(store, StoreAndPathApps, files);
+    let view = dispatch.submit(Surface::SearchBar, "ch").unwrap();
+    let icons: Vec<_> = view.rows.iter().map(|row| row.icon.clone()).collect();
+    assert_eq!(
+        icons,
+        vec![
+            Some(IconKey {
+                path: r"shell:AppsFolder\OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPT".to_owned(),
+                index: 0,
+            }),
+            Some(IconKey {
+                path: r"C:\apps\Chrome.exe".to_owned(),
+                index: 0,
+            }),
+            None,
+        ]
+    );
+}
+
+#[test]
+fn web_search_is_always_the_last_row_while_there_is_input() {
+    let (_temp, store) = open_store();
+    let (files, _) = script(file_result(FileSource::Everything, Vec::new()));
+    let (dispatch, _now, _) = ready(store, EchoApps, files);
+
+    let view = dispatch.submit(Surface::SearchBar, " chat ").unwrap();
+    let last = view.rows.last().unwrap();
+    assert_eq!(last.group, SearchGroup::WebSearch);
+    assert_eq!(last.label, "搜索 Google：chat");
+    assert_eq!(last.usage, UsageKey::WebSearch);
+    assert_eq!(
+        last.detail,
+        RowDetail::WebSearch {
+            url: "https://www.google.com/search?q=chat".to_owned()
+        }
+    );
+
+    let url = dispatch
+        .submit(Surface::SearchBar, "https://example.com/a")
+        .unwrap();
+    assert_eq!(url.rows.first().unwrap().group, SearchGroup::Browser);
+    assert_eq!(url.rows.last().unwrap().group, SearchGroup::WebSearch);
+
+    dispatch.set_web_search_engine(WebSearchEngine::Bing);
+    let bing = dispatch.submit(Surface::Panel, "微信").unwrap();
+    assert_eq!(bing.rows.last().unwrap().label, "搜索必应：微信");
+
+    assert!(
+        dispatch
+            .submit(Surface::SearchBar, "")
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    assert!(
+        dispatch
+            .submit(Surface::SearchBar, "+ 买菜")
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    assert!(
+        dispatch
+            .submit(Surface::Panel, "   ")
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+}
+
 #[test]
 fn rapid_input_keeps_only_the_last_query() {
     let (_temp, store) = open_store();
@@ -425,6 +519,33 @@ fn rapid_input_keeps_only_the_last_query() {
         .filter(|record| record.seq == first && record.superseded)
         .count();
     assert_eq!(superseded, 1);
+}
+
+#[test]
+fn rendered_results_are_not_superseded_by_later_input() {
+    let (_temp, store) = open_store();
+    let (files, _calls) = script(file_result(FileSource::Everything, Vec::new()));
+    let (dispatch, _now, _) = ready(store, EchoApps, files);
+    let first = dispatch
+        .submit(Surface::SearchBar, "ab")
+        .unwrap()
+        .sequence
+        .unwrap();
+    assert!(dispatch.mark_rendered(first, "local", 7));
+    dispatch.submit(Surface::SearchBar, "abc").unwrap();
+    dispatch.submit(Surface::SearchBar, "").unwrap();
+    let records = dispatch.latency_records();
+    let local = records
+        .iter()
+        .find(|record| record.seq == first && record.source == Some("local"))
+        .unwrap();
+    assert_eq!(local.end_ns, Some(7));
+    assert!(!local.superseded);
+    let second = records
+        .iter()
+        .find(|record| record.seq != first && record.source == Some("local"))
+        .unwrap();
+    assert!(second.superseded);
 }
 
 #[test]
@@ -585,21 +706,24 @@ fn completed_and_trashed_items_stay_out_of_the_index() {
             .submit(Surface::Panel, "已完成")
             .unwrap()
             .rows
-            .is_empty()
+            .iter()
+            .all(|row| row.group == SearchGroup::WebSearch)
     );
     assert!(
         dispatch
             .submit(Surface::Panel, "回收待办")
             .unwrap()
             .rows
-            .is_empty()
+            .iter()
+            .all(|row| row.group == SearchGroup::WebSearch)
     );
     assert!(
         dispatch
             .submit(Surface::Panel, "回收便签")
             .unwrap()
             .rows
-            .is_empty()
+            .iter()
+            .all(|row| row.group == SearchGroup::WebSearch)
     );
     assert_eq!(
         labels(&dispatch.submit(Surface::Panel, "还在").unwrap()),
@@ -612,7 +736,8 @@ fn completed_and_trashed_items_stay_out_of_the_index() {
             .submit(Surface::Panel, "未完成")
             .unwrap()
             .rows
-            .is_empty()
+            .iter()
+            .all(|row| row.group == SearchGroup::WebSearch)
     );
     let _ = note;
 }
@@ -651,7 +776,7 @@ fn note_body_returns_the_matching_line_and_pinyin_skips_the_body() {
     assert!(pinyin.rows[0].location.is_empty());
 
     let line = dispatch.submit(Surface::Panel, "命中").unwrap();
-    assert_eq!(line.rows.len(), 1);
+    assert_eq!(labels(&line).len(), 1);
     assert_eq!(line.rows[0].location, "命中这一行");
     assert_eq!(line.rows[0].kind, Some(HitKind::Substring));
 
@@ -740,7 +865,8 @@ fn query_does_not_read_the_file_and_follows_memory_updates() {
             .submit(Surface::Panel, "磁盘新标题")
             .unwrap()
             .rows
-            .is_empty()
+            .iter()
+            .all(|row| row.group == SearchGroup::WebSearch)
     );
     services.todos.rename_item(&item_id, "磁盘新标题").unwrap();
     assert!(
@@ -748,7 +874,8 @@ fn query_does_not_read_the_file_and_follows_memory_updates() {
             .submit(Surface::Panel, "磁盘旧标题")
             .unwrap()
             .rows
-            .is_empty()
+            .iter()
+            .all(|row| row.group == SearchGroup::WebSearch)
     );
     assert_eq!(
         labels(&dispatch.submit(Surface::Panel, "磁盘新标题").unwrap()),
@@ -792,7 +919,8 @@ fn interrupted_move_indexes_one_todo() {
             .submit(Surface::Panel, "旧")
             .unwrap()
             .rows
-            .is_empty()
+            .iter()
+            .all(|row| row.group == SearchGroup::WebSearch)
     );
 }
 
@@ -826,7 +954,11 @@ fn display_limit_and_icons_cover_only_visible_rows() {
     dispatch.submit(Surface::SearchBar, "wx").unwrap();
     now.store(FILE_QUERY_DELAY_MS * 1_000_000, Ordering::SeqCst);
     let merged = dispatch.poll().unwrap();
-    assert_eq!(merged.view.rows.len(), 20);
+    assert_eq!(merged.view.rows.len(), 21);
+    assert_eq!(
+        merged.view.rows.last().map(|row| row.group),
+        Some(SearchGroup::WebSearch)
+    );
     assert_eq!(
         merged
             .view

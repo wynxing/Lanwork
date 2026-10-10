@@ -9,7 +9,7 @@
 | 路径 | 现状 |
 | --- | --- |
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除只删除回收站里的条目。删除前把 id 写入 `todo-purge-pending.json`，清单写入成功后发出 `TodoNotice::Purged`。进入回收站满 30 天（30×86400000 毫秒）时，启动加载和 `purge_expired` 清除。原清单已删除时恢复到系统收件箱，没有收件箱则创建一次；这个收件箱就是默认清单。每月重复的日是 31、目标月没有 31 日时落到该月最后一天。锚点日写在周期的 `monthDay`。旧记录没有该字段时，用当前到期日的日子。下一次仍按这个日子，所以 1 月 31 日完成后是 2 月的最后一天，再完成回到 3 月 31 日。29 日或 30 日在目标月不存在时仍不猜测。在重复截止日当天完成不再生成下一次。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。GitHub 服务 `github`（`lanwork_core::github`）已接入，见「GitHub 服务」。薄命令是 `GithubCommands`。追踪仓库的添加与移除已实现，见「GitHub 服务」。筛选的并集已写入产品规格；快照没有作者、审查和 CI，服务仍不计算这些筛选。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。备份与导入 `backup`（`lanwork_core::backup`）已接入，见「数据」。 |
-| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条宿主和面板宿主。搜索条和面板的可见内容还没有。见「程序外壳」。 |
+| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板宿主。搜索条已有界面并调用查询调度，见「程序外壳」的「搜索条」。面板的可见内容还没有。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。产品渲染器见「运行时」。 |
@@ -27,7 +27,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 搜索条、面板和其他界面 | `crates/app`。程序外壳已接入。查询调度已在 `lanwork_core::dispatch`，搜索条和面板还没有调用它。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core`。热角的 50ms 轮询还没有接上 |
+| 面板和其他界面 | `crates/app`。程序外壳和搜索条已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands`、收纳薄命令 `ShelfCommands` 和 GitHub 薄命令 `GithubCommands` 已在 `crates/core`。热角的 50ms 轮询还没有接上 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
 
@@ -70,20 +70,38 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 
 模块分成两处。`lanwork_core::config` 和 `lanwork_core::shell` 不依赖 Slint，也不调用 Win32。互斥量、热键、注册表和窗口在 `crates/app`。非 Windows 进程打印「Lanwork 只支持 Windows 11 x64」并退出，退出码 1。
 
-启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条宿主、面板宿主和托盘。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。不打开便签和收纳。不建 GitHub 刷新定时器。`githubRefreshIntervalMs` 原样保存，包括 0，外壳不解释它。
+启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条、面板宿主和托盘。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。存储启动之后打开 `NoteCommands`、`AppIndex::open_from_process`（随后用 `load_user_catalog` 读 `user-apps.json` 交给 `set_user_catalog`）和 `FileCommands`，组成 `Dispatch` 并 `build`。这几步任一失败只写日志，进程继续，搜索条不安装，按热键不出现。不打开收纳。不建 GitHub 刷新定时器。`githubRefreshIntervalMs` 原样保存，包括 0，外壳不解释它。
 
 - **单实例。** 命名互斥量 `Local\Lanwork.SingleInstance.Mutex`，加上信号量 `Local\Lanwork.SingleInstance.Activate`（初值 0）。第一个进程拥有互斥量并等待信号量。后来的进程发现互斥量已存在，就对信号量加一，然后退出，退出码 0。信号量的计数会留到第一个进程来取，所以通知发生在等待之前也不会丢。第一个进程收到通知后不打开窗口。产品规格没有写这时要显示什么。
 - **托盘。** 菜单顺序是「打开面板」「设置」「新建便签」「刷新 GitHub」「退出」。提示文字只有「Lanwork」。图标是 32×32 的图，底色不是产品规格。逾期数量来自 `TodoCommands::overdue_count`，今天的日期用 `GetLocalTime`。数量为 0 时不画数字。数字画不下时裁掉超出图标的笔画，不改成「99+」。待办变更消息到达后在界面线程重画。读数量或日期失败时不画数字，并写日志。左键和右键都由 Slint 打开同一份菜单，没有另加左键动作。
 - **打开面板、设置、新建便签。** 菜单项会触发对应命令。不创建便签，也不显示搜索条、面板或设置页。这些窗口分别属于后续界面。
 - **刷新 GitHub。** 在界面线程之外调用 `GithubCommands::load` 和 `refresh_all`。时间是 `SystemTime` 的 UTC 毫秒。设置取当前配置里的长期未更新天数、来源同步、关闭来源时自动完成待办和刷新间隔。失败写入日志，不包含 `gh` 的标准输出、标准错误或 token。已经有一次刷新在进行时，再次点击直接返回，不排队。没有另外的提示窗口。
 - **退出。** 当前没有便签编辑器，`quit_without_note_editors` 返回结束进程。先隐藏托盘，再退出事件循环，然后卸下热键并释放互斥量。`QuitDecision::Stay` 留给以后的便签界面：那种情况下不结束进程，也不丢弃正文。现在没有这条返回值，也不做重试或放弃的对话框。
-- **热键。** `RegisterHotKey` 带 `MOD_NOREPEAT`，注册在单独线程的一个不显示的顶层窗口上。这个窗口不带 `WS_VISIBLE`。不用 `HWND_MESSAGE`，否则收不到 `WM_SETTINGCHANGE`。搜索条 id 是 1，面板 id 是 2。字符串格式是实现选择：修饰键 `Ctrl`、`Alt`、`Shift`、`Win`，加一个键。键是 `A`–`Z`、`0`–`9` 或 `F1`–`F24`。比较和保存前收成 `Ctrl+Alt+Shift+Win+键`。其他键名是「热键无效」。没有修饰键的单个键当前可以保存。产品规格没有写键名表。搜索条热键为空是「搜索条热键不能为空」。两个热键相同是「搜索条热键与面板热键相同」，不写盘。运行中修改热键只走先注册、成功后写入配置、再卸掉不再使用的旧热键。注册失败时磁盘和当前注册都保持旧热键。本进程内两条热键互换，或把一条的组合改给另一条时，先卸掉本进程里与新组合冲突的注册，再注册；失败则全部恢复。内容没变时不调用系统。写入配置时先更新内存，再发布变更。第一次启动就占用时，不改 `config.json`，写日志，进程继续，热键保持未注册。热键按下后不显示搜索条或面板。
+- **热键。** `RegisterHotKey` 带 `MOD_NOREPEAT`，注册在单独线程的一个不显示的顶层窗口上。这个窗口不带 `WS_VISIBLE`。不用 `HWND_MESSAGE`，否则收不到 `WM_SETTINGCHANGE`。搜索条 id 是 1，面板 id 是 2。字符串格式是实现选择：修饰键 `Ctrl`、`Alt`、`Shift`、`Win`，加一个键。键是 `A`–`Z`、`0`–`9` 或 `F1`–`F24`。比较和保存前收成 `Ctrl+Alt+Shift+Win+键`。其他键名是「热键无效」。没有修饰键的单个键当前可以保存。产品规格没有写键名表。搜索条热键为空是「搜索条热键不能为空」。两个热键相同是「搜索条热键与面板热键相同」，不写盘。运行中修改热键只走先注册、成功后写入配置、再卸掉不再使用的旧热键。注册失败时磁盘和当前注册都保持旧热键。本进程内两条热键互换，或把一条的组合改给另一条时，先卸掉本进程里与新组合冲突的注册，再注册；失败则全部恢复。内容没变时不调用系统。写入配置时先更新内存，再发布变更。第一次启动就占用时，不改 `config.json`，写日志，进程继续，热键保持未注册。搜索条热键显示或收起搜索条，见下面的「搜索条」。面板热键按下后不显示面板。
 - **配置。** 见「数据」。不认识的 `schemaVersion` 让进程以退出码 1 结束，不改文件，没有对话框。
 - **主题。** 明和暗直接写调色板。跟随系统时读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` 的 `AppsUseLightTheme`：0 是暗，其他值是明。读不到就不改调色板，也不猜测。`WM_SETTINGCHANGE` 且 `lParam` 为 `ImmersiveColorSet`（忽略 ASCII 大小写）时再读一次。调色板用 `ColorScheme.dark` 和 `ColorScheme.light` 这两个变体名。Slint 1.18.1 里这两个变体的注释文字和名字相反，以变体名为准。
 - **开机启动。** `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值名 `Lanwork`，类型 `REG_SZ`，内容是带引号的 exe 路径。配置为真且与现有值不同就写；为假且值存在就删。路径为空、不是 Unicode 或含 `"` 时不写。写入或删除失败只记日志，不把配置里的开关改回去。读不到现有值时也不改注册表。
-- **隐藏窗口。** 搜索条宿主和面板宿主在 `Component::new` 时创建，不调用 `show`。Slint 1.18.1 在这时创建 winit 适配器，操作系统窗口要到事件循环恢复时才出现，并且不会把未显示的窗口设为可见。启动时有没有一个隐藏的 HWND，要在 Windows 上看。宿主里没有输入框，也没有亚克力。
+- **隐藏窗口。** 搜索条和面板宿主在 `Component::new` 时创建，不调用 `show`。Slint 1.18.1 在这时创建 winit 适配器并登记为未激活窗口，事件循环开始时创建不可见的操作系统窗口，不会把未显示的窗口设为可见。面板宿主里没有输入框，也没有亚克力。事件循环用 `run_event_loop_until_quit`：搜索条收起后所有窗口都隐藏，事件循环不能因此结束；托盘「退出」才结束。
 
 外壳在 `boot` 前注册 `BackupCommands::register_boot_hooks`。有 `import.pending` 时先恢复，再加载待办和配置。`import_recovered` 为真时记日志「导入未完成」，并留在 `import_was_recovered`。界面尚未显示这句提示。读不到本地日期或自动备份失败时记日志，进程继续。没有恢复钩子时 `boot` 仍失败，外壳以退出码 1 结束。
+
+### 搜索条
+
+可见行为见产品规格「搜索条」「搜索」。代码在 `crates/app/src/searchbar.rs`（窗口与调度）、`crates/app/src/bar_win.rs`（Win32）和 `crates/app/ui/searchbar.slint`（版式）。不调用 Win32 的决定在 `lanwork_core::shell` 的 `bar`：背景选择、位置、修饰键与动作、Esc、收起后保留的文本、选择移动和结果区那一行文字。
+
+技术验证的「背景」和「渲染器」两项仍没有通过记录。这一版搜索条的界面代码依赖这两项，写在通过之前；两项的记录不因此改变。
+
+- **窗口。** `no-frame`，逻辑宽 680px，高度是输入框 56px 加结果区。结果行 48px，换组时多留 10px 并画一条分隔线，列表上下各留 6px。结果区最多约 9 行高，并且不超过工作区底边之上 24px；更多的行在 `Flickable` 里滚动。版式数值是实现选择，产品规格没有写。字体 `Microsoft YaHei UI`。高度变化由 winit 改窗口大小，左上角不动，所以上边缘留在 25% 处。winit 无边框窗口的样式总带 `WS_CAPTION | WS_SYSMENU`，按标志再加最小化、最大化框；边框扩展到整个客户区后，DWM 会在右上角画出这三个按钮。winit 每次改可见性都按自己的标志重写 `GWL_STYLE`，所以窗口第一次存在时用 `SetWindowSubclass` 装一个子类：处理 `WM_STYLECHANGING` 时从新样式里去掉 `WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX`，并立即对当前样式去一次再 `SWP_FRAMECHANGED`。`WS_CAPTION` 保留，DWM 仍画阴影和圆角。子类在 `WM_NCDESTROY` 时移除。
+- **结果行。** 名称拆成三段交给 Slint，中间一段用粗体：`lanwork_core::shell::match_span` 在显示名里找输入（去掉首尾空白）的第一处，逐字符比较，小写恰好是一个字符时按小写比，否则按原字符。找不到时整段用常规字重。文件和文件夹行（`location_always_shown`）在名称下方总是显示 `location`，也就是完整路径；其它行选中且 `location` 非空时才显示。
+- **Alt+数字。** `key-pressed` 在预编辑检查之后、Enter 之前处理：只按着 Alt（没有 Ctrl、Shift、Win），并且 `event.text` 是一个 1 至 9 的数字字符时调用 `shortcut`。`Flickable` 的 `content-y` 变化时把滚动量交给 Rust。`lanwork_core::shell::shortcut_rows` 用各行的 `y`、滚动量和结果区高度算出完整露出的行，从第一条起取至多 9 条连续的行；界面据此在行右侧画「Alt+N」，类型文字左移。`shortcut_target` 把数字换成行号，然后选中该行，按不带修饰键的 Enter 处理，所以组合输入、收集前缀和过期序号下同样无效。winit 处理 `WM_SYSCHAR` 时返回 0，不交给 `DefWindowProc`，所以 Alt+数字不会走到 `SC_KEYMENU`；没有菜单时是否仍有提示音，要在 Windows 上确认。
+- **位置。** 每次显示前用 `GetCursorPos`、`MonitorFromPoint`、`GetMonitorInfoW` 的 `rcWork` 和 `GetDpiForMonitor(MDT_EFFECTIVE_DPI)` 算出物理坐标：水平居中，上边缘在工作区高度 25% 处，再 `set_position`。显示后用 `GetWindowRect` 再对一次，不一致时 `SetWindowPos`（不改大小、不激活）。
+- **背景。** 窗口第一次存在（`winit_window()` 完成）时、每次显示前、主题变化时重新判断。Windows build 低于 22621 或读不到、`EnableTransparency` 为 0 或读不到（值不存在按开启）、`GetSystemPowerStatus` 报节电或读不到时用纯色。否则 `DwmExtendFrameIntoClientArea(-1)`，再设 `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_TRANSIENTWINDOW`；任一调用失败也用纯色。纯色时仍扩展边框，并把背景类型设回 `DWMSBT_NONE`，客户区由 Slint 画满 `#F3F3F3`（浅）或 `#202020`（暗）。圆角是 `DWMWCP_ROUND`，暗色用 `DWMWA_USE_IMMERSIVE_DARK_MODE`。透明渲染本身失败（例如客户区画成黑色）没有在运行时检测，只看 DWM 调用的返回值。
+- **任务栏。** 用 `unstable-winit-030` 的 `set_skip_taskbar(true)`，由 winit 在样式更新时保留。不手写 `WS_EX_TOOLWINDOW`，winit 每次改窗口状态都会重写扩展样式。
+- **显示与收起。** 热键在搜索条可见时收起，否则显示：定位、设背景、`show`、`SetForegroundWindow`、焦点给输入框。winit 的 `Focused(false)` 到达时收起。收起时除未提交的收集文本外清空输入并向调度提交空串，然后把延迟记录写出。
+- **输入。** 输入框是 `TextInput`，不是 `LineEdit`，因为要读 `preedit-text`。`key-pressed` 里预编辑非空时一律交还输入法。Esc、上、下、Enter 由搜索条处理，其他键交给 `TextInput`。`edited` 把已提交的文本交给 `Dispatch::submit(Surface::SearchBar, …)`，结果在界面线程上立即画出。收集前缀时调度返回收集状态，搜索条不显示结果；收集预览和提交属于快速收集，还没有。
+- **后台。** 一个线程取当前可见行的图标；文件阶段还在等待时，等 60ms（新输入重新计时）再 `poll`，结果和图标交回界面线程。界面只接受 `accepts` 为真的序号。同一段输入的后续结果保留选中的那一条，输入变了回到第一条。上下键不回绕。每行有一个 `TouchArea`：指针在行上移动（`PointerEventKind.move`）时选中该行，列表在静止的指针下滚动不改选择；单击先选中该行，再按不带修饰键的 Enter 处理，组合输入期间同样无效。滚轮交给 `Flickable`。
+- **动作。** 由 `row_action` 决定，没有动作时按键无效。Shell 调用在单独线程上，成功后收起，失败时在结果区下方显示错误并写日志，不收起；那时已经因失焦收起的只写日志。打开一项（不含打开所在目录和网页搜索）后 `record_open`。网页搜索行把 `RowDetail::WebSearch` 里的地址作为 `LaunchTarget::Url` 交给 Shell，由默认浏览器打开。待办和便签结果先 `record_open` 再收起，面板定位和便签悬浮的调用点留空，等面板和便签悬浮窗。
+- **延迟记录。** 环境变量 `LANWORK_LATENCY_OUT` 非空时，热召回和结果延迟的原始记录按 `tools/README.md` 的 JSONL 追加到该文件。界面不暴露这个变量。热召回起点是平台线程收到 `WM_HOTKEY` 时的 `SystemClock`，终点是显示后第一次 `AfterRendering`。结果记录在同一序号的视图画出后用 `mark_rendered` 填终点：本地结果在第一次画出时，文件来源在文件阶段结束的视图画出时。进程启动后第一次热召回和第一个查询序号标为预热。已经填了终点的记录不再因后来的输入标为被取代。没有按「性能测量」采样时，这些记录不表示目标已经达到。
 
 ## 通知
 
@@ -206,7 +224,7 @@ Lanwork/
 
 应用来源：当前用户和公共开始菜单、注册表 App Paths、PATH、商店应用、用户添加的便携应用和别名。按启动目标去重。快捷方式保留参数和工作目录。启动时先加载缓存，再在后台更新。目录变化合并后再重建；注册表、商店应用和手动刷新按来源更新。
 
-应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用、别名、隐藏和手动刷新的可见入口已写入产品规格。设置页、右键菜单和快捷键尚未实现。`AppIndex::refresh` 仍只是进程内重建。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
+应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用、别名、隐藏和手动刷新的可见入口已写入产品规格。设置页、右键菜单和快捷键尚未实现。`AppIndex::refresh` 仍只是进程内重建。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。`shell:AppsFolder` 也列出开始菜单快捷方式带来的桌面应用，它们的解析名是 `Chrome` 这类自定 AUMID 或 `{已知文件夹 GUID}\…\chrome.exe`，不是快捷方式的目标路径，按启动目标去重合不上，同一个应用会出现两条。商店来源因此只收打包应用的 AUMID，形如 `<包名>_<13 位发布者 ID>!<应用 ID>`（`rules::is_package_aumid`）；其余项由开始菜单来源收录，被开始菜单过滤掉的（卸载程序、目标不存在、启动文件夹）也不会从这里回来。商店应用的图标键是 `shell:AppsFolder\<AUMID>`，取图仍走 `SHCreateItemFromParsingName` 和 `IShellItemImageFactory`，得到包里的图标。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
 
 下面是当前实现选择，不是产品规则。PATH 上的 UNC 目录跳过，避免一个断开的网络路径挡住其余来源。开始菜单目录变化的安静时间是 400ms，另有 2 秒上限，到点就重建开始菜单来源。`apps.json` 的 `schemaVersion` 不是 1 时，和无法解析一样隔离成 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，日志不含文件内容。这和数据目录里不认识的 `schemaVersion` 不隔离不同，因为这份缓存可以重建。读取缓存时的 IO 错误只记日志，不改名。`apps.json` 仍是 schemaVersion 1，新增可选字段 `alternateNames`，来源值 `portable` 与 `alias`，以及目标种类 `url`。旧缓存没有这些字段时按空值读取。
 
@@ -270,7 +288,9 @@ Lanwork/
 
 `rank_hits` 做组内排序。同一个候选项 id 只留一条，命中类型取完全匹配、前缀、全拼、首字母、子串、模糊里最前的一种。然后按这个类型排序。同一种类型里，调用方经 `FrequencySource` 传入的使用频率高的在前。类型和频率都相同，则保持该候选项在输入里第一次出现的相对顺序。引擎不保存使用次数。次数如何加 1 已写入产品规格。本模块仍不把次数写入磁盘，由调用方传入。已接入的便签服务不保存这个次数。
 
-`allocate_display` 按浏览器、应用、待办、便签、文件、文件夹收已经排好的各组结果。每组先取至多 8 条。20 条还没满时，再按同一顺序把前面组剩下的结果取完，再取后面的组，直到满 20 条或没有更多结果。同一组入选的条目在输出里挨在一起。浏览器组只由调用方在输入是有效 `http` / `https` 时放入。
+`allocate_display` 按浏览器、应用、待办、便签、文件、文件夹收已经排好的各组结果。每组先取至多 8 条。20 条还没满时，再按同一顺序把前面组剩下的结果取完，再取后面的组，直到满 20 条或没有更多结果。同一组入选的条目在输出里挨在一起。浏览器组只由调用方在输入是有效 `http` / `https` 时放入。`SearchGroup::WebSearch` 没有分组序号，`allocate_display` 不收它。
+
+网页搜索行由调度在输入非空白时接在分配结果之后，所以不占 20 条名额，最多 21 行；产品规格对名额待定。搜索引擎在 `lanwork_core::search::WebSearchEngine`：`google`（默认）、`bing`、`baidu`，地址分别是 `https://www.google.com/search?q=`、`https://www.bing.com/search?q=`、`https://www.baidu.com/s?wd=`，搜索词去掉首尾空白后按 UTF-8 百分号编码，只保留字母、数字和 `-_.~`。名称是「搜索 Google：」「搜索必应：」「搜索百度：」加原样的搜索词。`config.json` 的字段是 `webSearchEngine`，缺省为 `google`；取值不在这三个里时按字段不合法处理，本次用默认配置。启动时 `Dispatch::set_web_search_engine` 读一次配置，设置页还没做，改配置后要重启才生效。用法键是 `UsageKey::WebSearch`，界面不对它 `record_open`。
 
 `cargo bench -p lanwork-core` 用 5,000 个应用名和 10,000 条待办标题测量准备和查询。这组基准不按「性能测量」采样，不能当作应用结果 P95 已经达到。这组语料的 `MatchIndex::heap_bytes()`（各 `Vec` 和 `String` 的 capacity 之和，不含拼音表，不含分配器额外开销）在 Linux 的 debug 构建里是 3,563,603 字节。分配器取整会改变这个数，测试只要求它小于 16 MiB。
 
@@ -294,11 +314,11 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 查询队列只保留一个待处理请求，新输入替换旧请求。每次查询有序号，过期序号的结果必须丢弃。应用、待办和便签结果先返回。最后一次输入后 60ms 内没有新输入，才向 Everything 或 Windows Search 发请求并合并结果。每次最多接收 50 条，界面最多显示 20 条。只为可见项取图标。图标缓存同时不超过 128 项和 8 MiB，搜索和收纳共用。
 
-查询调度的代码在 `lanwork_core::dispatch`，类型是 `Dispatch`。搜索条和面板还没有调用它。`TodoCommands::boot` 成功并且 `NoteCommands::open` 在导入恢复之后完成，才调用 `Dispatch::build`。`Store::build_index` 在启动未完成时不会建索引。索引读的是这两份服务的内存：未完成且不在回收站的待办标题，以及未软删除便签的标题、标签和正文。之后只在 `EntityChanged` 的种类是待办或便签时，从同一份内存重建对应索引。查询不读盘。交给 `Dispatch` 的必须是正在写入的那一份命令；克隆仍是同一份内存。待办在提交批次之前写入内存。便签在写盘或删文件成功之后、发布变更之前更新内存。订阅者读到消息时，这两份内存已是新值。保存或永久删除便签的回调里不要再调用便签写入，写入锁还被这次操作持有。
+查询调度的代码在 `lanwork_core::dispatch`，类型是 `Dispatch`。搜索条已调用它，面板还没有。`TodoCommands::boot` 成功并且 `NoteCommands::open` 在导入恢复之后完成，才调用 `Dispatch::build`。`Store::build_index` 在启动未完成时不会建索引。索引读的是这两份服务的内存：未完成且不在回收站的待办标题，以及未软删除便签的标题、标签和正文。之后只在 `EntityChanged` 的种类是待办或便签时，从同一份内存重建对应索引。查询不读盘。交给 `Dispatch` 的必须是正在写入的那一份命令；克隆仍是同一份内存。待办在提交批次之前写入内存。便签在写盘或删文件成功之后、发布变更之前更新内存。订阅者读到消息时，这两份内存已是新值。保存或永久删除便签的回调里不要再调用便签写入，写入锁还被这次操作持有。
 
 `submit` 的时钟读数是结果延迟的起点。搜索条先经 `classify_prefix`。空输入和收集前缀不进入查询队列，并使当前序号失效。面板不分类：空字符串是空输入，其余按搜索。组合中的预编辑不要调用 `submit`。序号从 1 递增。本地分组写好之后，并且距这次 `submit` 已满 60ms、期间没有更新的输入，才调用文件来源。文件查询返回时序号已经变了就不合并。不可用时结果上的说明是「文件索引不可用」，已有的应用、待办和便签行保留。文件服务最多交回 50 条，显示用 `allocate_display` 收到最多 20 条。
 
-有效地址沿用 `is_http_source_url`。应用、待办和便签的组内顺序用 `rank_hits`。`record_open` 把对应键的次数加 1，只放在本进程内存里，下一次查询才参与排序。`LatencyRecord::to_json_line` 的字段与 `tools/sample` 的延迟输入一致。终点由调用方用 `mark_rendered` 填上同序号、同一来源的 `end_ns`。被取代的记录单独标出。热召回不在这一层。没有按「性能测量」采样时，这些记录不表示目标已经达到。
+有效地址沿用 `is_http_source_url`。应用、待办和便签的组内顺序用 `rank_hits`。`record_open` 把对应键的次数加 1，只放在本进程内存里，下一次查询才参与排序。`LatencyRecord::to_json_line` 的字段与 `tools/sample` 的延迟输入一致。终点由调用方用 `mark_rendered` 填上同序号、同一来源的 `end_ns`。被取代的记录单独标出；已经填了终点的记录不再标为被取代。热召回不在这一层。没有按「性能测量」采样时，这些记录不表示目标已经达到。
 
 图标缓存是 `IconCache`。`Dispatch::icon_cache` 把同一份缓存交给收纳。取图只针对当前可见行。Windows 上用 `IShellItemImageFactory::GetImage`，只要图标并缩放到请求边长，再用 `GetDIBits` 读成 RGBA。非 Windows 上取不到图。下面几项规格没有写死，当前做法如下，不把它们当成产品规则：请求边长是 32 像素；快捷方式图标序号只区分缓存键，取图接口没有这个参数；使用次数不落盘；待办、便签和浏览器行没有可交给壳层的路径，不取图标；文件和文件夹保持文件来源的返回顺序，不按次数重排。
 

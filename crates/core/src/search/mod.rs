@@ -9,6 +9,7 @@ mod pinyin;
 mod prefix;
 mod prepare;
 mod query;
+mod web;
 
 pub use corpus::benchmark_corpus;
 pub use order::{
@@ -25,3 +26,4 @@ pub use prepare::{FieldInput, FieldRole, MatchIndex, PreparedCandidate, prepare}
 pub use query::{
     FUZZY_BASE, FUZZY_CONSECUTIVE_BONUS, FUZZY_WORD_START_BONUS, Hit, HitKind, query_prepared,
 };
+pub use web::WebSearchEngine;

@@ -26,6 +26,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::search::WebSearchEngine;
     use crate::storage::{DocumentId, EntityKind, Store, StorePaths};
 
     struct TempDir {
@@ -81,6 +82,7 @@ mod tests {
         assert_eq!(config.pomodoro_break_minutes, 5);
         assert_eq!(config.pomodoro_long_break_minutes, 15);
         assert_eq!(config.github_refresh_interval_ms, 0);
+        assert_eq!(config.web_search_engine, WebSearchEngine::Google);
         assert!(!store.document_path(&DocumentId::Config).unwrap().exists());
     }
 
@@ -92,8 +94,9 @@ mod tests {
         next.launch_at_startup = true;
         next.stale_days = 0;
         next.panel_hotkey = Some("ctrl+shift+f2".into());
+        next.web_search_engine = WebSearchEngine::Baidu;
         commands.replace(next).unwrap();
-        let again = ConfigCommands::open(store).unwrap();
+        let again = ConfigCommands::open(store.clone()).unwrap();
         assert_eq!(again.fallback(), None);
         let config = again.current();
         assert_eq!(config.theme, Theme::Dark);
@@ -101,6 +104,12 @@ mod tests {
         assert_eq!(config.stale_days, 0);
         assert_eq!(config.panel_hotkey.as_deref(), Some("Ctrl+Shift+F2"));
         assert_eq!(config.github_settings().stale_days, 0);
+        assert_eq!(config.web_search_engine, WebSearchEngine::Baidu);
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(store.document_path(&DocumentId::Config).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["webSearchEngine"], "baidu");
     }
 
     #[test]
@@ -226,6 +235,21 @@ mod tests {
         let commands = ConfigCommands::open(store).unwrap();
         assert_eq!(commands.fallback(), Some(Fallback::Invalid));
         assert_eq!(commands.current().theme, Theme::System);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn unknown_web_search_engine_keeps_the_file() {
+        let (_temp, store, _) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let original = br#"{"schemaVersion":1,"webSearchEngine":"yahoo"}"#;
+        std::fs::write(&path, original).unwrap();
+        let commands = ConfigCommands::open(store).unwrap();
+        assert_eq!(commands.fallback(), Some(Fallback::Invalid));
+        assert_eq!(
+            commands.current().web_search_engine,
+            WebSearchEngine::Google
+        );
         assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 

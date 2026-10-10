@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::github::{DEFAULT_STALE_DAYS, GithubSettings};
+use crate::search::WebSearchEngine;
 use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 use crate::todos::{DEFAULT_DEFER_DAYS, MAX_DEFER_DAYS, MIN_DEFER_DAYS};
 
@@ -124,6 +125,9 @@ pub struct Config {
         default = "default_long_break_minutes"
     )]
     pub pomodoro_long_break_minutes: u32,
+    /// 网页搜索结果用的搜索引擎：`google`、`bing` 或 `baidu`。缺省 `google`。
+    #[serde(rename = "webSearchEngine", default)]
+    pub web_search_engine: WebSearchEngine,
 }
 
 impl Default for Config {
@@ -145,6 +149,7 @@ impl Default for Config {
             pomodoro_work_minutes: DEFAULT_WORK_MINUTES,
             pomodoro_break_minutes: DEFAULT_BREAK_MINUTES,
             pomodoro_long_break_minutes: DEFAULT_LONG_BREAK_MINUTES,
+            web_search_engine: WebSearchEngine::Google,
         }
     }
 }

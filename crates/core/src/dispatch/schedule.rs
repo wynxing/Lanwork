@@ -11,7 +11,8 @@ use crate::files::{
 };
 use crate::notes::NoteCommands;
 use crate::search::{
-    FieldRole, Hit, HitKind, RankedGroup, SearchGroup, allocate_display, classify_prefix, rank_hits,
+    FieldRole, Hit, HitKind, RankedGroup, SearchGroup, WebSearchEngine, allocate_display,
+    classify_prefix, rank_hits,
 };
 use crate::storage::{self, EntityKind, Error as StorageError, StartupError, Store};
 use crate::todos::{TodoCommands, is_http_source_url};
@@ -69,7 +70,7 @@ pub struct Services {
     pub notes: NoteCommands,
 }
 
-/// 可替换的来源和时钟。搜索条界面还没有，测试用它换掉文件查询和时钟。
+/// 可替换的来源和时钟。测试用它换掉文件查询和时钟。
 pub struct Sides<A, F, C, I> {
     pub apps: A,
     pub files: F,
@@ -102,6 +103,7 @@ struct Inner {
     mode: Mode,
     freq: HashMap<UsageKey, u64>,
     latency: Vec<LatencyRecord>,
+    web_engine: WebSearchEngine,
 }
 
 enum Mode {
@@ -193,6 +195,7 @@ impl Dispatch {
                 mode: Mode::Empty,
                 freq: HashMap::new(),
                 latency: Vec::new(),
+                web_engine: WebSearchEngine::default(),
             }),
             apps: Mutex::new(Box::new(sides.apps)),
             files: Mutex::new(Box::new(sides.files)),
@@ -274,6 +277,11 @@ impl Dispatch {
     #[must_use]
     pub fn accepts(&self, sequence: u64) -> bool {
         storage::lock_mutex(&self.inner).accepts(sequence)
+    }
+
+    /// 网页搜索那一条用的搜索引擎。从下一次输入起生效。
+    pub fn set_web_search_engine(&self, engine: WebSearchEngine) {
+        storage::lock_mutex(&self.inner).web_engine = engine;
     }
 
     /// 从搜索结果打开一项。次数加 1，只影响之后的组内排序。
@@ -566,8 +574,9 @@ impl Inner {
             return;
         };
         let sequence = state.sequence;
+        // 已经画出来的结果不算被取代：新输入在它之后才到。
         for record in &mut self.latency {
-            if record.seq == sequence {
+            if record.seq == sequence && record.end_ns.is_none() {
                 record.superseded = true;
             }
         }
@@ -582,7 +591,7 @@ impl Inner {
             Mode::Empty => QueryView::idle(ViewPhase::Empty),
             Mode::Capture => QueryView::idle(ViewPhase::Capture),
             Mode::Search(state) => {
-                let (rows, file) = project(state);
+                let (rows, file) = project(state, self.web_engine);
                 QueryView {
                     phase: ViewPhase::Results,
                     sequence: Some(state.sequence),
@@ -605,7 +614,7 @@ impl Inner {
     }
 }
 
-fn project(state: &SearchState) -> (Vec<SearchRow>, FileProgress) {
+fn project(state: &SearchState, engine: WebSearchEngine) -> (Vec<SearchRow>, FileProgress) {
     let mut groups = state.local_groups.clone();
     let progress = match state.file {
         FileSlot::Waiting { .. } => FileProgress::Waiting,
@@ -628,11 +637,32 @@ fn project(state: &SearchState) -> (Vec<SearchRow>, FileProgress) {
             FileProgress::Settled
         }
     };
-    let rows = allocate_display(&groups)
+    let mut rows: Vec<SearchRow> = allocate_display(&groups)
         .into_iter()
         .map(|(_group, row)| row)
         .collect();
+    if let Some(row) = web_search_row(&state.text, engine) {
+        rows.push(row);
+    }
     (rows, progress)
+}
+
+/// 有输入时总是有这一条，放在最后。输入是网址时浏览器那一条仍在最前。
+fn web_search_row(text: &str, engine: WebSearchEngine) -> Option<SearchRow> {
+    if is_blank(text) {
+        return None;
+    }
+    Some(SearchRow {
+        group: SearchGroup::WebSearch,
+        kind: None,
+        usage: UsageKey::WebSearch,
+        label: engine.label(text),
+        location: String::new(),
+        icon: None,
+        detail: RowDetail::WebSearch {
+            url: engine.search_url(text),
+        },
+    })
 }
 
 fn local_groups(
@@ -753,13 +783,20 @@ fn app_icon(hit: &AppHit) -> Option<super::model::IconKey> {
             });
         }
     }
-    if let LaunchTarget::Path { path, .. } = &hit.entry.target {
-        let path = path.to_string_lossy().to_string();
-        if !path.is_empty() {
-            return Some(super::model::IconKey { path, index: 0 });
+    match &hit.entry.target {
+        LaunchTarget::Path { path, .. } => {
+            let path = path.to_string_lossy().to_string();
+            (!path.is_empty()).then_some(super::model::IconKey { path, index: 0 })
         }
+        LaunchTarget::Aumid { aumid } => {
+            let aumid = aumid.trim();
+            (!aumid.is_empty()).then(|| super::model::IconKey {
+                path: format!(r"shell:AppsFolder\{aumid}"),
+                index: 0,
+            })
+        }
+        LaunchTarget::Url { .. } => None,
     }
-    None
 }
 
 fn file_rows(hits: &[FileHit]) -> (Vec<SearchRow>, Vec<SearchRow>) {
@@ -932,8 +969,9 @@ mod tests {
         dispatch.build().unwrap();
         let created = notes.create(&input("旧标题")).unwrap();
         let indexed = dispatch.submit(Surface::Panel, "旧标题").unwrap();
-        assert_eq!(indexed.rows.len(), 1);
+        assert_eq!(indexed.rows.len(), 2);
         assert_eq!(indexed.rows[0].label, "旧标题");
+        assert_eq!(indexed.rows[1].group, crate::search::SearchGroup::WebSearch);
 
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -949,6 +987,7 @@ mod tests {
                 assert_eq!(
                     view.rows
                         .iter()
+                        .filter(|row| row.group != crate::search::SearchGroup::WebSearch)
                         .map(|row| row.label.as_str())
                         .collect::<Vec<_>>(),
                     vec!["新标题"]

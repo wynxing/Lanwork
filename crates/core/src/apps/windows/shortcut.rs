@@ -1,6 +1,6 @@
 //! 用 `IShellLinkW` 读出目标、参数、工作目录和图标。写快捷方式只给测试和测量用。
 //!
-//! 目标文件不存在时不收录。带 `System.AppUserModel.ID` 也不收录；
+//! 目标文件不存在时不收录，即使带 `System.AppUserModel.ID`；
 //! 同一商店应用仍由 `shell:AppsFolder` 按 AUMID 进入索引。
 
 use std::path::{Path, PathBuf};

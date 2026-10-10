@@ -1,15 +1,20 @@
 //! 启动顺序：先占住单实例，再打开数据目录，完成导入恢复和待办加载，加载配置，按本地日期自动备份，然后选渲染器、注册热键、创建隐藏窗口和托盘。
+//! 便签服务、应用索引和文件索引在存储启动之后打开，交给搜索条的查询调度。
 //!
-//! 搜索条、面板、设置和便签的可见内容不在这里绘制。
+//! 面板、设置和便签的可见内容不在这里绘制。搜索条在 `searchbar`。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
+use lanwork_core::apps::{AppIndex, load_user_catalog};
 use lanwork_core::backup::BackupCommands;
 use lanwork_core::config::{ConfigCommands, Fallback, Theme};
+use lanwork_core::dispatch::{Dispatch, Services};
+use lanwork_core::files::FileCommands;
 use lanwork_core::github::{GithubCommands, GithubError, ProcessGh, RefreshReport, RepoResult};
+use lanwork_core::notes::NoteCommands;
 use lanwork_core::shell::{
     PANEL_HOTKEY_ID, QuitDecision, SEARCH_HOTKEY_ID, ShellCommand, SystemLight, TRAY_ICON_PX,
     desired_bindings, quit_without_note_editors, resolve_theme, tray_icon_rgba,
@@ -22,7 +27,8 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 use crate::instance::{self, Claim};
 use crate::platform::{HotkeyControl, Platform};
 use crate::registry::{apply_startup, read_system_theme};
-use crate::{PanelHost, SearchHost, Tray};
+use crate::searchbar;
+use crate::{PanelHost, SearchBar, Tray};
 
 pub(crate) fn run() -> i32 {
     let claim = match instance::claim(instance::MUTEX_NAME, instance::ACTIVATE_NAME) {
@@ -91,27 +97,73 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         Err(_) => store.log_warn("读不到可执行文件路径，开机启动项未更新"),
     }
 
-    let search = SearchHost::new().map_err(|err| err.to_string())?;
+    let search = SearchBar::new().map_err(|err| err.to_string())?;
     let panel = PanelHost::new().map_err(|err| err.to_string())?;
     let tray = Tray::new().map_err(|err| err.to_string())?;
-    refresh_theme(&search, &panel, &config, store);
+    if let Some(dispatch) = open_dispatch(store, &todos) {
+        dispatch.set_web_search_engine(config.current().web_search_engine);
+        searchbar::install(search.clone_strong(), dispatch, store.clone());
+    }
+    refresh_theme(&panel, &config, store);
     refresh_badge(&tray, &todos, store);
     wire_tray(&tray, &config, store, &todos);
     watch_todos(&tray, &todos, store);
-    let search_weak = search.as_weak();
     let panel_weak = panel.as_weak();
     let config_theme = config.clone();
     let store_theme = store.clone();
     platform.set_theme_callback(Box::new(move || {
-        let (Some(search), Some(panel)) = (search_weak.upgrade(), panel_weak.upgrade()) else {
+        let Some(panel) = panel_weak.upgrade() else {
             return;
         };
-        refresh_theme(&search, &panel, &config_theme, &store_theme);
+        refresh_theme(&panel, &config_theme, &store_theme);
     }));
 
-    slint::run_event_loop().map_err(|err| err.to_string())?;
+    // 搜索条收起时所有窗口都隐藏，事件循环不能因此结束。
+    let run = slint::run_event_loop_until_quit().map_err(|err| err.to_string());
+    searchbar::shutdown();
+    drop(search);
     platform.shutdown();
-    Ok(())
+    run
+}
+
+/// 便签服务、应用索引和文件索引，然后建内存索引。失败时写日志，搜索条按热键不出现。
+fn open_dispatch(store: &Store, todos: &TodoCommands) -> Option<Arc<Dispatch>> {
+    let notes = match NoteCommands::open(store.clone()) {
+        Ok(notes) => notes,
+        Err(err) => {
+            store.log_error(&format!("便签服务没有打开，搜索条不可用：{err}"));
+            return None;
+        }
+    };
+    let apps = match AppIndex::open_from_process() {
+        Ok(apps) => apps,
+        Err(err) => {
+            store.log_error(&format!("应用索引没有打开，搜索条不可用：{err}"));
+            return None;
+        }
+    };
+    match load_user_catalog(&store.user_apps_path()) {
+        Ok(catalog) => {
+            if let Err(err) = apps.set_user_catalog(catalog) {
+                store.log_warn(&format!("便携应用和别名没有载入：{err}"));
+            }
+        }
+        Err(err) => store.log_warn(&format!("便携应用和别名没有载入：{err}")),
+    }
+    let dispatch = Dispatch::open(
+        store.clone(),
+        Services {
+            todos: todos.clone(),
+            notes,
+        },
+        apps,
+        FileCommands::open(store.clone()),
+    );
+    if let Err(err) = dispatch.build() {
+        store.log_error(&format!("搜索索引没有建起来，搜索条不可用：{err}"));
+        return None;
+    }
+    Some(Arc::new(dispatch))
 }
 
 fn apply_configured_hotkeys(hotkeys: &HotkeyControl, config: &ConfigCommands, store: &Store) {
@@ -280,7 +332,7 @@ fn tray_image(overdue: u32) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-fn refresh_theme(search: &SearchHost, panel: &PanelHost, config: &ConfigCommands, store: &Store) {
+fn refresh_theme(panel: &PanelHost, config: &ConfigCommands, store: &Store) {
     let system = read_system_theme();
     if config.current().theme == Theme::System && system == SystemLight::Unknown {
         static LOGGED: AtomicBool = AtomicBool::new(false);
@@ -291,7 +343,7 @@ fn refresh_theme(search: &SearchHost, panel: &PanelHost, config: &ConfigCommands
     let Some(dark) = resolve_theme(config.current().theme, system).is_dark() else {
         return;
     };
-    search.invoke_apply_theme(dark);
+    searchbar::apply_theme(dark);
     panel.invoke_apply_theme(dark);
 }
 
@@ -317,15 +369,13 @@ fn request_quit(tray: &slint::Weak<Tray>) {
     }
 }
 
-pub(crate) fn on_hotkey(id: i32) {
-    let command = if id == SEARCH_HOTKEY_ID {
-        ShellCommand::SearchHotkey
+/// `received_ns` 是平台线程收到热键消息时的单调时间，热召回从这里算起。
+pub(crate) fn on_hotkey(id: i32, received_ns: u64) {
+    if id == SEARCH_HOTKEY_ID {
+        searchbar::toggle(received_ns);
     } else if id == PANEL_HOTKEY_ID {
-        ShellCommand::PanelHotkey
-    } else {
-        return;
-    };
-    pending_visible(command);
+        pending_visible(ShellCommand::PanelHotkey);
+    }
 }
 
 pub(crate) fn on_second_instance() {
