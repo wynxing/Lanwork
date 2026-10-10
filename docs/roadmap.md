@@ -17,8 +17,8 @@
 | 项 | 记录 |
 | --- | --- |
 | 中文输入法 | [记录](verification/ime.md)。100% 缩放下用户报告单行、多行、候选窗、拖动后的候选窗、Enter 和数字键没有问题。2026-10-10 在 DESKTOP-HDJS01V 上复测 main `52b5a3b`（含 #74），主屏 100%、副屏 150%。外框不再变形，preedit 保留。跨 DPI 拖动松手后候选窗仍不显示，再输入一个字母后候选窗重新出现。用户判定可接受，不再继续修。条件 5 与该项都记为「通过（附已知问题）」 |
-| 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，FemtoVG、软件渲染、Skia 软件、Skia OpenGL 的窗口都是磨砂、能透出背景、没有黑色客户区。系统浅色/深色主题切换通过，深色下也清楚。关闭/打开「透明效果」通过。节电模式通过。默认渲染器已写入 architecture.md「运行时」。2026-10-10 在 DESKTOP-HDJS01V（Windows 11 build 26300，Intel UHD + NVIDIA GeForce RTX 4050 Laptop GPU，当时为远程控制）上，FemtoVG 场景 A：亚克力背景正常，没有黑框，`graphics_api=NativeOpenGL`，`render_failed=false`，`backdrop_hresult=0`。进程 GPU Engine 计数器里出现了 ofa、vr、两个 videoencode，这些是 NVIDIA 适配器常见的引擎名。没有 3D 引擎名和适配器 LUID，当时是远程控制，不能证明客户区画在 RTX 4050 上。这一项仍未通过：独显只有 FemtoVG 场景 A 的目视，失败回退和主题切换没有这次记录。真实透明渲染失败没有新的记录。观察（不是失败判定）：自定义标题栏导致窗口拖不动；有两个关闭按钮 |
-| 渲染器 | 部分记录，未通过。同上。2026-10-09 四种窗口的文字清楚（含中文和 0OIl1）。默认 FemtoVG，初始化失败自动退回软件渲染，已写入 architecture.md「运行时」。外壳按此选择。2026-10-10 独显只补了 FemtoVG 场景 A 的目视（中文和 0OIl1 清楚），没有内存采样，场景 B 和另外三种渲染器没有在这台机器上做。这一项仍未通过 |
+| 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，FemtoVG、软件渲染、Skia 软件、Skia OpenGL 的窗口都是磨砂、能透出背景、没有黑色客户区。系统浅色/深色主题切换通过，深色下也清楚。关闭/打开「透明效果」通过。节电模式通过。默认渲染器已写入 architecture.md「运行时」。2026-10-10 在 DESKTOP-HDJS01V（Windows 11 build 26300，Intel UHD + NVIDIA GeForce RTX 4050 Laptop GPU，当时为远程控制）上，FemtoVG 场景 A：亚克力背景正常，没有黑框，`graphics_api=NativeOpenGL`，`render_failed=false`，`backdrop_hresult=0`。进程 GPU Engine 计数器里出现了 ofa、vr、两个 videoencode，这些是 NVIDIA 适配器常见的引擎名。没有 3D 引擎名和适配器 LUID，当时是远程控制，不能证明客户区画在 RTX 4050 上。这一项仍未通过：独显只有 FemtoVG 场景 A 的目视，失败回退和主题切换没有这次记录。真实透明渲染失败没有新的记录。观察（不是失败判定）：自定义标题栏导致窗口拖不动；有两个关闭按钮。2026-10-10 在 DESKTOP-7C3P6OG 上运行产品搜索条（PR #77 头 `873c5cc`，release）：亚克力显示正确，切换系统深浅色后颜色跟随，关闭「透明效果」后呼出为纯色、没有黑框，用户确认。这次没有记实际渲染器、Windows build 和 GPU。节电模式未测。透明渲染失败时退回纯色仍未满足：产品运行时检测不到真实的透明失败，也没有在透明渲染有问题的机器上看过。这一项仍未通过，见 [render-2026-10-08.md](measurements/render-2026-10-08.md)「2026-10-10 产品搜索条」 |
+| 渲染器 | 部分记录，未通过。同上。2026-10-09 四种窗口的文字清楚（含中文和 0OIl1）。默认 FemtoVG，初始化失败自动退回软件渲染，已写入 architecture.md「运行时」。外壳按此选择。2026-10-10 独显只补了 FemtoVG 场景 A 的目视（中文和 0OIl1 清楚），没有内存采样，场景 B 和另外三种渲染器没有在这台机器上做。2026-10-10 产品搜索条在 DESKTOP-7C3P6OG 上外观正常，但没有记实际渲染器，没有内存数字；没有 OpenGL 时退回软件渲染未测。这一项仍未通过 |
 | 外部拖放 | 通过条件表七条都通过，产品用 OLE。`--slint` 拖放仍失败，没有路径。2026-10-09 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。见下方「外部拖放」。 |
 | Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
 | Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。2026-10-09 14:24（UTC+8）停止 `WSearch` 后，`fileidx.exe wsearch --text notepad` 的 `ok` 为 false，`hresult` 为 2147614729（`0x80020009`，`DISP_E_EXCEPTION`），`message` 为空字符串，约 5.3 ms，`returned` 为 0，没有崩溃或卡住。随后服务恢复为 Running/Manual。错误提示文案不能依赖空的 `message`，列为后续。 |
@@ -140,7 +140,7 @@
 | 界面 | 规格位置 | 代码 |
 | --- | --- | --- |
 | 程序外壳 | [architecture.md](architecture.md)「程序外壳」 | 有。单实例、托盘、全局热键、主题、开机启动，以及隐藏的搜索条和面板宿主。可见的面板、设置和便签仍无。热角的 50ms 轮询还没有接上 |
-| 搜索条、搜索（搜索条内） | [product.md](product.md)「搜索条」「搜索」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。右键菜单、隐藏应用、待办和便签的落点（面板、悬浮窗）没有 |
+| 搜索条、搜索（搜索条内） | [product.md](product.md)「搜索条」「搜索」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。右键菜单、隐藏应用、待办和便签的落点（面板、悬浮窗）没有。2026-10-10 用户在 DESKTOP-7C3P6OG 上运行 PR #77 头 `873c5cc` 的 release：外观、应用去重、商店应用图标、文件和文件夹的路径行、匹配加粗、Alt+数字、网页搜索确认没问题；关闭「透明效果」后呼出为纯色、没有黑框，切换系统深浅色后颜色跟随。未测：节电模式、没有 OpenGL 时退回软件渲染 |
 | 快速收集（搜索条内）、面板、面板搜索、待办、便签、收纳、GitHub、设置 | [product.md](product.md) 对应各节 | 无 |
 | 番茄钟 | [product.md](product.md)「番茄钟」 | 无。规格已写入，可以实现 |
 
