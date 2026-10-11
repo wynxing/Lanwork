@@ -439,6 +439,55 @@ fn float_geometry_goes_through_export_and_import() {
 }
 
 #[test]
+fn float_pinned_goes_through_export_import_and_backup_restore() {
+    let fx = fixture();
+    let notes = NoteCommands::open(fx.store.clone()).unwrap();
+    let note = notes
+        .create(&NoteInput {
+            title: "钉住".to_owned(),
+            body: "正文".to_owned(),
+            tags: Vec::new(),
+            pinned: false,
+        })
+        .unwrap();
+    let other = notes
+        .create(&NoteInput {
+            title: "不钉".to_owned(),
+            body: "正文".to_owned(),
+            tags: Vec::new(),
+            pinned: false,
+        })
+        .unwrap();
+    let shelves = ShelfCommands::open(fx.store.clone()).unwrap();
+    let pinned_group = shelves.create_group("钉住").unwrap();
+    let plain_group = shelves.create_group("不钉").unwrap();
+    notes.set_float_pinned(&note.id, true).unwrap();
+    shelves.set_float_pinned(&pinned_group.id, true).unwrap();
+
+    let commands = BackupCommands::open(fx.store.clone());
+    let package = fx._temp.path().join("pin.zip");
+    commands.export(&package, true, 30).unwrap();
+    notes.set_float_pinned(&note.id, false).unwrap();
+    shelves.set_float_pinned(&pinned_group.id, false).unwrap();
+    shelves.set_float_pinned(&plain_group.id, true).unwrap();
+
+    commands.import(&package, 40).unwrap();
+    assert!(notes.get(&note.id).unwrap().float_pinned);
+    assert!(!notes.get(&other.id).unwrap().float_pinned);
+    assert!(shelves.get(&pinned_group.id).unwrap().float_pinned);
+    assert!(!shelves.get(&plain_group.id).unwrap().float_pinned);
+
+    notes.set_float_pinned(&note.id, false).unwrap();
+    shelves.set_float_pinned(&pinned_group.id, false).unwrap();
+    let backup = commands.backup_manual(50).unwrap();
+    notes.set_float_pinned(&note.id, true).unwrap();
+    shelves.set_float_pinned(&pinned_group.id, true).unwrap();
+    commands.import(&backup, 60).unwrap();
+    assert!(!notes.get(&note.id).unwrap().float_pinned);
+    assert!(!shelves.get(&pinned_group.id).unwrap().float_pinned);
+}
+
+#[test]
 fn shelf_links_go_through_export_and_import_including_the_old_single_field() {
     let fx = fixture();
     write_rel(

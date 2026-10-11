@@ -48,6 +48,11 @@ impl NoteCommands {
         self.service.set_float(id, geometry)
     }
 
+    /// 记下悬浮窗是否钉住。不改 `revision`，见 [`NoteService::set_float_pinned`]。
+    pub fn set_float_pinned(&self, id: &str, pinned: bool) -> Result<Note, NoteError> {
+        self.service.set_float_pinned(id, pinned)
+    }
+
     pub fn set_pinned(&self, id: &str, revision: u64, pinned: bool) -> Result<Note, NoteError> {
         self.service.check_id(id)?;
         self.service.set_pinned(id, revision, pinned)

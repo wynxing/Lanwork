@@ -32,6 +32,8 @@ pub struct Shelf {
     pub refs: Vec<ShelfRef>,
     /// 这个分组的悬浮窗上次关闭时的位置和大小。没有记录时为 `None`。旧文件没有这个字段。
     pub float: Option<FloatGeometry>,
+    /// 这个分组的悬浮窗是否钉住（始终在其他窗口之上）。旧文件没有这个字段，按未钉住。
+    pub float_pinned: bool,
 }
 
 /// 一条路径引用。不包含文件内容。
@@ -104,6 +106,12 @@ pub(crate) struct ShelfFile {
         skip_serializing_if = "Option::is_none"
     )]
     float: Option<FloatGeometry>,
+    #[serde(
+        rename = "floatPinned",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    float_pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +141,7 @@ impl ShelfFile {
             legacy_todo_id: None,
             todo_ids: shelf.todo_ids.clone(),
             float: shelf.float,
+            float_pinned: shelf.float_pinned,
             refs: shelf
                 .refs
                 .iter()
@@ -191,6 +200,7 @@ impl ShelfFile {
             todo_ids,
             refs,
             float: self.float,
+            float_pinned: self.float_pinned,
         })
     }
 }

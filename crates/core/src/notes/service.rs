@@ -98,6 +98,7 @@ impl NoteService {
             deleted_at: None,
             revision: 1,
             float: None,
+            float_pinned: false,
         };
         self.persist(note)
     }
@@ -142,6 +143,21 @@ impl NoteService {
             return Ok(next);
         }
         next.float = Some(geometry);
+        self.persist(next)
+    }
+
+    /// 记下这一篇悬浮窗是否钉住。
+    ///
+    /// 与 [`Self::set_float`] 一样不带 `revision`，也不改 `revision`、`updatedAt` 和列表里的置顶：
+    /// 编辑区手里的版本号不会因此过期，也不会引出冲突提示。回收站里的便签同样可以记。值没变时不写盘。
+    pub fn set_float_pinned(&self, id: &str, pinned: bool) -> Result<Note, NoteError> {
+        self.check_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        let mut next = self.cached(id)?;
+        if next.float_pinned == pinned {
+            return Ok(next);
+        }
+        next.float_pinned = pinned;
         self.persist(next)
     }
 

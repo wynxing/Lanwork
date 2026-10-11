@@ -128,6 +128,7 @@ impl ShelfService {
             todo_ids: Vec::new(),
             refs: Vec::new(),
             float: None,
+            float_pinned: false,
         };
         self.persist_one(&shelf)?;
         Ok(shelf)
@@ -215,6 +216,7 @@ impl ShelfService {
                     todo_ids: Vec::new(),
                     refs: Vec::new(),
                     float: None,
+                    float_pinned: false,
                 }
             }
             None => return Err(ShelfError::TargetGroupRequired),
@@ -301,6 +303,20 @@ impl ShelfService {
             return Ok(shelf);
         }
         shelf.float = Some(geometry);
+        self.persist_one(&shelf)?;
+        Ok(shelf)
+    }
+
+    /// 记下这个分组的悬浮窗是否钉住。不改名称、顺序、关联、引用和悬浮窗的位置大小。值没有变化时不写盘。
+    pub fn set_float_pinned(&self, id: &str, pinned: bool) -> Result<Shelf, ShelfError> {
+        self.check_group_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        self.ensure_usable()?;
+        let mut shelf = self.group(id)?;
+        if shelf.float_pinned == pinned {
+            return Ok(shelf);
+        }
+        shelf.float_pinned = pinned;
         self.persist_one(&shelf)?;
         Ok(shelf)
     }
