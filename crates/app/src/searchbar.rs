@@ -22,7 +22,7 @@ use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
     BAR_WIDTH, Backdrop, EnterChord, EscapeAction, MonitorArea, ROW_HEIGHT, RowAction, WorkArea,
-    escape_action, group_label, location_always_shown, match_span, max_results_height,
+    escape_action, group_label, location_always_shown, match_span, max_results_height, monitor_at,
     move_selection, path_target, place_bar, pointed_row, reselect, row_action, row_offsets,
     shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
 };
@@ -285,10 +285,7 @@ impl Bar {
             .map(|reading| reading.dpi)
             .unwrap_or(cursor_dpi);
         let origin = placement.origin;
-        let room = max_results_height(placement.work, dpi, INPUT_HEIGHT, BOTTOM_GAP);
-        self.max_list = room.min(LIST_CAP);
-        self.ui.set_max_list_height(px(self.max_list));
-        self.push_shortcuts();
+        self.apply_results_cap(placement.work, origin.1, dpi);
         self.ui
             .window()
             .set_position(slint::PhysicalPosition::new(origin.0, origin.1));
@@ -307,6 +304,9 @@ impl Bar {
             // 跨 DPI 移动时系统建议的矩形可能偏离目标位置，显示后再对一次。
             if bar_win::window_origin(hwnd) != Some(origin) {
                 bar_win::move_window(hwnd, origin.0, origin.1);
+            }
+            if bar_win::window_origin(hwnd).is_some_and(|actual| actual.1 != origin.1) {
+                self.refit_results_to_window();
             }
             bar_win::bring_to_front(hwnd);
         }
@@ -362,6 +362,7 @@ impl Bar {
 
     fn finish_drag(&mut self) {
         self.remember_origin();
+        self.refit_results_to_window();
         if self.visible {
             self.ui.invoke_focus_input();
         }
@@ -371,6 +372,35 @@ impl Bar {
                 with_bar(|bar| bar.dragging = false);
             });
         });
+    }
+
+    fn apply_results_cap(&mut self, work: WorkArea, origin_y: i32, dpi: u32) {
+        let room = max_results_height(work, origin_y, dpi, INPUT_HEIGHT, BOTTOM_GAP);
+        self.max_list = room.min(LIST_CAP);
+        self.ui.set_max_list_height(px(self.max_list));
+        self.push_shortcuts();
+    }
+
+    /// 按窗口现在的左上角重算列表高度。点不在任何显示器上时保持当前高度。
+    fn refit_results_to_window(&mut self) {
+        let Some((x, y)) = self.hwnd().and_then(bar_win::window_origin) else {
+            return;
+        };
+        let readings = bar_win::monitors();
+        let areas: Vec<MonitorArea> = readings
+            .iter()
+            .map(|reading| MonitorArea {
+                bounds: reading.bounds,
+                work: reading.work,
+            })
+            .collect();
+        let Some(index) = monitor_at(&areas, x, y) else {
+            return;
+        };
+        let Some(reading) = readings.get(index) else {
+            return;
+        };
+        self.apply_results_cap(reading.work, y, reading.dpi);
     }
 
     fn remember_origin(&mut self) {
