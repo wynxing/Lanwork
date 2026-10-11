@@ -12,6 +12,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use lanwork_core::apps::{LaunchError, LaunchTarget, launch, launch_elevated};
+use lanwork_core::config::{ConfigCommands, SearchBarOrigin};
 use lanwork_core::dispatch::{
     Dispatch, FILE_QUERY_DELAY_MS, FileProgress, IconKey, LATENCY_SOURCE_LOCAL, Monotonic,
     QueryView, RgbaImage, RowDetail, SearchGroup, SearchRow, Surface, SystemClock, UsageKey,
@@ -20,10 +21,10 @@ use lanwork_core::dispatch::{
 use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
-    BAR_WIDTH, Backdrop, EnterChord, EscapeAction, ROW_HEIGHT, RowAction, WorkArea, bar_origin,
-    escape_action, group_label, location_always_shown, match_span, max_results_height,
-    move_selection, path_target, pointed_row, reselect, row_action, row_offsets, shortcut_rows,
-    shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
+    BAR_WIDTH, Backdrop, EnterChord, EscapeAction, MonitorArea, ROW_HEIGHT, RowAction, WorkArea,
+    escape_action, group_label, location_always_shown, match_span, max_results_height, monitor_at,
+    move_selection, path_target, place_bar, pointed_row, reselect, row_action, row_offsets,
+    shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
@@ -64,7 +65,12 @@ fn with_bar(action: impl FnOnce(&mut Bar) + 'static) {
 }
 
 /// 启动时调用一次。窗口保持隐藏，直到热键。
-pub(crate) fn install(ui: SearchBar, dispatch: Arc<Dispatch>, store: Store) {
+pub(crate) fn install(
+    ui: SearchBar,
+    dispatch: Arc<Dispatch>,
+    store: Store,
+    config: ConfigCommands,
+) {
     let rows = Rc::new(VecModel::<BarRow>::default());
     ui.set_rows(ModelRc::from(Rc::clone(&rows)));
     let marks = Rc::new(RefCell::new(Marks {
@@ -91,6 +97,8 @@ pub(crate) fn install(ui: SearchBar, dispatch: Arc<Dispatch>, store: Store) {
     ui.on_activate(|index| with_bar(move |bar| bar.activate(index)));
     ui.on_shortcut(|digit| with_bar(move |bar| bar.shortcut(digit)));
     ui.on_scrolled(|top| with_bar(move |bar| bar.scrolled(top)));
+    ui.on_drag_window(|| with_bar(Bar::drag));
+    bar_win::set_move_loop_hook(move_loop);
 
     let render_marks = Rc::clone(&marks);
     let notifier = ui.window().set_rendering_notifier(move |state, _| {
@@ -124,6 +132,7 @@ pub(crate) fn install(ui: SearchBar, dispatch: Arc<Dispatch>, store: Store) {
 
     let bar = Bar {
         ui,
+        config,
         rows,
         dispatch,
         store,
@@ -146,6 +155,8 @@ pub(crate) fn install(ui: SearchBar, dispatch: Arc<Dispatch>, store: Store) {
         dark: false,
         hwnd_ready: false,
         launching: false,
+        dragging: false,
+        drag_origin: None,
         first_sequence: None,
     };
     BAR.with(|cell| *cell.borrow_mut() = Some(bar));
@@ -176,6 +187,7 @@ pub(crate) fn shutdown() {
 
 struct Bar {
     ui: SearchBar,
+    config: ConfigCommands,
     rows: Rc<VecModel<BarRow>>,
     dispatch: Arc<Dispatch>,
     store: Store,
@@ -198,17 +210,25 @@ struct Bar {
     dark: bool,
     hwnd_ready: bool,
     launching: bool,
+    /// 拖动过程中，包括循环结束后留给迟到失焦的那两轮。
+    dragging: bool,
+    /// 这次按下时的左上角。松开后没变就不写配置。
+    drag_origin: Option<(i32, i32)>,
     first_sequence: Option<u64>,
 }
 
 impl Bar {
     fn window_ready(&mut self) {
         self.hwnd_ready = true;
-        if let Some(hwnd) = self.hwnd()
-            && !bar_win::remove_caption_buttons(hwnd)
-        {
-            self.store
-                .log_warn("搜索条样式子类没有装上，显示时可能出现标题栏按钮");
+        if let Some(hwnd) = self.hwnd() {
+            if !bar_win::remove_caption_buttons(hwnd) {
+                self.store
+                    .log_warn("搜索条样式子类没有装上，显示时可能出现标题栏按钮");
+            }
+            if !bar_win::watch_move_loop(hwnd) {
+                self.store
+                    .log_warn("搜索条拖动结束通知没有装上，松开后可能不记住位置");
+            }
         }
         self.refresh_backdrop();
     }
@@ -231,7 +251,7 @@ impl Bar {
     }
 
     fn show(&mut self, received_ns: u64) {
-        let (work, dpi) = bar_win::cursor_monitor().unwrap_or((
+        let (cursor_work, cursor_dpi) = bar_win::cursor_monitor().unwrap_or((
             WorkArea {
                 left: 0,
                 top: 0,
@@ -240,11 +260,32 @@ impl Bar {
             },
             lanwork_core::shell::BASE_DPI,
         ));
-        let origin = bar_origin(work, to_physical(BAR_WIDTH, dpi));
-        let room = max_results_height(work, dpi, INPUT_HEIGHT, BOTTOM_GAP);
-        self.max_list = room.min(LIST_CAP);
-        self.ui.set_max_list_height(px(self.max_list));
-        self.push_shortcuts();
+        let readings = bar_win::monitors();
+        let areas: Vec<MonitorArea> = readings
+            .iter()
+            .map(|reading| MonitorArea {
+                bounds: reading.bounds,
+                work: reading.work,
+            })
+            .collect();
+        let saved = self
+            .config
+            .current()
+            .search_bar_origin
+            .map(|origin| (origin.x, origin.y));
+        let placement = place_bar(
+            saved,
+            &areas,
+            cursor_work,
+            to_physical(BAR_WIDTH, cursor_dpi),
+        );
+        let dpi = placement
+            .monitor
+            .and_then(|index| readings.get(index))
+            .map(|reading| reading.dpi)
+            .unwrap_or(cursor_dpi);
+        let origin = placement.origin;
+        self.apply_results_cap(placement.work, origin.1, dpi);
         self.ui
             .window()
             .set_position(slint::PhysicalPosition::new(origin.0, origin.1));
@@ -263,6 +304,9 @@ impl Bar {
             // 跨 DPI 移动时系统建议的矩形可能偏离目标位置，显示后再对一次。
             if bar_win::window_origin(hwnd) != Some(origin) {
                 bar_win::move_window(hwnd, origin.0, origin.1);
+            }
+            if bar_win::window_origin(hwnd).is_some_and(|actual| actual.1 != origin.1) {
+                self.refit_results_to_window();
             }
             bar_win::bring_to_front(hwnd);
         }
@@ -286,8 +330,103 @@ impl Bar {
     }
 
     fn blur(&mut self) {
+        if self.dragging {
+            return;
+        }
         if self.visible {
             self.hide();
+        }
+    }
+
+    /// 左侧拖动条按下。真正的移动在之后的模态循环里，这里先挡住失焦收起。
+    fn drag(&mut self) {
+        self.dragging = true;
+        self.drag_origin = self.hwnd().and_then(bar_win::window_origin);
+        let started = self
+            .ui
+            .window()
+            .with_winit_window(|window| window.drag_window().is_ok());
+        if started != Some(true) {
+            self.dragging = false;
+            self.store.log_warn("搜索条拖动没有开始");
+        }
+    }
+
+    fn on_move_loop(&mut self, entering: bool) {
+        if entering {
+            self.dragging = true;
+            return;
+        }
+        self.finish_drag();
+    }
+
+    fn finish_drag(&mut self) {
+        self.remember_origin();
+        self.refit_results_to_window();
+        if self.visible {
+            self.ui.invoke_focus_input();
+        }
+        // 失焦可能排在拖动返回之后。先留一轮给已经入队的失焦，再下一轮才允许收起。
+        slint::Timer::single_shot(Duration::ZERO, || {
+            slint::Timer::single_shot(Duration::ZERO, || {
+                with_bar(|bar| bar.dragging = false);
+            });
+        });
+    }
+
+    fn apply_results_cap(&mut self, work: WorkArea, origin_y: i32, dpi: u32) {
+        let room = max_results_height(work, origin_y, dpi, INPUT_HEIGHT, BOTTOM_GAP);
+        self.max_list = room.min(LIST_CAP);
+        self.ui.set_max_list_height(px(self.max_list));
+        self.push_shortcuts();
+    }
+
+    /// 按窗口现在的左上角重算列表高度。点不在任何显示器上时保持当前高度。
+    fn refit_results_to_window(&mut self) {
+        let Some((x, y)) = self.hwnd().and_then(bar_win::window_origin) else {
+            return;
+        };
+        let readings = bar_win::monitors();
+        let areas: Vec<MonitorArea> = readings
+            .iter()
+            .map(|reading| MonitorArea {
+                bounds: reading.bounds,
+                work: reading.work,
+            })
+            .collect();
+        let Some(index) = monitor_at(&areas, x, y) else {
+            return;
+        };
+        let Some(reading) = readings.get(index) else {
+            return;
+        };
+        self.apply_results_cap(reading.work, y, reading.dpi);
+    }
+
+    fn remember_origin(&mut self) {
+        let Some(hwnd) = self.hwnd() else {
+            return;
+        };
+        let Some((x, y)) = bar_win::window_origin(hwnd) else {
+            self.store.log_warn("读不到搜索条位置，没有写入");
+            return;
+        };
+        // 只点一下拖动条、窗口没动时不把当次的默认位置写进去。
+        if self.drag_origin == Some((x, y)) {
+            return;
+        }
+        let mut next = self.config.current();
+        if next
+            .search_bar_origin
+            .is_some_and(|origin| origin.x == x && origin.y == y)
+        {
+            return;
+        }
+        next.search_bar_origin = Some(SearchBarOrigin { x, y });
+        if let Err(err) = self.config.replace(next) {
+            self.store.log_warn(&format!("搜索条位置没有写入：{err}"));
+            self.error = Some(err.to_string());
+            self.push_status();
         }
     }
 
@@ -788,6 +927,16 @@ fn worker_main(dispatch: &Dispatch, rx: &Receiver<Job>) {
         } else if report.view.file == FileProgress::Waiting {
             deadline = Some(Instant::now() + POLL_RETRY);
         }
+    }
+}
+
+/// 窗口过程里调用。转到界面队列，避免在模态循环的窗口过程里写盘。
+fn move_loop(entering: bool) {
+    let posted = slint::invoke_from_event_loop(move || {
+        with_bar(move |bar| bar.on_move_loop(entering));
+    });
+    if posted.is_err() {
+        with_bar(move |bar| bar.on_move_loop(entering));
     }
 }
 

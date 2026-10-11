@@ -1,5 +1,6 @@
 //! 搜索条用到的 Win32：窗口句柄、光标所在显示器、DWM 背景、系统版本和节电。
 
+use std::cell::Cell;
 use std::ffi::c_void;
 
 use lanwork_core::shell::{Backdrop, BackdropInput, WorkArea, choose_backdrop};
@@ -22,7 +23,8 @@ use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindow
 use windows::Win32::UI::WindowsAndMessaging::{
     GWL_STYLE, GetCursorPos, GetWindowLongPtrW, GetWindowRect, STYLESTRUCT, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, WM_NCDESTROY, WM_STYLECHANGING, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+    SetWindowPos, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_STYLECHANGING,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
 
 use crate::registry::read_transparency_enabled;
@@ -77,6 +79,71 @@ pub(crate) fn cursor_monitor() -> Option<(WorkArea, u32)> {
         },
         dpi,
     ))
+}
+
+/// 一块显示器的读数。`bounds` 是 `rcMonitor`，`work` 是 `rcWork`，物理像素。
+pub(crate) struct MonitorReading {
+    pub bounds: WorkArea,
+    pub work: WorkArea,
+    pub dpi: u32,
+}
+
+/// 所有显示器。枚举失败时返回空表。
+pub(crate) fn monitors() -> Vec<MonitorReading> {
+    // SAFETY: 系统只在下面 EnumDisplayMonitors 调用期间、同一线程上调用它，data 是该调用传入的指针。
+    unsafe extern "system" fn collect(
+        monitor: HMONITOR,
+        _: HDC,
+        _: *mut RECT,
+        data: LPARAM,
+    ) -> windows::core::BOOL {
+        let mut info = MONITORINFO {
+            cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).unwrap_or(0),
+            ..Default::default()
+        };
+        // SAFETY: cbSize 已设为结构体大小，指针指向局部变量。
+        if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+            let mut dpi_x = 0u32;
+            let mut dpi_y = 0u32;
+            // SAFETY: 两个输出指针都指向局部变量。
+            let dpi = match unsafe {
+                GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y)
+            } {
+                Ok(()) if dpi_x > 0 => dpi_x,
+                _ => lanwork_core::shell::BASE_DPI,
+            };
+            // SAFETY: data 是下面 EnumDisplayMonitors 调用传入的 `Vec<MonitorReading>` 的地址，
+            // 回调只在那次调用返回之前、在同一线程上执行。
+            let list = unsafe { &mut *(data.0 as *mut Vec<MonitorReading>) };
+            list.push(MonitorReading {
+                bounds: area_of(info.rcMonitor),
+                work: area_of(info.rcWork),
+                dpi,
+            });
+        }
+        true.into()
+    }
+
+    let mut list: Vec<MonitorReading> = Vec::new();
+    // SAFETY: 回调只借用 `list`，枚举在本调用内同步结束，`list` 在此期间不会被移动。
+    let _ = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect),
+            LPARAM(std::ptr::from_mut(&mut list) as isize),
+        )
+    };
+    list
+}
+
+fn area_of(rect: RECT) -> WorkArea {
+    WorkArea {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
 }
 
 /// 所有显示器的工作区，物理像素，虚拟屏幕坐标。枚举失败时返回空表。
@@ -147,6 +214,47 @@ pub(crate) fn move_window(hwnd: HWND, x: i32, y: i32) {
 /// 总带 `WS_SYSMENU`；边框扩展到整个客户区后，DWM 会在右上角画出这三个按钮。
 const CAPTION_BUTTONS: u32 = WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
 const CAPTION_SUBCLASS_ID: usize = 1;
+const MOVE_SUBCLASS_ID: usize = 2;
+
+thread_local! {
+    static MOVE_LOOP: Cell<Option<fn(bool)>> = const { Cell::new(None) };
+}
+
+/// 拖动循环开始（`true`）或结束（`false`）时调用。只由搜索条登记。
+pub(crate) fn set_move_loop_hook(hook: fn(bool)) {
+    MOVE_LOOP.with(|cell| cell.set(Some(hook)));
+}
+
+/// 观察这个窗口的 `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`。和标题栏子类互不替换。
+pub(crate) fn watch_move_loop(hwnd: HWND) -> bool {
+    // SAFETY: 在创建窗口的线程上调用。回调不带引用数据，窗口销毁时由回调自己移除。
+    unsafe { SetWindowSubclass(hwnd, Some(observe_move_loop), MOVE_SUBCLASS_ID, 0) }.as_bool()
+}
+
+unsafe extern "system" fn observe_move_loop(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if message == WM_ENTERSIZEMOVE || message == WM_EXITSIZEMOVE {
+        let entering = message == WM_ENTERSIZEMOVE;
+        MOVE_LOOP.with(|cell| {
+            if let Some(hook) = cell.get() {
+                hook(entering);
+            }
+        });
+    } else if message == WM_NCDESTROY {
+        // SAFETY: 窗口正在销毁，移除本模块装上的子类。之后的消息直接交给下一层。
+        unsafe {
+            let _ = RemoveWindowSubclass(hwnd, Some(observe_move_loop), MOVE_SUBCLASS_ID);
+        }
+    }
+    // SAFETY: 参数原样交给子类链的下一层。
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
 
 /// 去掉标题栏按钮，并在之后每次改样式时继续去掉。保留 `WS_CAPTION`，DWM 仍画阴影和圆角。
 pub(crate) fn remove_caption_buttons(hwnd: HWND) -> bool {

@@ -15,7 +15,8 @@ pub use error::ConfigError;
 pub use hotkey::{Hotkey, HotkeyKey, default_search_hotkey, parse_hotkey};
 pub use model::{
     Config, DEFAULT_BREAK_MINUTES, DEFAULT_LONG_BREAK_MINUTES, DEFAULT_WORK_MINUTES, HotCorner,
-    MAX_BREAK_MINUTES, MAX_WORK_MINUTES, MIN_BREAK_MINUTES, MIN_WORK_MINUTES, Theme, normalize,
+    MAX_BREAK_MINUTES, MAX_WORK_MINUTES, MIN_BREAK_MINUTES, MIN_WORK_MINUTES, SearchBarOrigin,
+    Theme, normalize,
 };
 pub use service::{ConfigService, Fallback};
 
@@ -83,6 +84,7 @@ mod tests {
         assert_eq!(config.pomodoro_long_break_minutes, 15);
         assert_eq!(config.github_refresh_interval_ms, 0);
         assert_eq!(config.web_search_engine, WebSearchEngine::Google);
+        assert!(config.search_bar_origin.is_none());
         assert!(!store.document_path(&DocumentId::Config).unwrap().exists());
     }
 
@@ -110,6 +112,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(saved["webSearchEngine"], "baidu");
+        assert!(saved.get("searchBarOrigin").is_none());
+    }
+
+    #[test]
+    fn incomplete_search_bar_origin_keeps_the_file_and_uses_defaults() {
+        let (_temp, store, _) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let original = br#"{"schemaVersion":1,"searchBarOrigin":{"x":1},"theme":"dark"}"#;
+        std::fs::write(&path, original).unwrap();
+        let commands = ConfigCommands::open(store).unwrap();
+        assert_eq!(commands.fallback(), Some(Fallback::Invalid));
+        assert!(commands.current().search_bar_origin.is_none());
+        assert_eq!(commands.current().theme, Theme::System);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn search_bar_origin_is_absent_until_set_and_roundtrips() {
+        let (_temp, store, _) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"schemaVersion":1,"searchHotkey":"Ctrl+Alt+M","theme":"dark"}"#,
+        )
+        .unwrap();
+        let commands = ConfigCommands::open(store.clone()).unwrap();
+        assert_eq!(commands.fallback(), None);
+        assert_eq!(commands.current().theme, Theme::Dark);
+        assert!(commands.current().search_bar_origin.is_none());
+
+        let mut next = commands.current();
+        next.search_bar_origin = Some(SearchBarOrigin { x: -40, y: 120 });
+        commands.replace(next).unwrap();
+        let again = ConfigCommands::open(store.clone()).unwrap();
+        assert_eq!(
+            again.current().search_bar_origin,
+            Some(SearchBarOrigin { x: -40, y: 120 })
+        );
+        assert_eq!(again.current().theme, Theme::Dark);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["searchBarOrigin"]["x"], -40);
+        assert_eq!(saved["searchBarOrigin"]["y"], 120);
     }
 
     #[test]

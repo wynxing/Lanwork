@@ -102,11 +102,100 @@ pub fn bar_origin(work: WorkArea, width_px: i32) -> (i32, i32) {
     (x, y)
 }
 
-/// 结果区最多占到工作区底边之上，逻辑像素。`input_height` 是输入框一行。
+/// 一块显示器。`bounds` 是显示器矩形，`work` 是工作区。物理像素。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorArea {
+    pub bounds: WorkArea,
+    pub work: WorkArea,
+}
+
+/// 这次显示搜索条用的位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarPlacement {
+    pub origin: (i32, i32),
+    /// 用来限制结果区高度的工作区。
+    pub work: WorkArea,
+    /// 记住的位置落在 `monitors` 的这个下标上。用默认位置时为 `None`。
+    pub monitor: Option<usize>,
+}
+
+/// 搜索条这次显示的左上角。
+///
+/// `saved` 为 `None`，或该点不在任何 `monitors.bounds` 内时，用 [`bar_origin`]
+/// （光标所在显示器的工作区水平居中、上边缘 25%）。点在某块显示器内时原样使用，不拉回。
+/// 判断是左闭右开、上闭下开。多块重叠时用切片里的第一块。
+/// 这是待定项的临时做法，不是产品规则。
 #[must_use]
-pub fn max_results_height(work: WorkArea, dpi: u32, input_height: u32, bottom_gap: u32) -> u32 {
-    let below = work.height() - work.height() / 4;
-    to_logical(below, dpi).saturating_sub(input_height.saturating_add(bottom_gap))
+pub fn place_bar(
+    saved: Option<(i32, i32)>,
+    monitors: &[MonitorArea],
+    cursor_work: WorkArea,
+    width_px: i32,
+) -> BarPlacement {
+    if let Some((x, y)) = saved
+        && let Some(index) = monitor_at(monitors, x, y)
+    {
+        return BarPlacement {
+            origin: (x, y),
+            work: monitors[index].work,
+            monitor: Some(index),
+        };
+    }
+    BarPlacement {
+        origin: bar_origin(cursor_work, width_px),
+        work: cursor_work,
+        monitor: None,
+    }
+}
+
+fn point_inside(area: WorkArea, x: i32, y: i32) -> bool {
+    x >= area.left && x < area.right && y >= area.top && y < area.bottom
+}
+
+/// 左上角落在哪一块显示器的 `bounds` 上。左闭右开、上闭下开。重叠时取第一块。
+#[must_use]
+pub fn monitor_at(monitors: &[MonitorArea], x: i32, y: i32) -> Option<usize> {
+    monitors
+        .iter()
+        .position(|monitor| point_inside(monitor.bounds, x, y))
+}
+
+/// 结果列表在窗口纵坐标 `origin_y` 下的最大逻辑高度。
+///
+/// 距离是从 `origin_y` 到 `work.bottom` 的物理像素，按 `dpi` 换成逻辑像素，再减去输入行和底边留白。
+/// 换算四舍五入后若会多出物理像素，就减掉对应的逻辑像素，使输入行、列表和留白不超过这段距离。
+/// 放不下输入行加留白时返回 0。约 9 行的上限由调用方再取较小值。
+/// 空间不够时列表高度为 0、窗口留在原地，是待定项的临时做法。
+#[must_use]
+pub fn max_results_height(
+    work: WorkArea,
+    origin_y: i32,
+    dpi: u32,
+    input_height: u32,
+    bottom_gap: u32,
+) -> u32 {
+    let available = i64::from(work.bottom)
+        .saturating_sub(i64::from(origin_y))
+        .max(0);
+    logical_within(available, dpi).saturating_sub(input_height.saturating_add(bottom_gap))
+}
+
+/// 最大的逻辑长度，按 [`to_physical`] 换算后不超过 `available` 个物理像素。
+fn logical_within(available: i64, dpi: u32) -> u32 {
+    let dpi = u64::from(if dpi == 0 { BASE_DPI } else { dpi });
+    let Ok(available) = u64::try_from(available) else {
+        return 0;
+    };
+    // (logical * dpi + BASE_DPI/2) / BASE_DPI <= available
+    // logical <= (available * BASE_DPI + BASE_DPI/2 - 1) / dpi
+    let base = u64::from(BASE_DPI);
+    let Some(span) = available.checked_mul(base) else {
+        return u32::MAX;
+    };
+    let Some(limit) = span.checked_add(base / 2 - 1) else {
+        return u32::MAX;
+    };
+    u32::try_from(limit / dpi).unwrap_or(u32::MAX)
 }
 
 /// 结果行高、列表上下留白和组间距，逻辑像素。版式是实现选择。
@@ -624,6 +713,108 @@ mod tests {
         assert_eq!(bar_origin(negative, 680), (-1280 + 300, 50));
     }
 
+    fn monitor(bounds: WorkArea, work: WorkArea) -> MonitorArea {
+        MonitorArea { bounds, work }
+    }
+
+    #[test]
+    fn missing_origin_uses_the_default_placement() {
+        let cursor = WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        let placed = place_bar(None, &[monitor(cursor, cursor)], cursor, 680);
+        assert_eq!(placed.origin, (620, 260));
+        assert_eq!(placed.work, cursor);
+        assert_eq!(placed.monitor, None);
+    }
+
+    #[test]
+    fn saved_origin_uses_the_monitor_that_contains_the_point() {
+        let primary = WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let second_bounds = WorkArea {
+            left: 1920,
+            top: 0,
+            right: 4480,
+            bottom: 1440,
+        };
+        let second_work = WorkArea {
+            left: 1920,
+            top: 40,
+            right: 4480,
+            bottom: 1400,
+        };
+        let placed = place_bar(
+            Some((2000, 100)),
+            &[
+                monitor(primary, primary),
+                monitor(second_bounds, second_work),
+            ],
+            primary,
+            680,
+        );
+        assert_eq!(placed.origin, (2000, 100));
+        assert_eq!(placed.work, second_work);
+        assert_eq!(placed.monitor, Some(1));
+    }
+
+    #[test]
+    fn saved_origin_off_every_monitor_falls_back_and_edges_are_half_open() {
+        let cursor = WorkArea {
+            left: 100,
+            top: 50,
+            right: 1000,
+            bottom: 800,
+        };
+        let monitors = [monitor(cursor, cursor)];
+        let fallback = place_bar(Some((-5000, 10)), &monitors, cursor, 400);
+        assert_eq!(fallback.origin, bar_origin(cursor, 400));
+        assert_eq!(fallback.monitor, None);
+        assert_eq!(fallback.work, cursor);
+
+        assert_eq!(
+            place_bar(Some((1000, 50)), &monitors, cursor, 400).monitor,
+            None
+        );
+        assert_eq!(
+            place_bar(Some((100, 800)), &monitors, cursor, 400).monitor,
+            None
+        );
+        let on_corner = place_bar(Some((100, 50)), &monitors, cursor, 400);
+        assert_eq!(on_corner.origin, (100, 50));
+        assert_eq!(on_corner.monitor, Some(0));
+    }
+
+    #[test]
+    fn negative_monitor_keeps_a_point_on_it_and_empty_list_falls_back() {
+        let bounds = WorkArea {
+            left: -1920,
+            top: -200,
+            right: 0,
+            bottom: 880,
+        };
+        let placed = place_bar(Some((-100, 10)), &[monitor(bounds, bounds)], bounds, 680);
+        assert_eq!(placed.origin, (-100, 10));
+        assert_eq!(placed.monitor, Some(0));
+
+        let cursor = WorkArea {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 600,
+        };
+        let fallback = place_bar(Some((10, 10)), &[], cursor, 200);
+        assert_eq!(fallback.origin, bar_origin(cursor, 200));
+        assert_eq!(fallback.monitor, None);
+    }
+
     #[test]
     fn dpi_conversion_rounds() {
         assert_eq!(to_physical(680, 96), 680);
@@ -638,7 +829,90 @@ mod tests {
             right: 1920,
             bottom: 1080,
         };
-        assert_eq!(max_results_height(work, 144, 56, 24), 540 - 80);
+        let default_y = work.top + work.height() / 4;
+        assert_eq!(max_results_height(work, default_y, 144, 56, 24), 540 - 80);
+    }
+
+    #[test]
+    fn results_list_stays_inside_the_work_area_at_any_y() {
+        const INPUT: u32 = 56;
+        const GAP: u32 = 24;
+        const CAP: u32 = 9 * ROW_HEIGHT + 2 * LIST_PAD;
+        let screens = [
+            WorkArea {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            },
+            WorkArea {
+                left: 1920,
+                top: 0,
+                right: 3200,
+                bottom: 800,
+            },
+            WorkArea {
+                left: -1920,
+                top: -200,
+                right: 0,
+                bottom: 880,
+            },
+        ];
+        for work in screens {
+            for dpi in [96, 120, 144] {
+                let mut y = work.top - 300;
+                while y < work.bottom + 80 {
+                    let room = max_results_height(work, y, dpi, INPUT, GAP);
+                    let shown = room.min(CAP);
+                    let available = i64::from(work.bottom).saturating_sub(i64::from(y)).max(0);
+                    if shown > 0 {
+                        let used = i64::from(to_physical(
+                            INPUT.saturating_add(shown).saturating_add(GAP),
+                            dpi,
+                        ));
+                        assert!(
+                            used <= available,
+                            "y={y} dpi={dpi} room={room} shown={shown} used={used} available={available} work={work:?}"
+                        );
+                    }
+                    let reserved = i64::from(to_physical(INPUT + GAP, dpi));
+                    if available < reserved {
+                        assert_eq!(room, 0, "y={y} dpi={dpi} work={work:?}");
+                    }
+                    y += 7;
+                }
+                assert_eq!(
+                    max_results_height(work, work.bottom.saturating_sub(1), dpi, INPUT, GAP),
+                    0
+                );
+                assert_eq!(
+                    max_results_height(work, work.bottom.saturating_add(40), dpi, INPUT, GAP),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_down_on_a_150_percent_screen_shrinks_the_list() {
+        let work = WorkArea {
+            left: 1920,
+            top: 0,
+            right: 3200,
+            bottom: 800,
+        };
+        let dpi = 144;
+        let default_y = work.top + work.height() / 4;
+        let dragged = default_y + 16;
+        let sized_for_default = {
+            let below = work.height() - work.height() / 4;
+            to_logical(below, dpi).saturating_sub(56 + 24)
+        };
+        let available = i64::from(work.bottom - dragged);
+        assert!(i64::from(to_physical(56 + sized_for_default + 24, dpi)) > available);
+        let room = max_results_height(work, dragged, dpi, 56, 24);
+        assert!(room < sized_for_default);
+        assert!(i64::from(to_physical(56 + room + 24, dpi)) <= available);
     }
 
     #[test]
