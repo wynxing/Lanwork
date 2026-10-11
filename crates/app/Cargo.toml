@@ -37,3 +37,4 @@ windows = { version = "0.62.2", features = [
 
 [build-dependencies]
 slint-build.workspace = true
+winresource = "0.1"

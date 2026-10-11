@@ -60,7 +60,7 @@
 - 中文输入法能在搜索条、面板搜索框、待办标题和便签正文中上屏。做不到这一点时，界面方案不成立，不能改用「只支持英文」通过验收。
 - 搜索条和面板在启动时创建并保持隐藏，以满足热召回目标；隐藏中不做整页重绘。快速收集是搜索条的一种输入状态，不另建窗口。便签悬浮窗、番茄钟在使用时创建，关闭时释放文本、图标和绘图资源。到期提醒的调度保留在主进程里。
 - Slint 1.18.1 编进本仓库的 winit 后端没有实现 `start_drag`（`i-slint-backend-winit` 1.18.1 的 `WinitWindowAdapter` 只实现了 `start_window_move`；`WindowAdapterInternal::start_drag` 的默认实现返回 false）。因此 `DragArea` 的拖动留在窗口内。`spikes/dnd` 用 `dispatch_event` 观察到：同一窗口里文件路径以复制放下，目标要求移动时放下被拒绝。winit 0.30.13 创建窗口时调用 `OleInitialize` 并 `RegisterDragDrop` 注册自己的 `FileDropHandler`；探针在我们注册之前得到 already-registered。资源管理器方向的手测见 [roadmap.md](roadmap.md)。`--slint` 拖放没有路径，外部拖放按「收纳」的原生 OLE 实现。
-- 托盘用 Slint 1.18.1 的 `SystemTrayIcon`。它有菜单，图标是一张图，逾期数字画在这张图上。因此没有改用 Win32 `Shell_NotifyIcon`。
+- 托盘用 Slint 1.18.1 的 `SystemTrayIcon`。它有菜单，图标是一张图，逾期数字画在这张图的右下角。因此没有改用 Win32 `Shell_NotifyIcon`。
 - 热角检测用 50ms 轮询读取光标位置，不用低级鼠标钩子。
 - `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。
 
@@ -73,7 +73,8 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条、面板宿主和托盘。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。存储启动之后打开 `NoteCommands`、`AppIndex::open_from_process`（随后用 `load_user_catalog` 读 `user-apps.json` 交给 `set_user_catalog`）和 `FileCommands`，组成 `Dispatch` 并 `build`。这几步任一失败只写日志，进程继续，搜索条不安装，按热键不出现。同一时刻打开 `ShelfCommands` 并调用 `watch_todo_notices`，待办被永久删除时分组的关联由它解除；打不开时只写日志，收纳页显示错误。不建 GitHub 刷新定时器。`githubRefreshIntervalMs` 原样保存，包括 0，外壳不解释它。
 
 - **单实例。** 命名互斥量 `Local\Lanwork.SingleInstance.Mutex`，加上信号量 `Local\Lanwork.SingleInstance.Activate`（初值 0）。第一个进程拥有互斥量并等待信号量。后来的进程发现互斥量已存在，就对信号量加一，然后退出，退出码 0。信号量的计数会留到第一个进程来取，所以通知发生在等待之前也不会丢。第一个进程收到通知后不打开窗口。产品规格没有写这时要显示什么。
-- **托盘。** 菜单顺序是「打开面板」「设置」「新建便签」「刷新 GitHub」「退出」。提示文字只有「Lanwork」。图标是 32×32 的图，底色不是产品规格。逾期数量来自 `TodoCommands::overdue_count`，今天的日期用 `GetLocalTime`。数量为 0 时不画数字。数字画不下时裁掉超出图标的笔画，不改成「99+」。待办变更消息到达后在界面线程重画。读数量或日期失败时不画数字，并写日志。左键和右键都由 Slint 打开同一份菜单，没有另加左键动作。
+- **应用图标。** 源文件是 `crates/app/assets/lanwork.svg`，按给出的字节原样放进仓库，不改花瓣，也不改颜色。同目录的 `lanwork-256.png` 是这张图的 256×256 渲染，同样原样提交。16、20、24、32、40、48、64 的 PNG，托盘底图 `lanwork-32.rgba`，以及含这八个尺寸的 `lanwork.ico`，由 `tools/render_app_icon.py` 从这张 256px 图做整数面积平均得到。脚本只用 Python 标准库，不重新解释 SVG。产物提交在仓库里。构建不运行这个脚本，也不需要 SVG 工具。Windows 目标上，`crates/app/build.rs` 用 `winresource`（与 `spikes/dnd` 同一个 crate）把 `lanwork.ico` 编成资源 ID 1，链进 `lanwork.exe`，资源管理器和任务栏用它。非 Windows 目标不嵌入。搜索条、面板、便签悬浮窗和收纳悬浮窗的 Slint `Window` `icon` 用 `lanwork-256.png`。技术验证的「背景」和「渲染器」仍没有通过记录，给这些窗口设图标不改变那两项。
+- **托盘。** 菜单顺序是「打开面板」「设置」「新建便签」「刷新 GitHub」「退出」。提示文字只有「Lanwork」。图标是 32×32 的应用图标。逾期数量来自 `TodoCommands::overdue_count`，今天的日期用 `GetLocalTime`。数量为 0 时不画数字。数量不为 0 时在右下角盖一块徽章再画原来的 5×7 数字：白底、深色笔画、一圈深色边。一位和两位按 2 倍笔画，更长时按 1 倍。画不出图标的笔画裁掉，不改成「99+」。徽章的底色、边和放大倍数是实现选择，产品规格没有写徽章的样子。待办变更消息到达后在界面线程重画。读数量或日期失败时不画数字，并写日志。左键和右键都由 Slint 打开同一份菜单，没有另加左键动作。
 - **打开面板、设置、新建便签。** 「打开面板」显示面板，标签保持收起前的选择。「设置」显示面板并切到设置标签，那个标签目前只有一行空状态。面板热键按下后同样显示面板，不收起。「新建便签」创建一篇空便签，显示面板并切到便签页，选中它；没有便签服务时只显示错误。当前编辑区有没写盘的修改且保存失败时，先停在原来的便签上，等用户重试或放弃。
 - **刷新 GitHub。** 在界面线程之外调用 `GithubCommands::load` 和 `refresh_all`。时间是 `SystemTime` 的 UTC 毫秒。设置取当前配置里的长期未更新天数、来源同步、关闭来源时自动完成待办和刷新间隔。失败写入日志，不包含 `gh` 的标准输出、标准错误或 token。已经有一次刷新在进行时，再次点击直接返回，不排队。没有另外的提示窗口。
 - **退出。** 先保存面板便签页和所有悬浮窗里没写盘的修改，并记下仍打开的悬浮窗的位置和大小。`quit_decision(unsaved)` 在仍有没写盘的修改时返回 `QuitDecision::Stay`：不结束进程，显示出相关窗口，窗口上有「重试」和「放弃修改」；重试成功、放弃或选定冲突版本之后再继续退出：这些动作发生在窗口自己的回调里，面板和悬浮窗的表还被借用着，所以 `continue_quit` 只登记，下一轮事件循环才再次尝试（`lanwork_core::shell::resume_quit_later`）。全部写盘后才隐藏托盘、退出事件循环、卸下热键并释放互斥量。
