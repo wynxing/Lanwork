@@ -64,12 +64,12 @@ fn second_write_failure_restores_the_first_group() {
     let err = service.unlink_todo_everywhere("todo-a").unwrap_err();
     assert!(err.to_string().contains("写入失败"), "{err}");
     assert_eq!(
-        service.get(&first.id).unwrap().todo_id.as_deref(),
-        Some("todo-a")
+        service.get(&first.id).unwrap().todo_ids,
+        ["todo-a".to_owned()]
     );
     assert_eq!(
-        service.get(&second.id).unwrap().todo_id.as_deref(),
-        Some("todo-a")
+        service.get(&second.id).unwrap().todo_ids,
+        ["todo-a".to_owned()]
     );
     assert_eq!(std::fs::read(&first_path).unwrap(), first_before);
     assert_eq!(std::fs::read(&second_path).unwrap(), second_before);
@@ -108,13 +108,17 @@ fn purge_notice_clears_every_link() {
         })
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while service.get(&first.id).unwrap().todo_id.is_some() && std::time::Instant::now() < deadline
+    while !service.get(&first.id).unwrap().todo_ids.is_empty()
+        && std::time::Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(service.get(&first.id).unwrap().todo_id, None);
     assert_eq!(
-        service.get(&second.id).unwrap().todo_id.as_deref(),
-        Some("todo-b")
+        service.get(&first.id).unwrap().todo_ids,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        service.get(&second.id).unwrap().todo_ids,
+        ["todo-b".to_owned()]
     );
 }

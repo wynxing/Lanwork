@@ -1,18 +1,18 @@
 //! 启动顺序：先占住单实例，再打开数据目录，完成导入恢复和待办加载，加载配置，按本地日期自动备份，然后选渲染器、注册热键、创建隐藏窗口和托盘。
-//! 便签服务、应用索引和文件索引在存储启动之后打开，交给搜索条的查询调度。
+//! 便签服务、收纳服务、应用索引和文件索引在存储启动之后打开；应用索引和文件索引交给搜索条的查询调度。
 //!
 //! 面板在 `panel`，搜索条在 `searchbar`。设置页还没有。
 
 use std::cell::RefCell;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
 use lanwork_core::apps::{AppIndex, load_user_catalog};
 use lanwork_core::backup::BackupCommands;
 use lanwork_core::config::{ConfigCommands, Fallback, Theme};
-use lanwork_core::dispatch::{Dispatch, Services};
+use lanwork_core::dispatch::{Dispatch, IconCache, Services};
 use lanwork_core::files::FileCommands;
 use lanwork_core::github::{GithubCommands, GithubError, ProcessGh, RefreshReport, RepoResult};
 use lanwork_core::notes::NoteCommands;
@@ -22,6 +22,7 @@ use lanwork_core::shell::{
     TRAY_ICON_PX, desired_bindings, quit_decision, resolve_theme, resume_quit_later,
     tray_icon_rgba,
 };
+use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::{BootHooks, EntityKind, Store, resolve_from_process};
 use lanwork_core::todos::TodoCommands;
 use slint::ComponentHandle;
@@ -33,6 +34,7 @@ use crate::panel;
 use crate::platform::{HotkeyControl, Platform};
 use crate::registry::{apply_startup, read_system_theme};
 use crate::searchbar;
+use crate::shelf_float;
 use crate::{Panel, SearchBar, Tray};
 
 pub(crate) fn run() -> i32 {
@@ -109,13 +111,32 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     if let Some(notes) = &notes {
         note_float::install(notes.clone(), store.clone());
     }
+    let shelves = open_shelves(store, &todos);
+    let mut icons = None;
     if let Some(notes) = notes.clone()
         && let Some(dispatch) = open_dispatch(store, &todos, notes)
     {
         dispatch.set_web_search_engine(config.current().web_search_engine);
+        icons = Some(dispatch.icon_cache());
         searchbar::install(search.clone_strong(), dispatch, store.clone());
     }
-    panel::install(panel_ui.clone_strong(), todos.clone(), notes, store.clone());
+    let icons = icons.unwrap_or_else(|| Arc::new(Mutex::new(IconCache::shell())));
+    if let Some(shelves) = &shelves {
+        shelf_float::install(
+            shelves.clone(),
+            todos.clone(),
+            Arc::clone(&icons),
+            store.clone(),
+        );
+    }
+    panel::install(
+        panel_ui.clone_strong(),
+        todos.clone(),
+        notes,
+        shelves,
+        icons,
+        store.clone(),
+    );
     refresh_theme(&config, store);
     refresh_badge(&tray, &todos, store);
     wire_tray(&tray, &config, store, &todos);
@@ -143,6 +164,20 @@ fn open_notes(store: &Store) -> Option<NoteCommands> {
             store.log_error(&format!(
                 "便签服务没有打开，便签页、悬浮窗和搜索条不可用：{err}"
             ));
+            None
+        }
+    }
+}
+
+/// 收纳服务。打不开时写日志，收纳页显示错误；待办被永久删除时分组的关联由它自动解除。
+fn open_shelves(store: &Store, todos: &TodoCommands) -> Option<ShelfCommands> {
+    match ShelfCommands::open(store.clone()) {
+        Ok(shelves) => {
+            shelves.watch_todo_notices(todos);
+            Some(shelves)
+        }
+        Err(err) => {
+            store.log_error(&format!("收纳服务没有打开，收纳页不可用：{err}"));
             None
         }
     }
@@ -252,6 +287,13 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
                 });
                 continue;
             }
+            if event.kind == EntityKind::Shelf {
+                let _ = slint::invoke_from_event_loop(|| {
+                    panel::on_shelves_changed();
+                    shelf_float::on_changed();
+                });
+                continue;
+            }
             if event.kind != EntityKind::Todo {
                 continue;
             }
@@ -264,6 +306,7 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
                 };
                 refresh_badge(&tray, &todos, &store);
                 panel::on_todos_changed();
+                shelf_float::on_todos_changed();
             });
         }
     });
@@ -374,6 +417,7 @@ fn refresh_theme(config: &ConfigCommands, store: &Store) {
     searchbar::apply_theme(dark);
     panel::apply_theme(dark);
     note_float::apply_theme(dark);
+    shelf_float::apply_theme(dark);
 }
 
 pub(crate) fn local_today() -> Option<CivilDate> {
@@ -413,6 +457,7 @@ fn attempt_quit() {
     match quit_decision(unsaved) {
         QuitDecision::Exit => {
             QUIT.clear();
+            shelf_float::save_for_quit();
             let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
             if let Some(tray) = tray {
                 let _ = tray.hide();

@@ -6,6 +6,9 @@ use lanwork_core as _;
 
 slint::include_modules!();
 
+#[cfg(test)]
+mod float_layout_tests;
+
 #[cfg(windows)]
 mod bar_win;
 #[cfg(windows)]
@@ -26,6 +29,14 @@ mod platform;
 mod registry;
 #[cfg(windows)]
 mod searchbar;
+#[cfg(windows)]
+mod shelf_dnd;
+#[cfg(windows)]
+mod shelf_float;
+#[cfg(windows)]
+mod shelf_refs;
+#[cfg(windows)]
+mod shelves_page;
 #[cfg(windows)]
 mod winutil;
 
@@ -66,6 +77,8 @@ mod tests {
             ("panel.slint", include_str!("../ui/panel.slint")),
             ("notespage.slint", include_str!("../ui/notespage.slint")),
             ("notefloat.slint", include_str!("../ui/notefloat.slint")),
+            ("shelvespage.slint", include_str!("../ui/shelvespage.slint")),
+            ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
         ];
         for (name, source) in sources {
             for forbidden in ["今日", "focus-page", "FocusPage"] {

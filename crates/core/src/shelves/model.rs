@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::notes::FloatGeometry;
 use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 
 use super::error::ShelfError;
@@ -26,8 +27,11 @@ pub struct Shelf {
     pub id: String,
     pub name: String,
     pub order: i64,
-    pub todo_id: Option<String>,
+    /// 关联的待办 id，按关联的先后。同一条只出现一次。旧文件的单条 `todoId` 读入时成为第一项。
+    pub todo_ids: Vec<String>,
     pub refs: Vec<ShelfRef>,
+    /// 这个分组的悬浮窗上次关闭时的位置和大小。没有记录时为 `None`。旧文件没有这个字段。
+    pub float: Option<FloatGeometry>,
 }
 
 /// 一条路径引用。不包含文件内容。
@@ -87,10 +91,19 @@ pub(crate) struct ShelfFile {
     name: String,
     #[serde(default)]
     order: i64,
-    #[serde(rename = "todoId", default, skip_serializing_if = "Option::is_none")]
-    todo_id: Option<String>,
+    /// 只读：写成 `todoIds` 之前的文件里的单条关联。写入时不再写这个字段。
+    #[serde(rename = "todoId", default, skip_serializing)]
+    legacy_todo_id: Option<String>,
+    #[serde(rename = "todoIds", default, skip_serializing_if = "Vec::is_empty")]
+    todo_ids: Vec<String>,
     #[serde(default)]
     refs: Vec<RefFile>,
+    #[serde(
+        rename = "floatWindow",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    float: Option<FloatGeometry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,7 +130,9 @@ impl ShelfFile {
             id: shelf.id.clone(),
             name: shelf.name.clone(),
             order: shelf.order,
-            todo_id: shelf.todo_id.clone(),
+            legacy_todo_id: None,
+            todo_ids: shelf.todo_ids.clone(),
+            float: shelf.float,
             refs: shelf
                 .refs
                 .iter()
@@ -163,12 +178,19 @@ impl ShelfFile {
                 added_at: item.added_at,
             });
         }
+        let mut todo_ids: Vec<String> = Vec::new();
+        for id in self.legacy_todo_id.into_iter().chain(self.todo_ids) {
+            if !todo_ids.contains(&id) {
+                todo_ids.push(id);
+            }
+        }
         LoadedShelf::Group(Shelf {
             id: file_id,
             name: self.name,
             order: self.order,
-            todo_id: self.todo_id,
+            todo_ids,
             refs,
+            float: self.float,
         })
     }
 }

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::shelves::{
-    DEFAULT_GROUP_NAME, IncomingRef, ShelfCommands, ShelfError, normalize_path,
+    DEFAULT_GROUP_NAME, FloatGeometry, IncomingRef, ShelfCommands, ShelfError, normalize_path,
 };
 use lanwork_core::storage::{CollectionKind, DocumentId, EntityKind, Store, StorePaths};
 use lanwork_core::todos::{
@@ -375,8 +375,90 @@ fn groups_can_be_renamed_reordered_and_reloaded() {
     assert_eq!(reloaded.list().unwrap()[0].id, second.id);
 }
 
+fn geometry(x: i32) -> FloatGeometry {
+    FloatGeometry {
+        x,
+        y: -20,
+        width: 320,
+        height: 360,
+    }
+}
+
 #[test]
-fn linking_is_one_todo_per_group_and_many_groups_per_todo() {
+fn float_geometry_is_per_group_survives_other_edits_and_reloads() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let first = cmds.create_group("甲").unwrap();
+    let second = cmds.create_group("乙").unwrap();
+    assert_eq!(first.float, None);
+    let file = user_file(&fix, "a.txt", b"a");
+
+    cmds.set_float(&first.id, geometry(100)).unwrap();
+    cmds.set_float(&second.id, geometry(900)).unwrap();
+    cmds.add_refs(Some(&first.id), &[incoming(&file, false)])
+        .unwrap();
+    cmds.rename_group(&first.id, "甲二").unwrap();
+    cmds.link_todo(&first.id, "todo-1").unwrap();
+    cmds.reorder_groups(&[second.id.clone(), first.id.clone()])
+        .unwrap();
+
+    let reloaded = ShelfCommands::open(fix.store.clone()).unwrap();
+    let got = reloaded.get(&first.id).unwrap();
+    assert_eq!(got.float, Some(geometry(100)));
+    assert_eq!(got.name, "甲二");
+    assert_eq!(got.refs.len(), 1);
+    assert_eq!(reloaded.get(&second.id).unwrap().float, Some(geometry(900)));
+    assert_unchanged(&file, b"a");
+}
+
+#[test]
+fn setting_the_same_float_geometry_writes_nothing_and_a_bad_id_is_refused() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let group = cmds.create_group("甲").unwrap();
+    cmds.set_float(&group.id, geometry(5)).unwrap();
+    let events = fix.store.subscribe();
+    cmds.set_float(&group.id, geometry(5)).unwrap();
+    assert!(
+        events.try_recv().is_err(),
+        "an unchanged value is not a write"
+    );
+    cmds.set_float(&group.id, geometry(6)).unwrap();
+    assert_eq!(events.try_recv().unwrap().kind, EntityKind::Shelf);
+    assert!(cmds.set_float("../x", geometry(1)).is_err());
+    assert!(matches!(
+        cmds.set_float("missing", geometry(1)).unwrap_err(),
+        ShelfError::NotFound { .. }
+    ));
+}
+
+#[test]
+fn a_file_written_before_float_windows_existed_still_opens_and_keeps_its_shape() {
+    let fix = fixture();
+    let path = fix
+        .store
+        .document_path(&DocumentId::Shelf("old".into()))
+        .unwrap();
+    std::fs::write(
+        &path,
+        r#"{"schemaVersion":1,"id":"old","name":"旧","order":0,"refs":[]}"#,
+    )
+    .unwrap();
+    let cmds = ShelfCommands::open(fix.store.clone()).unwrap();
+    let group = cmds.get("old").unwrap();
+    assert_eq!(group.float, None);
+    let unwritten = std::fs::read_to_string(&path).unwrap();
+    assert!(!unwritten.contains("floatWindow"), "{unwritten}");
+    cmds.rename_group("old", "旧二").unwrap();
+    let rewritten = std::fs::read_to_string(&path).unwrap();
+    assert!(!rewritten.contains("floatWindow"), "{rewritten}");
+    cmds.set_float("old", geometry(7)).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("floatWindow"), "{written}");
+}
+
+#[test]
+fn a_group_links_many_todos_and_a_todo_links_many_groups() {
     let fix = fixture();
     let file = user_file(&fix, "keep.txt", b"keep");
     let cmds = commands(&fix.store);
@@ -386,35 +468,106 @@ fn linking_is_one_todo_per_group_and_many_groups_per_todo() {
         .unwrap();
     cmds.link_todo(&first.id, "todo-a").unwrap();
     cmds.link_todo(&second.id, "todo-a").unwrap();
-    let same = cmds.link_todo(&first.id, "todo-a").unwrap();
-    assert_eq!(same.todo_id.as_deref(), Some("todo-a"));
-    let err = cmds.link_todo(&first.id, "todo-b").unwrap_err();
-    assert!(matches!(err, ShelfError::AlreadyLinked { .. }), "{err}");
+    let again = cmds.link_todo(&first.id, "todo-a").unwrap();
+    assert_eq!(again.todo_ids, ["todo-a"]);
+    let both = cmds.link_todo(&first.id, "todo-b").unwrap();
+    assert_eq!(both.todo_ids, ["todo-a", "todo-b"]);
+    assert_eq!(cmds.get(&second.id).unwrap().todo_ids, ["todo-a"]);
     assert!(cmds.link_todo(&first.id, "bad/id").is_err());
-    cmds.link_todo(&second.id, "missing-todo").unwrap_err();
-    let replaced = cmds.link_todo(&second.id, "missing-todo");
-    assert!(replaced.is_err());
-    cmds.unlink_todo(&second.id).unwrap();
-    let linked = cmds.link_todo(&second.id, "missing-todo").unwrap();
-    assert_eq!(linked.todo_id.as_deref(), Some("missing-todo"));
+    assert!(cmds.unlink_todo(&first.id, "bad/id").is_err());
 
-    let cleared = cmds.unlink_todo_everywhere("todo-a").unwrap();
-    assert_eq!(cleared, vec![first.id.clone()]);
-    assert!(cmds.get(&first.id).unwrap().todo_id.is_none());
-    cmds.link_todo(&first.id, "todo-a").unwrap();
-    cmds.link_todo(&second.id, "gone").unwrap_err();
-    cmds.unlink_todo(&second.id).unwrap();
+    let rx = fix.store.subscribe();
+    let same = cmds.link_todo(&first.id, "todo-b").unwrap();
+    assert_eq!(same.todo_ids, ["todo-a", "todo-b"]);
+    assert!(rx.try_recv().is_err(), "linking the same todo wrote");
+
+    let one_left = cmds.unlink_todo(&first.id, "todo-a").unwrap();
+    assert_eq!(one_left.todo_ids, ["todo-b"]);
+    assert_eq!(cmds.get(&second.id).unwrap().todo_ids, ["todo-a"]);
+    while rx.try_recv().is_ok() {}
+    cmds.unlink_todo(&first.id, "todo-a").unwrap();
+    assert!(rx.try_recv().is_err(), "unlinking an absent link wrote");
+
+    let back = cmds.link_todo(&first.id, "todo-a").unwrap();
+    assert_eq!(back.todo_ids, ["todo-b", "todo-a"]);
+    let reopened = commands(&fix.store);
+    assert_eq!(
+        reopened.get(&first.id).unwrap().todo_ids,
+        ["todo-b", "todo-a"]
+    );
+    assert_unchanged(&file, b"keep");
+}
+
+#[test]
+fn a_purged_todo_unlinks_only_itself_from_each_group() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let first = cmds.create_group("甲").unwrap();
+    let second = cmds.create_group("乙").unwrap();
+    let third = cmds.create_group("丙").unwrap();
+    for todo in ["gone", "stay"] {
+        cmds.link_todo(&first.id, todo).unwrap();
+    }
+    cmds.link_todo(&second.id, "gone").unwrap();
+    cmds.link_todo(&third.id, "stay").unwrap();
+
+    let cleared = cmds.unlink_todo_everywhere("gone").unwrap();
+    assert_eq!(cleared, vec![first.id.clone(), second.id.clone()]);
+    assert_eq!(cmds.get(&first.id).unwrap().todo_ids, ["stay"]);
+    assert!(cmds.get(&second.id).unwrap().todo_ids.is_empty());
+    assert_eq!(cmds.get(&third.id).unwrap().todo_ids, ["stay"]);
+
     cmds.link_todo(&second.id, "gone").unwrap();
     cmds.apply_todo_notice(&TodoNotice::Purged {
         item_id: "gone".into(),
     })
     .unwrap();
-    assert!(cmds.get(&second.id).unwrap().todo_id.is_none());
-    assert_eq!(
-        cmds.get(&first.id).unwrap().todo_id.as_deref(),
-        Some("todo-a")
+    assert!(cmds.get(&second.id).unwrap().todo_ids.is_empty());
+    assert_eq!(cmds.get(&first.id).unwrap().todo_ids, ["stay"]);
+}
+
+#[test]
+fn a_file_with_the_old_single_todo_field_reads_as_a_list_and_is_rewritten_as_one() {
+    let fix = fixture();
+    let path = fix
+        .store
+        .document_path(&DocumentId::Shelf("old".into()))
+        .unwrap();
+    std::fs::write(
+        &path,
+        r#"{"schemaVersion":1,"id":"old","name":"旧","order":0,"todoId":"t-old","refs":[]}"#,
+    )
+    .unwrap();
+    let both = fix
+        .store
+        .document_path(&DocumentId::Shelf("both".into()))
+        .unwrap();
+    std::fs::write(
+        &both,
+        r#"{"schemaVersion":1,"id":"both","name":"两种","order":1,"todoId":"t-1","todoIds":["t-2","t-1"],"refs":[]}"#,
+    )
+    .unwrap();
+    let cmds = ShelfCommands::open(fix.store.clone()).unwrap();
+    assert_eq!(cmds.get("old").unwrap().todo_ids, ["t-old"]);
+    assert_eq!(cmds.get("both").unwrap().todo_ids, ["t-1", "t-2"]);
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"todoId\""),
+        "reading must not rewrite the file"
     );
-    assert_unchanged(&file, b"keep");
+
+    cmds.link_todo("old", "t-new").unwrap();
+    let rewritten = std::fs::read_to_string(&path).unwrap();
+    assert!(!rewritten.contains("\"todoId\""), "{rewritten}");
+    assert!(rewritten.contains("\"todoIds\""), "{rewritten}");
+    let reopened = ShelfCommands::open(fix.store.clone()).unwrap();
+    assert_eq!(reopened.get("old").unwrap().todo_ids, ["t-old", "t-new"]);
+
+    cmds.unlink_todo("old", "t-old").unwrap();
+    cmds.unlink_todo("old", "t-new").unwrap();
+    let empty = std::fs::read_to_string(&path).unwrap();
+    assert!(!empty.contains("todoId"), "{empty}");
 }
 
 fn now_ms() -> i64 {
@@ -470,10 +623,10 @@ fn watch_after_boot_clears_the_purged_link_and_keeps_an_unrecorded_id() {
     assert!(recorded.contains("\"old\""), "{recorded}");
 
     shelves.watch_todo_notices(&todos);
-    assert!(shelves.get(&purged.id).unwrap().todo_id.is_none());
+    assert!(shelves.get(&purged.id).unwrap().todo_ids.is_empty());
     assert_eq!(
-        shelves.get(&missing.id).unwrap().todo_id.as_deref(),
-        Some("missing-todo")
+        shelves.get(&missing.id).unwrap().todo_ids,
+        ["missing-todo".to_owned()]
     );
     assert!(!pending.exists());
 }
@@ -501,14 +654,14 @@ fn watch_finishes_unlink_after_the_todo_write_and_leaves_other_ids() {
     shelves.link_todo(&never_group.id, "missing-todo").unwrap();
 
     shelves.watch_todo_notices(&todos);
-    assert!(shelves.get(&gone_group.id).unwrap().todo_id.is_none());
+    assert!(shelves.get(&gone_group.id).unwrap().todo_ids.is_empty());
     assert_eq!(
-        shelves.get(&still_group.id).unwrap().todo_id.as_deref(),
-        Some(still.as_str())
+        shelves.get(&still_group.id).unwrap().todo_ids,
+        [still.as_str().to_owned()]
     );
     assert_eq!(
-        shelves.get(&never_group.id).unwrap().todo_id.as_deref(),
-        Some("missing-todo")
+        shelves.get(&never_group.id).unwrap().todo_ids,
+        ["missing-todo".to_owned()]
     );
     let left = std::fs::read_to_string(&pending).unwrap();
     assert!(left.contains(&format!("\"{still}\"")), "{left}");

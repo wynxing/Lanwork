@@ -72,6 +72,48 @@ export component Btn inherits Rectangle {
     }
 }
 
+// 圆形勾选框，待办页和收纳悬浮窗的关联待办共用。
+export component Check inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <Ink> c;
+    callback toggled();
+
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    opacity: enabled ? 1 : 0.5;
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        border-width: 1.5px;
+        border-color: checked ? c.accent : c.secondary;
+        background: checked ? c.accent : enabled && touch.has-hover ? c.hover : transparent;
+
+        if checked: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 18;
+            viewbox-height: 18;
+            fill: transparent;
+            stroke: #ffffff;
+            stroke-width: 1.6px;
+            commands: "M5 9.3l2.7 2.7 5.2-5.4";
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
 // 单行输入。用 TextInput 而不是 LineEdit，因为要读 preedit-text：组合输入期间 Enter 不提交。
 export component Field inherits Rectangle {
     in property <string> source-text;

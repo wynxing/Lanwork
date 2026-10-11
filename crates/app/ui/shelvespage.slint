@@ -1,0 +1,627 @@
+// 面板的收纳页：左侧是分组，右侧是选中分组的条目。版式由这里决定，数据和动作在 Rust。
+// 数据和回调放在 ShelvesPageData 里，面板窗口只负责把这个页面摆在标签内容区。
+// 拖入拖出走原生 OLE，不用 DropArea、DragArea；这里只把行上的按下和移动交给 Rust。
+
+import { ListView } from "std-widgets.slint";
+import { Btn, Chip, Field, Ink } from "widgets.slint";
+
+export struct ShelfGroupRow {
+    name: string,
+    count: int,
+    // 关联待办的标题，多条用「、」连起来。没有可显示的标题时为空。
+    todo: string,
+}
+
+export struct ShelfRefRow {
+    name: string,
+    icon: image,
+    has-icon: bool,
+    missing: bool,
+}
+
+// 选中分组关联的一条待办。
+export struct ShelfLinkRow {
+    title: string,
+    // 找得到这条待办。找不到时 title 为空。
+    found: bool,
+    completed: bool,
+    in-trash: bool,
+}
+
+export struct ShelfTodoRow {
+    title: string,
+    list: string,
+}
+
+export global ShelvesPageData {
+    in property <[ShelfGroupRow]> groups;
+    in property <int> selected-group: -1;
+    in property <[ShelfRefRow]> refs;
+    in property <int> selected-ref: -1;
+    // 选中条目的完整路径。
+    in property <string> selected-path;
+    in property <string> group-name;
+    // 换了分组或需要把输入框还原时加一。
+    in property <int> group-version;
+    // 选中分组关联的待办，按关联的先后，包括找不到的。
+    in property <[ShelfLinkRow]> links;
+    // 悬浮窗里「关联待办」区域是否展开。默认收起，不记住。
+    in-out property <bool> links-open: false;
+    in property <bool> can-up;
+    in property <bool> can-down;
+    in-out property <bool> confirm-delete;
+    in-out property <bool> picker-open;
+    in property <[ShelfTodoRow]> choices;
+    // 关键字输入框清空时加一。
+    in property <int> picker-reset;
+    // 列表里完整露出或部分露出的第一行和行数。
+    in-out property <int> first-visible;
+    in-out property <int> visible-count;
+
+    callback select-group(int);
+    callback new-group(string);
+    callback rename-group(string);
+    callback move-group(bool);
+    callback delete-group();
+    // 把选中的分组打开成独立窗口。
+    callback float-group();
+    callback select-ref(int);
+    callback open-ref();
+    callback open-ref-folder();
+    callback remove-ref();
+    callback open-picker();
+    callback close-picker();
+    callback filter-todos(string);
+    callback pick-todo(int);
+    // 解除对第 index 条待办的关联。
+    callback unlink-todo(int);
+    // 悬浮窗：勾选完成第 index 条关联待办。
+    callback complete-todo(int);
+    // 悬浮窗：打开面板并定位第 index 条关联待办。
+    callback open-todo(int);
+    callback ref-press(int, length, length);
+    callback ref-move(int, length, length);
+    callback ref-release();
+    callback visible-changed(int, int);
+}
+
+// 关联待办的搜索框：输入关键字筛选，点击一条即关联。
+component TodoPicker inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> dark;
+
+    background: dark ? #2b2b2b : #fafafa;
+
+    init => {
+        picker-field.focus-field();
+    }
+
+    TouchArea { }
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            height: 30px;
+            spacing: 8px;
+
+            picker-field := Field {
+                name: "搜索待办";
+                source-text: "";
+                reset: ShelvesPageData.picker-reset;
+                c: root.c;
+                edited(text) => {
+                    ShelvesPageData.filter-todos(text);
+                }
+                escape => {
+                    ShelvesPageData.close-picker();
+                }
+            }
+
+            Btn {
+                text: "取消";
+                c: root.c;
+                clicked => {
+                    ShelvesPageData.close-picker();
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+
+            if ShelvesPageData.choices.length == 0: Text {
+                x: 4px;
+                y: 4px;
+                text: "没有待办";
+                color: c.secondary;
+                font-size: 14px;
+            }
+
+            ListView {
+                visible: ShelvesPageData.choices.length > 0;
+
+                for choice[index] in ShelvesPageData.choices: Rectangle {
+                    height: 40px;
+
+                    Rectangle {
+                        width: parent.width;
+                        border-radius: 6px;
+                        background: choice-touch.has-hover ? c.hover : transparent;
+                    }
+
+                    choice-touch := TouchArea {
+                        clicked => {
+                            ShelvesPageData.pick-todo(index);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: choice.title;
+                            color: c.ink;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        Chip {
+                            text: choice.list;
+                            tone: c.secondary;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 选中分组的条目列表，面板的收纳页和收纳悬浮窗共用。可见行的起止在这里算，因为列表只在选中分组时存在。
+export component RefsList inherits Rectangle {
+    in property <Ink> c;
+    // 点击条目行后让页面拿焦点，这样 Enter 和 Ctrl+Enter 才有效。
+    callback focus-requested();
+
+    property <length> row-height: 40px;
+    property <int> first-row: max(0, Math.floor(-refs-list.content-y / row-height));
+    property <int> row-count: Math.ceil(refs-list.visible-height / row-height) + 1;
+
+    changed first-row => {
+        ShelvesPageData.first-visible = first-row;
+        ShelvesPageData.visible-changed(first-row, row-count);
+    }
+    changed row-count => {
+        ShelvesPageData.visible-count = row-count;
+        ShelvesPageData.visible-changed(first-row, row-count);
+    }
+    init => {
+        ShelvesPageData.first-visible = first-row;
+        ShelvesPageData.visible-count = row-count;
+        ShelvesPageData.visible-changed(first-row, row-count);
+    }
+
+    refs-list := ListView {
+        width: parent.width;
+        height: parent.height;
+        visible: ShelvesPageData.refs.length > 0;
+
+        for item[index] in ShelvesPageData.refs: Rectangle {
+            property <bool> is-selected: index == ShelvesPageData.selected-ref;
+
+            height: row-height;
+
+            Rectangle {
+                width: parent.width;
+                border-radius: 6px;
+                background: is-selected ? c.selection : ref-touch.has-hover ? c.hover : transparent;
+            }
+
+            if is-selected: Rectangle {
+                x: 0px;
+                y: (parent.height - 16px) / 2;
+                width: 3px;
+                height: 16px;
+                border-radius: 1.5px;
+                background: c.accent;
+            }
+
+            ref-touch := TouchArea {
+                clicked => {
+                    root.focus-requested();
+                    ShelvesPageData.select-ref(index);
+                }
+                double-clicked => {
+                    ShelvesPageData.select-ref(index);
+                    ShelvesPageData.open-ref();
+                }
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        ShelvesPageData.ref-press(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                    if event.kind == PointerEventKind.move && self.pressed {
+                        ShelvesPageData.ref-move(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                    if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                        ShelvesPageData.ref-release();
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 10px;
+
+                Rectangle {
+                    width: 24px;
+
+                    if item.has-icon: Image {
+                        x: 0px;
+                        y: (parent.height - 24px) / 2;
+                        width: 24px;
+                        height: 24px;
+                        source: item.icon;
+                        image-fit: contain;
+                    }
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: item.name;
+                    color: item.missing ? c.tertiary : c.ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                if item.missing: Chip {
+                    text: "路径不存在";
+                    tone: c.critical;
+                }
+            }
+        }
+    }
+}
+
+export component ShelvesPage inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> dark;
+    callback escape();
+
+    property <length> rail-width: 232px;
+
+    page-scope := FocusScope {
+        key-pressed(event) => {
+            if ShelvesPageData.selected-ref >= 0 && event.text == Key.Return {
+                if event.modifiers.control {
+                    ShelvesPageData.open-ref-folder();
+                } else {
+                    ShelvesPageData.open-ref();
+                }
+                return accept;
+            }
+            reject
+        }
+
+        // 左侧：分组列表和新建。
+        Rectangle {
+            x: 0px;
+            width: rail-width;
+            height: root.height;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+
+                Rectangle {
+                    vertical-stretch: 1;
+
+                    if ShelvesPageData.groups.length == 0: Text {
+                        x: 8px;
+                        y: 6px;
+                        text: "没有分组";
+                        color: c.secondary;
+                        font-size: 14px;
+                    }
+
+                    ListView {
+                        visible: ShelvesPageData.groups.length > 0;
+
+                        for group[index] in ShelvesPageData.groups: Rectangle {
+                            property <bool> is-selected: index == ShelvesPageData.selected-group;
+
+                            height: group.todo != "" ? 56px : 40px;
+
+                            Rectangle {
+                                width: parent.width;
+                                border-radius: 6px;
+                                background: is-selected ? c.selection : group-touch.has-hover ? c.hover : transparent;
+                            }
+
+                            if is-selected: Rectangle {
+                                x: 0px;
+                                y: (parent.height - 16px) / 2;
+                                width: 3px;
+                                height: 16px;
+                                border-radius: 1.5px;
+                                background: c.accent;
+                            }
+
+                            group-touch := TouchArea {
+                                clicked => {
+                                    page-scope.focus();
+                                    ShelvesPageData.select-group(index);
+                                }
+                            }
+
+                            VerticalLayout {
+                                padding-left: 12px;
+                                padding-right: 8px;
+                                padding-top: 6px;
+                                padding-bottom: 6px;
+                                spacing: 2px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    height: 28px;
+
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: group.name;
+                                        color: c.ink;
+                                        font-size: 14px;
+                                        font-weight: is-selected ? 600 : 400;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+
+                                    Text {
+                                        text: group.count;
+                                        color: c.tertiary;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                if group.todo != "": Text {
+                                    text: group.todo;
+                                    color: c.tertiary;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                new-group := Field {
+                    name: "新建分组";
+                    c: root.c;
+                    committed(text) => {
+                        ShelvesPageData.new-group(text);
+                        self.clear();
+                    }
+                    escape => {
+                        root.escape();
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            x: rail-width;
+            width: 1px;
+            height: root.height;
+            background: c.divider;
+        }
+
+        // 右侧：分组的名称与动作、条目列表、选中条目的路径与动作。
+        Rectangle {
+            x: rail-width + 1px;
+            width: root.width - rail-width - 1px;
+            height: root.height;
+
+            if ShelvesPageData.selected-group >= 0: VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    height: 30px;
+                    spacing: 8px;
+
+                    Field {
+                        source-text: ShelvesPageData.group-name;
+                        reset: ShelvesPageData.group-version;
+                        c: root.c;
+                        committed(text) => {
+                            ShelvesPageData.rename-group(text);
+                        }
+                        escape => {
+                            root.escape();
+                        }
+                    }
+
+                    Btn {
+                        text: "上移";
+                        c: root.c;
+                        enabled: ShelvesPageData.can-up;
+                        clicked => {
+                            ShelvesPageData.move-group(true);
+                        }
+                    }
+
+                    Btn {
+                        text: "下移";
+                        c: root.c;
+                        enabled: ShelvesPageData.can-down;
+                        clicked => {
+                            ShelvesPageData.move-group(false);
+                        }
+                    }
+
+                    Btn {
+                        text: "关联待办";
+                        c: root.c;
+                        clicked => {
+                            ShelvesPageData.open-picker();
+                        }
+                    }
+
+                    Btn {
+                        text: "悬浮";
+                        c: root.c;
+                        clicked => {
+                            ShelvesPageData.float-group();
+                        }
+                    }
+
+                    if !ShelvesPageData.confirm-delete: Btn {
+                        text: "删除分组";
+                        c: root.c;
+                        danger: true;
+                        clicked => {
+                            ShelvesPageData.confirm-delete = true;
+                        }
+                    }
+
+                    if ShelvesPageData.confirm-delete: Btn {
+                        text: "确认删除";
+                        c: root.c;
+                        danger: true;
+                        clicked => {
+                            ShelvesPageData.confirm-delete = false;
+                            ShelvesPageData.delete-group();
+                        }
+                    }
+
+                    if ShelvesPageData.confirm-delete: Btn {
+                        text: "取消";
+                        c: root.c;
+                        clicked => {
+                            ShelvesPageData.confirm-delete = false;
+                        }
+                    }
+                }
+
+                if ShelvesPageData.links.length > 0: Rectangle {
+                    height: min(ShelvesPageData.links.length, 3) * 30px;
+
+                    ListView {
+                        width: parent.width;
+                        height: parent.height;
+
+                        for link[index] in ShelvesPageData.links: Rectangle {
+                            height: 30px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Chip {
+                                    text: "待办";
+                                    tone: c.secondary;
+                                }
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: link.found ? link.title : "找不到这条待办";
+                                    color: link.found ? c.secondary : c.tertiary;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                Btn {
+                                    text: "解除关联";
+                                    c: root.c;
+                                    height: 26px;
+                                    clicked => {
+                                        ShelvesPageData.unlink-todo(index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+
+                    if ShelvesPageData.refs.length == 0: Text {
+                        x: 4px;
+                        y: 4px;
+                        text: "没有条目";
+                        color: c.secondary;
+                        font-size: 14px;
+                    }
+
+                    RefsList {
+                        width: parent.width;
+                        height: parent.height;
+                        c: root.c;
+                        focus-requested => {
+                            page-scope.focus();
+                        }
+                    }
+                }
+
+                if ShelvesPageData.selected-ref >= 0: Rectangle {
+                    height: 1px;
+                    background: c.divider;
+                }
+
+                if ShelvesPageData.selected-ref >= 0: HorizontalLayout {
+                    height: 30px;
+                    spacing: 8px;
+
+                    Text {
+                        horizontal-stretch: 1;
+                        text: ShelvesPageData.selected-path;
+                        color: c.secondary;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    Btn {
+                        text: "打开";
+                        c: root.c;
+                        clicked => {
+                            ShelvesPageData.open-ref();
+                        }
+                    }
+
+                    Btn {
+                        text: "打开所在目录";
+                        c: root.c;
+                        clicked => {
+                            ShelvesPageData.open-ref-folder();
+                        }
+                    }
+
+                    Btn {
+                        text: "移除引用";
+                        c: root.c;
+                        danger: true;
+                        clicked => {
+                            ShelvesPageData.remove-ref();
+                        }
+                    }
+                }
+            }
+
+            if ShelvesPageData.picker-open: TodoPicker {
+                x: 0px;
+                width: parent.width;
+                height: parent.height;
+                c: root.c;
+                dark: root.dark;
+            }
+        }
+    }
+}

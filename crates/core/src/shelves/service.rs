@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::notes::FloatGeometry;
 use crate::storage::{CollectionKind, DocumentId, Store, lock_mutex};
 use crate::todos::{TodoCommands, TodoNotice};
 
@@ -124,8 +125,9 @@ impl ShelfService {
             id,
             name,
             order,
-            todo_id: None,
+            todo_ids: Vec::new(),
             refs: Vec::new(),
+            float: None,
         };
         self.persist_one(&shelf)?;
         Ok(shelf)
@@ -210,8 +212,9 @@ impl ShelfService {
                     id,
                     name: super::model::DEFAULT_GROUP_NAME.to_owned(),
                     order: next_order(groups.iter().map(|group| group.order))?,
-                    todo_id: None,
+                    todo_ids: Vec::new(),
                     refs: Vec::new(),
+                    float: None,
                 }
             }
             None => return Err(ShelfError::TargetGroupRequired),
@@ -269,7 +272,7 @@ impl ShelfService {
         Ok(shelf)
     }
 
-    /// 关联一条待办。已关联另一条时拒绝，不替换。
+    /// 再关联一条待办，排在已有关联之后。已经关联这一条时不写盘。
     ///
     /// 只校验待办 id 的格式。该 id 是否已有待办，产品规格没有写，这里不检查。
     pub fn link_todo(&self, id: &str, todo_id: &str) -> Result<Shelf, ShelfError> {
@@ -278,34 +281,47 @@ impl ShelfService {
         let _write = lock_mutex(&self.inner.write);
         self.ensure_usable()?;
         let mut shelf = self.group(id)?;
-        if shelf.todo_id.as_deref() == Some(todo_id) {
+        if shelf.todo_ids.iter().any(|existing| existing == todo_id) {
             return Ok(shelf);
         }
-        if let Some(existing) = shelf.todo_id.clone() {
-            return Err(ShelfError::AlreadyLinked {
-                id: id.to_owned(),
-                todo_id: existing,
-            });
-        }
-        shelf.todo_id = Some(todo_id.to_owned());
+        shelf.todo_ids.push(todo_id.to_owned());
         self.persist_one(&shelf)?;
         Ok(shelf)
     }
 
-    pub fn unlink_todo(&self, id: &str) -> Result<Shelf, ShelfError> {
+    /// 记下这个分组的悬浮窗的位置和大小。不改名称、顺序、关联和引用。
+    ///
+    /// 这是界面记下的值，服务不判断它是否还在某个显示器内。值没有变化时不写盘。
+    pub fn set_float(&self, id: &str, geometry: FloatGeometry) -> Result<Shelf, ShelfError> {
         self.check_group_id(id)?;
         let _write = lock_mutex(&self.inner.write);
         self.ensure_usable()?;
         let mut shelf = self.group(id)?;
-        if shelf.todo_id.is_none() {
+        if shelf.float == Some(geometry) {
             return Ok(shelf);
         }
-        shelf.todo_id = None;
+        shelf.float = Some(geometry);
         self.persist_one(&shelf)?;
         Ok(shelf)
     }
 
-    /// 按待办 id 解除所有分组上的关联。没有关联时不写盘。
+    /// 解除这个分组对一条待办的关联，其余关联不动。没有这条关联时不写盘。
+    pub fn unlink_todo(&self, id: &str, todo_id: &str) -> Result<Shelf, ShelfError> {
+        self.check_group_id(id)?;
+        self.check_todo_id(todo_id)?;
+        let _write = lock_mutex(&self.inner.write);
+        self.ensure_usable()?;
+        let mut shelf = self.group(id)?;
+        let before = shelf.todo_ids.len();
+        shelf.todo_ids.retain(|existing| existing != todo_id);
+        if shelf.todo_ids.len() == before {
+            return Ok(shelf);
+        }
+        self.persist_one(&shelf)?;
+        Ok(shelf)
+    }
+
+    /// 按待办 id 解除所有分组上对这一条的关联，各分组的其他关联不动。没有关联时不写盘。
     pub fn unlink_todo_everywhere(&self, todo_id: &str) -> Result<Vec<String>, ShelfError> {
         self.check_todo_id(todo_id)?;
         let _write = lock_mutex(&self.inner.write);
@@ -313,9 +329,9 @@ impl ShelfService {
         let changed: Vec<Shelf> = self
             .groups()?
             .into_iter()
-            .filter(|group| group.todo_id.as_deref() == Some(todo_id))
+            .filter(|group| group.todo_ids.iter().any(|existing| existing == todo_id))
             .map(|mut group| {
-                group.todo_id = None;
+                group.todo_ids.retain(|existing| existing != todo_id);
                 group
             })
             .collect();

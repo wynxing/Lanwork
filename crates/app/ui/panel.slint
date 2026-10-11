@@ -2,8 +2,9 @@
 // 风格与搜索条一致：亚克力时客户区透明，纯色时由这里画满；深浅两套配色。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Chip, Field, Ink } from "widgets.slint";
+import { Btn, Check, Chip, Field, Ink } from "widgets.slint";
 import { NotesPage } from "notespage.slint";
+import { ShelvesPage } from "shelvespage.slint";
 
 export struct PanelRow {
     title: string,
@@ -15,6 +16,8 @@ export struct PanelRow {
     source: string,
     // 回收站里：还剩几天被清除。
     note: string,
+    // 有收纳分组关联了这条待办。
+    shelf: bool,
 }
 
 export struct PanelList {
@@ -30,47 +33,11 @@ export struct PanelDetail {
     recurrence: int,
     until: string,
     has-source: bool,
+    // 有收纳分组关联了这条待办。
+    has-shelf: bool,
     current: bool,
     can-up: bool,
     can-down: bool,
-}
-
-component Check inherits Rectangle {
-    in property <bool> checked;
-    in property <Ink> c;
-    callback toggled();
-
-    width: 28px;
-    height: 28px;
-    background: transparent;
-
-    Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        width: 18px;
-        height: 18px;
-        border-radius: 9px;
-        border-width: 1.5px;
-        border-color: checked ? c.accent : c.secondary;
-        background: checked ? c.accent : touch.has-hover ? c.hover : transparent;
-
-        if checked: Path {
-            width: 100%;
-            height: 100%;
-            viewbox-width: 18;
-            viewbox-height: 18;
-            fill: transparent;
-            stroke: #ffffff;
-            stroke-width: 1.6px;
-            commands: "M5 9.3l2.7 2.7 5.2-5.4";
-        }
-    }
-
-    touch := TouchArea {
-        clicked => {
-            root.toggled();
-        }
-    }
 }
 
 component Segments inherits Rectangle {
@@ -161,6 +128,13 @@ export component Panel inherits Window {
     callback commit-remind(string);
     callback choose-recurrence(int);
     callback commit-until(string);
+    callback open-shelf();
+
+    // 收纳页的放下区域，窗口客户区里的逻辑像素。OLE 放下目标用它判断指针在不在收纳页上。
+    out property <length> shelf-zone-x: 0px;
+    out property <length> shelf-zone-y: title-height + 1px;
+    out property <length> shelf-zone-w: panel-width;
+    out property <length> shelf-zone-h: panel-height - title-height - 1px;
 
     property <length> title-height: 48px;
     property <length> rail-width: 168px;
@@ -326,8 +300,8 @@ export component Panel inherits Window {
                 background: c.divider;
             }
 
-            // 标签内容。待办和便签有内容，其他标签只显示一行对象名。
-            if root.tab >= 2: Text {
+            // 标签内容。待办、便签和收纳有内容，其他标签只显示一行对象名。
+            if root.tab >= 3: Text {
                 x: 24px;
                 y: title-height + 20px;
                 width: parent.width - 48px;
@@ -338,6 +312,18 @@ export component Panel inherits Window {
             }
 
             if root.tab == 1: NotesPage {
+                x: 0px;
+                y: title-height + 1px;
+                width: parent.width;
+                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                c: root.c;
+                dark: root.dark;
+                escape => {
+                    root.escape();
+                }
+            }
+
+            if root.tab == 2: ShelvesPage {
                 x: 0px;
                 y: title-height + 1px;
                 width: parent.width;
@@ -586,6 +572,11 @@ export component Panel inherits Window {
                                             tone: c.secondary;
                                         }
 
+                                        if row.shelf: Chip {
+                                            text: "收纳";
+                                            tone: c.secondary;
+                                        }
+
                                         if row.note != "": Chip {
                                             text: row.note;
                                             tone: c.secondary;
@@ -630,6 +621,14 @@ export component Panel inherits Window {
                                     overflow: elide;
                                 }
 
+                                if trash-selected && detail.has-shelf: Btn {
+                                    text: "打开关联收纳";
+                                    c: root.c;
+                                    clicked => {
+                                        root.open-shelf();
+                                    }
+                                }
+
                                 if trash-selected && detail.current: Btn {
                                     text: "清除当前";
                                     c: root.c;
@@ -668,6 +667,14 @@ export component Panel inherits Window {
                                     c: root.c;
                                     clicked => {
                                         root.open-source();
+                                    }
+                                }
+
+                                if !trash-selected && detail.has-shelf: Btn {
+                                    text: "打开关联收纳";
+                                    c: root.c;
+                                    clicked => {
+                                        root.open-shelf();
                                     }
                                 }
 
