@@ -7,6 +7,7 @@ use crate::todos::TodoCommands;
 
 use super::error::ShelfError;
 use super::model::{AddRefsOutcome, IncomingRef, Shelf};
+use crate::notes::FloatGeometry;
 use super::service::ShelfService;
 
 /// 界面调用的收纳命令。克隆与对应的 [`ShelfService`] 共享状态。
@@ -94,6 +95,12 @@ impl ShelfCommands {
         self.service.check_group_id(id)?;
         self.service.check_todo_id(todo_id)?;
         self.service.link_todo(id, todo_id)
+    }
+
+    /// 记下这个分组的悬浮窗的位置和大小。
+    pub fn set_float(&self, id: &str, geometry: FloatGeometry) -> Result<Shelf, ShelfError> {
+        self.service.check_group_id(id)?;
+        self.service.set_float(id, geometry)
     }
 
     pub fn unlink_todo(&self, id: &str) -> Result<Shelf, ShelfError> {

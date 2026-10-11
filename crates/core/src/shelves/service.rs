@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::notes::FloatGeometry;
 use crate::storage::{CollectionKind, DocumentId, Store, lock_mutex};
 use crate::todos::{TodoCommands, TodoNotice};
 
@@ -126,6 +127,7 @@ impl ShelfService {
             order,
             todo_id: None,
             refs: Vec::new(),
+            float: None,
         };
         self.persist_one(&shelf)?;
         Ok(shelf)
@@ -212,6 +214,7 @@ impl ShelfService {
                     order: next_order(groups.iter().map(|group| group.order))?,
                     todo_id: None,
                     refs: Vec::new(),
+                    float: None,
                 }
             }
             None => return Err(ShelfError::TargetGroupRequired),
@@ -288,6 +291,22 @@ impl ShelfService {
             });
         }
         shelf.todo_id = Some(todo_id.to_owned());
+        self.persist_one(&shelf)?;
+        Ok(shelf)
+    }
+
+    /// 记下这个分组的悬浮窗的位置和大小。不改名称、顺序、关联和引用。
+    ///
+    /// 这是界面记下的值，服务不判断它是否还在某个显示器内。值没有变化时不写盘。
+    pub fn set_float(&self, id: &str, geometry: FloatGeometry) -> Result<Shelf, ShelfError> {
+        self.check_group_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        self.ensure_usable()?;
+        let mut shelf = self.group(id)?;
+        if shelf.float == Some(geometry) {
+            return Ok(shelf);
+        }
+        shelf.float = Some(geometry);
         self.persist_one(&shelf)?;
         Ok(shelf)
     }

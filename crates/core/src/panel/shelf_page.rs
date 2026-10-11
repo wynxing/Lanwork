@@ -143,6 +143,7 @@ mod tests {
                     added_at: 0,
                 })
                 .collect(),
+            float: None,
         }
     }
 

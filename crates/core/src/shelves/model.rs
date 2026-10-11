@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::notes::FloatGeometry;
 use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 
 use super::error::ShelfError;
@@ -28,6 +29,8 @@ pub struct Shelf {
     pub order: i64,
     pub todo_id: Option<String>,
     pub refs: Vec<ShelfRef>,
+    /// 这个分组的悬浮窗上次关闭时的位置和大小。没有记录时为 `None`。旧文件没有这个字段。
+    pub float: Option<FloatGeometry>,
 }
 
 /// 一条路径引用。不包含文件内容。
@@ -91,6 +94,12 @@ pub(crate) struct ShelfFile {
     todo_id: Option<String>,
     #[serde(default)]
     refs: Vec<RefFile>,
+    #[serde(
+        rename = "floatWindow",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    float: Option<FloatGeometry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +127,7 @@ impl ShelfFile {
             name: shelf.name.clone(),
             order: shelf.order,
             todo_id: shelf.todo_id.clone(),
+            float: shelf.float,
             refs: shelf
                 .refs
                 .iter()
@@ -169,6 +179,7 @@ impl ShelfFile {
             order: self.order,
             todo_id: self.todo_id,
             refs,
+            float: self.float,
         })
     }
 }

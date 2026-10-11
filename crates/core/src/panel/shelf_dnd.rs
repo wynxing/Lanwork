@@ -25,6 +25,18 @@ pub struct DropZone {
 }
 
 impl DropZone {
+    /// 整个窗口都是放下区域。悬浮窗用它：窗口里没有收纳页以外的部分。
+    #[must_use]
+    pub fn everywhere() -> Self {
+        Self {
+            x: f32::MIN / 4.0,
+            y: f32::MIN / 4.0,
+            width: f32::MAX / 2.0,
+            height: f32::MAX / 2.0,
+            scale: 1.0,
+        }
+    }
+
     /// 客户区物理像素坐标是否落在区域内。区域没有大小时一律在外。
     #[must_use]
     pub fn contains(&self, client_x_px: i32, client_y_px: i32) -> bool {
@@ -119,6 +131,14 @@ mod tests {
         assert!(passed_drag_threshold(4.1, 0.0, 4, 4));
         assert!(passed_drag_threshold(0.0, -5.0, 4, 4));
         assert!(!passed_drag_threshold(-4.0, 4.0, 4, 4));
+    }
+
+    #[test]
+    fn a_float_window_zone_covers_every_client_point() {
+        let zone = DropZone::everywhere();
+        for (x, y) in [(0, 0), (1, 1), (5000, 3000), (-5, -5)] {
+            assert!(zone.contains(x, y), "{x},{y}");
+        }
     }
 
     #[test]
