@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use lanwork_core::dispatch::IconCache;
 use lanwork_core::panel::{
-    GroupRow, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids, pick_selection,
-    reordered_group_ids, todo_choices,
+    GroupRow, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids, linked_todos,
+    pick_selection, reordered_group_ids, todo_choices,
 };
 use lanwork_core::shelves::{IncomingRef, Shelf, ShelfCommands, ShelfRef};
 use lanwork_core::storage::Store;
@@ -22,8 +22,9 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use crate::panel::with_shelves;
 use crate::shelf_dnd::DragOutcome;
 use crate::shelf_refs::{
-    InlineDrag, Moved, ProbeResult, RefsView, drag_error, drag_now, parent_folder, prepare_drop,
-    release_grab, schedule_drag, skipped_message, spawn_launch, spawn_probe, to_i32,
+    InlineDrag, Moved, ProbeResult, RefsView, drag_error, drag_now, joined_titles, parent_folder,
+    prepare_drop, push_links, release_grab, schedule_drag, skipped_message, spawn_launch,
+    spawn_probe, to_i32,
 };
 use crate::{Panel, ShelfGroupRow, ShelfTodoRow, ShelvesPageData};
 
@@ -182,7 +183,7 @@ impl ShelvesPage {
                 .map(|row| ShelfGroupRow {
                     name: row.name.as_str().into(),
                     count: to_i32(row.count),
-                    todo: row.todo_title.as_str().into(),
+                    todo: joined_titles(&row.todo_titles).into(),
                 })
                 .collect::<Vec<_>>(),
         );
@@ -204,14 +205,8 @@ impl ShelvesPage {
                 .unwrap_or_default()
                 .into(),
         );
-        data.set_linked(shelf.is_some_and(|shelf| shelf.todo_id.is_some()));
-        let todo_title = self
-            .selected
-            .as_ref()
-            .and_then(|id| self.rows.iter().find(|row| &row.id == id))
-            .map(|row| row.todo_title.clone())
-            .unwrap_or_default();
-        data.set_linked_todo(todo_title.into());
+        let links = shelf.map_or_else(Vec::new, |shelf| linked_todos(&shelf.todo_ids, &self.lists));
+        push_links(&links, &data);
         let (can_up, can_down) = match &self.selected {
             Some(id) => (
                 reordered_group_ids(&self.list, id, true).is_some(),
@@ -461,11 +456,20 @@ impl ShelvesPage {
         }
     }
 
-    fn unlink_todo(&mut self, ui: &Panel) {
-        let (Some(shelves), Some(id)) = (self.shelves.clone(), self.selected.clone()) else {
+    /// 解除选中分组对第 `index` 条关联待办的关联，其余不动。
+    fn unlink_todo(&mut self, ui: &Panel, index: i32) {
+        let todo_id = self.selected_shelf().and_then(|shelf| {
+            usize::try_from(index)
+                .ok()
+                .and_then(|index| shelf.todo_ids.get(index))
+                .cloned()
+        });
+        let (Some(shelves), Some(id), Some(todo_id)) =
+            (self.shelves.clone(), self.selected.clone(), todo_id)
+        else {
             return;
         };
-        match shelves.unlink_todo(&id) {
+        match shelves.unlink_todo(&id, &todo_id) {
             Ok(_) => {
                 ui.set_error(SharedString::new());
                 self.reload(ui);
@@ -609,7 +613,7 @@ fn wire(ui: &Panel) {
         with_shelves(move |page, _| page.filter_todos(&text));
     });
     data.on_pick_todo(|index| with_shelves(move |page, ui| page.pick_todo(ui, index)));
-    data.on_unlink_todo(|| with_shelves(ShelvesPage::unlink_todo));
+    data.on_unlink_todo(|index| with_shelves(move |page, ui| page.unlink_todo(ui, index)));
     data.on_ref_press(|index, x, y| with_shelves(move |page, _| page.ref_press(index, x, y)));
     data.on_ref_move(|_, x, y| {
         let inline = InlineDrag::new();

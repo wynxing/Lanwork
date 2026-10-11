@@ -122,7 +122,12 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     }
     let icons = icons.unwrap_or_else(|| Arc::new(Mutex::new(IconCache::shell())));
     if let Some(shelves) = &shelves {
-        shelf_float::install(shelves.clone(), Arc::clone(&icons), store.clone());
+        shelf_float::install(
+            shelves.clone(),
+            todos.clone(),
+            Arc::clone(&icons),
+            store.clone(),
+        );
     }
     panel::install(
         panel_ui.clone_strong(),
@@ -301,6 +306,7 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
                 };
                 refresh_badge(&tray, &todos, &store);
                 panel::on_todos_changed();
+                shelf_float::on_todos_changed();
             });
         }
     });

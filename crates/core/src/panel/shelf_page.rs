@@ -64,11 +64,10 @@ pub fn group_rows(shelves: &[Shelf], lists: &[TodoList]) -> Vec<GroupRow> {
         .collect()
 }
 
-/// 一个分组关联的各条待办，按关联的先后，包括找不到的。排序产品规格没有写，这是实现选择。
+/// 一个分组关联的各条待办（`Shelf::todo_ids`），按关联的先后，包括找不到的。排序产品规格没有写，这是实现选择。
 #[must_use]
-pub fn linked_todos(shelf: &Shelf, lists: &[TodoList]) -> Vec<LinkedTodo> {
-    shelf
-        .todo_ids
+pub fn linked_todos(todo_ids: &[String], lists: &[TodoList]) -> Vec<LinkedTodo> {
+    todo_ids
         .iter()
         .map(|id| match find_todo(lists, id) {
             Some(item) => LinkedTodo {
@@ -241,7 +240,7 @@ mod tests {
             vec![todo("t-open", "写周报"), done, trashed],
         )];
         let group = shelf("a", &["t-trash", "t-gone", "t-open", "t-done"], &[]);
-        let rows = linked_todos(&group, &lists);
+        let rows = linked_todos(&group.todo_ids, &lists);
         assert_eq!(
             rows.iter()
                 .map(|row| (

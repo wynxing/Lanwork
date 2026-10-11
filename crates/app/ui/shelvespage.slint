@@ -8,7 +8,7 @@ import { Btn, Chip, Field, Ink } from "widgets.slint";
 export struct ShelfGroupRow {
     name: string,
     count: int,
-    // 关联待办的标题。没有关联时为空。
+    // 关联待办的标题，多条用「、」连起来。没有可显示的标题时为空。
     todo: string,
 }
 
@@ -17,6 +17,15 @@ export struct ShelfRefRow {
     icon: image,
     has-icon: bool,
     missing: bool,
+}
+
+// 选中分组关联的一条待办。
+export struct ShelfLinkRow {
+    title: string,
+    // 找得到这条待办。找不到时 title 为空。
+    found: bool,
+    completed: bool,
+    in-trash: bool,
 }
 
 export struct ShelfTodoRow {
@@ -34,9 +43,10 @@ export global ShelvesPageData {
     in property <string> group-name;
     // 换了分组或需要把输入框还原时加一。
     in property <int> group-version;
-    in property <string> linked-todo;
-    // 选中的分组已经关联了待办（即使找不到它的标题）。
-    in property <bool> linked;
+    // 选中分组关联的待办，按关联的先后，包括找不到的。
+    in property <[ShelfLinkRow]> links;
+    // 悬浮窗里「关联待办」区域是否展开。默认收起，不记住。
+    in-out property <bool> links-open: false;
     in property <bool> can-up;
     in property <bool> can-down;
     in-out property <bool> confirm-delete;
@@ -63,7 +73,12 @@ export global ShelvesPageData {
     callback close-picker();
     callback filter-todos(string);
     callback pick-todo(int);
-    callback unlink-todo();
+    // 解除对第 index 条待办的关联。
+    callback unlink-todo(int);
+    // 悬浮窗：勾选完成第 index 条关联待办。
+    callback complete-todo(int);
+    // 悬浮窗：打开面板并定位第 index 条关联待办。
+    callback open-todo(int);
     callback ref-press(int, length, length);
     callback ref-move(int, length, length);
     callback ref-release();
@@ -450,19 +465,11 @@ export component ShelvesPage inherits Rectangle {
                         }
                     }
 
-                    if !ShelvesPageData.linked: Btn {
+                    Btn {
                         text: "关联待办";
                         c: root.c;
                         clicked => {
                             ShelvesPageData.open-picker();
-                        }
-                    }
-
-                    if ShelvesPageData.linked: Btn {
-                        text: "解除关联";
-                        c: root.c;
-                        clicked => {
-                            ShelvesPageData.unlink-todo();
                         }
                     }
 
@@ -502,22 +509,43 @@ export component ShelvesPage inherits Rectangle {
                     }
                 }
 
-                if ShelvesPageData.linked-todo != "": HorizontalLayout {
-                    height: 22px;
-                    spacing: 8px;
-                    alignment: start;
+                if ShelvesPageData.links.length > 0: Rectangle {
+                    height: min(ShelvesPageData.links.length, 3) * 30px;
 
-                    Chip {
-                        text: "待办";
-                        tone: c.secondary;
-                    }
+                    ListView {
+                        width: parent.width;
+                        height: parent.height;
 
-                    Text {
-                        text: ShelvesPageData.linked-todo;
-                        color: c.secondary;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                        overflow: elide;
+                        for link[index] in ShelvesPageData.links: Rectangle {
+                            height: 30px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Chip {
+                                    text: "待办";
+                                    tone: c.secondary;
+                                }
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: link.found ? link.title : "找不到这条待办";
+                                    color: link.found ? c.secondary : c.tertiary;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                Btn {
+                                    text: "解除关联";
+                                    c: root.c;
+                                    height: 26px;
+                                    clicked => {
+                                        ShelvesPageData.unlink-todo(index);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 

@@ -5,7 +5,8 @@
 //! 拉回工作区，做法与便签悬浮窗相同。窗口失焦不关闭；面板自己的失焦收起不受影响。
 //!
 //! 条目列表逻辑在 `shelf_refs`，和面板的收纳页共用。每个窗口单独登记 OLE 放下目标（`shelf_dnd`），
-//! 关闭时先撤销登记再隐藏。版式在 `ui/shelffloat.slint`。
+//! 关闭时先撤销登记再隐藏。窗口上方有一个可折叠的「关联待办」，默认收起：列出分组关联的待办，
+//! 可以勾选完成（`TodoCommands::complete_item`），点标题打开面板并定位。版式在 `ui/shelffloat.slint`。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,19 +17,20 @@ use std::time::Duration;
 
 use lanwork_core::dispatch::IconCache;
 use lanwork_core::panel::{
-    DropZone, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH, FLOAT_WIDTH, float_default_origin,
-    restore_float,
+    DropZone, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH, FLOAT_WIDTH, LinkedTodo,
+    PanelTarget, float_default_origin, linked_todos, restore_float,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::shelves::{FloatGeometry, IncomingRef, ShelfCommands, ShelfError, ShelfRef};
 use lanwork_core::storage::Store;
+use lanwork_core::todos::TodoCommands;
 use slint::winit_030::WinitWindowAccessor;
 use slint::{CloseRequestResponse, ComponentHandle, SharedString};
 
 use crate::shelf_dnd::{DragOutcome, DropState, Registration, register};
 use crate::shelf_refs::{
     InlineDrag, Moved, ProbeResult, RefsView, drag_error, drag_now, parent_folder, prepare_drop,
-    release_grab, schedule_drag, skipped_message, spawn_launch, spawn_probe,
+    push_links, release_grab, schedule_drag, skipped_message, spawn_launch, spawn_probe,
 };
 use crate::{ShelfFloat, ShelvesPageData, bar_win};
 
@@ -42,6 +44,8 @@ struct FloatWindow {
     ui: ShelfFloat,
     group_id: String,
     refs: Vec<ShelfRef>,
+    todo_ids: Vec<String>,
+    links: Vec<LinkedTodo>,
     view: RefsView,
     drop_state: Arc<DropState>,
     registration: Option<Registration>,
@@ -54,6 +58,7 @@ struct FloatWindow {
 
 struct Floats {
     shelves: ShelfCommands,
+    todos: TodoCommands,
     icons: Arc<Mutex<IconCache>>,
     store: Store,
     dark: bool,
@@ -67,10 +72,16 @@ thread_local! {
 }
 
 /// 启动时调用一次。没有收纳服务时不调用，悬浮窗打不开。
-pub(crate) fn install(shelves: ShelfCommands, icons: Arc<Mutex<IconCache>>, store: Store) {
+pub(crate) fn install(
+    shelves: ShelfCommands,
+    todos: TodoCommands,
+    icons: Arc<Mutex<IconCache>>,
+    store: Store,
+) {
     FLOATS.with(|cell| {
         *cell.borrow_mut() = Some(Floats {
             shelves,
+            todos,
             icons,
             store,
             dark: false,
@@ -97,6 +108,7 @@ fn with_floats(action: impl FnOnce(&mut Floats) + 'static) {
 
 struct Ctx<'a> {
     shelves: &'a ShelfCommands,
+    todos: &'a TodoCommands,
     icons: &'a Arc<Mutex<IconCache>>,
     store: &'a Store,
     dark: bool,
@@ -107,6 +119,7 @@ fn with_window(id: &str, action: impl FnOnce(&mut FloatWindow, &Ctx<'_>) + 'stat
     with_floats(move |floats| {
         let ctx = Ctx {
             shelves: &floats.shelves,
+            todos: &floats.todos,
             icons: &floats.icons,
             store: &floats.store,
             dark: floats.dark,
@@ -157,12 +170,22 @@ pub(crate) fn on_changed() {
     with_floats(|floats| {
         let ctx = Ctx {
             shelves: &floats.shelves,
+            todos: &floats.todos,
             icons: &floats.icons,
             store: &floats.store,
             dark: floats.dark,
         };
         for window in floats.windows.values_mut().filter(|window| !window.closed) {
             window.reload(&ctx, true);
+        }
+    });
+}
+
+/// 待办有变更消息时调用：已经打开的悬浮窗重读自己关联的待办（标题、完成状态）。
+pub(crate) fn on_todos_changed() {
+    with_floats(|floats| {
+        for window in floats.windows.values_mut().filter(|window| !window.closed) {
+            window.refresh_links(&floats.todos, &floats.store);
         }
     });
 }
@@ -295,10 +318,12 @@ impl Floats {
             self.store
                 .log_warn(&format!("收纳悬浮窗初始化未排队：{err}"));
         }
-        let window = FloatWindow {
+        let mut window = FloatWindow {
             ui,
             group_id: group_id.to_owned(),
             refs: shelf.refs,
+            todo_ids: shelf.todo_ids,
+            links: Vec::new(),
             view: RefsView::new(),
             drop_state: Arc::new(DropState::default()),
             registration: None,
@@ -313,6 +338,7 @@ impl Floats {
             .set_refs(slint::ModelRc::from(window.view.model()));
         window.ui.global::<ShelvesPageData>().set_selected_ref(-1);
         window.push();
+        window.refresh_links(&self.todos, &self.store);
         self.windows.insert(group_id.to_owned(), window);
         Ok(())
     }
@@ -375,6 +401,14 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
                 );
             }
         }
+    });
+    data.on_complete_todo({
+        let id = id.clone();
+        move |index| with_window(&id, move |window, ctx| window.complete_todo(ctx, index))
+    });
+    data.on_open_todo({
+        let id = id.clone();
+        move |index| with_window(&id, move |window, _| window.open_todo(index))
     });
     data.on_ref_release({
         let id = id.clone();
@@ -485,10 +519,12 @@ impl FloatWindow {
         match ctx.shelves.get(&self.group_id) {
             Ok(shelf) => {
                 self.refs = shelf.refs;
+                self.todo_ids = shelf.todo_ids;
                 self.clear_error();
             }
             Err(ShelfError::NotFound { .. }) => {
                 self.refs = Vec::new();
+                self.todo_ids = Vec::new();
                 self.view.clear();
             }
             Err(err) => {
@@ -498,7 +534,54 @@ impl FloatWindow {
         }
         self.view.keep_selected(&self.refs);
         self.push();
+        self.refresh_links(ctx.todos, ctx.store);
         self.refresh_visible(ctx, force);
+    }
+
+    /// 按待办现在的状态重排「关联待办」列表。读不到待办时列表按「找不到」显示，并记日志。
+    fn refresh_links(&mut self, todos: &TodoCommands, store: &Store) {
+        let lists = todos.lists().unwrap_or_else(|err| {
+            store.log_warn(&format!("收纳悬浮窗读不到待办：{err}"));
+            Vec::new()
+        });
+        self.links = linked_todos(&self.todo_ids, &lists);
+        push_links(&self.links, &self.ui.global::<ShelvesPageData>());
+    }
+
+    /// 勾选完成一条关联待办，走待办现有的完成逻辑（含重复待办）。已完成或在回收站的不处理：
+    /// 悬浮窗里能不能取消完成，产品规格没有写。
+    fn complete_todo(&mut self, ctx: &Ctx<'_>, index: i32) {
+        let Some(link) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.links.get(index))
+        else {
+            return;
+        };
+        if !link.found || link.completed || link.in_trash {
+            return;
+        }
+        match ctx.todos.complete_item(&link.id) {
+            Ok(()) => {
+                self.clear_error();
+                self.refresh_links(ctx.todos, ctx.store);
+            }
+            Err(err) => self.fail(&err.to_string()),
+        }
+    }
+
+    /// 点标题：打开面板，切到待办并定位这一条。
+    fn open_todo(&self, index: i32) {
+        let Some(link) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.links.get(index))
+        else {
+            return;
+        };
+        if link.found {
+            crate::panel::open_target(PanelTarget::Todo {
+                item_id: link.id.clone(),
+            });
+        }
     }
 
     fn refresh_visible(&mut self, ctx: &Ctx<'_>, force: bool) {

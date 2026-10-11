@@ -12,14 +12,14 @@ use std::time::Duration;
 
 use lanwork_core::apps::launch;
 use lanwork_core::dispatch::{IconCache, IconKey, RgbaImage};
-use lanwork_core::panel::{passed_drag_threshold, visible_paths};
+use lanwork_core::panel::{LinkedTodo, passed_drag_threshold, visible_paths};
 use lanwork_core::shell::path_target;
 use lanwork_core::shelves::{IncomingRef, ShelfCommands, ShelfRef};
 use slint::platform::{PointerEventButton, WindowEvent};
-use slint::{LogicalPosition, Model, VecModel};
+use slint::{LogicalPosition, Model, ModelRc, VecModel};
 
 use crate::shelf_dnd::{DragOutcome, drag_metrics, drag_out, path_text};
-use crate::{ShelfRefRow, ShelvesPageData};
+use crate::{ShelfLinkRow, ShelfRefRow, ShelvesPageData};
 
 /// 按下条目行时记下的位置，指针移出阈值之后才开始拖出。
 struct Press {
@@ -433,11 +433,37 @@ fn to_image(image: &RgbaImage) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// 把选中分组的关联待办推给界面。面板和悬浮窗各有一份 `ShelvesPageData`，都调这个。
+pub(crate) fn push_links(links: &[LinkedTodo], data: &ShelvesPageData<'_>) {
+    let rows: Vec<ShelfLinkRow> = links
+        .iter()
+        .map(|link| ShelfLinkRow {
+            title: link.title.as_str().into(),
+            found: link.found,
+            completed: link.completed,
+            in_trash: link.in_trash,
+        })
+        .collect();
+    data.set_links(ModelRc::new(VecModel::from(rows)));
+}
+
+/// 多条关联待办在分组列表里的一行文字：标题用「、」连起来。怎么排版产品规格没有写，这是实现选择。
+pub(crate) fn joined_titles(titles: &[String]) -> String {
+    titles.join("、")
+}
+
 #[cfg(test)]
 mod tests {
     use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, E_FAIL};
 
     use super::*;
+
+    #[test]
+    fn linked_titles_are_joined_with_the_enumeration_comma() {
+        assert_eq!(joined_titles(&[]), "");
+        assert_eq!(joined_titles(&["甲".to_owned()]), "甲");
+        assert_eq!(joined_titles(&["甲".to_owned(), "乙".to_owned()]), "甲、乙");
+    }
 
     #[test]
     fn an_inline_drag_is_handed_over_once_and_a_deferred_action_is_refused() {

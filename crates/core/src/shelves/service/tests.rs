@@ -108,7 +108,7 @@ fn purge_notice_clears_every_link() {
         })
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while service.get(&first.id).unwrap().todo_ids.first().is_some()
+    while !service.get(&first.id).unwrap().todo_ids.is_empty()
         && std::time::Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(10));

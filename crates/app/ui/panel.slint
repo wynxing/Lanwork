@@ -2,7 +2,7 @@
 // 风格与搜索条一致：亚克力时客户区透明，纯色时由这里画满；深浅两套配色。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Chip, Field, Ink } from "widgets.slint";
+import { Btn, Check, Chip, Field, Ink } from "widgets.slint";
 import { NotesPage } from "notespage.slint";
 import { ShelvesPage } from "shelvespage.slint";
 
@@ -38,44 +38,6 @@ export struct PanelDetail {
     current: bool,
     can-up: bool,
     can-down: bool,
-}
-
-component Check inherits Rectangle {
-    in property <bool> checked;
-    in property <Ink> c;
-    callback toggled();
-
-    width: 28px;
-    height: 28px;
-    background: transparent;
-
-    Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        width: 18px;
-        height: 18px;
-        border-radius: 9px;
-        border-width: 1.5px;
-        border-color: checked ? c.accent : c.secondary;
-        background: checked ? c.accent : touch.has-hover ? c.hover : transparent;
-
-        if checked: Path {
-            width: 100%;
-            height: 100%;
-            viewbox-width: 18;
-            viewbox-height: 18;
-            fill: transparent;
-            stroke: #ffffff;
-            stroke-width: 1.6px;
-            commands: "M5 9.3l2.7 2.7 5.2-5.4";
-        }
-    }
-
-    touch := TouchArea {
-        clicked => {
-            root.toggled();
-        }
-    }
 }
 
 component Segments inherits Rectangle {
