@@ -30,7 +30,8 @@ PrivilegesRequired=lowest
 UsedUserAreasWarning=no
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
-MinVersion=0
+; 6.1 是 Inno Setup 6.7.3 的编译器下限，不是产品最低版本。
+MinVersion=6.1
 AppMutex=Local\Lanwork.SingleInstance.Mutex
 CloseApplications=yes
 CloseApplicationsFilter=lanwork.exe

@@ -476,7 +476,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 不选 NSIS。它也能在 `windows-latest` 上编出单个 exe，按用户安装也能做，但 `CreateShortcut` 写不了 `VT_CLSID`。不选 WiX。它在 `windows-latest` 上能编，默认产物是 msi；要 exe 还要 Burn。`MsiShortcutProperty` 把快捷方式属性写成字符串，写不成「通知」里用 `InitPropVariantFromCLSID` 验证过的 `VT_CLSID`。
 
-脚本在 `packaging/lanwork.iss`。产物文件名是 `Lanwork-Setup-<版本>.exe`，当前是 `Lanwork-Setup-0.1.0.exe`。`PrivilegesRequired=lowest`，不请求管理员，不写 HKLM，不安装 WebView2，不安装 Windows App Runtime。默认目录是 `%LOCALAPPDATA%\Programs\Lanwork`。这是实现选择，产品规格没有写安装目录。用户可以改目录。目录里有 `"` 时安装停止。`MinVersion=0` 只关掉安装器自带的旧系统拦截，不是把产品最低版本定成 0。产品最低 build 仍待定。
+脚本在 `packaging/lanwork.iss`。产物文件名是 `Lanwork-Setup-<版本>.exe`，当前是 `Lanwork-Setup-0.1.0.exe`。`PrivilegesRequired=lowest`，不请求管理员，不写 HKLM，不安装 WebView2，不安装 Windows App Runtime。默认目录是 `%LOCALAPPDATA%\Programs\Lanwork`。这是实现选择，产品规格没有写安装目录。用户可以改目录。目录里有 `"` 时安装停止。Inno Setup 6.7.3 拒绝 `MinVersion=0`，编译器要求至少 `6.1`。脚本写 `MinVersion=6.1`，这是编译器下限，不是产品最低版本。产品最低 build 仍待定，安装程序不判断 Windows 11 的 build。
 
 开始菜单快捷方式在当前用户的程序目录，文件名 `Lanwork.lnk`。Inno 的 `[Icons]` 写不了属性存储。安装结束时从临时目录运行 `lanwork-shortcut.exe`（`tools/shortcut`），写入 `System.AppUserModel.ID` 和 `System.AppUserModel.ToastActivatorCLSID`，然后删掉这个小程序，不留在安装目录。标识见「通知」。`DisplayName`、`CustomActivator` 和带引号的 `LocalServer32` 由安装脚本写入 HKCU。
 

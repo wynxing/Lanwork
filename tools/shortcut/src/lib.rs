@@ -139,6 +139,21 @@ fn copy_file(source: &Path, dest: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn normalize_newlines(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                out.push(b'\n');
+                index += 2;
+            } else {
+                out.push(bytes[index]);
+                index += 1;
+            }
+        }
+        out
+    }
+
     /// 注释里写「不安装 WebView2」是允许的。这里只拦会把运行时打进安装包的文件名。
     fn installer_bundles_webview(text: &str) -> bool {
         let lower = text.to_ascii_lowercase();
@@ -220,7 +235,8 @@ mod tests {
         assert!(iss.contains("CloseApplications=yes"));
         assert!(iss.contains("CloseApplicationsFilter=lanwork.exe"));
         assert!(iss.contains("RestartApplications=no"));
-        assert!(iss.contains("MinVersion=0"));
+        assert!(iss.contains("MinVersion=6.1"));
+        assert!(!iss.contains("MinVersion=0"));
         assert!(iss.contains("SetupIconFile=..\\crates\\app\\assets\\lanwork.ico"));
         assert!(iss.contains("AppUserModelId\\Lanwork"));
         assert!(iss.contains(ACTIVATOR_CLSID));
@@ -263,6 +279,7 @@ mod tests {
         assert!(cargo.contains(&format!("slint = \"={SLINT_VERSION}\"")));
         let license =
             include_bytes!("../../../third_party/slint/LicenseRef-Slint-Royalty-free-2.0.md");
+        let license = normalize_newlines(license);
         assert_eq!(license.len(), 3620);
         assert!(license.starts_with(b"# Slint Royalty-free"));
         let logo = include_bytes!("../../../third_party/slint/MadeWithSlint-logo-whitebg.png");
