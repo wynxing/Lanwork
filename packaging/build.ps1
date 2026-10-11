@@ -68,26 +68,51 @@ New-Item -ItemType Directory -Force $out | Out-Null
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Copy-Item $helper (Join-Path $helperDir "lanwork-shortcut.exe") -Force
 
-$iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-if (-not (Test-Path $iscc)) {
-    $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+# windows-latest 可能预装别的 Inno Setup。不用那份 ISCC。
+# 只使用哈希核对过的 6.7.3，装到独立目录。/PORTABLE=1 避免写到已有安装目录。
+$innoVersion = "6.7.3"
+$innoRoot = Join-Path $root "packaging\.tools\innosetup-$innoVersion"
+$iscc = Join-Path $innoRoot "ISCC.exe"
+$innoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-$innoVersion.exe"
+$innoHash = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+
+function Test-Iscc673([string]$Path) {
+    if (-not (Test-Path $Path)) { return $false }
+    $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+    if (-not $info.FileVersion) { return $false }
+    return $info.FileVersion.Trim().Trim([char]0).StartsWith("6.7.3")
 }
-if (-not (Test-Path $iscc)) {
-    $installer = Join-Path $env:TEMP "innosetup-6.7.3.exe"
-    $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
-    $expected = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
-    Invoke-WebRequest -Uri $url -OutFile $installer
+
+if (-not (Test-Iscc673 $iscc)) {
+    if (Test-Path $innoRoot) { Remove-Item -Recurse -Force $innoRoot }
+    $installer = Join-Path $env:TEMP "innosetup-$innoVersion.exe"
+    Invoke-WebRequest -Uri $innoUrl -OutFile $installer
     $got = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
-    if ($got -ne $expected) {
+    if ($got -ne $innoHash) {
         throw "Inno Setup 哈希不符: $got"
     }
-    $proc = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+    $proc = Start-Process -FilePath $installer -ArgumentList @(
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        "/SP-",
+        "/PORTABLE=1",
+        "/DIR=$innoRoot"
+    ) -Wait -PassThru
     if ($proc.ExitCode -ne 0) {
-        throw "安装 Inno Setup 失败，退出码 $($proc.ExitCode)"
+        throw "安装 Inno Setup $innoVersion 失败，退出码 $($proc.ExitCode)"
     }
-    $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 }
-if (-not (Test-Path $iscc)) { throw "找不到 ISCC.exe" }
+if (-not (Test-Iscc673 $iscc)) {
+    throw "找不到校验过的 Inno Setup $innoVersion : $iscc"
+}
+$isccInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($iscc)
+$isccFile = $isccInfo.FileVersion.Trim().Trim([char]0)
+$isccProduct = ""
+if ($isccInfo.ProductVersion) {
+    $isccProduct = $isccInfo.ProductVersion.Trim().Trim([char]0)
+}
+Write-Host "verified Inno Setup FileVersion=$isccFile ProductVersion=$isccProduct ISCC=$iscc"
 
 & $iscc $issPath
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

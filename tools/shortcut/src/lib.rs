@@ -52,9 +52,23 @@ Everything SDK 3 的许可是 Everything-SDK3-LICENSE.txt。
 拼音表使用 Unicode 18.0.0 Unihan。许可是 Unicode-LICENSE.txt（Unicode License v3）。
 
 界面使用 Slint {slint}（Royalty-free 2.0）。归属徽标和链接在 GitHub Release 页。
+
+安装向导的简体中文消息是 packaging/ChineseSimplified.isl。
+翻译版权与 MIT 许可正文如下，上游是
+https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation
+副本取自 Inno Setup tag is-6_7_3 的 Files/Languages/Unofficial/ChineseSimplified.isl。
+
+{chinese}
+
+编译安装包使用 Inno Setup 6.7.3。编译器不进入安装目录。
+下面是 Inno Setup 许可要求的条件，原文来自 tag is-6_7_3 的 license.txt，条件不改。
+
+{inno}
 ",
         version = env!("CARGO_PKG_VERSION"),
         slint = SLINT_VERSION,
+        chinese = include_str!("../../../packaging/ChineseSimplified-LICENSE.txt"),
+        inno = include_str!("../../../packaging/Inno-Setup-License.txt"),
     )
 }
 
@@ -214,6 +228,10 @@ mod tests {
         let notices = fs::read_to_string(dest.join("THIRD_PARTY_NOTICES.txt")).unwrap();
         assert!(notices.contains(env!("CARGO_PKG_VERSION")));
         assert!(notices.contains(SLINT_VERSION));
+        assert!(notices.contains("Copyright (c) 2019 - 2020 kirakira"));
+        assert!(notices.contains("Jordan Russell"));
+        assert!(notices.contains("Martijn Laan"));
+        assert!(notices.contains("this list of conditions without modification"));
         assert!(!notices.contains("已验收"));
         assert!(!notices.contains("仅供自测"));
         let _ = fs::remove_dir_all(&temp);
@@ -287,6 +305,11 @@ mod tests {
         );
         assert!(script.contains("portable-x64.zip"));
         assert!(script.contains("WaitForExit"));
+        assert!(script.contains("packaging\\.tools\\innosetup-$innoVersion"));
+        assert!(script.contains("$innoVersion = \"6.7.3\""));
+        assert!(script.contains("/PORTABLE=1"));
+        assert!(script.contains("verified Inno Setup"));
+        assert!(!script.contains("ProgramFiles(x86)"));
         assert!(!installer_bundles_webview(script));
         let cargo = include_str!("../../../Cargo.toml");
         assert!(cargo.contains(&format!("slint = \"={SLINT_VERSION}\"")));
@@ -305,6 +328,10 @@ mod tests {
         let text = include_str!("../../../docs/architecture.md");
         assert!(!text.contains("仓库公开之前不对外分发"));
         assert!(text.contains("Inno Setup 6.7.3"));
+        assert!(text.contains("packaging/.tools/innosetup-6.7.3"));
+        assert!(text.contains("ChineseSimplified-LICENSE.txt"));
+        assert!(text.contains("Inno-Setup-License.txt"));
+        assert!(text.contains("Copyright (c) 2019 - 2020 kirakira"));
         assert!(text.contains(ACTIVATOR_CLSID));
         assert!(text.contains("更新未验收"));
         assert!(text.contains("MadeWithSlint-logo-whitebg.png"));
