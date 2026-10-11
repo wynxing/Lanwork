@@ -472,7 +472,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 ### 安装程序与便携包
 
-安装程序用 Inno Setup 6.7.3。编译器是 `ISCC.exe`。`windows-latest` 可能已经预装别的版本（这次审查时是 6.7.1）。打包脚本不调用那份 `ISCC.exe`。它从 `https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe` 下载，SHA-256 为 `9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732`，核对哈希后以 `/PORTABLE=1` 装到 `packaging/.tools/innosetup-6.7.3`，再用那里的 `ISCC.exe`。日志打印该文件的 `FileVersion`，必须以 `6.7.3` 开头。编译器不进 Lanwork 的安装包。
+安装程序用 Inno Setup 6.7.3。编译器是 `ISCC.exe`。`windows-latest` 可能已经预装别的版本（这次审查时是 6.7.1）。打包脚本不调用那份 `ISCC.exe`。它从 `https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe` 下载，SHA-256 为 `9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732`，核对哈希后以 `/PORTABLE=1` 装到 `packaging/.tools/innosetup-6.7.3`，再用那里的 `ISCC.exe`。`ISCC.exe` 的文件版本资源是 `0.0.0.0`，不能用来区分预装编译器。日志改为运行这份 `ISCC` 并打印它的横幅，横幅里必须有 `6.7.3`。编译器不进 Lanwork 的安装包。
 
 不选 NSIS。它也能在 `windows-latest` 上编出单个 exe，按用户安装也能做，但 `CreateShortcut` 写不了 `VT_CLSID`。不选 WiX。它在 `windows-latest` 上能编，默认产物是 msi；要 exe 还要 Burn。`MsiShortcutProperty` 把快捷方式属性写成字符串，写不成「通知」里用 `InitPropVariantFromCLSID` 验证过的 `VT_CLSID`。
 

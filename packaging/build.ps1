@@ -76,11 +76,21 @@ $iscc = Join-Path $innoRoot "ISCC.exe"
 $innoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-$innoVersion.exe"
 $innoHash = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
 
+function Get-IsccBanner([string]$Path) {
+    if (-not (Test-Path $Path)) { return "" }
+    $outFile = Join-Path $env:TEMP ("iscc-banner-" + [guid]::NewGuid().ToString() + ".txt")
+    & $Path > $outFile 2>&1
+    $text = ""
+    if (Test-Path $outFile) {
+        $text = Get-Content -Raw $outFile
+        Remove-Item $outFile -Force
+    }
+    if (-not $text) { return "" }
+    return $text
+}
+
 function Test-Iscc673([string]$Path) {
-    if (-not (Test-Path $Path)) { return $false }
-    $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
-    if (-not $info.FileVersion) { return $false }
-    return $info.FileVersion.Trim().Trim([char]0).StartsWith("6.7.3")
+    return (Get-IsccBanner $Path) -match '6\.7\.3'
 }
 
 function Write-IsccCandidates {
@@ -94,18 +104,14 @@ function Write-IsccCandidates {
     foreach ($dir in $dirs) {
         $candidate = Join-Path $dir "ISCC.exe"
         if (-not (Test-Path $candidate)) { continue }
-        $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($candidate)
-        Write-Host "found ISCC FileVersion=$($info.FileVersion) Path=$candidate"
+        Write-Host "found ISCC Path=$candidate"
+        Write-Host (Get-IsccBanner $candidate)
     }
 }
 
 $systemIscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-$systemBefore = ""
-if (Test-Path $systemIscc) {
-    $systemBefore = [Diagnostics.FileVersionInfo]::GetVersionInfo($systemIscc).FileVersion
-    if ($systemBefore) { $systemBefore = $systemBefore.Trim().Trim([char]0) }
-}
-Write-Host "preinstalled ISCC FileVersion=$systemBefore Path=$systemIscc"
+Write-Host "preinstalled ISCC Path=$systemIscc"
+Write-Host (Get-IsccBanner $systemIscc)
 
 if (-not (Test-Iscc673 $iscc)) {
     if (Test-Path $innoRoot) { Remove-Item -Recurse -Force $innoRoot }
@@ -143,9 +149,8 @@ if (-not (Test-Iscc673 $iscc)) {
     )) {
         $candidate = Join-Path $dir "ISCC.exe"
         if (-not (Test-Iscc673 $candidate)) { continue }
-        $ver = [Diagnostics.FileVersionInfo]::GetVersionInfo($candidate).FileVersion.Trim().Trim([char]0)
-        if ($candidate -eq $systemIscc -and $ver -eq $systemBefore) { continue }
-        Write-Host "copy verified Inno Setup $ver from $dir"
+        if ($candidate -eq $systemIscc) { continue }
+        Write-Host "copy verified Inno Setup 6.7.3 from $dir"
         Copy-Item -Path (Join-Path $dir "*") -Destination $innoRoot -Recurse -Force
         break
     }
@@ -157,13 +162,12 @@ if (-not (Test-Iscc673 $iscc)) {
     if (Test-Path $innoLog) { $tail = (Get-Content -Path $innoLog -Tail 40) -join "`n" }
     throw "找不到校验过的 Inno Setup $innoVersion : $iscc`n$tail"
 }
-$isccInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($iscc)
-$isccFile = $isccInfo.FileVersion.Trim().Trim([char]0)
-$isccProduct = ""
-if ($isccInfo.ProductVersion) {
-    $isccProduct = $isccInfo.ProductVersion.Trim().Trim([char]0)
+$banner = Get-IsccBanner $iscc
+Write-Host "verified Inno Setup ISCC=$iscc"
+Write-Host $banner
+if ($banner -notmatch '6\.7\.3') {
+    throw "ISCC 横幅里没有 6.7.3"
 }
-Write-Host "verified Inno Setup FileVersion=$isccFile ProductVersion=$isccProduct ISCC=$iscc"
 
 & $iscc $issPath
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

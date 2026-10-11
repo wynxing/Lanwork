@@ -309,6 +309,7 @@ mod tests {
         assert!(script.contains("$innoVersion = \"6.7.3\""));
         assert!(script.contains("/PORTABLE=1"));
         assert!(script.contains("verified Inno Setup"));
+        assert!(script.contains("Get-IsccBanner"));
         assert!(script.contains("/DIR=`\"$innoRoot`\""));
         assert!(!installer_bundles_webview(script));
         let cargo = include_str!("../../../Cargo.toml");
