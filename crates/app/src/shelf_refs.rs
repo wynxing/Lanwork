@@ -3,6 +3,7 @@
 //! 两处各有自己的窗口和 `ShelvesPageData` 全局（全局在每个窗口里各一份），这里只持有状态，
 //! 不决定把结果交给哪个窗口。不打开、不复制、不移动、不删除被引用的文件。
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -289,18 +290,60 @@ pub(crate) fn spawn_probe(
         .map_err(|err| err.to_string())
 }
 
-/// 在界面线程的下一轮事件循环里进入 OLE 的拖出循环。不能在窗口的借用里调用：循环期间窗口消息照常派发。
+/// 拖动阈值触发的那次回调里，同步进入 OLE 的拖出循环所需的交接。
+///
+/// `DoDragDrop` 是模态循环，不能在窗口的 `RefCell` 借用里跑；但推迟到下一轮事件循环时，鼠标抬起可能
+/// 已经入队，循环一开始就看到按钮已松开而立刻结束。所以回调先在借用里只算出要拖的路径并交给
+/// [`InlineDrag::offer`]，借用结束后再由 [`InlineDrag::take`] 取走，在同一次回调里开始拖出。
+/// 如果回调本身就落在别的借用里（动作被推迟），`offer` 返回 false，退回 [`schedule_drag`]。
+pub(crate) struct InlineDrag {
+    open: Cell<bool>,
+    start: RefCell<Option<(String, (f32, f32))>>,
+}
+
+impl InlineDrag {
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(Self {
+            open: Cell::new(true),
+            start: RefCell::new(None),
+        })
+    }
+
+    /// 动作在回调里同步执行时接收要拖的路径。动作被推迟之后返回 false。
+    pub(crate) fn offer(&self, path: String, origin: (f32, f32)) -> bool {
+        if !self.open.get() {
+            return false;
+        }
+        *self.start.borrow_mut() = Some((path, origin));
+        true
+    }
+
+    /// 借用结束后取走同步接收到的路径，之后的 `offer` 都返回 false。
+    pub(crate) fn take(&self) -> Option<(String, (f32, f32))> {
+        self.open.set(false);
+        self.start.borrow_mut().take()
+    }
+}
+
+/// 立刻进入 OLE 的拖出循环。调用者不能持有窗口的借用：循环期间窗口消息照常派发。
 /// `before` 在进入循环前调用，`after` 在循环结束后调用。
+pub(crate) fn drag_now(
+    path: String,
+    before: impl FnOnce(),
+    after: impl FnOnce(Result<DragOutcome, String>),
+) {
+    before();
+    let outcome = drag_out(&[PathBuf::from(path)]);
+    after(outcome);
+}
+
+/// 动作被推迟（回调落在别的借用里）时的退路：下一轮事件循环再拖出。
 pub(crate) fn schedule_drag(
     path: String,
     before: impl FnOnce() + 'static,
     after: impl FnOnce(Result<DragOutcome, String>) + 'static,
 ) {
-    slint::Timer::single_shot(Duration::ZERO, move || {
-        before();
-        let outcome = drag_out(&[PathBuf::from(path)]);
-        after(outcome);
-    });
+    slint::Timer::single_shot(Duration::ZERO, move || drag_now(path, before, after));
 }
 
 /// 模态循环吃掉了鼠标抬起，行上的 `TouchArea` 还抓着鼠标。补发抬起和离开，抓取才会释放。
@@ -395,6 +438,16 @@ mod tests {
     use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, E_FAIL};
 
     use super::*;
+
+    #[test]
+    fn an_inline_drag_is_handed_over_once_and_a_deferred_action_is_refused() {
+        let inline = InlineDrag::new();
+        assert!(inline.offer("C:\\a.txt".into(), (1.0, 2.0)));
+        assert_eq!(inline.take(), Some(("C:\\a.txt".to_owned(), (1.0, 2.0))));
+        assert_eq!(inline.take(), None);
+        assert!(!inline.offer("C:\\b.txt".into(), (0.0, 0.0)));
+        assert_eq!(inline.take(), None);
+    }
 
     #[test]
     fn the_folder_to_open_is_the_parent_and_a_root_has_none() {

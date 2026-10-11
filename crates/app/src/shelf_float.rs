@@ -10,6 +10,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,8 +27,8 @@ use slint::{CloseRequestResponse, ComponentHandle, SharedString};
 
 use crate::shelf_dnd::{DragOutcome, DropState, Registration, register};
 use crate::shelf_refs::{
-    Moved, ProbeResult, RefsView, drag_error, parent_folder, prepare_drop, release_grab,
-    schedule_drag, skipped_message, spawn_launch, spawn_probe,
+    InlineDrag, Moved, ProbeResult, RefsView, drag_error, drag_now, parent_folder, prepare_drop,
+    release_grab, schedule_drag, skipped_message, spawn_launch, spawn_probe,
 };
 use crate::{ShelfFloat, ShelvesPageData, bar_win};
 
@@ -359,7 +360,21 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
     });
     data.on_ref_move({
         let id = id.clone();
-        move |_, x, y| with_window(&id, move |window, _| window.ref_move(x, y))
+        move |_, x, y| {
+            let inline = InlineDrag::new();
+            let offered = Rc::clone(&inline);
+            with_window(&id, move |window, _| window.ref_move(x, y, &offered));
+            if let Some((path, origin)) = inline.take() {
+                let id = id.clone();
+                drag_now(
+                    path,
+                    || {},
+                    move |outcome| {
+                        with_window(&id, move |window, _| window.drag_finished(outcome, origin));
+                    },
+                );
+            }
+        }
     });
     data.on_ref_release({
         let id = id.clone();
@@ -563,21 +578,26 @@ impl FloatWindow {
         self.view.press(&self.refs, index, x, y);
     }
 
-    /// 移动超过系统拖动阈值就拖出按下的那一条。OLE 的模态循环不能在这次回调里跑，放到下一轮事件循环。
-    fn ref_move(&mut self, x: f32, y: f32) {
+    /// 移动超过系统拖动阈值就拖出按下的那一条。同步执行时把路径交给 `inline`，由回调在借用结束后
+    /// 开始拖出；动作被推迟时退回下一轮事件循环。
+    fn ref_move(&mut self, x: f32, y: f32, inline: &InlineDrag) {
         match self.view.moved(self.ui.window().scale_factor(), x, y) {
             Moved::Nothing => {}
             Moved::Missing => self.fail("路径不存在"),
             Moved::Start { path, origin } => {
                 self.clear_error();
-                let id = self.group_id.clone();
-                schedule_drag(
-                    path,
-                    || {},
-                    move |outcome| {
-                        with_window(&id, move |window, _| window.drag_finished(outcome, origin));
-                    },
-                );
+                if !inline.offer(path.clone(), origin) {
+                    let id = self.group_id.clone();
+                    schedule_drag(
+                        path,
+                        || {},
+                        move |outcome| {
+                            with_window(&id, move |window, _| {
+                                window.drag_finished(outcome, origin)
+                            });
+                        },
+                    );
+                }
             }
         }
     }

@@ -22,10 +22,26 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use crate::panel::with_shelves;
 use crate::shelf_dnd::DragOutcome;
 use crate::shelf_refs::{
-    Moved, ProbeResult, RefsView, drag_error, parent_folder, prepare_drop, release_grab,
-    schedule_drag, skipped_message, spawn_launch, spawn_probe, to_i32,
+    InlineDrag, Moved, ProbeResult, RefsView, drag_error, drag_now, parent_folder, prepare_drop,
+    release_grab, schedule_drag, skipped_message, spawn_launch, spawn_probe, to_i32,
 };
 use crate::{Panel, ShelfGroupRow, ShelfTodoRow, ShelvesPageData};
+
+/// 放下那一刻的目标分组。OLE 回调在界面线程上，但可能正落在面板的借用里，所以不经过 `with_shelves`
+/// 去读选中项，而是由页面在每次重排时把选中的分组 id 放到这里。
+static DROP_TARGET: Mutex<Option<String>> = Mutex::new(None);
+
+fn publish_drop_target(selected: Option<&str>) {
+    let mut slot = DROP_TARGET.lock().unwrap_or_else(|e| e.into_inner());
+    *slot = selected.map(str::to_owned);
+}
+
+fn drop_target() -> Option<String> {
+    DROP_TARGET
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
 
 pub(crate) struct ShelvesPage {
     shelves: Option<ShelfCommands>,
@@ -158,6 +174,7 @@ impl ShelvesPage {
     }
 
     fn rebuild(&mut self, ui: &Panel) {
+        publish_drop_target(self.selected.as_deref());
         self.rows = group_rows(&self.list, &self.lists);
         self.groups_model.set_vec(
             self.rows
@@ -457,16 +474,25 @@ impl ShelvesPage {
         }
     }
 
-    /// 放下的路径加入当前选中的分组；没有分组时由服务先建名为「收纳」的分组。
-    fn add_dropped(&mut self, ui: &Panel, incoming: &[IncomingRef], skipped: usize) {
+    /// 放下的路径加入放下那一刻选中的分组 `target`；那时没有分组就传空，由服务先建名为「收纳」的分组。
+    /// 后台探测期间用户换了分组，也不改变这次的目标，选中项也不被拉回去。
+    fn add_dropped(
+        &mut self,
+        ui: &Panel,
+        target: Option<&str>,
+        incoming: &[IncomingRef],
+        skipped: usize,
+    ) {
         let Some(shelves) = self.shelves.clone() else {
             self.fail(ui, "收纳服务没有打开");
             return;
         };
         if !incoming.is_empty() {
-            match shelves.add_refs(self.selected.as_deref(), incoming) {
+            match shelves.add_refs(target, incoming) {
                 Ok(outcome) => {
-                    if let Some(group) = outcome.group {
+                    if target.is_none()
+                        && let Some(group) = outcome.group
+                    {
                         self.selected = Some(group.id);
                     }
                     ui.set_error(SharedString::new());
@@ -490,20 +516,24 @@ impl ShelvesPage {
         }
     }
 
-    /// 移动超过系统拖动阈值就拖出按下的那一条。OLE 的模态循环不能在这次回调里跑，放到下一轮事件循环。
-    fn ref_move(&mut self, ui: &Panel, x: f32, y: f32) {
+    /// 移动超过系统拖动阈值就拖出按下的那一条。同步执行时把路径交给 `inline`，由回调在借用结束后
+    /// 开始拖出；动作被推迟时退回下一轮事件循环。
+    fn ref_move(&mut self, ui: &Panel, x: f32, y: f32, inline: &InlineDrag) {
         match self.view.moved(ui.window().scale_factor(), x, y) {
             Moved::Nothing => {}
             Moved::Missing => self.fail(ui, "路径不存在"),
             Moved::Start { path, origin } => {
                 ui.set_error(SharedString::new());
-                schedule_drag(
-                    path,
-                    || with_shelves(|page, _| page.dragging = true),
-                    move |outcome| {
-                        with_shelves(move |page, ui| page.drag_finished(ui, outcome, origin))
-                    },
-                );
+                self.dragging = true;
+                if !inline.offer(path.clone(), origin) {
+                    schedule_drag(
+                        path,
+                        || {},
+                        move |outcome| {
+                            with_shelves(move |page, ui| page.drag_finished(ui, outcome, origin));
+                        },
+                    );
+                }
             }
         }
     }
@@ -536,9 +566,12 @@ impl ShelvesPage {
 
 /// OLE 放下目标读到路径之后调用。文件夹标记在后台线程里查，结果回到界面线程再写入服务。
 pub(crate) fn dropped(paths: Vec<PathBuf>) {
-    let spawned = prepare_drop(paths, |incoming, skipped| {
+    let target = drop_target();
+    let spawned = prepare_drop(paths, move |incoming, skipped| {
         let _ = slint::invoke_from_event_loop(move || {
-            with_shelves(move |page, ui| page.add_dropped(ui, &incoming, skipped));
+            with_shelves(move |page, ui| {
+                page.add_dropped(ui, target.as_deref(), &incoming, skipped);
+            });
         });
     });
     if let Err(err) = spawned {
@@ -578,7 +611,20 @@ fn wire(ui: &Panel) {
     data.on_pick_todo(|index| with_shelves(move |page, ui| page.pick_todo(ui, index)));
     data.on_unlink_todo(|| with_shelves(ShelvesPage::unlink_todo));
     data.on_ref_press(|index, x, y| with_shelves(move |page, _| page.ref_press(index, x, y)));
-    data.on_ref_move(|_, x, y| with_shelves(move |page, ui| page.ref_move(ui, x, y)));
+    data.on_ref_move(|_, x, y| {
+        let inline = InlineDrag::new();
+        let offered = Rc::clone(&inline);
+        with_shelves(move |page, ui| page.ref_move(ui, x, y, &offered));
+        if let Some((path, origin)) = inline.take() {
+            drag_now(
+                path,
+                || {},
+                |outcome| {
+                    with_shelves(move |page, ui| page.drag_finished(ui, outcome, origin));
+                },
+            );
+        }
+    });
     data.on_ref_release(|| with_shelves(|page, _| page.view.release()));
     data.on_visible_changed(|first, visible| {
         with_shelves(move |page, ui| {
@@ -586,4 +632,20 @@ fn wire(ui: &Panel) {
             page.refresh_visible(ui, false);
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_drop_target_is_what_was_selected_when_it_was_published() {
+        publish_drop_target(Some("g1"));
+        let at_drop = drop_target();
+        publish_drop_target(Some("g2"));
+        assert_eq!(at_drop.as_deref(), Some("g1"));
+        assert_eq!(drop_target().as_deref(), Some("g2"));
+        publish_drop_target(None);
+        assert_eq!(drop_target(), None);
+    }
 }
