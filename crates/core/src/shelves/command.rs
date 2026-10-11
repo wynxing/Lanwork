@@ -7,8 +7,8 @@ use crate::todos::TodoCommands;
 
 use super::error::ShelfError;
 use super::model::{AddRefsOutcome, IncomingRef, Shelf};
-use crate::notes::FloatGeometry;
 use super::service::ShelfService;
+use crate::notes::FloatGeometry;
 
 /// 界面调用的收纳命令。克隆与对应的 [`ShelfService`] 共享状态。
 #[derive(Clone, Debug)]

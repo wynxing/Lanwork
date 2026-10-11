@@ -419,7 +419,10 @@ fn setting_the_same_float_geometry_writes_nothing_and_a_bad_id_is_refused() {
     cmds.set_float(&group.id, geometry(5)).unwrap();
     let events = fix.store.subscribe();
     cmds.set_float(&group.id, geometry(5)).unwrap();
-    assert!(events.try_recv().is_err(), "an unchanged value is not a write");
+    assert!(
+        events.try_recv().is_err(),
+        "an unchanged value is not a write"
+    );
     cmds.set_float(&group.id, geometry(6)).unwrap();
     assert_eq!(events.try_recv().unwrap().kind, EntityKind::Shelf);
     assert!(cmds.set_float("../x", geometry(1)).is_err());
