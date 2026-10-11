@@ -72,6 +72,42 @@ export component Btn inherits Rectangle {
     }
 }
 
+// 悬浮窗标题条上的「钉住」按钮，便签悬浮窗和收纳悬浮窗共用。只有图标，没有文字。
+// 已钉住：图标实心、用强调色，底色用选中色；未钉住：只有描边的图标。
+export component PinBtn inherits Rectangle {
+    in property <bool> pinned;
+    in property <Ink> c;
+    callback toggled();
+
+    width: 28px;
+    height: 28px;
+    background: pinned ? c.selection : touch.has-hover ? c.hover : transparent;
+    accessible-role: button;
+    accessible-label: "钉住";
+    accessible-checkable: true;
+    accessible-checked: pinned;
+
+    Path {
+        x: 8px;
+        y: 8px;
+        width: 12px;
+        height: 12px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        fill: pinned ? c.accent : transparent;
+        stroke: pinned ? c.accent : c.secondary;
+        stroke-width: 1.2px;
+        stroke-line-join: round;
+        commands: "M4 1h4v2.2l-.8 2.4 2.2 2.1v1.1H6.6V11.5H5.4V8.8H2.6V7.7l2.2-2.1L4 3.2Z";
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
 // 圆形勾选框，待办页和收纳悬浮窗的关联待办共用。
 export component Check inherits Rectangle {
     in property <bool> checked;
