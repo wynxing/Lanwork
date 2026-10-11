@@ -157,7 +157,7 @@ Invoke-Gui $setup @(
     "/NORESTART",
     "/DIR=$installDir",
     "/LOG=$log"
-) $log }
+) $log
 
 foreach ($name in @(
     "lanwork.exe",
@@ -205,7 +205,7 @@ Invoke-Gui $unins @(
     "/VERYSILENT",
     "/SUPPRESSMSGBOXES",
     "/LOG=$unlog"
-) $unlog }
+) $unlog
 
 if (Test-Path (Join-Path $installDir "lanwork.exe")) { throw "卸载后程序还在" }
 if (Test-Path $lnk) { throw "卸载后快捷方式还在" }
