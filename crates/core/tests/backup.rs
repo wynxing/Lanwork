@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lanwork_core::CivilDate;
 use lanwork_core::backup::{BackupCommands, LaunchBackup};
 use lanwork_core::notes::{FloatGeometry, NoteCommands, NoteError, NoteInput};
+use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::{BootHooks, EntityKind, Store, StorePaths};
 
 struct TempDir {
@@ -435,4 +436,29 @@ fn float_geometry_goes_through_export_and_import() {
 
     commands.import(&package, 40).unwrap();
     assert_eq!(notes.get(&note.id).unwrap().float, Some(geometry));
+}
+
+#[test]
+fn shelf_links_go_through_export_and_import_including_the_old_single_field() {
+    let fx = fixture();
+    write_rel(
+        &fx.store,
+        "shelves/old.json",
+        r#"{"schemaVersion":1,"id":"old","name":"旧","order":0,"todoId":"t-old","refs":[]}"#,
+    );
+    let shelves = ShelfCommands::open(fx.store.clone()).unwrap();
+    let many = shelves.create_group("新").unwrap();
+    shelves.link_todo(&many.id, "t-1").unwrap();
+    shelves.link_todo(&many.id, "t-2").unwrap();
+    assert_eq!(shelves.get("old").unwrap().todo_ids, ["t-old"]);
+
+    let commands = BackupCommands::open(fx.store.clone());
+    let package = fx._temp.path().join("shelves.zip");
+    commands.export(&package, true, 30).unwrap();
+    shelves.unlink_todo(&many.id, "t-1").unwrap();
+    shelves.link_todo("old", "t-extra").unwrap();
+
+    commands.import(&package, 40).unwrap();
+    assert_eq!(shelves.get("old").unwrap().todo_ids, ["t-old"]);
+    assert_eq!(shelves.get(&many.id).unwrap().todo_ids, ["t-1", "t-2"]);
 }

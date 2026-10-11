@@ -21,8 +21,8 @@ pub use shelf_dnd::{
     continue_drag, drop_effect, passed_drag_threshold,
 };
 pub use shelf_page::{
-    GroupRow, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids, pick_selection,
-    reordered_group_ids, todo_choices, visible_paths,
+    GroupRow, LinkedTodo, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids,
+    linked_todos, pick_selection, reordered_group_ids, todo_choices, visible_paths,
 };
 pub use todo_page::{
     InputError, ListEntry, RECURRENCE_CHOICES, Row, TodoView, default_view, format_date,

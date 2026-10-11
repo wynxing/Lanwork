@@ -103,9 +103,11 @@ impl ShelfCommands {
         self.service.set_float(id, geometry)
     }
 
-    pub fn unlink_todo(&self, id: &str) -> Result<Shelf, ShelfError> {
+    /// 解除这个分组对一条待办的关联，其余关联不动。
+    pub fn unlink_todo(&self, id: &str, todo_id: &str) -> Result<Shelf, ShelfError> {
         self.service.check_group_id(id)?;
-        self.service.unlink_todo(id)
+        self.service.check_todo_id(todo_id)?;
+        self.service.unlink_todo(id, todo_id)
     }
 
     pub fn unlink_todo_everywhere(&self, todo_id: &str) -> Result<Vec<String>, ShelfError> {

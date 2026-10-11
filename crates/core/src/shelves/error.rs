@@ -29,8 +29,6 @@ pub enum ShelfError {
     AllocateId,
     /// 已有分组，但这次拖入没有给出目标。服务不猜测该写入哪一组。
     TargetGroupRequired,
-    /// 分组已经关联了另一条待办。先解除再关联。
-    AlreadyLinked { id: String, todo_id: String },
     /// 分组里没有这条路径。
     RefNotFound { id: String, path: String },
     /// 回滚没有写回去，重新读入也失败。内存已清空，避免继续用和磁盘不一致的分组。
@@ -53,9 +51,6 @@ impl fmt::Display for ShelfError {
             Self::InvalidOrder => write!(f, "排序无效"),
             Self::AllocateId => write!(f, "无法分配收纳标识"),
             Self::TargetGroupRequired => write!(f, "没有指定收纳分组"),
-            Self::AlreadyLinked { id, todo_id } => {
-                write!(f, "收纳分组已关联待办：{id}：{todo_id}")
-            }
             Self::RefNotFound { id, path } => write!(f, "找不到引用：{id}：{path}"),
             Self::Unreadable => write!(f, "收纳数据无法读回"),
             Self::Store(err) => write!(f, "{err}"),
