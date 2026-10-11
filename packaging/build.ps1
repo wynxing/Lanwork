@@ -38,19 +38,22 @@ if (-not (Test-Path $helper)) { throw "缺少 $helper" }
 
 function Assert-ProductVersion([string]$Path, [string]$Expected, [string]$Label) {
     $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
-    $product = $info.ProductVersion.Trim()
-    $file = $info.FileVersion.Trim()
+    $product = ($info.ProductVersion).Trim().Trim([char]0)
+    $file = ($info.FileVersion).Trim().Trim([char]0)
     if ($product -ne $Expected) {
         throw "$Label ProductVersion '$product' FileVersion '$file'，期望 $Expected"
     }
     if ($file -ne $Expected -and $file -ne "$Expected.0") {
         throw "$Label FileVersion '$file'，期望 $Expected 或 $Expected.0"
     }
-    if ($info.FileDescription -ne "Lanwork") {
-        throw "$Label FileDescription '$($info.FileDescription)'"
+    # Inno 会把版本字符串用空格补到固定宽度。
+    $description = ($info.FileDescription).Trim().Trim([char]0)
+    $name = ($info.ProductName).Trim().Trim([char]0)
+    if ($description -ne "Lanwork") {
+        throw "$Label FileDescription '$description'"
     }
-    if ($info.ProductName -ne "Lanwork") {
-        throw "$Label ProductName '$($info.ProductName)'"
+    if ($name -ne "Lanwork") {
+        throw "$Label ProductName '$name'"
     }
 }
 
