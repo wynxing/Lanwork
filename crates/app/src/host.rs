@@ -118,7 +118,12 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     {
         dispatch.set_web_search_engine(config.current().web_search_engine);
         icons = Some(dispatch.icon_cache());
-        searchbar::install(search.clone_strong(), dispatch, store.clone());
+        searchbar::install(
+            search.clone_strong(),
+            dispatch,
+            store.clone(),
+            config.clone(),
+        );
     }
     let icons = icons.unwrap_or_else(|| Arc::new(Mutex::new(IconCache::shell())));
     if let Some(shelves) = &shelves {

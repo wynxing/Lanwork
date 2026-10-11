@@ -79,6 +79,16 @@ pub enum Theme {
     System,
 }
 
+/// 搜索条上次拖动结束时的左上角。
+///
+/// 没有这个字段表示还没记住，显示时用默认位置。`x`、`y` 怎么解释，产品规格没有写，
+/// 见架构文档「搜索条」的待定项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchBarOrigin {
+    pub x: i32,
+    pub y: i32,
+}
+
 /// 已经校验过的配置。热键字符串是规范形式。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -128,6 +138,13 @@ pub struct Config {
     /// 网页搜索结果用的搜索引擎：`google`、`bing` 或 `baidu`。缺省 `google`。
     #[serde(rename = "webSearchEngine", default)]
     pub web_search_engine: WebSearchEngine,
+    /// 搜索条左上角。没有这个字段时不记住，显示用默认位置。
+    #[serde(
+        rename = "searchBarOrigin",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub search_bar_origin: Option<SearchBarOrigin>,
 }
 
 impl Default for Config {
@@ -150,6 +167,7 @@ impl Default for Config {
             pomodoro_break_minutes: DEFAULT_BREAK_MINUTES,
             pomodoro_long_break_minutes: DEFAULT_LONG_BREAK_MINUTES,
             web_search_engine: WebSearchEngine::Google,
+            search_bar_origin: None,
         }
     }
 }

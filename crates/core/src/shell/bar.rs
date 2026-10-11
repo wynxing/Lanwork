@@ -102,6 +102,58 @@ pub fn bar_origin(work: WorkArea, width_px: i32) -> (i32, i32) {
     (x, y)
 }
 
+/// 一块显示器。`bounds` 是显示器矩形，`work` 是工作区。物理像素。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorArea {
+    pub bounds: WorkArea,
+    pub work: WorkArea,
+}
+
+/// 这次显示搜索条用的位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarPlacement {
+    pub origin: (i32, i32),
+    /// 用来限制结果区高度的工作区。
+    pub work: WorkArea,
+    /// 记住的位置落在 `monitors` 的这个下标上。用默认位置时为 `None`。
+    pub monitor: Option<usize>,
+}
+
+/// 搜索条这次显示的左上角。
+///
+/// `saved` 为 `None`，或该点不在任何 `monitors.bounds` 内时，用 [`bar_origin`]
+/// （光标所在显示器的工作区水平居中、上边缘 25%）。点在某块显示器内时原样使用，不拉回。
+/// 判断是左闭右开、上闭下开。多块重叠时用切片里的第一块。
+/// 这是待定项的临时做法，不是产品规则。
+#[must_use]
+pub fn place_bar(
+    saved: Option<(i32, i32)>,
+    monitors: &[MonitorArea],
+    cursor_work: WorkArea,
+    width_px: i32,
+) -> BarPlacement {
+    if let Some((x, y)) = saved
+        && let Some(index) = monitors
+            .iter()
+            .position(|monitor| point_inside(monitor.bounds, x, y))
+    {
+        return BarPlacement {
+            origin: (x, y),
+            work: monitors[index].work,
+            monitor: Some(index),
+        };
+    }
+    BarPlacement {
+        origin: bar_origin(cursor_work, width_px),
+        work: cursor_work,
+        monitor: None,
+    }
+}
+
+fn point_inside(area: WorkArea, x: i32, y: i32) -> bool {
+    x >= area.left && x < area.right && y >= area.top && y < area.bottom
+}
+
 /// 结果区最多占到工作区底边之上，逻辑像素。`input_height` 是输入框一行。
 #[must_use]
 pub fn max_results_height(work: WorkArea, dpi: u32, input_height: u32, bottom_gap: u32) -> u32 {
@@ -622,6 +674,108 @@ mod tests {
             bottom: 800,
         };
         assert_eq!(bar_origin(negative, 680), (-1280 + 300, 50));
+    }
+
+    fn monitor(bounds: WorkArea, work: WorkArea) -> MonitorArea {
+        MonitorArea { bounds, work }
+    }
+
+    #[test]
+    fn missing_origin_uses_the_default_placement() {
+        let cursor = WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        let placed = place_bar(None, &[monitor(cursor, cursor)], cursor, 680);
+        assert_eq!(placed.origin, (620, 260));
+        assert_eq!(placed.work, cursor);
+        assert_eq!(placed.monitor, None);
+    }
+
+    #[test]
+    fn saved_origin_uses_the_monitor_that_contains_the_point() {
+        let primary = WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let second_bounds = WorkArea {
+            left: 1920,
+            top: 0,
+            right: 4480,
+            bottom: 1440,
+        };
+        let second_work = WorkArea {
+            left: 1920,
+            top: 40,
+            right: 4480,
+            bottom: 1400,
+        };
+        let placed = place_bar(
+            Some((2000, 100)),
+            &[
+                monitor(primary, primary),
+                monitor(second_bounds, second_work),
+            ],
+            primary,
+            680,
+        );
+        assert_eq!(placed.origin, (2000, 100));
+        assert_eq!(placed.work, second_work);
+        assert_eq!(placed.monitor, Some(1));
+    }
+
+    #[test]
+    fn saved_origin_off_every_monitor_falls_back_and_edges_are_half_open() {
+        let cursor = WorkArea {
+            left: 100,
+            top: 50,
+            right: 1000,
+            bottom: 800,
+        };
+        let monitors = [monitor(cursor, cursor)];
+        let fallback = place_bar(Some((-5000, 10)), &monitors, cursor, 400);
+        assert_eq!(fallback.origin, bar_origin(cursor, 400));
+        assert_eq!(fallback.monitor, None);
+        assert_eq!(fallback.work, cursor);
+
+        assert_eq!(
+            place_bar(Some((1000, 50)), &monitors, cursor, 400).monitor,
+            None
+        );
+        assert_eq!(
+            place_bar(Some((100, 800)), &monitors, cursor, 400).monitor,
+            None
+        );
+        let on_corner = place_bar(Some((100, 50)), &monitors, cursor, 400);
+        assert_eq!(on_corner.origin, (100, 50));
+        assert_eq!(on_corner.monitor, Some(0));
+    }
+
+    #[test]
+    fn negative_monitor_keeps_a_point_on_it_and_empty_list_falls_back() {
+        let bounds = WorkArea {
+            left: -1920,
+            top: -200,
+            right: 0,
+            bottom: 880,
+        };
+        let placed = place_bar(Some((-100, 10)), &[monitor(bounds, bounds)], bounds, 680);
+        assert_eq!(placed.origin, (-100, 10));
+        assert_eq!(placed.monitor, Some(0));
+
+        let cursor = WorkArea {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 600,
+        };
+        let fallback = place_bar(Some((10, 10)), &[], cursor, 200);
+        assert_eq!(fallback.origin, bar_origin(cursor, 200));
+        assert_eq!(fallback.monitor, None);
     }
 
     #[test]
