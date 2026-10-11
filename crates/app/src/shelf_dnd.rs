@@ -186,10 +186,14 @@ fn has_hdrop(data: &IDataObject) -> bool {
     unsafe { data.QueryGetData(&format) }.is_ok()
 }
 
-/// `GetData(CF_HDROP)` 在路径超过 260 个 UTF-16 单元时返回的错误：外壳用固定 260 单元组 `CF_HDROP`。
-const E_PATH_TOO_LONG_FOR_HDROP: i32 = 0x8007_007A_u32 as i32;
-
+/// 先用外壳项取路径：外壳用固定 260 单元组 `CF_HDROP`，路径更长时 `GetData` 要么失败（0x8007007A），
+/// 要么给出 8.3 短名。外壳项给出完整的文件系统路径。取不到时再读 `CF_HDROP`。
 fn paths_from_data_object(data: &IDataObject) -> Result<Vec<PathBuf>, String> {
+    let shell_error = match paths_from_shell_items(data) {
+        Ok(paths) if !paths.is_empty() => return Ok(paths),
+        Ok(_) => "没有条目".to_owned(),
+        Err(error) => error,
+    };
     let format = hdrop_format();
     // SAFETY: format 是局部变量，调用期间有效。
     match unsafe { data.GetData(&format) } {
@@ -201,11 +205,9 @@ fn paths_from_data_object(data: &IDataObject) -> Result<Vec<PathBuf>, String> {
             unsafe { ReleaseStgMedium(&mut medium) };
             Ok(paths)
         }
-        Err(error) if error.code().0 == E_PATH_TOO_LONG_FOR_HDROP => paths_from_shell_items(data)
-            .map_err(|fallback| {
-                format!("读取 CF_HDROP 失败：{error}；外壳项退路也失败：{fallback}")
-            }),
-        Err(error) => Err(format!("读取 CF_HDROP 失败：{error}")),
+        Err(error) => Err(format!(
+            "读取 CF_HDROP 失败：{error}；外壳项：{shell_error}"
+        )),
     }
 }
 
