@@ -1,4 +1,4 @@
-//! 搜索条前缀分类，以及应用、待办、便签共用的匹配器。
+//! 搜索条前缀分类、像网址的判断，以及应用、待办、便签共用的匹配器。
 //!
 //! [`classify_prefix`] 只供搜索条调用。组内排序和 20 条名额见 [`rank_hits`]、[`allocate_display`]。
 //! 应用枚举、文件索引和查询调度不在这里。使用频率的增减尚未规定。
@@ -9,6 +9,7 @@ mod pinyin;
 mod prefix;
 mod prepare;
 mod query;
+mod url;
 mod web;
 
 pub use corpus::benchmark_corpus;
@@ -26,4 +27,5 @@ pub use prepare::{FieldInput, FieldRole, MatchIndex, PreparedCandidate, prepare}
 pub use query::{
     FUZZY_BASE, FUZZY_CONSECUTIVE_BONUS, FUZZY_WORD_START_BONUS, Hit, HitKind, query_prepared,
 };
+pub use url::{OPEN_WEBSITE_LABEL, open_website};
 pub use web::WebSearchEngine;

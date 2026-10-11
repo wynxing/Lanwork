@@ -628,10 +628,71 @@ fn invalid_urls_do_not_add_a_browser_row() {
         .submit(Surface::SearchBar, "https://example.com/a")
         .unwrap();
     assert_eq!(groups(&view), vec![SearchGroup::Browser]);
-    assert_eq!(view.rows[0].label, "https://example.com/a");
+    assert_eq!(view.rows[0].label, "打开网址");
+    assert!(view.rows[0].location.is_empty());
     match &view.rows[0].detail {
         RowDetail::Browser { url } => assert_eq!(url, "https://example.com/a"),
         other => panic!("expected browser, {other:?}"),
+    }
+    assert_eq!(view.rows.last().unwrap().group, SearchGroup::WebSearch);
+}
+
+#[test]
+fn website_like_input_opens_before_web_search_on_both_surfaces() {
+    let (_temp, store) = open_store();
+    let (files, _) = script(file_result(FileSource::Everything, Vec::new()));
+    let (dispatch, _, _) = ready(store, NoApps, files);
+
+    let bare = dispatch.submit(Surface::SearchBar, " cursor.com ").unwrap();
+    assert_eq!(bare.rows[0].label, "打开网址");
+    assert_eq!(bare.rows[0].group, SearchGroup::Browser);
+    assert_eq!(
+        bare.rows[0].usage,
+        UsageKey::Browser("https://cursor.com".to_owned())
+    );
+    match &bare.rows[0].detail {
+        RowDetail::Browser { url } => assert_eq!(url, "https://cursor.com"),
+        other => panic!("expected browser, {other:?}"),
+    }
+    let last = bare.rows.last().unwrap();
+    assert_eq!(last.group, SearchGroup::WebSearch);
+    assert_eq!(last.label, "搜索 Google：cursor.com");
+
+    let path = dispatch
+        .submit(Surface::Panel, "https://cursor.com/dashboard")
+        .unwrap();
+    match &path.rows[0].detail {
+        RowDetail::Browser { url } => assert_eq!(url, "https://cursor.com/dashboard"),
+        other => panic!("expected browser, {other:?}"),
+    }
+    assert_eq!(path.rows[0].label, "打开网址");
+    assert_eq!(path.rows.last().unwrap().group, SearchGroup::WebSearch);
+
+    let http = dispatch
+        .submit(Surface::Panel, "http://cursor.com")
+        .unwrap();
+    match &http.rows[0].detail {
+        RowDetail::Browser { url } => assert_eq!(url, "http://cursor.com"),
+        other => panic!("expected browser, {other:?}"),
+    }
+
+    // 「名称.后缀」是否打开仍待定。当前会给出这一条。
+    let file_name = dispatch.submit(Surface::Panel, "readme.md").unwrap();
+    assert_eq!(file_name.rows[0].label, "打开网址");
+    match &file_name.rows[0].detail {
+        RowDetail::Browser { url } => assert_eq!(url, "https://readme.md"),
+        other => panic!("expected browser, {other:?}"),
+    }
+
+    for text in ["cursor .com", "file:///C:/Windows", "readme"] {
+        let view = dispatch.submit(Surface::SearchBar, text).unwrap();
+        assert!(
+            view.rows
+                .iter()
+                .all(|row| row.group != SearchGroup::Browser),
+            "{text}"
+        );
+        assert_eq!(view.rows.last().unwrap().group, SearchGroup::WebSearch);
     }
 }
 

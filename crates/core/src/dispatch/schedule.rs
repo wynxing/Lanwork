@@ -11,11 +11,11 @@ use crate::files::{
 };
 use crate::notes::NoteCommands;
 use crate::search::{
-    FieldRole, Hit, HitKind, RankedGroup, SearchGroup, WebSearchEngine, allocate_display,
-    classify_prefix, rank_hits,
+    FieldRole, Hit, HitKind, OPEN_WEBSITE_LABEL, RankedGroup, SearchGroup, WebSearchEngine,
+    allocate_display, classify_prefix, open_website, rank_hits,
 };
 use crate::storage::{self, EntityKind, Error as StorageError, StartupError, Store};
-use crate::todos::{TodoCommands, is_http_source_url};
+use crate::todos::TodoCommands;
 
 use super::icon::{IconCache, IconLoader};
 use super::index::MemoryIndex;
@@ -647,7 +647,7 @@ fn project(state: &SearchState, engine: WebSearchEngine) -> (Vec<SearchRow>, Fil
     (rows, progress)
 }
 
-/// 有输入时总是有这一条，放在最后。输入是网址时浏览器那一条仍在最前。
+/// 有输入时总是有这一条，放在最后。输入像网址时「打开网址」仍在最前。
 fn web_search_row(text: &str, engine: WebSearchEngine) -> Option<SearchRow> {
     if is_blank(text) {
         return None;
@@ -702,20 +702,17 @@ fn local_groups(
     groups
 }
 
+/// 输入像网址时放在最前。名称是「打开网址」，地址由 [`open_website`] 补全。
 fn browser_row(text: &str) -> Option<SearchRow> {
-    if !is_http_source_url(text) {
-        return None;
-    }
+    let url = open_website(text)?;
     Some(SearchRow {
         group: SearchGroup::Browser,
         kind: None,
-        usage: UsageKey::Browser(text.to_owned()),
-        label: text.to_owned(),
+        usage: UsageKey::Browser(url.clone()),
+        label: OPEN_WEBSITE_LABEL.to_owned(),
         location: String::new(),
         icon: None,
-        detail: RowDetail::Browser {
-            url: text.to_owned(),
-        },
+        detail: RowDetail::Browser { url },
     })
 }
 
