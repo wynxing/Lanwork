@@ -130,9 +130,34 @@ if (-not (Test-Path $runKey)) { New-Item -Path $runKey -Force | Out-Null }
 New-ItemProperty -Path $runKey -Name "Lanwork" -PropertyType String -Value "sentinel" -Force | Out-Null
 New-ItemProperty -Path $runKey -Name "LanworkPackagingProbe" -PropertyType String -Value "keep" -Force | Out-Null
 
+# 安装包和卸载程序是图形程序。& 不会等待它们退出。需要 PowerShell 7 的 ArgumentList。
+function Invoke-Gui([string]$File, [string[]]$Arguments, [string]$Log) {
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $File
+    $info.UseShellExecute = $false
+    foreach ($arg in $Arguments) {
+        [void]$info.ArgumentList.Add($arg)
+    }
+    $proc = [Diagnostics.Process]::Start($info)
+    if ($null -eq $proc) { throw "无法启动 $File" }
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) {
+        $tail = ""
+        if ($Log -and (Test-Path $Log)) {
+            $tail = (Get-Content -Path $Log -Tail 40) -join "`n"
+        }
+        throw "$File 退出码 $($proc.ExitCode)`n$tail"
+    }
+}
+
 Write-Host "silent install to $installDir"
-& $setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir" "/LOG=$log"
-if ($LASTEXITCODE -ne 0) { throw "静默安装退出码 $LASTEXITCODE" }
+Invoke-Gui $setup @(
+    "/VERYSILENT",
+    "/SUPPRESSMSGBOXES",
+    "/NORESTART",
+    "/DIR=$installDir",
+    "/LOG=$log"
+) $log }
 
 foreach ($name in @(
     "lanwork.exe",
@@ -176,8 +201,11 @@ if (-not (Test-Path $cacheMarker)) { throw "安装删了缓存目录标记" }
 
 $unlog = Join-Path $out "uninstall.log"
 $unins = Join-Path $installDir "unins000.exe"
-& $unins /VERYSILENT /SUPPRESSMSGBOXES "/LOG=$unlog"
-if ($LASTEXITCODE -ne 0) { throw "静默卸载退出码 $LASTEXITCODE" }
+Invoke-Gui $unins @(
+    "/VERYSILENT",
+    "/SUPPRESSMSGBOXES",
+    "/LOG=$unlog"
+) $unlog }
 
 if (Test-Path (Join-Path $installDir "lanwork.exe")) { throw "卸载后程序还在" }
 if (Test-Path $lnk) { throw "卸载后快捷方式还在" }
