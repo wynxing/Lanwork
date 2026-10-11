@@ -82,6 +82,7 @@ pub struct SearchRow {
 /// 打开这一条时界面还需要的标识。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowDetail {
+    /// 默认浏览器要打开的地址。没写协议时已经补成 `https://`。
     Browser {
         url: String,
     },

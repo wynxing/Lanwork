@@ -100,7 +100,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 - **显示与收起。** 热键在搜索条可见时收起，否则显示：定位、设背景、`show`、`SetForegroundWindow`、焦点给输入框。winit 的 `Focused(false)` 到达时收起。收起时除未提交的收集文本外清空输入并向调度提交空串，然后把延迟记录写出。
 - **输入。** 输入框是 `TextInput`，不是 `LineEdit`，因为要读 `preedit-text`。`key-pressed` 里预编辑非空时一律交还输入法。Esc、上、下、Enter 由搜索条处理，其他键交给 `TextInput`。`edited` 把已提交的文本交给 `Dispatch::submit(Surface::SearchBar, …)`，结果在界面线程上立即画出。收集前缀时调度返回收集状态，搜索条不显示结果；收集预览和提交属于快速收集，还没有。
 - **后台。** 一个线程取当前可见行的图标；文件阶段还在等待时，等 60ms（新输入重新计时）再 `poll`，结果和图标交回界面线程。界面只接受 `accepts` 为真的序号。同一段输入的后续结果保留选中的那一条，输入变了回到第一条。上下键不回绕。每行有一个 `TouchArea`：指针在行上移动（`PointerEventKind.move`）时选中该行，列表在静止的指针下滚动不改选择；单击先选中该行，再按不带修饰键的 Enter 处理，组合输入期间同样无效。滚轮交给 `Flickable`。
-- **动作。** 由 `row_action` 决定，没有动作时按键无效。Shell 调用在单独线程上，成功后收起，失败时在结果区下方显示错误并写日志，不收起；那时已经因失焦收起的只写日志。打开一项（不含打开所在目录和网页搜索）后 `record_open`。网页搜索行把 `RowDetail::WebSearch` 里的地址作为 `LaunchTarget::Url` 交给 Shell，由默认浏览器打开。待办和便签结果先 `record_open` 再收起。待办结果随后调用 `panel::open_target`，面板打开并定位（见「面板」）；便签结果 Enter 调用 `panel::open_target(PanelTarget::Note { .. })`，Ctrl+Enter 调用 `note_float::open`，悬浮失败时在面板上显示错误。
+- **动作。** 由 `row_action` 决定，没有动作时按键无效。Shell 调用在单独线程上，成功后收起，失败时在结果区下方显示错误并写日志，不收起；那时已经因失焦收起的只写日志。打开一项（不含打开所在目录和网页搜索）后 `record_open`。网页搜索行把 `RowDetail::WebSearch` 里的地址作为 `LaunchTarget::Url` 交给 Shell，由默认浏览器打开。「打开网址」把 `RowDetail::Browser` 里的地址同样交给 Shell，由默认浏览器打开，并 `record_open`。待办和便签结果先 `record_open` 再收起。待办结果随后调用 `panel::open_target`，面板打开并定位（见「面板」）；便签结果 Enter 调用 `panel::open_target(PanelTarget::Note { .. })`，Ctrl+Enter 调用 `note_float::open`，悬浮失败时在面板上显示错误。
 - **延迟记录。** 环境变量 `LANWORK_LATENCY_OUT` 非空时，热召回和结果延迟的原始记录按 `tools/README.md` 的 JSONL 追加到该文件。界面不暴露这个变量。热召回起点是平台线程收到 `WM_HOTKEY` 时的 `SystemClock`，终点是显示后第一次 `AfterRendering`。结果记录在同一序号的视图画出后用 `mark_rendered` 填终点：本地结果在第一次画出时，文件来源在文件阶段结束的视图画出时。进程启动后第一次热召回和第一个查询序号标为预热。已经填了终点的记录不再因后来的输入标为被取代。没有按「性能测量」采样时，这些记录不表示目标已经达到。
 
 ### 面板
@@ -317,15 +317,38 @@ Lanwork/
 
 `rank_hits` 做组内排序。同一个候选项 id 只留一条，命中类型取完全匹配、前缀、全拼、首字母、子串、模糊里最前的一种。然后按这个类型排序。同一种类型里，调用方经 `FrequencySource` 传入的使用频率高的在前。类型和频率都相同，则保持该候选项在输入里第一次出现的相对顺序。引擎不保存使用次数。次数如何加 1 已写入产品规格。本模块仍不把次数写入磁盘，由调用方传入。已接入的便签服务不保存这个次数。
 
-`allocate_display` 按浏览器、应用、待办、便签、文件、文件夹收已经排好的各组结果。每组先取至多 8 条。20 条还没满时，再按同一顺序把前面组剩下的结果取完，再取后面的组，直到满 20 条或没有更多结果。同一组入选的条目在输出里挨在一起。浏览器组只由调用方在输入是有效 `http` / `https` 时放入。`SearchGroup::WebSearch` 没有分组序号，`allocate_display` 不收它。
+`allocate_display` 按浏览器、应用、待办、便签、文件、文件夹收已经排好的各组结果。每组先取至多 8 条。20 条还没满时，再按同一顺序把前面组剩下的结果取完，再取后面的组，直到满 20 条或没有更多结果。同一组入选的条目在输出里挨在一起。浏览器组只由调用方在 `open_website` 认为输入像网址时放入一条。`SearchGroup::WebSearch` 没有分组序号，`allocate_display` 不收它。
 
 网页搜索行由调度在输入非空白时接在分配结果之后，所以不占 20 条名额，最多 21 行；产品规格对名额待定。搜索引擎在 `lanwork_core::search::WebSearchEngine`：`google`（默认）、`bing`、`baidu`，地址分别是 `https://www.google.com/search?q=`、`https://www.bing.com/search?q=`、`https://www.baidu.com/s?wd=`，搜索词去掉首尾空白后按 UTF-8 百分号编码，只保留字母、数字和 `-_.~`。名称是「搜索 Google：」「搜索必应：」「搜索百度：」加原样的搜索词。`config.json` 的字段是 `webSearchEngine`，缺省为 `google`；取值不在这三个里时按字段不合法处理，本次用默认配置。启动时 `Dispatch::set_web_search_engine` 读一次配置，设置页还没做，改配置后要重启才生效。用法键是 `UsageKey::WebSearch`，界面不对它 `record_open`。
 
 `cargo bench -p lanwork-core` 用 5,000 个应用名和 10,000 条待办标题测量准备和查询。这组基准不按「性能测量」采样，不能当作应用结果 P95 已经达到。这组语料的 `MatchIndex::heap_bytes()`（各 `Vec` 和 `String` 的 capacity 之和，不含拼音表，不含分配器额外开销）在 Linux 的 debug 构建里是 3,563,603 字节。分配器取整会改变这个数，测试只要求它小于 16 MiB。
 
+### 打开网址
+
+产品规格只要求：输入像网址时，结果最前面有一条名称为「打开网址」的浏览器结果，Enter 或单击用默认浏览器打开；没写协议的补成 `https://`，已经写了 `http` 或 `https` 的按所写协议打开；网页搜索仍在后面。下面怎么判断「像网址」是当前实现选择，不是产品规则。
+
+函数是 `lanwork_core::search::open_website`。搜索条和面板搜索都走 `Dispatch::submit`，在 `browser_row` 里调用。面板搜索框的界面还没有，调度对 `Surface::Panel` 已经按同一规则给这一条。命中时 `SearchGroup::Browser` 放一条，`label` 是「打开网址」，类型文字仍是「浏览器」。`RowDetail::Browser.url` 是要打开的地址。用法键是这个地址，打开后 `record_open`。`location` 留空：将要打开的地址是否画在这一行上，产品规格待定，当前不画。这一条走浏览器组，占最多 20 条里的名额，和原来的浏览器结果一样。网页搜索仍接在 `allocate_display` 之后，名称和搜索词仍用原输入，不改成补全后的地址。
+
+判断步骤：
+
+1. 去掉首尾 Unicode 空白。中间还有空白或控制字符则不是。因此 `cursor .com`、`https://cursor.com/a b` 不是。
+2. 含 `@`、`\`、`<`、`>` 或 `"` 则不是。电子邮件不打开。
+3. 有 `://` 时，协议只能是 `http` 或 `https`（忽略 ASCII 大小写）。其它协议不是，包括 `file://`、`ftp://` 和 `steam://`。`javascript:` 没有 `://`，后面的主机检查也会失败。写了协议就保留，不把 `http` 改成 `https`。写进地址时协议改成小写，`://` 后面的其余部分原样保留。
+4. 没有 `://` 时前面补 `https://`。`http:cursor.com` 这种没有 `://` 的写法不按已写协议处理。
+5. 主机必须是下面之一。主机名只接受 ASCII。含非 ASCII 的主机名是否打开，产品规格待定，当前不产生这一条。路径、查询和片段里的非 ASCII 可以保留，例如 `https://cursor.com/文档`。
+   - `localhost`，忽略 ASCII 大小写，可以不带点。
+   - IPv4：恰好四段十进制，每段 0–255。
+   - 方括号里的 IPv6：只含十六进制和冒号，最多一处 `::`。不接受百分号区域标识，也不接受带点的 IPv4 映射写法。不带方括号的 `::1` 不是。
+   - 域名：至少一个点。标签用字母、数字和连字符，不能以连字符开头或结尾，每段最长 63，整段主机最长 253。最后一段至少两个 ASCII 字母。因此 `http://x`、`a.b` 不是，`t.co` 是。
+6. 端口可选，写在主机后面，十进制 1–65535。`cursor.com:8080`、`https://127.0.0.1:8080/a`、`https://[::1]:443/a` 可以。空端口、0 和超出范围不可以。
+7. 端口之后只能是结尾，或路径（`/`）、查询（`?`）、片段（`#`）。这些部分原样保留，不重新编码。`https://cursor.com/dashboard`、`cursor.com/a?q=1#x` 可以。
+8. 没有协议、且整个输入只是带一个点的「名称.后缀」时，当前只要后缀是至少两个字母就产生这一条。因此 `readme.md` 也会出现「打开网址」，打开 `https://readme.md`。是否排除这种更像文件名的输入，产品规格待定。
+
+打开和网页搜索是同一条启动路径：`LaunchTarget::Url` 交给 `ShellExecuteExW`，动词 `open`，由系统的默认浏览器处理 `http` / `https`。`crates/core` 不启动浏览器。Alt+数字、悬停选中、单击等同 Enter，都不因为这一条而改变。
+
 文件和文件夹优先使用 Everything，支持 1.4 和 1.5。随包附带 voidtools 的 Everything SDK x64 DLL：1.4 用 SDK 的 DLL，1.5 用 SDK3 的 DLL。两者固定版本，放在程序目录，并附许可说明。每次查询前按 1.5、1.4 的顺序检查状态并探测，不为每次查询启动命令行。
 
-Everything 未运行或未就绪时，退回 Windows Search 索引。查询只匹配文件名，不匹配正文和属性，范围是 Windows 已建立索引的位置。Windows Search 服务不可用时报告文件索引不可用。Everything 恢复就绪后，下一次查询改回 Everything。两种来源都不复制全盘索引。有效 `http` / `https` 成为浏览器动作，无效地址丢弃。打开交给 Windows Shell。
+Everything 未运行或未就绪时，退回 Windows Search 索引。查询只匹配文件名，不匹配正文和属性，范围是 Windows 已建立索引的位置。Windows Search 服务不可用时报告文件索引不可用。Everything 恢复就绪后，下一次查询改回 Everything。两种来源都不复制全盘索引。打开文件和文件夹交给 Windows Shell。「打开网址」和网页搜索的地址交给默认浏览器，见「打开网址」。
 
 Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提供程序 `Search.CollatorDSO.1`，SQL 含 `System.FileName LIKE`，`TOP` 不超过 50。匹配方式（子串、前缀或整名，以及查询里的 `*`、`?` 和 `LIKE` 的 `%`、`_` 是否同义）待定；产品规格只写到按名称。`ISearchQueryHelper::GenerateSQLFromUserQuery` 的默认语句是 `CONTAINS(*)`，会返回正文命中，不作为产品查询。`ISearchManager` 只用来对照 SQL 和列出索引根。这次做法只说明技术验证里测通的调用，不表示「性能测量」的 P95 已经达到。
 
@@ -347,7 +370,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 `submit` 的时钟读数是结果延迟的起点。搜索条先经 `classify_prefix`。空输入和收集前缀不进入查询队列，并使当前序号失效。面板不分类：空字符串是空输入，其余按搜索。组合中的预编辑不要调用 `submit`。序号从 1 递增。本地分组写好之后，并且距这次 `submit` 已满 60ms、期间没有更新的输入，才调用文件来源。文件查询返回时序号已经变了就不合并。不可用时结果上的说明是「文件索引不可用」，已有的应用、待办和便签行保留。文件服务最多交回 50 条，显示用 `allocate_display` 收到最多 20 条。
 
-有效地址沿用 `is_http_source_url`。应用、待办和便签的组内顺序用 `rank_hits`。`record_open` 把对应键的次数加 1，只放在本进程内存里，下一次查询才参与排序。`LatencyRecord::to_json_line` 的字段与 `tools/sample` 的延迟输入一致。终点由调用方用 `mark_rendered` 填上同序号、同一来源的 `end_ns`。被取代的记录单独标出；已经填了终点的记录不再标为被取代。热召回不在这一层。没有按「性能测量」采样时，这些记录不表示目标已经达到。
+像网址的判断在 `lanwork_core::search::open_website`，见「打开网址」。待办来源校验仍用 `is_http_source_url`，不拿来决定这一条。应用、待办和便签的组内顺序用 `rank_hits`。`record_open` 把对应键的次数加 1，只放在本进程内存里，下一次查询才参与排序。`LatencyRecord::to_json_line` 的字段与 `tools/sample` 的延迟输入一致。终点由调用方用 `mark_rendered` 填上同序号、同一来源的 `end_ns`。被取代的记录单独标出；已经填了终点的记录不再标为被取代。热召回不在这一层。没有按「性能测量」采样时，这些记录不表示目标已经达到。
 
 图标缓存是 `IconCache`。`Dispatch::icon_cache` 把同一份缓存交给收纳。取图只针对当前可见行。Windows 上用 `IShellItemImageFactory::GetImage`，只要图标并缩放到请求边长，再用 `GetDIBits` 读成 RGBA。非 Windows 上取不到图。下面几项规格没有写死，当前做法如下，不把它们当成产品规则：请求边长是 32 像素；快捷方式图标序号只区分缓存键，取图接口没有这个参数；使用次数不落盘；待办、便签和浏览器行没有可交给壳层的路径，不取图标；文件和文件夹保持文件来源的返回顺序，不按次数重排。
 
