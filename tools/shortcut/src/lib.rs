@@ -311,6 +311,8 @@ mod tests {
         assert!(script.contains("verified Inno Setup"));
         assert!(script.contains("Get-IsccBanner"));
         assert!(script.contains("Compiler engine version: Inno Setup 6.7.3"));
+        assert!(script.contains("Assert-GuiSubsystem"));
+        assert!(script.contains("发布版必须是 GUI (2)"));
         assert!(script.contains("/DIR=`\"$innoRoot`\""));
         assert!(!installer_bundles_webview(script));
         let cargo = include_str!("../../../Cargo.toml");
@@ -334,6 +336,9 @@ mod tests {
         assert!(text.contains("ChineseSimplified-LICENSE.txt"));
         assert!(text.contains("Inno-Setup-License.txt"));
         assert!(text.contains("Copyright (c) 2019 - 2020 kirakira"));
+        assert!(text.contains("发布版 `lanwork.exe` 的 PE 子系统是 2"));
+        assert!(text.contains("windows_subsystem = \"windows\""));
+        assert!(text.contains("调试构建不写这个属性，仍是控制台子系统"));
         assert!(text.contains(ACTIVATOR_CLSID));
         assert!(text.contains("更新未验收"));
         assert!(text.contains("MadeWithSlint-logo-whitebg.png"));

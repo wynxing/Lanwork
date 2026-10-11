@@ -36,6 +36,34 @@ $helper = Join-Path $releaseDir "lanwork-shortcut.exe"
 if (-not (Test-Path $exe)) { throw "缺少 $exe" }
 if (-not (Test-Path $helper)) { throw "缺少 $helper" }
 
+function Get-PeSubsystem([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+        throw "$Path 不是 MZ"
+    }
+    $e_lfanew = [BitConverter]::ToInt32($bytes, 0x3C)
+    if ($e_lfanew -lt 0 -or ($e_lfanew + 24 + 70) -gt $bytes.Length) {
+        throw "$Path PE 头超出文件"
+    }
+    $sig = [BitConverter]::ToUInt32($bytes, $e_lfanew)
+    if ($sig -ne 0x00004550) { throw "$Path 不是 PE" }
+    $magic = [BitConverter]::ToUInt16($bytes, $e_lfanew + 24)
+    # 0x10B 是 PE32，0x20B 是 PE32+。两种可选头里 Subsystem 都在偏移 68。
+    if ($magic -ne 0x10B -and $magic -ne 0x20B) {
+        throw "$Path 可选头 magic $magic"
+    }
+    return [BitConverter]::ToUInt16($bytes, $e_lfanew + 24 + 68)
+}
+
+function Assert-GuiSubsystem([string]$Path, [string]$Label) {
+    $subsystem = Get-PeSubsystem $Path
+    Write-Host "$Label PE subsystem=$subsystem"
+    # IMAGE_SUBSYSTEM_WINDOWS_GUI = 2。控制台是 3。
+    if ($subsystem -ne 2) {
+        throw "$Label PE 子系统是 $subsystem，发布版必须是 GUI (2)"
+    }
+}
+
 function Assert-ProductVersion([string]$Path, [string]$Expected, [string]$Label) {
     $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
     $product = ($info.ProductVersion).Trim().Trim([char]0)
@@ -58,6 +86,7 @@ function Assert-ProductVersion([string]$Path, [string]$Expected, [string]$Label)
 }
 
 Assert-ProductVersion $exe $version "lanwork.exe"
+Assert-GuiSubsystem $exe "lanwork.exe"
 
 $staging = Join-Path $root "packaging\staging"
 $helperDir = Join-Path $root "packaging\helper"
@@ -261,6 +290,7 @@ if (Test-Path (Join-Path $installDir "lanwork-shortcut.exe")) {
     throw "快捷方式工具不应留在安装目录"
 }
 Assert-ProductVersion (Join-Path $installDir "lanwork.exe") $version "已安装的 lanwork.exe"
+Assert-GuiSubsystem (Join-Path $installDir "lanwork.exe") "已安装的 lanwork.exe"
 
 $aumidKey = "HKCU:\Software\Classes\AppUserModelId\Lanwork"
 $aumid = Get-ItemProperty $aumidKey

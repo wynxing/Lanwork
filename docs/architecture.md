@@ -72,6 +72,8 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 
 模块分成两处。`lanwork_core::config` 和 `lanwork_core::shell` 不依赖 Slint，也不调用 Win32。互斥量、热键、注册表和窗口在 `crates/app`。非 Windows 进程打印「Lanwork 只支持 Windows 11 x64」并退出，退出码 1。
 
+发布版 `lanwork.exe` 的 PE 子系统是 2（`IMAGE_SUBSYSTEM_WINDOWS_GUI`）。`crates/app/src/main.rs` 在 Windows 且没有 `debug_assertions` 时写 `windows_subsystem = "windows"`。`cargo build --release` 默认关掉 `debug_assertions`，安装包和便携版里的就是这个 GUI 程序。双击或从开始菜单启动时 Windows 不分配控制台，关掉一个控制台窗口也不会结束进程。调试构建不写这个属性，仍是控制台子系统，`cargo run` 能看到标准错误。日志在数据目录的 `logs/app.log`，不写到控制台。存储已经打开时，启动失败调用 `Store::log_error`；panic 也写入同一份日志。存储还没打开、但数据目录已经能解析、且目录不是 MayDolist 时，启动失败直接写 `logs/app.log`。`eprintln` 只是调试控制台的副本，发布版没有控制台接收它。数据目录解析失败时还没有日志文件，发布版也不弹出控制台，没有对话框。
+
 启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条、面板宿主和托盘。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。存储启动之后打开 `NoteCommands`、`AppIndex::open_from_process`（随后用 `load_user_catalog` 读 `user-apps.json` 交给 `set_user_catalog`）和 `FileCommands`，组成 `Dispatch` 并 `build`。这几步任一失败只写日志，进程继续，搜索条不安装，按热键不出现。同一时刻打开 `ShelfCommands` 并调用 `watch_todo_notices`，待办被永久删除时分组的关联由它解除；打不开时只写日志，收纳页显示错误。不建 GitHub 刷新定时器。`githubRefreshIntervalMs` 原样保存，包括 0，外壳不解释它。
 
 - **单实例。** 命名互斥量 `Local\Lanwork.SingleInstance.Mutex`，加上信号量 `Local\Lanwork.SingleInstance.Activate`（初值 0）。第一个进程拥有互斥量并等待信号量。后来的进程发现互斥量已存在，就对信号量加一，然后退出，退出码 0。信号量的计数会留到第一个进程来取，所以通知发生在等待之前也不会丢。第一个进程收到通知后不打开窗口。产品规格没有写这时要显示什么。
@@ -176,7 +178,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 
 便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。便携版通知只显示提醒，点击不定位。2026-10-09 的记录里，便携版通知能显示；运行中点击没有定位，日志没有 `COM Activate`；退出后点击没有拉起进程。
 
-卸载要删掉上述快捷方式和 HKCU 键，以及 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值名 `Lanwork`，由安装程序实现。不删除数据目录。产品用的标识和 spike 不同：AUMID 是 `Lanwork`，激活 CLSID 是 `{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}`，显示名是 `Lanwork`。快捷方式是当前用户开始菜单程序目录里的 `Lanwork.lnk`。`LocalServer32` 的值是带引号的 `lanwork.exe` 路径，规则与开机启动的 `quoted_executable` 相同。进程侧的 `CoRegisterClassObject` 还不在 `lanwork.exe` 里。通知这一项仍未通过。验证程序自己的注销只清理它写过的 spike 标识，不清理产品用的标识。
+卸载要删掉上述快捷方式和 HKCU 键，以及 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值名 `Lanwork`，由安装程序实现。不删除数据目录。产品用的标识和 spike 不同：AUMID 是 `Lanwork`，激活 CLSID 是 `{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}`，显示名是 `Lanwork`。快捷方式是当前用户开始菜单程序目录里的 `Lanwork.lnk`。`LocalServer32` 的值是带引号的 `lanwork.exe` 路径，规则与开机启动的 `quoted_executable` 相同。进程侧的 `CoRegisterClassObject` 还不在 `lanwork.exe` 里，程序也不识别 `-Embedding`。发布版改成 GUI 子系统不改变这条路径：SCM 还不会来拉起 `lanwork.exe`。上面关于控制台子系统和 `SW_HIDE` 的说明仍指验证程序 `spikes/toast`，那个程序继续用控制台子系统。通知这一项仍未通过。验证程序自己的注销只清理它写过的 spike 标识，不清理产品用的标识。
 
 ## 数据
 
@@ -489,6 +491,8 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 便携版是 zip，文件名 `Lanwork-<版本>-portable-x64.zip`，当前是 `Lanwork-0.1.0-portable-x64.zip`。内容与安装目录相同，不含安装程序，不含 `lanwork-shortcut.exe`。程序还不区分安装版和便携版，便携版启动时也不写 `DisplayName`。那一步还没有代码。
 
 版本只有 Cargo workspace 的 `0.1.0`。安装包的 `AppVersion`、`VersionInfoProductVersion` 和 exe 资源里的 `FileVersion`、`ProductVersion` 字符串都是这个值。安装包文件版本资源的四段整数是 `0.1.0.0`。
+
+打包脚本在编完 release 之后、以及静默安装之后，各读一次 `lanwork.exe` 的 PE 可选头。`Subsystem` 必须是 2。这是 `IMAGE_SUBSYSTEM_WINDOWS_GUI`。快捷方式工具 `lanwork-shortcut.exe` 仍是控制台程序，不留在安装目录，不查它的子系统。
 
 推送与 Cargo 版本一致的 `v*` tag 时，`.github/workflows/release.yml` 在 `windows-latest` 上编 release、打安装包和便携版、创建 GitHub Release 并上传这两个文件。说明里放 Slint 徽标和 <https://slint.dev> 的链接，并说明第三方许可。仓库已经公开，Release 按公开发布。不生成 minisign 签名，不生成 `latest.json`，不在程序里下载或安装更新。设置里的「关于与更新」仍没有界面。未登录浏览器打开 Release 页、确认徽标和链接的记录还没有。
 
