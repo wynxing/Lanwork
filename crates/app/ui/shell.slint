@@ -6,7 +6,7 @@ export { NoteFloat } from "notefloat.slint";
 export { ShelfFloat } from "shelffloat.slint";
 
 export component Tray inherits SystemTrayIcon {
-    // 逾期数字画在这张图上。数量为 0 时图里没有数字。
+    // 底图是应用图标。逾期数字画在右下角的徽章上。数量为 0 时没有徽章。
     in-out property <image> badge-icon;
     icon: badge-icon;
     tooltip: "Lanwork";

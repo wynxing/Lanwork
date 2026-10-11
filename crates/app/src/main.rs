@@ -88,6 +88,25 @@ mod tests {
     }
 
     #[test]
+    fn windows_use_the_app_icon() {
+        let icon = "icon: @image-url(\"../assets/lanwork-256.png\");";
+        for (name, source) in [
+            ("searchbar.slint", include_str!("../ui/searchbar.slint")),
+            ("panel.slint", include_str!("../ui/panel.slint")),
+            ("notefloat.slint", include_str!("../ui/notefloat.slint")),
+            ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
+        ] {
+            assert!(source.contains(icon), "{name} 没有窗口图标");
+        }
+        let png = include_bytes!("../assets/lanwork-256.png");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(&png[12..16], b"IHDR");
+        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        assert_eq!((width, height), (256, 256));
+    }
+
+    #[test]
     fn note_inputs_expose_the_ime_composition_text() {
         for (name, source) in [
             ("noteeditor.slint", include_str!("../ui/noteeditor.slint")),

@@ -2699,6 +2699,7 @@ dependencies = [
  "slint-build",
  "windows",
  "windows-core",
+ "winresource",
 ]
 
 [[package]]
