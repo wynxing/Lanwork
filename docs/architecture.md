@@ -484,7 +484,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 卸载删掉安装目录里这次装上的文件、开始菜单快捷方式、上面的 HKCU 键，以及 Run 里的值名 `Lanwork`。不删 Run 这个键本身。不删 `%USERPROFILE%\Documents\Lanwork`。不删 `%LOCALAPPDATA%\Lanwork` 下的引导文件和缓存。安装目录在 `%LOCALAPPDATA%\Programs\Lanwork`，和缓存目录不是同一个。安装不写 Run 值；开机启动仍由程序按配置写。卸载才删这个值。
 
-程序目录里的文件：`lanwork.exe`、`PROGRAM_DIRECTORY_FILES` 的四个文件、`Unicode-LICENSE.txt`（`third_party/unihan/LICENSE.txt`）、`THIRD_PARTY_NOTICES.txt`。图标用 `crates/app/assets/lanwork.ico`。向导用 Inno 自带的简体中文，欢迎页关掉。这些文字是安装器的实现选择，不是产品规格里的界面文案。「背景」和「渲染器」仍没有通过记录，打包不改变那两项。
+程序目录里的文件：`lanwork.exe`、`PROGRAM_DIRECTORY_FILES` 的四个文件、`Unicode-LICENSE.txt`（`third_party/unihan/LICENSE.txt`）、`THIRD_PARTY_NOTICES.txt`。图标用 `crates/app/assets/lanwork.ico`。向导用 tag `is-6_7_3` 里非官方的简体中文消息 `Files/Languages/Unofficial/ChineseSimplified.isl`，副本是 `packaging/ChineseSimplified.isl`（20905 字节，LF）。编译器安装程序不拷贝 Unofficial 目录，所以脚本不写 `compiler:Languages\...`。欢迎页关掉。这些文字是安装器的实现选择，不是产品规格里的界面文案。「背景」和「渲染器」仍没有通过记录，打包不改变那两项。
 
 便携版是 zip，文件名 `Lanwork-<版本>-portable-x64.zip`，当前是 `Lanwork-0.1.0-portable-x64.zip`。内容与安装目录相同，不含安装程序，不含 `lanwork-shortcut.exe`。程序还不区分安装版和便携版，便携版启动时也不写 `DisplayName`。那一步还没有代码。
 

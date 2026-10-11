@@ -238,6 +238,18 @@ mod tests {
         assert!(iss.contains("MinVersion=6.1"));
         assert!(!iss.contains("MinVersion=0"));
         assert!(iss.contains("SetupIconFile=..\\crates\\app\\assets\\lanwork.ico"));
+        assert!(iss.contains("MessagesFile: \"ChineseSimplified.isl\""));
+        assert!(!iss.contains("compiler:Languages\\ChineseSimplified.isl"));
+        let messages = include_bytes!("../../../packaging/ChineseSimplified.isl");
+        let messages = normalize_newlines(messages);
+        assert_eq!(messages.len(), 20905);
+        let messages = std::str::from_utf8(&messages).expect("简体中文消息是 UTF-8");
+        assert!(
+            messages.starts_with("; *** Inno Setup version 6.5.0+ Chinese Simplified messages ***")
+        );
+        assert!(messages.contains("LanguageName=简体中文"));
+        assert!(messages.contains("LanguageID=$0804"));
+        assert!(messages.contains("LanguageCodePage=936"));
         assert!(iss.contains("AppUserModelId\\Lanwork"));
         assert!(iss.contains(ACTIVATOR_CLSID));
         assert!(iss.contains("uninsdeletevalue dontcreatekey"));
