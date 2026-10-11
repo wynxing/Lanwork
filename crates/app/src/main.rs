@@ -27,6 +27,10 @@ mod registry;
 #[cfg(windows)]
 mod searchbar;
 #[cfg(windows)]
+mod shelf_dnd;
+#[cfg(windows)]
+mod shelves_page;
+#[cfg(windows)]
 mod winutil;
 
 fn main() {
@@ -66,6 +70,7 @@ mod tests {
             ("panel.slint", include_str!("../ui/panel.slint")),
             ("notespage.slint", include_str!("../ui/notespage.slint")),
             ("notefloat.slint", include_str!("../ui/notefloat.slint")),
+            ("shelvespage.slint", include_str!("../ui/shelvespage.slint")),
         ];
         for (name, source) in sources {
             for forbidden in ["今日", "focus-page", "FocusPage"] {

@@ -1,20 +1,26 @@
 //! 面板窗口：标签框架、待办页和定位接口。
 //!
 //! 窗口启动时创建并保持隐藏。待办页调用 `TodoCommands`，规则在服务里，这里只把命令结果
-//! 排成界面要的行。便签页在 `notes_page`。面板搜索框、热角、收纳页、GitHub 页和设置页还没有。
+//! 排成界面要的行。便签页在 `notes_page`，收纳页在 `shelves_page`，拖入的 OLE 放下目标登记在
+//! 这个窗口的句柄上（`shelf_dnd`）。面板搜索框、热角、GitHub 页和设置页还没有。
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use lanwork_core::CivilDate;
 use lanwork_core::apps::{LaunchTarget, launch};
+use lanwork_core::dispatch::IconCache;
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::{
-    self, PanelTab, PanelTarget, RECURRENCE_CHOICES, Row, TodoView, format_date, panel_origin,
-    panel_size, parse_due, parse_remind, recurrence_from_choice, recurrence_index, reordered_ids,
+    self, DropZone, PanelTab, PanelTarget, RECURRENCE_CHOICES, Row, TodoView, format_date,
+    panel_origin, panel_size, parse_due, parse_remind, recurrence_from_choice, recurrence_index,
+    reordered_ids,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
+use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
 use lanwork_core::todos::{NewTodo, TodoCommands, TodoItem, TodoList};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
@@ -23,6 +29,8 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 use crate::bar_win;
 use crate::host::{local_today, unix_now_ms};
 use crate::notes_page::NotesPage;
+use crate::shelf_dnd::{self, DropState, Registration};
+use crate::shelves_page::{self, ShelvesPage};
 use crate::{Panel, PanelDetail, PanelList, PanelRow};
 
 /// 显示后这段时间内的失焦不收起。托盘菜单关闭时焦点会迟到地变化一次。
@@ -53,8 +61,20 @@ pub(crate) fn with_notes(action: impl FnOnce(&mut NotesPage, &Panel) + 'static) 
     with_panel(move |panel| action(&mut panel.notes, &panel.ui));
 }
 
+/// 收纳页的动作。和面板共用同一个借用，所以也走 [`with_panel`]。
+pub(crate) fn with_shelves(action: impl FnOnce(&mut ShelvesPage, &Panel) + 'static) {
+    with_panel(move |panel| action(&mut panel.shelves, &panel.ui));
+}
+
 /// 启动时调用一次。窗口保持隐藏，直到托盘或搜索结果打开它。
-pub(crate) fn install(ui: Panel, todos: TodoCommands, notes: Option<NoteCommands>, store: Store) {
+pub(crate) fn install(
+    ui: Panel,
+    todos: TodoCommands,
+    notes: Option<NoteCommands>,
+    shelves: Option<ShelfCommands>,
+    icons: Arc<Mutex<IconCache>>,
+    store: Store,
+) {
     let tab_titles: Vec<slint::SharedString> =
         PanelTab::ALL.iter().map(|tab| tab.title().into()).collect();
     ui.set_tab_titles(ModelRc::from(Rc::new(VecModel::from(tab_titles))));
@@ -88,6 +108,10 @@ pub(crate) fn install(ui: Panel, todos: TodoCommands, notes: Option<NoteCommands
 
     let controller = Controller {
         notes: NotesPage::new(&ui, notes, store.clone()),
+        shelves: ShelvesPage::new(&ui, shelves, todos.clone(), icons, store.clone()),
+        drop_state: Arc::new(DropState::default()),
+        drop_registration: None,
+        linked: HashSet::new(),
         ui,
         todos,
         store,
@@ -174,6 +198,23 @@ pub(crate) fn on_todos_changed() {
     with_panel(|panel| {
         if panel.visible {
             panel.reload();
+            if panel.tab == PanelTab::Shelves {
+                panel.shelves.reload(&panel.ui);
+            }
+        }
+    });
+}
+
+/// 收纳有变更消息时调用。分组变了，待办页的标记也要跟着变。
+pub(crate) fn on_shelves_changed() {
+    with_panel(|panel| {
+        if !panel.visible {
+            return;
+        }
+        match panel.tab {
+            PanelTab::Shelves => panel.shelves.reload(&panel.ui),
+            PanelTab::Todo => panel.reload(),
+            _ => {}
         }
     });
 }
@@ -202,6 +243,7 @@ fn wire(ui: &Panel) {
     ui.on_toggle_complete(|index| with_panel(move |panel| panel.complete_row(index)));
     ui.on_toggle_current(|| with_panel(Controller::toggle_current));
     ui.on_open_source(|| with_panel(Controller::open_source));
+    ui.on_open_shelf(|| with_panel(Controller::open_shelf));
     ui.on_move_item(|up| with_panel(move |panel| panel.move_selected(up)));
     ui.on_delete_item(|| with_panel(Controller::delete_selected));
     ui.on_restore_item(|| with_panel(Controller::restore_selected));
@@ -228,6 +270,11 @@ fn wire(ui: &Panel) {
 pub(crate) struct Controller {
     ui: Panel,
     notes: NotesPage,
+    shelves: ShelvesPage,
+    drop_state: Arc<DropState>,
+    drop_registration: Option<Registration>,
+    /// 被收纳分组关联的待办 id。待办页的标记和「打开关联收纳」用它。
+    linked: HashSet<String>,
     todos: TodoCommands,
     store: Store,
     lists_model: Rc<VecModel<PanelList>>,
@@ -255,6 +302,18 @@ impl Controller {
         {
             self.store
                 .log_warn("面板样式子类没有装上，显示时可能出现标题栏按钮");
+        }
+        if let Some(hwnd) = self.hwnd() {
+            match shelf_dnd::register(
+                hwnd,
+                Arc::clone(&self.drop_state),
+                Arc::new(shelves_page::dropped),
+            ) {
+                Ok(registration) => self.drop_registration = Some(registration),
+                Err(message) => self
+                    .store
+                    .log_warn(&format!("收纳页拖入没有装上，不能拖入文件：{message}")),
+            }
         }
         self.refresh_backdrop();
     }
@@ -288,11 +347,13 @@ impl Controller {
         self.tab = match target {
             PanelTarget::Todo { .. } => PanelTab::Todo,
             PanelTarget::Note { .. } => PanelTab::Notes,
+            PanelTarget::Shelf { .. } => PanelTab::Shelves,
         };
         self.prepare();
         match target {
             PanelTarget::Todo { item_id } => self.locate(item_id),
             PanelTarget::Note { note_id } => self.notes.locate(&self.ui, note_id),
+            PanelTarget::Shelf { group_id } => self.shelves.locate(&self.ui, group_id),
         }
         self.present();
     }
@@ -317,6 +378,9 @@ impl Controller {
         self.push_error();
         if self.tab == PanelTab::Notes {
             self.notes.entered(&self.ui);
+        }
+        if self.tab == PanelTab::Shelves {
+            self.shelves.entered(&self.ui);
         }
     }
 
@@ -356,11 +420,26 @@ impl Controller {
         }
         self.ui.invoke_focus_root();
         self.ui.invoke_ensure_row_visible(self.selected_index());
+        self.sync_drop();
+    }
+
+    /// 放下目标只在面板显示、收纳标签打开时接受，区域是收纳页在窗口里的位置。
+    fn sync_drop(&self) {
+        let accepting = self.visible && self.tab == PanelTab::Shelves;
+        self.drop_state.set_accepting(accepting);
+        self.drop_state.set_zone(DropZone {
+            x: self.ui.get_shelf_zone_x(),
+            y: self.ui.get_shelf_zone_y(),
+            width: self.ui.get_shelf_zone_w(),
+            height: self.ui.get_shelf_zone_h(),
+            scale: self.ui.window().scale_factor(),
+        });
     }
 
     fn hide(&mut self) {
         self.visible = false;
         self.error = None;
+        self.sync_drop();
         let _ = self.ui.hide();
     }
 
@@ -368,7 +447,7 @@ impl Controller {
         let settling = self
             .shown_at
             .is_some_and(|shown| shown.elapsed() < BLUR_GRACE);
-        if self.visible && self.focused && !settling {
+        if self.visible && self.focused && !settling && !self.shelves.is_dragging() {
             self.hide();
         }
     }
@@ -385,9 +464,12 @@ impl Controller {
         self.ui.set_empty_label(tab.empty_label().into());
         if tab == PanelTab::Notes {
             self.notes.entered(&self.ui);
+        } else if tab == PanelTab::Shelves {
+            self.shelves.entered(&self.ui);
         } else {
             self.push_error();
         }
+        self.sync_drop();
         self.ui.invoke_focus_root();
     }
 
@@ -421,6 +503,7 @@ impl Controller {
     fn rebuild(&mut self) {
         let today = self.today();
         let now = unix_now_ms();
+        self.linked = self.shelves.linked_todos();
         let entries = panel::list_entries(&self.lists);
         let selected_list = match &self.view {
             Some(TodoView::List(id)) => entries.iter().position(|entry| &entry.id == id),
@@ -455,7 +538,11 @@ impl Controller {
         {
             self.selected = None;
         }
-        let models: Vec<PanelRow> = self.rows.iter().map(row_model).collect();
+        let models: Vec<PanelRow> = self
+            .rows
+            .iter()
+            .map(|row| row_model(row, self.linked.contains(&row.id)))
+            .collect();
         self.rows_model.set_vec(models);
         self.ui.set_selected_row(self.selected_index());
         self.push_detail(false);
@@ -505,6 +592,7 @@ impl Controller {
                 .unwrap_or_default()
                 .into(),
             has_source: item.source.is_some(),
+            has_shelf: self.linked.contains(&item.id),
             current: item.current,
             can_up: reordered_ids(&self.lists, &list.id, &item.id, true).is_some(),
             can_down: reordered_ids(&self.lists, &list.id, &item.id, false).is_some(),
@@ -703,6 +791,19 @@ impl Controller {
         }
     }
 
+    /// 「打开关联收纳」：切到收纳并选中关联这条待办的分组，关联多个时选第一个。
+    fn open_shelf(&mut self) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let Some(group_id) = self.shelves.group_for_todo(&id) else {
+            self.error = Some("没有关联的收纳分组".to_owned());
+            self.push_error();
+            return;
+        };
+        self.open_target(&PanelTarget::Shelf { group_id });
+    }
+
     fn move_selected(&mut self, up: bool) {
         let Some((list, item)) = self.selected_item() else {
             return;
@@ -824,7 +925,7 @@ impl Controller {
     }
 }
 
-fn row_model(row: &Row) -> PanelRow {
+fn row_model(row: &Row, shelf: bool) -> PanelRow {
     PanelRow {
         title: row.title.as_str().into(),
         completed: row.completed,
@@ -834,6 +935,7 @@ fn row_model(row: &Row) -> PanelRow {
         recurrence: row.recurrence.into(),
         source: row.source.as_str().into(),
         note: row.trash_note.as_str().into(),
+        shelf,
     }
 }
 
