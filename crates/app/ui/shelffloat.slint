@@ -1,0 +1,142 @@
+// 收纳分组的悬浮窗。只显示该分组的条目：上沿一条可拖动的细条，右侧是关闭，下面是条目列表。
+// 条目列表和面板的收纳页是同一个组件；全局 ShelvesPageData 在每个窗口里各有一份，
+// 所以这个窗口的数据和回调由它自己的 Rust 对象接。风格与便签悬浮窗一致。
+
+import { Palette } from "std-widgets.slint";
+import { Ink } from "widgets.slint";
+import { RefsList, ShelvesPageData } from "shelvespage.slint";
+
+export component ShelfFloat inherits Window {
+    title: "Lanwork";
+    no-frame: true;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+    preferred-width: 320px;
+    preferred-height: 360px;
+    min-width: 200px;
+    min-height: 120px;
+    resize-border-width: 6px;
+
+    in property <bool> dark;
+    // 亚克力时客户区透明，DWM 画背景。
+    in property <bool> acrylic;
+    in property <color> solid-color: #f3f3f3;
+    in property <string> error;
+
+    callback close-clicked();
+    callback drag-window();
+
+    property <Ink> c: {
+        ink: dark ? #ffffff : #1b1b1b,
+        secondary: dark ? #c5c5c5 : #5d5d5d,
+        tertiary: dark ? #9a9a9a : #767676,
+        divider: dark ? #ffffff17 : #00000014,
+        hover: dark ? #ffffff0d : #00000008,
+        selection: dark ? #ffffff14 : #0000000d,
+        field: dark ? #ffffff0a : #ffffff80,
+        accent: dark ? #60cdff : #005fb8,
+        critical: dark ? #ff99a4 : #c42b1c,
+    };
+    property <length> error-height: error != "" ? 24px : 0px;
+
+    background: acrylic ? transparent : solid-color;
+
+    init => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+        float-scope.focus();
+    }
+    changed dark => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    float-scope := FocusScope {
+        key-pressed(event) => {
+            if ShelvesPageData.selected-ref >= 0 && event.text == Key.Return {
+                if event.modifiers.control {
+                    ShelvesPageData.open-ref-folder();
+                } else {
+                    ShelvesPageData.open-ref();
+                }
+                return accept;
+            }
+            reject
+        }
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 28px;
+
+            TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.drag-window();
+                    }
+                }
+            }
+
+            Rectangle {
+                x: parent.width - 28px;
+                width: 28px;
+                height: parent.height;
+                background: close-touch.has-hover ? c.hover : transparent;
+
+                Path {
+                    x: 9px;
+                    y: 9px;
+                    width: 10px;
+                    height: 10px;
+                    viewbox-width: 10;
+                    viewbox-height: 10;
+                    fill: transparent;
+                    stroke: c.secondary;
+                    stroke-width: 1.2px;
+                    commands: "M1 1l8 8 M9 1l-8 8";
+                }
+
+                close-touch := TouchArea {
+                    clicked => {
+                        root.close-clicked();
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            x: 10px;
+            y: 28px;
+            width: parent.width - 20px;
+            height: parent.height - 28px - 8px - error-height;
+
+            if ShelvesPageData.refs.length == 0: Text {
+                x: 4px;
+                y: 4px;
+                text: "没有条目";
+                color: c.secondary;
+                font-size: 14px;
+            }
+
+            RefsList {
+                width: parent.width;
+                height: parent.height;
+                c: root.c;
+                focus-requested => {
+                    float-scope.focus();
+                }
+            }
+        }
+
+        if error != "": Text {
+            x: 10px;
+            y: parent.height - error-height - 4px;
+            width: parent.width - 20px;
+            height: error-height;
+            text: root.error;
+            color: c.critical;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}

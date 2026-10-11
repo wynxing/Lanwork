@@ -34,6 +34,7 @@ use crate::panel;
 use crate::platform::{HotkeyControl, Platform};
 use crate::registry::{apply_startup, read_system_theme};
 use crate::searchbar;
+use crate::shelf_float;
 use crate::{Panel, SearchBar, Tray};
 
 pub(crate) fn run() -> i32 {
@@ -120,6 +121,9 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         searchbar::install(search.clone_strong(), dispatch, store.clone());
     }
     let icons = icons.unwrap_or_else(|| Arc::new(Mutex::new(IconCache::shell())));
+    if let Some(shelves) = &shelves {
+        shelf_float::install(shelves.clone(), Arc::clone(&icons), store.clone());
+    }
     panel::install(
         panel_ui.clone_strong(),
         todos.clone(),
@@ -279,7 +283,10 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
                 continue;
             }
             if event.kind == EntityKind::Shelf {
-                let _ = slint::invoke_from_event_loop(panel::on_shelves_changed);
+                let _ = slint::invoke_from_event_loop(|| {
+                    panel::on_shelves_changed();
+                    shelf_float::on_changed();
+                });
                 continue;
             }
             if event.kind != EntityKind::Todo {
@@ -404,6 +411,7 @@ fn refresh_theme(config: &ConfigCommands, store: &Store) {
     searchbar::apply_theme(dark);
     panel::apply_theme(dark);
     note_float::apply_theme(dark);
+    shelf_float::apply_theme(dark);
 }
 
 pub(crate) fn local_today() -> Option<CivilDate> {
@@ -443,6 +451,7 @@ fn attempt_quit() {
     match quit_decision(unsaved) {
         QuitDecision::Exit => {
             QUIT.clear();
+            shelf_float::save_for_quit();
             let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
             if let Some(tray) = tray {
                 let _ = tray.hide();

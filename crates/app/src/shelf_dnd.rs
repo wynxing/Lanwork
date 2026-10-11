@@ -605,4 +605,94 @@ mod tests {
         assert!(file.is_file(), "the original file stays");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn a_float_window_accepts_anywhere_and_two_windows_do_not_share_state() {
+        ensure_ole();
+        let root = scratch("floats");
+        let file = root.join("a.txt");
+        std::fs::write(&file, b"a").expect("file");
+        let data = data_object_for_paths(std::slice::from_ref(&file)).expect("data object");
+        let all = EFFECT_COPY | EFFECT_MOVE | EFFECT_LINK;
+        let first = probe();
+        let second = probe();
+        first.state.set_accepting(true);
+        first.state.set_zone(DropZone::everywhere());
+        assert_eq!(offer(&first, &data, 5000, all), EFFECT_COPY);
+        assert_eq!(
+            offer(&second, &data, 10, all),
+            EFFECT_NONE,
+            "the other window is closed"
+        );
+
+        let point = POINTL { x: 5000, y: 10 };
+        let mut effect = DROPEFFECT(all);
+        // SAFETY: data 是有效数据对象，point 和 effect 指向局部变量。
+        unsafe {
+            second
+                .target
+                .Drop(&data, MODIFIERKEYS_FLAGS(0), point, &mut effect)
+        }
+        .expect("Drop on the closed window");
+        assert_eq!(effect.0, EFFECT_NONE);
+        assert!(second.received.try_recv().is_err());
+        assert!(
+            first.received.try_recv().is_err(),
+            "nothing was dropped on the first"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn test_window() -> HWND {
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WINDOW_EX_STYLE, WS_POPUP};
+        use windows::core::w;
+        // SAFETY: STATIC 是系统自带的窗口类，不需要实例句柄；参数都是常量，句柄由测试自己销毁。
+        unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("lanwork-shelf-test"),
+                WS_POPUP,
+                0,
+                0,
+                10,
+                10,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("test window")
+    }
+
+    #[test]
+    fn each_window_registers_on_its_own_handle_and_revokes_when_its_registration_drops() {
+        use windows::Win32::Foundation::DRAGDROP_E_NOTREGISTERED;
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+        ensure_ole();
+        let (first, second) = (test_window(), test_window());
+        let sink: DropSink = Arc::new(|_| {});
+        let registration_one =
+            register(first, Arc::new(DropState::default()), Arc::clone(&sink)).expect("first");
+        let registration_two =
+            register(second, Arc::new(DropState::default()), sink).expect("second");
+
+        drop(registration_one);
+        // SAFETY: first 是本测试创建的窗口；已撤销时只返回错误。
+        let again = unsafe { RevokeDragDrop(first) };
+        assert_eq!(
+            again.expect_err("already revoked").code(),
+            DRAGDROP_E_NOTREGISTERED
+        );
+        // SAFETY: second 仍然登记着，撤销它不影响第一个窗口。
+        unsafe { RevokeDragDrop(second) }.expect("the second window is still registered");
+
+        drop(registration_two);
+        // SAFETY: 两个窗口都由本测试创建，之后不再使用。
+        unsafe {
+            let _ = DestroyWindow(first);
+            let _ = DestroyWindow(second);
+        }
+    }
 }

@@ -53,6 +53,8 @@ export global ShelvesPageData {
     callback rename-group(string);
     callback move-group(bool);
     callback delete-group();
+    // 把选中的分组打开成独立窗口。
+    callback float-group();
     callback select-ref(int);
     callback open-ref();
     callback open-ref-folder();
@@ -165,8 +167,8 @@ component TodoPicker inherits Rectangle {
     }
 }
 
-// 选中分组的条目列表。可见行的起止在这里算，因为列表只在选中分组时存在。
-component RefsList inherits Rectangle {
+// 选中分组的条目列表，面板的收纳页和收纳悬浮窗共用。可见行的起止在这里算，因为列表只在选中分组时存在。
+export component RefsList inherits Rectangle {
     in property <Ink> c;
     // 点击条目行后让页面拿焦点，这样 Enter 和 Ctrl+Enter 才有效。
     callback focus-requested();
@@ -461,6 +463,14 @@ export component ShelvesPage inherits Rectangle {
                         c: root.c;
                         clicked => {
                             ShelvesPageData.unlink-todo();
+                        }
+                    }
+
+                    Btn {
+                        text: "悬浮";
+                        c: root.c;
+                        clicked => {
+                            ShelvesPageData.float-group();
                         }
                     }
 

@@ -29,6 +29,10 @@ mod searchbar;
 #[cfg(windows)]
 mod shelf_dnd;
 #[cfg(windows)]
+mod shelf_float;
+#[cfg(windows)]
+mod shelf_refs;
+#[cfg(windows)]
 mod shelves_page;
 #[cfg(windows)]
 mod winutil;
@@ -71,6 +75,7 @@ mod tests {
             ("notespage.slint", include_str!("../ui/notespage.slint")),
             ("notefloat.slint", include_str!("../ui/notefloat.slint")),
             ("shelvespage.slint", include_str!("../ui/shelvespage.slint")),
+            ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
         ];
         for (name, source) in sources {
             for forbidden in ["今日", "focus-page", "FocusPage"] {

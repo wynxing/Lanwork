@@ -4,35 +4,28 @@
 //! 和 `lanwork_core::panel`。这里把服务的结果排成界面要的行，并把用户的动作交给服务。
 //! 只保存路径引用；不打开、不复制、不移动、不删除被引用的文件。
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
-use lanwork_core::apps::launch;
-use lanwork_core::dispatch::{IconCache, IconKey, RgbaImage};
+use lanwork_core::dispatch::IconCache;
 use lanwork_core::panel::{
-    GroupRow, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids, passed_drag_threshold,
-    pick_selection, reordered_group_ids, todo_choices, visible_paths,
+    GroupRow, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids, pick_selection,
+    reordered_group_ids, todo_choices,
 };
-use lanwork_core::shell::path_target;
-use lanwork_core::shelves::{IncomingRef, Shelf, ShelfCommands};
+use lanwork_core::shelves::{IncomingRef, Shelf, ShelfCommands, ShelfRef};
 use lanwork_core::storage::Store;
 use lanwork_core::todos::{TodoCommands, TodoList};
-use slint::platform::{PointerEventButton, WindowEvent};
-use slint::{ComponentHandle, LogicalPosition, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::panel::with_shelves;
-use crate::shelf_dnd::{DragOutcome, drag_metrics, drag_out, path_text};
-use crate::{Panel, ShelfGroupRow, ShelfRefRow, ShelfTodoRow, ShelvesPageData};
-
-/// 按下条目行时记下的位置，指针移出阈值之后才开始拖出。
-struct Press {
-    path: String,
-    x: f32,
-    y: f32,
-}
+use crate::shelf_dnd::DragOutcome;
+use crate::shelf_refs::{
+    Moved, ProbeResult, RefsView, drag_error, parent_folder, prepare_drop, release_grab,
+    schedule_drag, skipped_message, spawn_launch, spawn_probe, to_i32,
+};
+use crate::{Panel, ShelfGroupRow, ShelfTodoRow, ShelvesPageData};
 
 pub(crate) struct ShelvesPage {
     shelves: Option<ShelfCommands>,
@@ -40,21 +33,14 @@ pub(crate) struct ShelvesPage {
     icon_cache: Arc<Mutex<IconCache>>,
     store: Store,
     groups_model: Rc<VecModel<ShelfGroupRow>>,
-    refs_model: Rc<VecModel<ShelfRefRow>>,
     choices_model: Rc<VecModel<ShelfTodoRow>>,
+    view: RefsView,
     list: Vec<Shelf>,
     lists: Vec<TodoList>,
     rows: Vec<GroupRow>,
     selected: Option<String>,
     shown_group: Option<String>,
-    selected_ref: Option<String>,
-    exists: HashMap<String, bool>,
-    icons: HashMap<String, slint::Image>,
-    epoch: u64,
-    first_visible: usize,
-    visible_count: usize,
     choices: Vec<TodoChoice>,
-    press: Option<Press>,
     dragging: bool,
 }
 
@@ -72,26 +58,19 @@ impl ShelvesPage {
             icon_cache,
             store,
             groups_model: Rc::default(),
-            refs_model: Rc::default(),
             choices_model: Rc::default(),
+            view: RefsView::new(),
             list: Vec::new(),
             lists: Vec::new(),
             rows: Vec::new(),
             selected: None,
             shown_group: None,
-            selected_ref: None,
-            exists: HashMap::new(),
-            icons: HashMap::new(),
-            epoch: 0,
-            first_visible: 0,
-            visible_count: 0,
             choices: Vec::new(),
-            press: None,
             dragging: false,
         };
         let data = ui.global::<ShelvesPageData>();
         data.set_groups(ModelRc::from(Rc::clone(&page.groups_model)));
-        data.set_refs(ModelRc::from(Rc::clone(&page.refs_model)));
+        data.set_refs(ModelRc::from(page.view.model()));
         data.set_choices(ModelRc::from(Rc::clone(&page.choices_model)));
         data.set_selected_group(-1);
         data.set_selected_ref(-1);
@@ -175,7 +154,7 @@ impl ShelvesPage {
         self.selected
             .as_ref()
             .and_then(|id| self.list.iter().position(|shelf| &shelf.id == id))
-            .map_or(-1, count)
+            .map_or(-1, to_i32)
     }
 
     fn rebuild(&mut self, ui: &Panel) {
@@ -185,7 +164,7 @@ impl ShelvesPage {
                 .iter()
                 .map(|row| ShelfGroupRow {
                     name: row.name.as_str().into(),
-                    count: count(row.count),
+                    count: to_i32(row.count),
                     todo: row.todo_title.as_str().into(),
                 })
                 .collect::<Vec<_>>(),
@@ -196,8 +175,7 @@ impl ShelvesPage {
         let changed = self.shown_group != self.selected;
         if changed {
             self.shown_group.clone_from(&self.selected);
-            self.selected_ref = None;
-            self.press = None;
+            self.view.clear();
             data.set_confirm_delete(false);
             data.set_picker_open(false);
             data.set_group_version(data.get_group_version().wrapping_add(1));
@@ -227,159 +205,49 @@ impl ShelvesPage {
         data.set_can_up(can_up);
         data.set_can_down(can_down);
 
-        if let Some(path) = &self.selected_ref
-            && !self
-                .selected_shelf()
-                .is_some_and(|shelf| shelf.refs.iter().any(|item| &item.path == path))
-        {
-            self.selected_ref = None;
-        }
-        if changed {
-            self.exists.clear();
-            self.icons.clear();
-        }
         self.push_refs(ui);
         self.refresh_visible(ui, true);
     }
 
-    /// 条目行跟着当前分组和已知的存在、图标状态重排。行数不变时逐行更新，列表的滚动位置不动。
+    fn refs(&self) -> &[ShelfRef] {
+        self.selected_shelf()
+            .map_or(&[], |shelf| shelf.refs.as_slice())
+    }
+
     fn push_refs(&self, ui: &Panel) {
-        let rows: Vec<ShelfRefRow> = self
-            .selected_shelf()
-            .map(|shelf| {
-                shelf
-                    .refs
-                    .iter()
-                    .map(|item| {
-                        let icon = self.icons.get(&item.path);
-                        ShelfRefRow {
-                            name: item.name.as_str().into(),
-                            icon: icon.cloned().unwrap_or_default(),
-                            has_icon: icon.is_some(),
-                            missing: self.exists.get(&item.path) == Some(&false),
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if self.refs_model.row_count() == rows.len() {
-            for (index, row) in rows.into_iter().enumerate() {
-                self.refs_model.set_row_data(index, row);
-            }
-        } else {
-            self.refs_model.set_vec(rows);
-        }
-        let data = ui.global::<ShelvesPageData>();
-        let (index, path) = match (&self.selected_ref, self.selected_shelf()) {
-            (Some(path), Some(shelf)) => (
-                shelf
-                    .refs
-                    .iter()
-                    .position(|item| &item.path == path)
-                    .map_or(-1, count),
-                path.clone(),
-            ),
-            _ => (-1, String::new()),
-        };
-        data.set_selected_ref(index);
-        data.set_selected_path(path.into());
+        self.view.push(self.refs(), &ui.global::<ShelvesPageData>());
     }
 
     /// 只给可见的行查路径是否存在和取图标。查询放在后台线程，结果回到界面线程再合并。
-    /// `force` 为真时丢掉已知的存在状态重新查，这样文件被删掉或补回之后能更新。
     fn refresh_visible(&mut self, ui: &Panel, force: bool) {
-        let (Some(shelves), Some(shelf)) = (self.shelves.clone(), self.selected_shelf()) else {
+        let (Some(shelves), Some(group_id)) = (self.shelves.clone(), self.selected.clone()) else {
             return;
         };
-        let group_id = shelf.id.clone();
-        let visible = visible_paths(&shelf.refs, self.first_visible, self.visible_count.max(1));
-        if force {
-            self.epoch = self.epoch.wrapping_add(1);
-            for path in &visible {
-                self.exists.remove(path);
-            }
-        }
-        let to_check: Vec<String> = visible
+        let refs = self
+            .list
             .iter()
-            .filter(|path| !self.exists.contains_key(*path))
-            .cloned()
-            .collect();
-        let to_icon: Vec<String> = visible
-            .iter()
-            .filter(|path| !self.icons.contains_key(*path))
-            .cloned()
-            .collect();
-        let keep: HashSet<&String> = visible.iter().collect();
-        let before = self.icons.len();
-        self.icons.retain(|path, _| keep.contains(path));
-        if self.icons.len() != before {
-            self.push_refs(ui);
-        }
-        if to_check.is_empty() && to_icon.is_empty() {
+            .find(|shelf| shelf.id == group_id)
+            .map_or(&[][..], |shelf| shelf.refs.as_slice());
+        let data = ui.global::<ShelvesPageData>();
+        let Some(plan) = self.view.refresh(refs, force, &data) else {
             return;
-        }
-        let epoch = self.epoch;
-        let cache = Arc::clone(&self.icon_cache);
-        let spawned = std::thread::Builder::new()
-            .name("lanwork-shelf-probe".into())
-            .spawn(move || {
-                let flags = shelves.check_exists(&to_check);
-                let exists: Vec<(String, bool)> = to_check.into_iter().zip(flags).collect();
-                let known_missing: HashSet<&String> = exists
-                    .iter()
-                    .filter(|(_, present)| !present)
-                    .map(|(path, _)| path)
-                    .collect();
-                let mut icons = Vec::new();
-                for path in to_icon {
-                    if known_missing.contains(&path) {
-                        continue;
-                    }
-                    let key = IconKey {
-                        path: path.clone(),
-                        index: 0,
-                    };
-                    let image = cache
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .get(&key);
-                    if let Some(image) = image {
-                        icons.push((path, image));
-                    }
-                }
-                let _ = slint::invoke_from_event_loop(move || {
-                    with_shelves(move |page, ui| {
-                        page.receive(ui, epoch, &group_id, exists, &icons);
-                    });
-                });
+        };
+        let spawned = spawn_probe(shelves, Arc::clone(&self.icon_cache), plan, move |result| {
+            let _ = slint::invoke_from_event_loop(move || {
+                with_shelves(move |page, ui| page.receive(ui, &group_id, result));
             });
+        });
         if let Err(err) = spawned {
             self.store
                 .log_warn(&format!("收纳页没有启动路径检查线程：{err}"));
         }
     }
 
-    fn receive(
-        &mut self,
-        ui: &Panel,
-        epoch: u64,
-        group_id: &str,
-        exists: Vec<(String, bool)>,
-        icons: &[(String, RgbaImage)],
-    ) {
+    fn receive(&mut self, ui: &Panel, group_id: &str, result: ProbeResult) {
         if self.selected.as_deref() != Some(group_id) {
             return;
         }
-        if epoch == self.epoch {
-            self.exists.extend(exists);
-        } else {
-            for (path, present) in exists {
-                self.exists.entry(path).or_insert(present);
-            }
-        }
-        for (path, image) in icons {
-            self.icons.insert(path.clone(), to_image(image));
-        }
+        self.view.receive(result);
         self.push_refs(ui);
     }
 
@@ -459,17 +327,10 @@ impl ShelvesPage {
         }
     }
 
-    fn ref_path(&self, index: i32) -> Option<String> {
-        let index = usize::try_from(index).ok()?;
-        self.selected_shelf()?
-            .refs
-            .get(index)
-            .map(|item| item.path.clone())
-    }
-
     fn select_ref(&mut self, ui: &Panel, index: i32) {
-        if let Some(path) = self.ref_path(index) {
-            self.selected_ref = Some(path);
+        if let Some(shelf) = self.selected_shelf() {
+            let refs = shelf.refs.clone();
+            self.view.select(&refs, index);
             self.push_refs(ui);
         }
     }
@@ -478,14 +339,14 @@ impl ShelvesPage {
         let (Some(shelves), Some(id), Some(path)) = (
             self.shelves.clone(),
             self.selected.clone(),
-            self.selected_ref.clone(),
+            self.view.selected().map(str::to_owned),
         ) else {
             return;
         };
         match shelves.remove_ref(&id, &path) {
             Ok(_) => {
                 ui.set_error(SharedString::new());
-                self.selected_ref = None;
+                self.view.deselect();
                 self.reload(ui);
             }
             Err(err) => self.fail(ui, &err.to_string()),
@@ -494,10 +355,10 @@ impl ShelvesPage {
 
     /// Enter 或双击：用 Windows Shell 打开。已知不存在的路径直接显示错误。
     fn open_ref(&mut self, ui: &Panel) {
-        let Some(path) = self.selected_ref.clone() else {
+        let Some(path) = self.view.selected().map(str::to_owned) else {
             return;
         };
-        if self.exists.get(&path) == Some(&false) {
+        if self.view.is_missing(&path) {
             self.fail(ui, "路径不存在");
             return;
         }
@@ -507,15 +368,10 @@ impl ShelvesPage {
 
     /// Ctrl+Enter：打开所在目录，即路径的上一级。
     fn open_ref_folder(&mut self, ui: &Panel) {
-        let Some(path) = self.selected_ref.clone() else {
+        let Some(path) = self.view.selected() else {
             return;
         };
-        let Some(parent) = Path::new(&path)
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .and_then(Path::to_str)
-            .map(str::to_owned)
-        else {
+        let Some(parent) = parent_folder(path) else {
             self.fail(ui, "没有所在目录");
             return;
         };
@@ -524,16 +380,11 @@ impl ShelvesPage {
     }
 
     fn spawn_open(&self, ui: &Panel, path: String) {
-        let spawned = std::thread::Builder::new()
-            .name("lanwork-shelf-open".into())
-            .spawn(move || {
-                if let Err(err) = launch(&path_target(&path)) {
-                    let message = err.message;
-                    let _ = slint::invoke_from_event_loop(move || {
-                        with_shelves(move |page, ui| page.fail(ui, &message));
-                    });
-                }
+        let spawned = spawn_launch(path, |message| {
+            let _ = slint::invoke_from_event_loop(move || {
+                with_shelves(move |page, ui| page.fail(ui, &message));
             });
+        });
         if let Err(err) = spawned {
             self.fail(ui, &format!("打开失败：{err}"));
         }
@@ -627,36 +478,34 @@ impl ShelvesPage {
                 }
             }
         }
-        if skipped > 0 {
-            self.fail(ui, &format!("{skipped} 个路径不是有效的 Unicode，没有加入"));
+        if let Some(message) = skipped_message(skipped) {
+            self.fail(ui, &message);
         }
     }
 
     fn ref_press(&mut self, index: i32, x: f32, y: f32) {
-        self.press = self.ref_path(index).map(|path| Press { path, x, y });
+        let refs = self.selected_shelf().map(|shelf| shelf.refs.clone());
+        if let Some(refs) = refs {
+            self.view.press(&refs, index, x, y);
+        }
     }
 
     /// 移动超过系统拖动阈值就拖出按下的那一条。OLE 的模态循环不能在这次回调里跑，放到下一轮事件循环。
     fn ref_move(&mut self, ui: &Panel, x: f32, y: f32) {
-        let Some(press) = self.press.as_ref() else {
-            return;
-        };
-        let scale = ui.window().scale_factor();
-        let (cx, cy) = drag_metrics();
-        if !passed_drag_threshold((x - press.x) * scale, (y - press.y) * scale, cx, cy) {
-            return;
+        match self.view.moved(ui.window().scale_factor(), x, y) {
+            Moved::Nothing => {}
+            Moved::Missing => self.fail(ui, "路径不存在"),
+            Moved::Start { path, origin } => {
+                ui.set_error(SharedString::new());
+                schedule_drag(
+                    path,
+                    || with_shelves(|page, _| page.dragging = true),
+                    move |outcome| {
+                        with_shelves(move |page, ui| page.drag_finished(ui, outcome, origin))
+                    },
+                );
+            }
         }
-        let Some(press) = self.press.take() else {
-            return;
-        };
-        if self.exists.get(&press.path) == Some(&false) {
-            self.fail(ui, "路径不存在");
-            return;
-        }
-        ui.set_error(SharedString::new());
-        let origin = (press.x, press.y);
-        let path = press.path;
-        slint::Timer::single_shot(Duration::ZERO, move || run_drag(path, origin));
     }
 
     fn drag_finished(
@@ -666,69 +515,38 @@ impl ShelvesPage {
         origin: (f32, f32),
     ) {
         self.dragging = false;
-        self.press = None;
-        let window = ui.window();
-        window.dispatch_event(WindowEvent::PointerReleased {
-            position: LogicalPosition::new(origin.0, origin.1),
-            button: PointerEventButton::Left,
-        });
-        window.dispatch_event(WindowEvent::PointerExited);
-        match outcome {
-            Ok(outcome) if outcome.failed() => {
-                self.fail(ui, &format!("拖出失败：{}", outcome.result.message()));
-            }
-            Ok(_) => {}
-            Err(message) => self.fail(ui, &format!("拖出失败：{message}")),
+        self.view.release();
+        release_grab(ui.window(), origin);
+        if let Some(message) = drag_error(outcome) {
+            self.fail(ui, &message);
+        }
+    }
+
+    /// 把选中的分组打开成悬浮窗。
+    fn float_group(&mut self, ui: &Panel) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        match crate::shelf_float::open(&id) {
+            Ok(()) => ui.set_error(SharedString::new()),
+            Err(message) => self.fail(ui, &message),
         }
     }
 }
 
-/// 在界面线程上进入 OLE 的拖出循环。不能在面板的借用里调用：循环期间窗口消息照常派发。
-fn run_drag(path: String, origin: (f32, f32)) {
-    with_shelves(|page, _| page.dragging = true);
-    let outcome = drag_out(&[PathBuf::from(path)]);
-    with_shelves(move |page, ui| page.drag_finished(ui, outcome, origin));
-}
-
 /// OLE 放下目标读到路径之后调用。文件夹标记在后台线程里查，结果回到界面线程再写入服务。
 pub(crate) fn dropped(paths: Vec<PathBuf>) {
-    let spawned = std::thread::Builder::new()
-        .name("lanwork-shelf-drop".into())
-        .spawn(move || {
-            let mut incoming = Vec::with_capacity(paths.len());
-            let mut skipped = 0;
-            for path in paths {
-                match path_text(&path) {
-                    Some(text) => incoming.push(IncomingRef {
-                        folder: std::fs::metadata(&path).is_ok_and(|meta| meta.is_dir()),
-                        path: text,
-                    }),
-                    None => skipped += 1,
-                }
-            }
-            let _ = slint::invoke_from_event_loop(move || {
-                with_shelves(move |page, ui| page.add_dropped(ui, &incoming, skipped));
-            });
+    let spawned = prepare_drop(paths, |incoming, skipped| {
+        let _ = slint::invoke_from_event_loop(move || {
+            with_shelves(move |page, ui| page.add_dropped(ui, &incoming, skipped));
         });
+    });
     if let Err(err) = spawned {
         let message = format!("放下的路径没有处理：{err}");
         let _ = slint::invoke_from_event_loop(move || {
             with_shelves(move |page, ui| page.fail(ui, &message));
         });
     }
-}
-
-fn count(value: usize) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
-}
-
-fn to_image(image: &RgbaImage) -> slint::Image {
-    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-        &image.pixels,
-        image.width,
-        image.height,
-    );
-    slint::Image::from_rgba8(buffer)
 }
 
 fn wire(ui: &Panel) {
@@ -744,6 +562,7 @@ fn wire(ui: &Panel) {
     });
     data.on_move_group(|up| with_shelves(move |page, ui| page.move_group(ui, up)));
     data.on_delete_group(|| with_shelves(ShelvesPage::delete_group));
+    data.on_float_group(|| with_shelves(ShelvesPage::float_group));
     data.on_select_ref(|index| with_shelves(move |page, ui| page.select_ref(ui, index)));
     data.on_open_ref(|| with_shelves(ShelvesPage::open_ref));
     data.on_open_ref_folder(|| with_shelves(ShelvesPage::open_ref_folder));
@@ -760,11 +579,10 @@ fn wire(ui: &Panel) {
     data.on_unlink_todo(|| with_shelves(ShelvesPage::unlink_todo));
     data.on_ref_press(|index, x, y| with_shelves(move |page, _| page.ref_press(index, x, y)));
     data.on_ref_move(|_, x, y| with_shelves(move |page, ui| page.ref_move(ui, x, y)));
-    data.on_ref_release(|| with_shelves(|page, _| page.press = None));
+    data.on_ref_release(|| with_shelves(|page, _| page.view.release()));
     data.on_visible_changed(|first, visible| {
         with_shelves(move |page, ui| {
-            page.first_visible = usize::try_from(first).unwrap_or(0);
-            page.visible_count = usize::try_from(visible).unwrap_or(0);
+            page.view.set_visible(first, visible);
             page.refresh_visible(ui, false);
         });
     });
