@@ -83,28 +83,79 @@ function Test-Iscc673([string]$Path) {
     return $info.FileVersion.Trim().Trim([char]0).StartsWith("6.7.3")
 }
 
+function Write-IsccCandidates {
+    $dirs = @(
+        $innoRoot,
+        (Join-Path $env:USERPROFILE "Desktop\Inno Setup 6"),
+        "${env:ProgramFiles(x86)}\Inno Setup 6",
+        "$env:ProgramFiles\Inno Setup 6",
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6")
+    )
+    foreach ($dir in $dirs) {
+        $candidate = Join-Path $dir "ISCC.exe"
+        if (-not (Test-Path $candidate)) { continue }
+        $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($candidate)
+        Write-Host "found ISCC FileVersion=$($info.FileVersion) Path=$candidate"
+    }
+}
+
+$systemIscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+$systemBefore = ""
+if (Test-Path $systemIscc) {
+    $systemBefore = [Diagnostics.FileVersionInfo]::GetVersionInfo($systemIscc).FileVersion
+    if ($systemBefore) { $systemBefore = $systemBefore.Trim().Trim([char]0) }
+}
+Write-Host "preinstalled ISCC FileVersion=$systemBefore Path=$systemIscc"
+
 if (-not (Test-Iscc673 $iscc)) {
     if (Test-Path $innoRoot) { Remove-Item -Recurse -Force $innoRoot }
+    New-Item -ItemType Directory -Force $innoRoot | Out-Null
     $installer = Join-Path $env:TEMP "innosetup-$innoVersion.exe"
     Invoke-WebRequest -Uri $innoUrl -OutFile $installer
     $got = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $innoHash) {
         throw "Inno Setup 哈希不符: $got"
     }
-    $proc = Start-Process -FilePath $installer -ArgumentList @(
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/NORESTART",
-        "/SP-",
-        "/PORTABLE=1",
-        "/DIR=$innoRoot"
-    ) -Wait -PassThru
+    $innoLog = Join-Path $out "innosetup-install.log"
+    # 参数串原样交给 Inno。/DIR 必须带引号，否则会落到预装目录。
+    $argLine = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /PORTABLE=1 /DIR=`"$innoRoot`" /LOG=`"$innoLog`""
+    Write-Host "inno installer: $argLine"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $installer
+    $psi.Arguments = $argLine
+    $psi.UseShellExecute = $false
+    $proc = [Diagnostics.Process]::Start($psi)
+    if ($null -eq $proc) { throw "无法启动 Inno Setup 安装程序" }
+    $proc.WaitForExit()
+    Write-Host "inno installer exit $($proc.ExitCode)"
     if ($proc.ExitCode -ne 0) {
-        throw "安装 Inno Setup $innoVersion 失败，退出码 $($proc.ExitCode)"
+        $tail = ""
+        if (Test-Path $innoLog) { $tail = (Get-Content -Path $innoLog -Tail 40) -join "`n" }
+        throw "安装 Inno Setup $innoVersion 失败，退出码 $($proc.ExitCode)`n$tail"
     }
 }
 if (-not (Test-Iscc673 $iscc)) {
-    throw "找不到校验过的 Inno Setup $innoVersion : $iscc"
+    foreach ($dir in @(
+        (Join-Path $env:USERPROFILE "Desktop\Inno Setup 6"),
+        "${env:ProgramFiles(x86)}\Inno Setup 6",
+        "$env:ProgramFiles\Inno Setup 6",
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6")
+    )) {
+        $candidate = Join-Path $dir "ISCC.exe"
+        if (-not (Test-Iscc673 $candidate)) { continue }
+        $ver = [Diagnostics.FileVersionInfo]::GetVersionInfo($candidate).FileVersion.Trim().Trim([char]0)
+        if ($candidate -eq $systemIscc -and $ver -eq $systemBefore) { continue }
+        Write-Host "copy verified Inno Setup $ver from $dir"
+        Copy-Item -Path (Join-Path $dir "*") -Destination $innoRoot -Recurse -Force
+        break
+    }
+}
+if (-not (Test-Iscc673 $iscc)) {
+    Write-IsccCandidates
+    $tail = ""
+    $innoLog = Join-Path $out "innosetup-install.log"
+    if (Test-Path $innoLog) { $tail = (Get-Content -Path $innoLog -Tail 40) -join "`n" }
+    throw "找不到校验过的 Inno Setup $innoVersion : $iscc`n$tail"
 }
 $isccInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($iscc)
 $isccFile = $isccInfo.FileVersion.Trim().Trim([char]0)
