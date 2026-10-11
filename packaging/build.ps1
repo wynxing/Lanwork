@@ -78,8 +78,13 @@ $innoHash = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
 
 function Get-IsccBanner([string]$Path) {
     if (-not (Test-Path $Path)) { return "" }
+    # 帮助文本只有 “Inno Setup 6”，没有修订号。读完脚本、开始编译之前才打印
+    # Compiler engine version。空脚本随后会编译失败，这个退出码不是打包失败。
+    $PSNativeCommandUseErrorActionPreference = $false
+    $probe = Join-Path $env:TEMP "lanwork-iscc-probe.iss"
+    Set-Content -Path $probe -Value "; probe" -Encoding ascii
     $outFile = Join-Path $env:TEMP ("iscc-banner-" + [guid]::NewGuid().ToString() + ".txt")
-    & $Path > $outFile 2>&1
+    & $Path "/O-" $probe > $outFile 2>&1
     $text = ""
     if (Test-Path $outFile) {
         $text = Get-Content -Raw $outFile
@@ -90,7 +95,7 @@ function Get-IsccBanner([string]$Path) {
 }
 
 function Test-Iscc673([string]$Path) {
-    return (Get-IsccBanner $Path) -match '6\.7\.3'
+    return (Get-IsccBanner $Path) -match 'Compiler engine version: Inno Setup 6\.7\.3'
 }
 
 function Write-IsccCandidates {
@@ -165,8 +170,8 @@ if (-not (Test-Iscc673 $iscc)) {
 $banner = Get-IsccBanner $iscc
 Write-Host "verified Inno Setup ISCC=$iscc"
 Write-Host $banner
-if ($banner -notmatch '6\.7\.3') {
-    throw "ISCC 横幅里没有 6.7.3"
+if ($banner -notmatch 'Compiler engine version: Inno Setup 6\.7\.3') {
+    throw "ISCC 横幅里没有 Compiler engine version: Inno Setup 6.7.3"
 }
 
 & $iscc $issPath
