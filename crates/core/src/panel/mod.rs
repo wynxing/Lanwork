@@ -1,10 +1,12 @@
 //! 面板里不调用窗口 API 的决定：标签、定位目标、窗口尺寸与位置，待办页的列表、行和输入解析，
-//! 便签页的列表、便签编辑窗口的保存状态，以及便签悬浮窗的默认大小和位置。
+//! 便签页的列表、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，以及收纳页的分组、引用和拖放判定。
 //!
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
 mod note_edit;
 mod note_page;
+mod shelf_dnd;
+mod shelf_page;
 mod todo_page;
 
 pub use note_edit::{AUTOSAVE_IDLE_MS, EditSession, SaveOutcome, SaveProblem};
@@ -14,6 +16,14 @@ pub use note_page::{
     restore_float, tag_names, trash_rows,
 };
 
+pub use shelf_dnd::{
+    DragContinue, DropZone, EFFECT_COPY, EFFECT_LINK, EFFECT_MOVE, EFFECT_NONE, OUTGOING_EFFECTS,
+    continue_drag, drop_effect, passed_drag_threshold,
+};
+pub use shelf_page::{
+    GroupRow, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids, pick_selection,
+    reordered_group_ids, todo_choices, visible_paths,
+};
 pub use todo_page::{
     InputError, ListEntry, RECURRENCE_CHOICES, Row, TodoView, default_view, format_date,
     list_entries, locate, parse_due, parse_remind, recurrence_from_choice, recurrence_index,
@@ -84,11 +94,12 @@ impl PanelTab {
     }
 }
 
-/// 打开面板时要定位的对象。收纳分组等它的标签实现后再加。
+/// 打开面板时要定位的对象。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelTarget {
     Todo { item_id: String },
     Note { note_id: String },
+    Shelf { group_id: String },
 }
 
 /// 面板的逻辑尺寸。工作区放不下默认尺寸时，每边留出 [`PANEL_MARGIN`] 后收小。
