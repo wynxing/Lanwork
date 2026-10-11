@@ -1,7 +1,7 @@
 //! 发布包程序目录里要带上的 Everything 文件。
 //!
 //! 运行时从程序目录加载 DLL。许可原文在 `third_party/everything/`。
-//! 安装程序还没做，这里只列出要拷贝的源和目标文件名。
+//! 安装程序按这份清单把文件拷进程序目录。Unicode 许可另外拷，不在这份 Everything 清单里。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProgramDirectoryFile {

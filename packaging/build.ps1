@@ -1,0 +1,196 @@
+# 在 windows-latest 上编译 release、安装包和便携版，并静默安装再卸载。
+# 不创建 GitHub Release。签名和 latest.json 不在这里。
+
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+
+$cargo = Get-Content -Raw (Join-Path $root "Cargo.toml")
+$versionMatch = [regex]::Match($cargo, '(?m)^version = "([^"]+)"')
+if (-not $versionMatch.Success) {
+    throw "Cargo.toml 里没有 workspace 版本"
+}
+$version = $versionMatch.Groups[1].Value
+
+$issPath = Join-Path $root "packaging\lanwork.iss"
+$iss = Get-Content -Raw $issPath
+$issVersion = [regex]::Match($iss, '#define MyAppVersion "([^"]+)"')
+if (-not $issVersion.Success -or $issVersion.Groups[1].Value -ne $version) {
+    throw "lanwork.iss 的 MyAppVersion 与 Cargo 版本 $version 不一致"
+}
+
+if ($env:GITHUB_REF_TYPE -eq "tag") {
+    $tag = $env:GITHUB_REF_NAME
+    if ($tag -ne "v$version") {
+        throw "tag $tag 与 Cargo 版本 v$version 不一致"
+    }
+}
+
+Write-Host "building Lanwork $version"
+cargo build -p lanwork -p lanwork-shortcut --release
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$releaseDir = Join-Path $root "target\release"
+$exe = Join-Path $releaseDir "lanwork.exe"
+$helper = Join-Path $releaseDir "lanwork-shortcut.exe"
+if (-not (Test-Path $exe)) { throw "缺少 $exe" }
+if (-not (Test-Path $helper)) { throw "缺少 $helper" }
+
+function Assert-ProductVersion([string]$Path, [string]$Expected, [string]$Label) {
+    $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+    $product = $info.ProductVersion.Trim()
+    $file = $info.FileVersion.Trim()
+    if ($product -ne $Expected) {
+        throw "$Label ProductVersion '$product' FileVersion '$file'，期望 $Expected"
+    }
+    if ($file -ne $Expected -and $file -ne "$Expected.0") {
+        throw "$Label FileVersion '$file'，期望 $Expected 或 $Expected.0"
+    }
+    if ($info.FileDescription -ne "Lanwork") {
+        throw "$Label FileDescription '$($info.FileDescription)'"
+    }
+    if ($info.ProductName -ne "Lanwork") {
+        throw "$Label ProductName '$($info.ProductName)'"
+    }
+}
+
+Assert-ProductVersion $exe $version "lanwork.exe"
+
+$staging = Join-Path $root "packaging\staging"
+$helperDir = Join-Path $root "packaging\helper"
+$out = Join-Path $root "packaging\out"
+New-Item -ItemType Directory -Force $helperDir | Out-Null
+New-Item -ItemType Directory -Force $out | Out-Null
+& $helper stage $exe $staging
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Copy-Item $helper (Join-Path $helperDir "lanwork-shortcut.exe") -Force
+
+$iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+if (-not (Test-Path $iscc)) {
+    $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+}
+if (-not (Test-Path $iscc)) {
+    $installer = Join-Path $env:TEMP "innosetup-6.7.3.exe"
+    $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+    $expected = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+    Invoke-WebRequest -Uri $url -OutFile $installer
+    $got = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+    if ($got -ne $expected) {
+        throw "Inno Setup 哈希不符: $got"
+    }
+    $proc = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+        throw "安装 Inno Setup 失败，退出码 $($proc.ExitCode)"
+    }
+    $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+}
+if (-not (Test-Path $iscc)) { throw "找不到 ISCC.exe" }
+
+& $iscc $issPath
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$setup = Join-Path $out "Lanwork-Setup-$version.exe"
+if (-not (Test-Path $setup)) { throw "缺少 $setup" }
+Assert-ProductVersion $setup $version "安装包"
+
+$zip = Join-Path $out "Lanwork-$version-portable-x64.zip"
+if (Test-Path $zip) { Remove-Item $zip }
+Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zip
+if ($zip -notlike "*portable*") { throw "便携版文件名不含 portable" }
+
+$notesPath = Join-Path $root "packaging\release-notes.md"
+$notes = Get-Content -Raw $notesPath
+if ($notes -notlike "*__VERSION__*") { throw "Release 说明缺少版本占位" }
+$notes = $notes.Replace("__VERSION__", $version).Replace("__TAG__", "v$version")
+if ($notes -like "*__VERSION__*" -or $notes -like "*__TAG__*") { throw "Release 说明仍有占位" }
+if ($notes -notlike "*https://slint.dev*") { throw "Release 说明缺少 Slint 链接" }
+if ($notes -notlike "*MadeWithSlint*") { throw "Release 说明缺少 Slint 徽标" }
+if ($notes -like "*仅供自测*") { throw "Release 说明不能标成仅供自测" }
+[System.IO.File]::WriteAllText((Join-Path $out "RELEASE.md"), $notes)
+Set-Content -Path (Join-Path $out "version.txt") -Value $version -Encoding ascii
+
+$installDir = Join-Path $env:TEMP "Lanwork 测试"
+$log = Join-Path $out "install.log"
+if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
+
+$docs = Join-Path $env:USERPROFILE "Documents\Lanwork"
+$cache = Join-Path $env:LOCALAPPDATA "Lanwork"
+New-Item -ItemType Directory -Force $docs | Out-Null
+New-Item -ItemType Directory -Force $cache | Out-Null
+$docsMarker = Join-Path $docs "packaging-keep.txt"
+$cacheMarker = Join-Path $cache "packaging-keep.txt"
+Set-Content -Path $docsMarker -Value "keep" -Encoding utf8
+Set-Content -Path $cacheMarker -Value "keep" -Encoding utf8
+
+$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+if (-not (Test-Path $runKey)) { New-Item -Path $runKey -Force | Out-Null }
+New-ItemProperty -Path $runKey -Name "Lanwork" -PropertyType String -Value "sentinel" -Force | Out-Null
+New-ItemProperty -Path $runKey -Name "LanworkPackagingProbe" -PropertyType String -Value "keep" -Force | Out-Null
+
+Write-Host "silent install to $installDir"
+& $setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir" "/LOG=$log"
+if ($LASTEXITCODE -ne 0) { throw "静默安装退出码 $LASTEXITCODE" }
+
+foreach ($name in @(
+    "lanwork.exe",
+    "Everything64.dll",
+    "Everything3_x64.dll",
+    "Everything-SDK-LICENSE.txt",
+    "Everything-SDK3-LICENSE.txt",
+    "Unicode-LICENSE.txt",
+    "THIRD_PARTY_NOTICES.txt"
+)) {
+    if (-not (Test-Path (Join-Path $installDir $name))) {
+        throw "安装目录缺少 $name"
+    }
+}
+if (Test-Path (Join-Path $installDir "lanwork-shortcut.exe")) {
+    throw "快捷方式工具不应留在安装目录"
+}
+Assert-ProductVersion (Join-Path $installDir "lanwork.exe") $version "已安装的 lanwork.exe"
+
+$aumidKey = "HKCU:\Software\Classes\AppUserModelId\Lanwork"
+$aumid = Get-ItemProperty $aumidKey
+if ($aumid.DisplayName -ne "Lanwork") { throw "DisplayName 不符" }
+if ($aumid.CustomActivator -ne "{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}") {
+    throw "CustomActivator 不符: $($aumid.CustomActivator)"
+}
+$clsidKey = "HKCU:\Software\Classes\CLSID\{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}\LocalServer32"
+$localServer = (Get-Item $clsidKey).GetValue("")
+$expectedServer = '"' + (Join-Path $installDir "lanwork.exe") + '"'
+if ($localServer -ne $expectedServer) {
+    throw "LocalServer32 '$localServer' != '$expectedServer'"
+}
+$runAfter = (Get-ItemProperty $runKey -Name "Lanwork").Lanwork
+if ($runAfter -ne "sentinel") { throw "安装改写了 Run 值: $runAfter" }
+
+$lnk = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Lanwork.lnk"
+if (-not (Test-Path $lnk)) { throw "没有开始菜单快捷方式" }
+& $helper read $lnk
+if ($LASTEXITCODE -ne 0) { throw "快捷方式属性读回失败" }
+if (-not (Test-Path $docsMarker)) { throw "安装删了数据目录标记" }
+if (-not (Test-Path $cacheMarker)) { throw "安装删了缓存目录标记" }
+
+$unlog = Join-Path $out "uninstall.log"
+$unins = Join-Path $installDir "unins000.exe"
+& $unins /VERYSILENT /SUPPRESSMSGBOXES "/LOG=$unlog"
+if ($LASTEXITCODE -ne 0) { throw "静默卸载退出码 $LASTEXITCODE" }
+
+if (Test-Path (Join-Path $installDir "lanwork.exe")) { throw "卸载后程序还在" }
+if (Test-Path $lnk) { throw "卸载后快捷方式还在" }
+if (Test-Path $aumidKey) { throw "卸载后 AUMID 键还在" }
+if (Test-Path "HKCU:\Software\Classes\CLSID\{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}") {
+    throw "卸载后 CLSID 键还在"
+}
+$runLeft = Get-ItemProperty $runKey -Name "Lanwork" -ErrorAction SilentlyContinue
+if ($null -ne $runLeft.Lanwork) { throw "卸载后 Run 值还在" }
+$probe = (Get-ItemProperty $runKey -Name "LanworkPackagingProbe").LanworkPackagingProbe
+if ($probe -ne "keep") { throw "卸载删了别的 Run 值" }
+Remove-ItemProperty -Path $runKey -Name "LanworkPackagingProbe"
+if (-not (Test-Path $docsMarker)) { throw "卸载删了数据目录" }
+if (-not (Test-Path $cacheMarker)) { throw "卸载删了缓存目录" }
+Remove-Item $docsMarker
+Remove-Item $cacheMarker
+
+Write-Host "package ok $setup"
+Write-Host "portable ok $zip"

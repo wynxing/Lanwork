@@ -12,6 +12,7 @@ members = [
     "spikes/dnd",
     "tools/fixture",
     "tools/sample",
+    "tools/shortcut",
 ]
 
 [workspace.package]

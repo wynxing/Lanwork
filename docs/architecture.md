@@ -21,7 +21,9 @@
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
 | `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合「性能测量」协议的实测记录。`docs/measurements/fileidx.md` 只说明 fileidx 那次场景。 |
 | `docs/measurements/2026-10-08-empty-window.md` | 空 Slint 窗口采样。脚本通过：300 行，首尾 298.989 秒。偏离协议，不算「已达到」。 |
-| `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。已放入 Everything SDK 与 SDK3 的 x64 DLL 及许可，见 `third_party/everything/`。 |
+| `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。已放入 Everything SDK 与 SDK3 的 x64 DLL 及许可，见 `third_party/everything/`。已放入 Slint 1.18.1 的 Royalty-free 2.0 许可文本和归属徽标，见 `third_party/slint/`。文本和徽标都取自 tag `v1.18.1`，不跟踪 master。 |
+| `tools/shortcut` | 包名 `lanwork-shortcut`。安装时写入开始菜单快捷方式的 AUMID 和激活 CLSID，并按清单把发布文件拷进暂存目录。不进 `lanwork` 的依赖，不留在安装目录里。 |
+| `packaging/` | Inno Setup 脚本、打包脚本和 Release 说明模板。不进编译依赖。 |
 
 ### 尚未接入
 
@@ -55,7 +57,7 @@
 - Slint crate 固定为 1.18.1。升级单独提交，并重跑依赖该版本行为的技术验证。
 - `DWMWA_SYSTEMBACKDROP_TYPE` 从 Windows 11 Build 22621 起可用。运行时检查 build 和调用返回值，不可用时不设置该属性，按纯色处理。产品支持的最低 build 尚未确定。
 - 进程内没有 Vue、Tauri、WebView2。
-- Slint 按 Royalty-free 许可证使用。归属声明用 Release 下载页上的 Slint 徽标，界面里不放 `AboutSlint`。许可证要求徽标在公开网页上，因此仓库公开之前不对外分发二进制。
+- Slint 按 Royalty-free 许可证 2.0 使用。固定文本是 tag `v1.18.1` 的 `LICENSES/LicenseRef-Slint-Royalty-free-2.0.md`，副本在 `third_party/slint/`。归属走许可证第 2 节 (b)：在可以下载二进制的公开网页上放 Slint 徽标 `MadeWithSlint-logo-whitebg.png`（同一 tag 的 `logo/`，副本在 `third_party/slint/`），并链到 <https://slint.dev>。界面里不放 `AboutSlint`。仓库已经公开。GitHub Release 按公开发布。未登录浏览器打开 Release 页、确认徽标和链接可见的记录还没有，那是第一次发布之后的人工步骤。
 - 界面调用薄命令。命令做校验，业务规则在服务中。需要保存的数据先原子写入，成功后再向本进程已打开的窗口发变更消息。非法输入返回明确错误。单进程、单写者。
 - 中文输入法能在搜索条、面板搜索框、待办标题和便签正文中上屏。做不到这一点时，界面方案不成立，不能改用「只支持英文」通过验收。
 - 搜索条和面板在启动时创建并保持隐藏，以满足热召回目标；隐藏中不做整页重绘。快速收集是搜索条的一种输入状态，不另建窗口。便签悬浮窗、番茄钟在使用时创建，关闭时释放文本、图标和绘图资源。到期提醒的调度保留在主进程里。
@@ -73,7 +75,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条、面板宿主和托盘。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。存储启动之后打开 `NoteCommands`、`AppIndex::open_from_process`（随后用 `load_user_catalog` 读 `user-apps.json` 交给 `set_user_catalog`）和 `FileCommands`，组成 `Dispatch` 并 `build`。这几步任一失败只写日志，进程继续，搜索条不安装，按热键不出现。同一时刻打开 `ShelfCommands` 并调用 `watch_todo_notices`，待办被永久删除时分组的关联由它解除；打不开时只写日志，收纳页显示错误。不建 GitHub 刷新定时器。`githubRefreshIntervalMs` 原样保存，包括 0，外壳不解释它。
 
 - **单实例。** 命名互斥量 `Local\Lanwork.SingleInstance.Mutex`，加上信号量 `Local\Lanwork.SingleInstance.Activate`（初值 0）。第一个进程拥有互斥量并等待信号量。后来的进程发现互斥量已存在，就对信号量加一，然后退出，退出码 0。信号量的计数会留到第一个进程来取，所以通知发生在等待之前也不会丢。第一个进程收到通知后不打开窗口。产品规格没有写这时要显示什么。
-- **应用图标。** 源文件是 `crates/app/assets/lanwork.svg`，按给出的字节原样放进仓库，不改花瓣，也不改颜色。同目录的 `lanwork-256.png` 是这张图的 256×256 渲染，同样原样提交。16、20、24、32、40、48、64 的 PNG，托盘底图 `lanwork-32.rgba`，以及含这八个尺寸的 `lanwork.ico`，由 `tools/render_app_icon.py` 从这张 256px 图做整数面积平均得到。脚本只用 Python 标准库，不重新解释 SVG。产物提交在仓库里。构建不运行这个脚本，也不需要 SVG 工具。Windows 目标上，`crates/app/build.rs` 用 `winresource`（与 `spikes/dnd` 同一个 crate）把 `lanwork.ico` 编成资源 ID 1，链进 `lanwork.exe`，资源管理器和任务栏用它。非 Windows 目标不嵌入。搜索条、面板、便签悬浮窗和收纳悬浮窗的 Slint `Window` `icon` 用 `lanwork-256.png`。技术验证的「背景」和「渲染器」仍没有通过记录，给这些窗口设图标不改变那两项。
+- **应用图标。** 源文件是 `crates/app/assets/lanwork.svg`，按给出的字节原样放进仓库，不改花瓣，也不改颜色。同目录的 `lanwork-256.png` 是这张图的 256×256 渲染，同样原样提交。16、20、24、32、40、48、64 的 PNG，托盘底图 `lanwork-32.rgba`，以及含这八个尺寸的 `lanwork.ico`，由 `tools/render_app_icon.py` 从这张 256px 图做整数面积平均得到。脚本只用 Python 标准库，不重新解释 SVG。产物提交在仓库里。构建不运行这个脚本，也不需要 SVG 工具。Windows 目标上，`crates/app/build.rs` 用 `winresource`（与 `spikes/dnd` 同一个 crate）把 `lanwork.ico` 编成资源 ID 1，链进 `lanwork.exe`，资源管理器和任务栏用它。同一份资源写入版本信息：字符串 `FileVersion` 和 `ProductVersion` 取 Cargo 包版本，当前是 `0.1.0`。数值 `FILEVERSION` 和 `PRODUCTVERSION` 是 Windows 要求的四段整数 `0.1.0.0`，对应这个 `0.1.0`，不是另一个版本。`ProductName` 和 `FileDescription` 写 `Lanwork`。非 Windows 目标不嵌入。搜索条、面板、便签悬浮窗和收纳悬浮窗的 Slint `Window` `icon` 用 `lanwork-256.png`。技术验证的「背景」和「渲染器」仍没有通过记录，给这些窗口设图标不改变那两项。
 - **托盘。** 菜单顺序是「打开面板」「设置」「新建便签」「刷新 GitHub」「退出」。提示文字只有「Lanwork」。图标是 32×32 的应用图标。逾期数量来自 `TodoCommands::overdue_count`，今天的日期用 `GetLocalTime`。数量为 0 时不画数字。数量不为 0 时在右下角盖一块徽章再画原来的 5×7 数字：白底、深色笔画、一圈深色边。一位和两位按 2 倍笔画，更长时按 1 倍。画不出图标的笔画裁掉，不改成「99+」。徽章的底色、边和放大倍数是实现选择，产品规格没有写徽章的样子。待办变更消息到达后在界面线程重画。读数量或日期失败时不画数字，并写日志。左键和右键都由 Slint 打开同一份菜单，没有另加左键动作。
 - **打开面板、设置、新建便签。** 「打开面板」显示面板，标签保持收起前的选择。「设置」显示面板并切到设置标签，那个标签目前只有一行空状态。面板热键按下后同样显示面板，不收起。「新建便签」创建一篇空便签，显示面板并切到便签页，选中它；没有便签服务时只显示错误。当前编辑区有没写盘的修改且保存失败时，先停在原来的便签上，等用户重试或放弃。
 - **刷新 GitHub。** 在界面线程之外调用 `GithubCommands::load` 和 `refresh_all`。时间是 `SystemTime` 的 UTC 毫秒。设置取当前配置里的长期未更新天数、来源同步、关闭来源时自动完成待办和刷新间隔。失败写入日志，不包含 `gh` 的标准输出、标准错误或 token。已经有一次刷新在进行时，再次点击直接返回，不排队。没有另外的提示窗口。
@@ -174,7 +176,7 @@ Slint 负责版式。待办规则、便签保存、收纳、GitHub 刷新、搜�
 
 便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。便携版通知只显示提醒，点击不定位。2026-10-09 的记录里，便携版通知能显示；运行中点击没有定位，日志没有 `COM Activate`；退出后点击没有拉起进程。
 
-卸载要删掉上述快捷方式和 HKCU 键，由安装程序实现。验证程序自己的注销只清理它写过的 spike 标识，不清理将来产品用的标识。
+卸载要删掉上述快捷方式和 HKCU 键，以及 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值名 `Lanwork`，由安装程序实现。不删除数据目录。产品用的标识和 spike 不同：AUMID 是 `Lanwork`，激活 CLSID 是 `{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}`，显示名是 `Lanwork`。快捷方式是当前用户开始菜单程序目录里的 `Lanwork.lnk`。`LocalServer32` 的值是带引号的 `lanwork.exe` 路径，规则与开机启动的 `quoted_executable` 相同。进程侧的 `CoRegisterClassObject` 还不在 `lanwork.exe` 里。通知这一项仍未通过。验证程序自己的注销只清理它写过的 spike 标识，不清理产品用的标识。
 
 ## 数据
 
@@ -385,7 +387,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 状态检查为就绪但这次查询调用失败时，本次改走 Windows Search，并记日志。规格没有单独写这一步。`Everything3_ConnectW` 在数据库加载时可能长时间不返回，规格没有超时，这里不加。只有 `WSearch` 正在运行才当作可用；正在启动算不算可用，规格没写。
 
-程序目录还要带上两份许可，文件名是 `Everything-SDK3-LICENSE.txt`、`Everything-SDK-LICENSE.txt`，来源是 `third_party/everything/` 里对应的 `LICENSE.txt`。安装程序还没做，拷贝不在本服务里。清单是 `PROGRAM_DIRECTORY_FILES`。
+程序目录还要带上两份许可，文件名是 `Everything-SDK3-LICENSE.txt`、`Everything-SDK-LICENSE.txt`，来源是 `third_party/everything/` 里对应的 `LICENSE.txt`。安装程序按清单把它们拷进程序目录，拷贝不在本服务里。清单是 `PROGRAM_DIRECTORY_FILES`。
 
 搜索条的输入先经 `lanwork_core::search::classify_prefix` 判断收集前缀。该函数只区分空输入、搜索、待办收集和便签收集，并给出前缀之后的剩余文本与是否可提交；不解析日期、不创建记录、不入查询队列。面板搜索框不调用它。待办收集的剩余文本再交给 `parse_todo_due_prefix`，今天的日期由调用方传入。命中前缀时不进入查询队列，尚未返回的查询结果丢弃，只做日期前缀解析和预览；未提交的收集文本保存在内存里，退出进程时不保留。
 
@@ -465,6 +467,32 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 安装版使用 minisign 签名和 `latest.json`。WinHTTP 分块下载到临时文件，流式验签成功后才启动安装程序。签名错误或下载失败不启动安装。界面提供检查、进度、安装和重启。
 
 便携版不在运行中替换自身，只打开对应的 Release。安装程序不安装 WebView2，也不安装 Windows App Runtime。安装版的开始菜单快捷方式和通知激活器按「通知」注册。签名私钥不进入仓库。没有从旧安装目录完成的一次升级记录时，测试通过不算升级验收。
+
+上面是更新的目标。minisign、`latest.json`、WinHTTP 下载和验签、设置里的检查和安装界面都还没有代码。最低系统版本等产品规格写明之前不判断 Windows build。没有从旧安装目录完成的升级记录，更新未验收。
+
+### 安装程序与便携包
+
+安装程序用 Inno Setup 6.7.3。编译器是 `ISCC.exe`。GitHub Actions 的 `windows-latest` 从 `https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe` 下载，SHA-256 为 `9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732`，静默安装后再编译。编译器不进 Lanwork 的安装包。
+
+不选 NSIS。它也能在 `windows-latest` 上编出单个 exe，按用户安装也能做，但 `CreateShortcut` 写不了 `VT_CLSID`。不选 WiX。它在 `windows-latest` 上能编，默认产物是 msi；要 exe 还要 Burn。`MsiShortcutProperty` 把快捷方式属性写成字符串，写不成「通知」里用 `InitPropVariantFromCLSID` 验证过的 `VT_CLSID`。
+
+脚本在 `packaging/lanwork.iss`。产物文件名是 `Lanwork-Setup-<版本>.exe`，当前是 `Lanwork-Setup-0.1.0.exe`。`PrivilegesRequired=lowest`，不请求管理员，不写 HKLM，不安装 WebView2，不安装 Windows App Runtime。默认目录是 `%LOCALAPPDATA%\Programs\Lanwork`。这是实现选择，产品规格没有写安装目录。用户可以改目录。目录里有 `"` 时安装停止。`MinVersion=0` 只关掉安装器自带的旧系统拦截，不是把产品最低版本定成 0。产品最低 build 仍待定。
+
+开始菜单快捷方式在当前用户的程序目录，文件名 `Lanwork.lnk`。Inno 的 `[Icons]` 写不了属性存储。安装结束时从临时目录运行 `lanwork-shortcut.exe`（`tools/shortcut`），写入 `System.AppUserModel.ID` 和 `System.AppUserModel.ToastActivatorCLSID`，然后删掉这个小程序，不留在安装目录。标识见「通知」。`DisplayName`、`CustomActivator` 和带引号的 `LocalServer32` 由安装脚本写入 HKCU。
+
+交互安装时，若互斥量 `Local\Lanwork.SingleInstance.Mutex` 还在，安装程序提示先关掉 Lanwork。静默安装发现这个互斥量还在就退出，不结束进程。文件被占用而互斥量已经不在时，交互安装仍提示关闭；静默安装这时会按 Inno Setup 的默认关掉占用进程。CI 的静默安装只在进程没运行时执行。
+
+卸载删掉安装目录里这次装上的文件、开始菜单快捷方式、上面的 HKCU 键，以及 Run 里的值名 `Lanwork`。不删 Run 这个键本身。不删 `%USERPROFILE%\Documents\Lanwork`。不删 `%LOCALAPPDATA%\Lanwork` 下的引导文件和缓存。安装目录在 `%LOCALAPPDATA%\Programs\Lanwork`，和缓存目录不是同一个。安装不写 Run 值；开机启动仍由程序按配置写。卸载才删这个值。
+
+程序目录里的文件：`lanwork.exe`、`PROGRAM_DIRECTORY_FILES` 的四个文件、`Unicode-LICENSE.txt`（`third_party/unihan/LICENSE.txt`）、`THIRD_PARTY_NOTICES.txt`。图标用 `crates/app/assets/lanwork.ico`。向导用 Inno 自带的简体中文，欢迎页关掉。这些文字是安装器的实现选择，不是产品规格里的界面文案。「背景」和「渲染器」仍没有通过记录，打包不改变那两项。
+
+便携版是 zip，文件名 `Lanwork-<版本>-portable-x64.zip`，当前是 `Lanwork-0.1.0-portable-x64.zip`。内容与安装目录相同，不含安装程序，不含 `lanwork-shortcut.exe`。程序还不区分安装版和便携版，便携版启动时也不写 `DisplayName`。那一步还没有代码。
+
+版本只有 Cargo workspace 的 `0.1.0`。安装包的 `AppVersion`、`VersionInfoProductVersion` 和 exe 资源里的 `FileVersion`、`ProductVersion` 字符串都是这个值。安装包文件版本资源的四段整数是 `0.1.0.0`。
+
+推送与 Cargo 版本一致的 `v*` tag 时，`.github/workflows/release.yml` 在 `windows-latest` 上编 release、打安装包和便携版、创建 GitHub Release 并上传这两个文件。说明里放 Slint 徽标和 <https://slint.dev> 的链接，并说明第三方许可。仓库已经公开，Release 按公开发布。不生成 minisign 签名，不生成 `latest.json`，不在程序里下载或安装更新。设置里的「关于与更新」仍没有界面。未登录浏览器打开 Release 页、确认徽标和链接的记录还没有。
+
+Pull request 的 CI 用同一套打包脚本试装：静默安装到带空格和中文的目录，再卸载，把安装包和便携版上传为 artifact，不创建 Release。这次静默安装不是 Windows 上的人工验收，也不是升级验收。
 
 ## 性能测量
 

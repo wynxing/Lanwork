@@ -54,3 +54,35 @@ jobs:
             exit 1
           }
           Write-Output $tree
+
+  package:
+    name: installer and portable zip
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.99.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build installer and portable zip
+        shell: pwsh
+        run: ./packaging/build.ps1
+
+      - name: Upload packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lanwork-packages
+          if-no-files-found: warn
+          path: |
+            packaging/out/*.exe
+            packaging/out/*portable*.zip
+            packaging/out/*.log
+            packaging/out/RELEASE.md
+
