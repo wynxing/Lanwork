@@ -205,17 +205,17 @@ pub(crate) fn on_todos_changed() {
     });
 }
 
-/// 收纳有变更消息时调用。分组变了，待办页的标记也要跟着变。
+/// 收纳有变更消息时调用。分组变了，待办页的「收纳」标记和「打开关联收纳」也要跟着变，
+/// 不论当前停在哪个标签，所以待办页的数据总是重排。面板隐藏时不重画，下次显示再读。
 pub(crate) fn on_shelves_changed() {
     with_panel(|panel| {
         if !panel.visible {
             return;
         }
-        match panel.tab {
-            PanelTab::Shelves => panel.shelves.reload(&panel.ui),
-            PanelTab::Todo => panel.reload(),
-            _ => {}
+        if panel.tab == PanelTab::Shelves {
+            panel.shelves.reload(&panel.ui);
         }
+        panel.reload();
     });
 }
 
@@ -467,6 +467,7 @@ impl Controller {
         } else if tab == PanelTab::Shelves {
             self.shelves.entered(&self.ui);
         } else {
+            self.reload();
             self.push_error();
         }
         self.sync_drop();
