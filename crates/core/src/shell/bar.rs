@@ -733,13 +733,17 @@ mod tests {
         let browser = RowDetail::Browser {
             url: "https://example.com".to_owned(),
         };
+        let open = row_action(&browser, EnterChord::Plain).unwrap();
         assert_eq!(
-            row_action(&browser, EnterChord::Plain),
-            Some(RowAction::Shell(LaunchTarget::Url {
+            open,
+            RowAction::Shell(LaunchTarget::Url {
                 url: "https://example.com".to_owned()
-            }))
+            })
         );
+        assert!(open.counts_as_open());
         assert_eq!(row_action(&browser, EnterChord::Ctrl), None);
+        assert_eq!(group_label(SearchGroup::Browser), "浏览器");
+        assert_eq!(match_span("打开网址", "cursor.com"), None);
 
         let todo = RowDetail::Todo {
             list_id: "l".to_owned(),
