@@ -3,7 +3,7 @@
 // 所以这个窗口的数据和回调由它自己的 Rust 对象接。风格与便签悬浮窗一致。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Check, Ink } from "widgets.slint";
+import { Btn, Check, Ink } from "widgets.slint";
 import { RefsList, ShelvesPageData } from "shelvespage.slint";
 
 export component ShelfFloat inherits Window {
@@ -41,6 +41,18 @@ export component ShelfFloat inherits Window {
     property <int> link-rows: min(ShelvesPageData.links.length, 4);
     // 收起时只有标题行；展开后是 1 到 4 行列表，没有关联时一行说明。
     property <length> links-height: ShelvesPageData.links-open ? 28px + max(link-rows, 1) * 30px : 28px;
+    // 选中条目时底部多一行：完整路径和「移除引用」。
+    property <length> action-height: ShelvesPageData.selected-ref >= 0 ? 34px : 0px;
+
+    // 布局检查用：各块的屏幕位置，测试据此确认互不重叠。Slint 里没有显式 x、y 的子元素会在
+    // 父元素里居中，父元素高度一变它就跟着动，所以这里每个子元素都写了 y。
+    out property <length> links-head-y: links-head-box.absolute-position.y;
+    out property <length> links-head-height: links-head-box.height;
+    out property <length> links-body-y: links-body.absolute-position.y;
+    out property <length> links-body-height: links-body.height;
+    out property <length> refs-area-y: refs-area.absolute-position.y;
+    out property <length> refs-area-height: refs-area.height;
+    out property <length> action-y: action-bar.absolute-position.y;
 
     background: acrylic ? transparent : solid-color;
 
@@ -113,7 +125,9 @@ export component ShelfFloat inherits Window {
             height: links-height;
             clip: true;
 
-            Rectangle {
+            links-head-box := Rectangle {
+                x: 0px;
+                y: 0px;
                 width: parent.width;
                 height: 28px;
                 border-radius: 6px;
@@ -141,64 +155,79 @@ export component ShelfFloat inherits Window {
 
                 Text {
                     x: 24px;
-                    text: "关联待办";
+                    y: 0px;
+                    width: parent.width - 24px - 6px;
+                    height: 28px;
+                    text: ShelvesPageData.links.length > 0 ? "关联待办（" + ShelvesPageData.links.length + "）" : "关联待办";
                     color: c.secondary;
                     font-size: 13px;
                     vertical-alignment: center;
-                    height: 100%;
+                    overflow: elide;
                 }
             }
 
-            if ShelvesPageData.links-open && ShelvesPageData.links.length == 0: Text {
-                x: 24px;
-                y: 28px;
-                height: 30px;
-                text: "没有关联待办";
-                color: c.tertiary;
-                font-size: 13px;
-                vertical-alignment: center;
-            }
-
-            if ShelvesPageData.links-open && ShelvesPageData.links.length > 0: ListView {
+            links-body := Rectangle {
+                x: 0px;
                 y: 28px;
                 width: parent.width;
-                height: link-rows * 30px;
+                height: ShelvesPageData.links-open ? max(link-rows, 1) * 30px : 0px;
+                clip: true;
 
-                for link[index] in ShelvesPageData.links: Rectangle {
+                if ShelvesPageData.links.length == 0: Text {
+                    x: 24px;
+                    y: 0px;
+                    width: parent.width - 24px;
                     height: 30px;
+                    text: "没有关联待办";
+                    color: c.tertiary;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
 
-                    HorizontalLayout {
-                        padding-left: 4px;
-                        spacing: 4px;
+                if ShelvesPageData.links.length > 0: ListView {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
 
-                        Check {
-                            c: root.c;
-                            checked: link.completed;
-                            enabled: link.found && !link.completed && !link.in-trash;
-                            toggled => {
-                                ShelvesPageData.complete-todo(index);
-                            }
-                        }
+                    for link[index] in ShelvesPageData.links: Rectangle {
+                        height: 30px;
 
-                        Rectangle {
-                            horizontal-stretch: 1;
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            spacing: 4px;
 
-                            title-touch := TouchArea {
-                                enabled: link.found;
-                                mouse-cursor: link.found ? MouseCursor.pointer : MouseCursor.default;
-                                clicked => {
-                                    ShelvesPageData.open-todo(index);
+                            Check {
+                                c: root.c;
+                                checked: link.completed;
+                                enabled: link.found && !link.completed && !link.in-trash;
+                                toggled => {
+                                    ShelvesPageData.complete-todo(index);
                                 }
                             }
 
-                            Text {
-                                width: parent.width;
-                                height: parent.height;
-                                text: link.found ? link.title : "找不到这条待办";
-                                color: !link.found || link.completed || link.in-trash ? c.tertiary : c.ink;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                                overflow: elide;
+                            Rectangle {
+                                horizontal-stretch: 1;
+
+                                TouchArea {
+                                    enabled: link.found;
+                                    mouse-cursor: link.found ? MouseCursor.pointer : MouseCursor.default;
+                                    clicked => {
+                                        ShelvesPageData.open-todo(index);
+                                    }
+                                }
+
+                                Text {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    text: link.found ? link.title : "找不到这条待办";
+                                    color: !link.found || link.completed || link.in-trash ? c.tertiary : c.ink;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
                             }
                         }
                     }
@@ -206,11 +235,11 @@ export component ShelfFloat inherits Window {
             }
         }
 
-        Rectangle {
+        refs-area := Rectangle {
             x: 10px;
             y: 28px + links-height;
             width: parent.width - 20px;
-            height: parent.height - 28px - links-height - 8px - error-height;
+            height: parent.height - 28px - links-height - 8px - error-height - action-height;
 
             if ShelvesPageData.refs.length == 0: Text {
                 x: 4px;
@@ -221,11 +250,46 @@ export component ShelfFloat inherits Window {
             }
 
             RefsList {
+                x: 0px;
+                y: 0px;
                 width: parent.width;
                 height: parent.height;
                 c: root.c;
                 focus-requested => {
                     float-scope.focus();
+                }
+            }
+        }
+
+        // 选中条目时：完整路径和「移除引用」。触发方式沿用面板的按钮，不加 Delete 键或右键。
+        action-bar := Rectangle {
+            x: 10px;
+            y: parent.height - error-height - 4px - action-height;
+            width: parent.width - 20px;
+            height: action-height;
+
+            if ShelvesPageData.selected-ref >= 0: HorizontalLayout {
+                spacing: 8px;
+                padding-top: 2px;
+                padding-bottom: 2px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: ShelvesPageData.selected-path;
+                    color: c.secondary;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Btn {
+                    text: "移除引用";
+                    c: root.c;
+                    danger: true;
+                    clicked => {
+                        ShelvesPageData.remove-ref();
+                        float-scope.focus();
+                    }
                 }
             }
         }

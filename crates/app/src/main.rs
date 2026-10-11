@@ -6,6 +6,9 @@ use lanwork_core as _;
 
 slint::include_modules!();
 
+#[cfg(test)]
+mod float_layout_tests;
+
 #[cfg(windows)]
 mod bar_win;
 #[cfg(windows)]

@@ -402,6 +402,10 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
             }
         }
     });
+    data.on_remove_ref({
+        let id = id.clone();
+        move || with_window(&id, |window, ctx| window.remove_ref(ctx))
+    });
     data.on_complete_todo({
         let id = id.clone();
         move |index| with_window(&id, move |window, ctx| window.complete_todo(ctx, index))
@@ -654,6 +658,23 @@ impl FloatWindow {
         });
         if let Err(err) = spawned {
             self.fail(&format!("打开失败：{err}"));
+        }
+    }
+
+    /// 「移除引用」：只从这个分组删掉选中的那一条，不动原文件。
+    fn remove_ref(&mut self, ctx: &Ctx<'_>) {
+        if self.closed {
+            return;
+        }
+        let Some(path) = self.view.selected().map(str::to_owned) else {
+            return;
+        };
+        match ctx.shelves.remove_ref(&self.group_id, &path) {
+            Ok(_) => {
+                self.view.deselect();
+                self.reload(ctx, true);
+            }
+            Err(err) => self.fail(&err.to_string()),
         }
     }
 
