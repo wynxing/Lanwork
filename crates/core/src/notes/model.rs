@@ -67,6 +67,8 @@ pub struct Note {
     pub revision: u64,
     /// 这一篇的悬浮窗上次关闭时的位置和大小。没有记录时为 `None`。
     pub float: Option<FloatGeometry>,
+    /// 这一篇的悬浮窗是否钉住（始终在其他窗口之上）。与列表里的 `pinned`（置顶）无关。旧文件没有这个字段，按未钉住。
+    pub float_pinned: bool,
 }
 
 impl Note {
@@ -212,6 +214,12 @@ pub(crate) struct NoteFile {
         skip_serializing_if = "Option::is_none"
     )]
     float: Option<FloatGeometry>,
+    #[serde(
+        rename = "floatPinned",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    float_pinned: bool,
 }
 
 impl NoteFile {
@@ -228,6 +236,7 @@ impl NoteFile {
             deleted_at: note.deleted_at,
             revision: note.revision,
             float: note.float,
+            float_pinned: note.float_pinned,
         }
     }
 
@@ -249,6 +258,7 @@ impl NoteFile {
             deleted_at: self.deleted_at,
             revision: self.revision,
             float: self.float,
+            float_pinned: self.float_pinned,
         })
     }
 }
@@ -271,6 +281,7 @@ mod tests {
             deleted_at: None,
             revision: 1,
             float: None,
+            float_pinned: false,
         }
     }
 

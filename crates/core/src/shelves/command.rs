@@ -103,6 +103,12 @@ impl ShelfCommands {
         self.service.set_float(id, geometry)
     }
 
+    /// 记下这个分组的悬浮窗是否钉住。
+    pub fn set_float_pinned(&self, id: &str, pinned: bool) -> Result<Shelf, ShelfError> {
+        self.service.check_group_id(id)?;
+        self.service.set_float_pinned(id, pinned)
+    }
+
     /// 解除这个分组对一条待办的关联，其余关联不动。
     pub fn unlink_todo(&self, id: &str, todo_id: &str) -> Result<Shelf, ShelfError> {
         self.service.check_group_id(id)?;

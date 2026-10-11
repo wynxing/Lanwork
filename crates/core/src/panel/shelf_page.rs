@@ -180,6 +180,7 @@ mod tests {
                 })
                 .collect(),
             float: None,
+            float_pinned: false,
         }
     }
 

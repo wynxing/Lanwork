@@ -1,9 +1,9 @@
-// 收纳分组的悬浮窗。只显示该分组的条目：上沿一条可拖动的细条，右侧是关闭，下面是条目列表。
+// 收纳分组的悬浮窗。只显示该分组的条目：上沿一条可拖动的细条，右侧是钉住和关闭，下面是条目列表。
 // 条目列表和面板的收纳页是同一个组件；全局 ShelvesPageData 在每个窗口里各有一份，
 // 所以这个窗口的数据和回调由它自己的 Rust 对象接。风格与便签悬浮窗一致。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Check, Ink } from "widgets.slint";
+import { Btn, Check, Ink, PinBtn } from "widgets.slint";
 import { RefsList, ShelvesPageData } from "shelvespage.slint";
 
 export component ShelfFloat inherits Window {
@@ -17,14 +17,18 @@ export component ShelfFloat inherits Window {
     min-width: 200px;
     min-height: 120px;
     resize-border-width: 6px;
+    // 钉住：窗口始终在其他窗口之上。属性变化后 Slint 在下一轮事件循环里改窗口层级。
+    always-on-top: pinned;
 
     in property <bool> dark;
     // 亚克力时客户区透明，DWM 画背景。
     in property <bool> acrylic;
     in property <color> solid-color: #f3f3f3;
     in property <string> error;
+    in property <bool> pinned;
 
     callback close-clicked();
+    callback pin-clicked();
     callback drag-window();
 
     property <Ink> c: {
@@ -54,6 +58,11 @@ export component ShelfFloat inherits Window {
     out property <length> refs-area-y: refs-area.absolute-position.y;
     out property <length> refs-area-height: refs-area.height;
     out property <length> action-y: action-bar.absolute-position.y;
+    out property <length> pin-x: pin-btn.absolute-position.x;
+    out property <length> pin-y: pin-btn.absolute-position.y;
+    out property <length> pin-width: pin-btn.width;
+    out property <length> pin-height: pin-btn.height;
+    out property <length> close-x: close-box.absolute-position.x;
 
     background: acrylic ? transparent : solid-color;
 
@@ -92,7 +101,17 @@ export component ShelfFloat inherits Window {
                 }
             }
 
-            Rectangle {
+            pin-btn := PinBtn {
+                x: parent.width - 56px;
+                y: 0px;
+                pinned: root.pinned;
+                c: root.c;
+                toggled => {
+                    root.pin-clicked();
+                }
+            }
+
+            close-box := Rectangle {
                 x: parent.width - 28px;
                 width: 28px;
                 height: parent.height;

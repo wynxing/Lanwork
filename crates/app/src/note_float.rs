@@ -16,7 +16,7 @@ use lanwork_core::panel::{
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
 use slint::winit_030::WinitWindowAccessor;
-use slint::{CloseRequestResponse, ComponentHandle};
+use slint::{CloseRequestResponse, ComponentHandle, SharedString};
 
 use crate::NoteFloat;
 use crate::bar_win;
@@ -235,6 +235,7 @@ impl Floats {
         }
         let ui = NoteFloat::new().map_err(|err| format!("悬浮窗没有创建：{err}"))?;
         ui.set_body(note.body.as_str().into());
+        ui.set_pinned(note.float_pinned);
         ui.set_dark(self.dark);
         ui.set_solid_color(rgb(solid_rgb(self.dark)));
         wire(&ui, note_id);
@@ -352,6 +353,10 @@ fn wire(ui: &NoteFloat, note_id: &str) {
             CloseRequestResponse::KeepWindowShown
         }
     });
+    ui.on_pin_clicked({
+        let id = id.clone();
+        move || with_window(&id, FloatWindow::toggle_pin)
+    });
     ui.on_drag_window({
         let id = id.clone();
         move || {
@@ -439,6 +444,26 @@ impl FloatWindow {
             bar_win::bring_to_front(hwnd);
         }
         self.ui.invoke_focus_body();
+    }
+
+    /// 点「钉住」：先写进便签文件，成功后窗口才改层级，所以按钮的外观总是和已保存的状态一致。
+    /// 写不成时状态不变，错误显示在标题条上。
+    fn toggle_pin(&mut self, ctx: &Ctx<'_>) {
+        if self.closed {
+            return;
+        }
+        let next = !self.ui.get_pinned();
+        match ctx.notes.set_float_pinned(self.editor.session.id(), next) {
+            Ok(_) => {
+                self.ui.set_pinned(next);
+                self.ui.set_pin_error(SharedString::new());
+            }
+            Err(err) => {
+                ctx.store
+                    .log_warn(&format!("悬浮窗的钉住状态没有写进便签：{err}"));
+                self.ui.set_pin_error(err.to_string().into());
+            }
+        }
     }
 
     fn push_problem(&self) {

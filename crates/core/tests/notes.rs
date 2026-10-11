@@ -963,3 +963,120 @@ fn float_geometry_survives_restart_without_touching_revision_or_order() {
         "记位置不让编辑区的版本号过期"
     );
 }
+
+#[test]
+fn float_pinned_is_per_note_optional_and_independent_of_list_pin_and_revision() {
+    let fix = fixture();
+    let commands = NoteCommands::open(fix.store.clone()).unwrap();
+    let first = commands.create(&input("甲", "正文")).unwrap();
+    let second = commands.create(&input("乙", "正文")).unwrap();
+    assert!(!first.float_pinned);
+    assert!(
+        json_file(&fix.store, &first.id)
+            .get("floatPinned")
+            .is_none()
+    );
+
+    let pinned = commands.set_float_pinned(&first.id, true).unwrap();
+    assert!(pinned.float_pinned);
+    assert!(!pinned.pinned, "钉住不是列表置顶");
+    assert_eq!(pinned.revision, first.revision);
+    assert_eq!(pinned.updated_at, first.updated_at);
+    assert_eq!(json_file(&fix.store, &first.id)["floatPinned"], true);
+    assert!(
+        json_file(&fix.store, &second.id)
+            .get("floatPinned")
+            .is_none()
+    );
+
+    let saved = commands
+        .save(&first.id, first.revision, &input("甲", "改过"))
+        .unwrap();
+    assert!(saved.float_pinned, "保存正文不清钉住");
+    let list_pinned = commands
+        .set_pinned(&first.id, saved.revision, true)
+        .unwrap();
+    assert!(list_pinned.float_pinned);
+    commands
+        .set_float(
+            &first.id,
+            FloatGeometry {
+                x: 1,
+                y: 2,
+                width: 300,
+                height: 200,
+            },
+        )
+        .unwrap();
+
+    let reopened = NoteCommands::open(fix.store.clone()).unwrap();
+    assert!(reopened.get(&first.id).unwrap().float_pinned);
+    assert!(!reopened.get(&second.id).unwrap().float_pinned);
+
+    let revision = reopened.get(&first.id).unwrap().revision;
+    let unpinned = reopened.set_float_pinned(&first.id, false).unwrap();
+    assert!(!unpinned.float_pinned);
+    assert_eq!(
+        unpinned.revision, revision,
+        "取消钉住不让编辑区的版本号过期"
+    );
+    assert!(
+        json_file(&fix.store, &first.id)
+            .get("floatPinned")
+            .is_none()
+    );
+}
+
+#[test]
+fn setting_the_same_float_pin_writes_nothing_and_trashed_notes_can_record_it() {
+    let fix = fixture();
+    let commands = NoteCommands::open(fix.store.clone()).unwrap();
+    let note = commands.create(&input("甲", "正文")).unwrap();
+    let events = fix.store.subscribe();
+    commands.set_float_pinned(&note.id, false).unwrap();
+    assert!(events.try_recv().is_err(), "没变的值不写盘");
+    commands.set_float_pinned(&note.id, true).unwrap();
+    assert!(events.try_recv().is_ok());
+    commands.set_float_pinned(&note.id, true).unwrap();
+    assert!(events.try_recv().is_err());
+
+    let trashed = commands.soft_delete(&note.id, note.revision).unwrap();
+    let after = commands.set_float_pinned(&note.id, false).unwrap();
+    assert!(!after.float_pinned);
+    assert_eq!(after.revision, trashed.revision);
+    assert!(commands.set_float_pinned("../x", true).is_err());
+    assert!(matches!(
+        commands.set_float_pinned("missing", true).unwrap_err(),
+        NoteError::NotFound { .. }
+    ));
+}
+
+#[test]
+fn a_note_file_without_float_pinned_opens_unpinned_and_is_not_rewritten_with_it() {
+    let fix = fixture();
+    let path = fix
+        .store
+        .document_path(&DocumentId::Note("old".into()))
+        .unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{"schemaVersion":1,"id":"old","title":"旧","body":"b","revision":3,"floatWindow":{"x":1,"y":2,"width":300,"height":200}}"#,
+    )
+    .unwrap();
+    let commands = NoteCommands::open(fix.store.clone()).unwrap();
+    let note = commands.get("old").unwrap();
+    assert!(!note.float_pinned);
+    commands.set_float_pinned("old", false).unwrap();
+    assert!(
+        !std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("floatPinned")
+    );
+    commands.set_float_pinned("old", true).unwrap();
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("floatPinned")
+    );
+}

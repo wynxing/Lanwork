@@ -251,6 +251,7 @@ impl Floats {
         }
         let shelf = self.shelves.get(group_id).map_err(|err| err.to_string())?;
         let ui = ShelfFloat::new().map_err(|err| format!("悬浮窗没有创建：{err}"))?;
+        ui.set_pinned(shelf.float_pinned);
         ui.set_dark(self.dark);
         ui.set_solid_color(rgb(solid_rgb(self.dark)));
         wire(&ui, group_id);
@@ -356,6 +357,10 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
             with_window(&id, |window, ctx| window.request_close(ctx));
             CloseRequestResponse::KeepWindowShown
         }
+    });
+    ui.on_pin_clicked({
+        let id = id.clone();
+        move || with_window(&id, |window, ctx| window.toggle_pin(ctx))
     });
     ui.on_drag_window({
         let id = id.clone();
@@ -730,6 +735,26 @@ impl FloatWindow {
         }
         if let Some(message) = skipped_message(skipped) {
             self.fail(&message);
+        }
+    }
+
+    /// 点「钉住」：先写进分组文件，成功后窗口才改层级，所以按钮的外观总是和已保存的状态一致。
+    /// 写不成时状态不变，错误显示在窗口里。
+    fn toggle_pin(&mut self, ctx: &Ctx<'_>) {
+        if self.closed {
+            return;
+        }
+        let next = !self.ui.get_pinned();
+        match ctx.shelves.set_float_pinned(&self.group_id, next) {
+            Ok(_) => {
+                self.ui.set_pinned(next);
+                self.clear_error();
+            }
+            Err(err) => {
+                ctx.store
+                    .log_warn(&format!("收纳悬浮窗的钉住状态没有写进分组：{err}"));
+                self.fail(&err.to_string());
+            }
         }
     }
 

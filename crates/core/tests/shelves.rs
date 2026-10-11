@@ -770,3 +770,97 @@ fn service_source_does_not_mutate_user_files() {
         }
     }
 }
+
+#[test]
+fn float_pinned_is_per_group_and_survives_other_edits_and_reloads() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let first = cmds.create_group("甲").unwrap();
+    let second = cmds.create_group("乙").unwrap();
+    assert!(!first.float_pinned);
+    let file = user_file(&fix, "a.txt", b"a");
+    let path_of = |id: &str| {
+        fix.store
+            .document_path(&DocumentId::Shelf(id.to_owned()))
+            .unwrap()
+    };
+    assert!(
+        !std::fs::read_to_string(path_of(&first.id))
+            .unwrap()
+            .contains("floatPinned")
+    );
+
+    cmds.set_float_pinned(&first.id, true).unwrap();
+    cmds.set_float(&first.id, geometry(100)).unwrap();
+    cmds.add_refs(Some(&first.id), &[incoming(&file, false)])
+        .unwrap();
+    cmds.rename_group(&first.id, "甲二").unwrap();
+    cmds.link_todo(&first.id, "todo-1").unwrap();
+    assert!(
+        std::fs::read_to_string(path_of(&first.id))
+            .unwrap()
+            .contains("\"floatPinned\":true")
+    );
+    assert!(
+        !std::fs::read_to_string(path_of(&second.id))
+            .unwrap()
+            .contains("floatPinned")
+    );
+
+    let reloaded = ShelfCommands::open(fix.store.clone()).unwrap();
+    let got = reloaded.get(&first.id).unwrap();
+    assert!(got.float_pinned);
+    assert_eq!(got.float, Some(geometry(100)));
+    assert_eq!(got.refs.len(), 1);
+    assert!(!reloaded.get(&second.id).unwrap().float_pinned);
+
+    reloaded.set_float_pinned(&first.id, false).unwrap();
+    assert!(!reloaded.get(&first.id).unwrap().float_pinned);
+    assert!(
+        !std::fs::read_to_string(path_of(&first.id))
+            .unwrap()
+            .contains("floatPinned")
+    );
+    assert_unchanged(&file, b"a");
+}
+
+#[test]
+fn setting_the_same_float_pin_writes_nothing_and_a_bad_id_is_refused() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let group = cmds.create_group("甲").unwrap();
+    let events = fix.store.subscribe();
+    cmds.set_float_pinned(&group.id, false).unwrap();
+    assert!(events.try_recv().is_err(), "没变的值不写盘");
+    cmds.set_float_pinned(&group.id, true).unwrap();
+    assert_eq!(events.try_recv().unwrap().kind, EntityKind::Shelf);
+    cmds.set_float_pinned(&group.id, true).unwrap();
+    assert!(events.try_recv().is_err());
+    assert!(cmds.set_float_pinned("../x", true).is_err());
+    assert!(matches!(
+        cmds.set_float_pinned("missing", true).unwrap_err(),
+        ShelfError::NotFound { .. }
+    ));
+}
+
+#[test]
+fn a_group_file_without_float_pinned_opens_unpinned() {
+    let fix = fixture();
+    let path = fix
+        .store
+        .document_path(&DocumentId::Shelf("old".into()))
+        .unwrap();
+    std::fs::write(
+        &path,
+        r#"{"schemaVersion":1,"id":"old","name":"旧","order":0,"refs":[]}"#,
+    )
+    .unwrap();
+    let cmds = ShelfCommands::open(fix.store.clone()).unwrap();
+    assert!(!cmds.get("old").unwrap().float_pinned);
+    cmds.rename_group("old", "旧二").unwrap();
+    assert!(
+        !std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("floatPinned")
+    );
+}
