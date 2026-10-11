@@ -3,3 +3,7 @@
 *.pdb
 spikes/fileidx/.vendor-in/
 spikes/fileidx/.portable/
+packaging/staging/
+packaging/out/
+packaging/helper/
+packaging/.tools/

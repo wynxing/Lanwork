@@ -1,6 +1,10 @@
 //! Lanwork 程序外壳。
 //!
 //! 非 Windows 上只说明平台并退出。
+//! 发布构建没有 `debug_assertions`，在 Windows 上使用 GUI 子系统，不分配控制台。
+//! 调试构建保留控制台子系统。
+
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use lanwork_core as _;
 
@@ -57,6 +61,14 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_windows_build_requests_the_gui_subsystem() {
+        let source = include_str!("main.rs");
+        assert!(source.contains("windows_subsystem = \"windows\""));
+        assert!(source.contains("not(debug_assertions)"));
+        assert!(source.contains("all(windows, not(debug_assertions))"));
+    }
+
     #[test]
     fn tray_menu_titles_are_the_shell_menu() {
         let source = include_str!("../ui/shell.slint");

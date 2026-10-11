@@ -23,7 +23,9 @@ use lanwork_core::shell::{
     tray_icon_rgba,
 };
 use lanwork_core::shelves::ShelfCommands;
-use lanwork_core::storage::{BootHooks, EntityKind, Store, resolve_from_process};
+use lanwork_core::storage::{
+    BootHooks, EntityKind, Error as StorageError, Log, LogSettings, Store, resolve_from_process,
+};
 use lanwork_core::todos::TodoCommands;
 use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -41,7 +43,8 @@ pub(crate) fn run() -> i32 {
     let claim = match instance::claim(instance::MUTEX_NAME, instance::ACTIVATE_NAME) {
         Ok(claim) => claim,
         Err(message) => {
-            eprintln!("{message}");
+            // 互斥量失败时存储还没打开。能解析到数据目录就写入 logs/app.log。
+            report_startup_error(&message, resolved_data_dir().as_deref());
             return 1;
         }
     };
@@ -51,14 +54,23 @@ pub(crate) fn run() -> i32 {
     let paths = match resolve_from_process() {
         Ok(paths) => paths,
         Err(err) => {
+            // 数据目录解析失败时还没有日志文件。发布版也没有控制台。
             eprintln!("{err}");
             return 1;
         }
     };
+    let data_dir = paths.data_dir.clone();
     let store = match Store::open(paths.into()) {
         Ok(store) => store,
         Err(err) => {
-            eprintln!("{err}");
+            let message = err.to_string();
+            // 拒绝 MayDolist 时不能在那个目录下创建 logs。
+            let log_dir = if matches!(err, StorageError::MayDolist { .. }) {
+                None
+            } else {
+                Some(data_dir.as_path())
+            };
+            report_startup_error(&message, log_dir);
             return 1;
         }
     };
@@ -70,7 +82,32 @@ pub(crate) fn run() -> i32 {
     0
 }
 
+/// 启动失败写入 `logs/app.log`。`eprintln` 只留给调试构建的控制台，发布版没有控制台接收它。
+fn report_startup_error(message: &str, data_dir: Option<&std::path::Path>) {
+    if let Some(dir) = data_dir {
+        let path = dir.join("logs").join("app.log");
+        if let Ok(log) = Log::open(path, LogSettings::default()) {
+            log.error(message);
+        }
+    }
+    eprintln!("{message}");
+}
+
+fn resolved_data_dir() -> Option<std::path::PathBuf> {
+    resolve_from_process().ok().map(|paths| paths.data_dir)
+}
+
+fn install_log_panic_hook(store: &Store) {
+    let store = store.clone();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        store.log_error(&format!("panic: {info}"));
+        previous(info);
+    }));
+}
+
 fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> {
+    install_log_panic_hook(store);
     let todos = TodoCommands::open(store.clone());
     let mut hooks = BootHooks::new();
     BackupCommands::register_boot_hooks(&mut hooks);
