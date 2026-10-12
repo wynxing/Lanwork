@@ -2,15 +2,18 @@
 //!
 //! 角不是关闭时，单独线程每 50ms 读一次光标。关闭时停在条件变量上，不再读光标。
 //! 不安装鼠标钩子，不调用 `timeBeginPeriod`。搜索条热键不在这里注册。
+//! 状态只在变化时记一条日志。打开面板走 `panel::show`，前台是否成功由面板记。
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use lanwork_core::config::HotCorner;
+use lanwork_core::panel::hot_corner_title;
 use lanwork_core::shell::hotcorner::{
-    CORNER_EDGE_PX, CornerWatch, Foreground, Observation, PxRect, hits_corner,
+    CORNER_EDGE_PX, CornerWatch, Foreground, Observation, PxRect, WatchPhase, hits_corner,
 };
+use lanwork_core::storage::Store;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
@@ -88,7 +91,9 @@ fn lock_slot() -> MutexGuard<'static, Slot> {
 }
 
 /// 按当前配置启动轮询线程。已经在跑时只更新热角。
-pub(crate) fn start(corner: HotCorner) -> Result<(), String> {
+///
+/// `store` 用来记状态变化。测试可以不传。已经在跑时忽略后来的 `store`。
+pub(crate) fn start(corner: HotCorner, store: Option<Store>) -> Result<(), String> {
     let mut slot = lock_slot();
     let corner = slot.pending.unwrap_or(corner);
     slot.pending = Some(corner);
@@ -100,7 +105,7 @@ pub(crate) fn start(corner: HotCorner) -> Result<(), String> {
     let thread_control = Arc::clone(&control);
     let thread = std::thread::Builder::new()
         .name("lanwork-hotcorner".into())
-        .spawn(move || poll_loop(thread_control))
+        .spawn(move || poll_loop(thread_control, store))
         .map_err(|err| format!("热角线程没有启动: {err}"))?;
     slot.runtime = Some(Runtime { control, thread });
     Ok(())
@@ -199,15 +204,20 @@ impl Control {
     }
 }
 
-fn poll_loop(control: Arc<Control>) {
+fn poll_loop(control: Arc<Control>, store: Option<Store>) {
     let _com = ComInit::new();
     let mut watch = CornerWatch::new(HotCorner::Off);
+    let mut seen = Seen {
+        corner: HotCorner::Off,
+        phase: WatchPhase::Idle,
+    };
     loop {
         match control.phase() {
             Phase::Stop => break,
             Phase::Off => {
                 // 关掉时清掉未完成的停留。不读光标。关闭时不会要求打开。
                 watch.poll(HotCorner::Off, None, Instant::now());
+                log_watch(&store, &mut seen, &watch, false, true);
                 if !control.wait_while_off() {
                     break;
                 }
@@ -216,13 +226,74 @@ fn poll_loop(control: Arc<Control>) {
                 let open = observe(corner, &mut watch);
                 // 这一拍读数期间若已改成别的角或关掉，就不要按旧角打开。
                 let still = control.should_wait(corner);
+                log_watch(&store, &mut seen, &watch, open, still);
                 if open && still {
-                    request_open();
+                    request_open(&store);
                 }
                 if still {
                     control.wait_interval(POLL);
                 }
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Seen {
+    corner: HotCorner,
+    phase: WatchPhase,
+}
+
+/// 相对上一拍多出来的日志。没有变化时为空，所以停留过程中不会每 50ms 记一条。
+fn note_logs(
+    seen: &mut Seen,
+    corner: HotCorner,
+    phase: WatchPhase,
+    open: bool,
+    still: bool,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if corner != seen.corner {
+        lines.push(if corner == HotCorner::Off {
+            "热角：关闭".to_owned()
+        } else {
+            format!("热角：{}", hot_corner_title(corner))
+        });
+    }
+    if phase != seen.phase {
+        let line = match phase {
+            WatchPhase::Dwelling => Some("热角：进入，开始停留"),
+            WatchPhase::Disarmed => Some(if open && still {
+                "热角：停留到点，请求打开面板"
+            } else if open {
+                "热角：停留到点，角已改变，不打开"
+            } else {
+                "热角：停留到点，全屏抑制，不打开"
+            }),
+            WatchPhase::Idle => {
+                if corner == HotCorner::Off {
+                    None
+                } else {
+                    Some("热角：离开，重新武装")
+                }
+            }
+        };
+        if let Some(line) = line {
+            lines.push(line.to_owned());
+        }
+    } else if corner != seen.corner && phase == WatchPhase::Dwelling {
+        // 换角时清掉旧停留；新角里这一拍又开始计时。上面的相位没变，这里补一条。
+        lines.push("热角：进入，开始停留".to_owned());
+    }
+    seen.corner = corner;
+    seen.phase = phase;
+    lines
+}
+
+fn log_watch(store: &Option<Store>, seen: &mut Seen, watch: &CornerWatch, open: bool, still: bool) {
+    for line in note_logs(seen, watch.corner(), watch.phase(), open, still) {
+        if let Some(store) = store {
+            store.log_info(&line);
         }
     }
 }
@@ -260,8 +331,12 @@ fn observe(corner: HotCorner, watch: &mut CornerWatch) -> bool {
     watch.poll(corner, Some(&observation), now)
 }
 
-fn request_open() {
-    let _ = slint::invoke_from_event_loop(|| panel::show(None));
+fn request_open(store: &Option<Store>) {
+    if let Err(err) = slint::invoke_from_event_loop(|| panel::show(None))
+        && let Some(store) = store
+    {
+        store.log_warn(&format!("热角：打开面板没有排进界面线程：{err}"));
+    }
 }
 
 fn cursor_pos() -> Option<(i32, i32)> {
@@ -374,7 +449,7 @@ mod tests {
     #[test]
     fn off_parks_the_poller_and_shutdown_joins_it() {
         let guard = StopGuard;
-        start(HotCorner::Off).expect("热角线程应能启动");
+        start(HotCorner::Off, None).expect("热角线程应能启动");
         apply(HotCorner::BottomLeft);
         std::thread::sleep(Duration::from_millis(80));
         apply(HotCorner::Off);
@@ -384,5 +459,202 @@ mod tests {
         );
         drop(guard);
         assert!(lock_slot().runtime.is_none());
+    }
+
+    fn fresh() -> Seen {
+        Seen {
+            corner: HotCorner::Off,
+            phase: WatchPhase::Idle,
+        }
+    }
+
+    #[test]
+    fn transition_logs_only_when_the_phase_changes() {
+        let mut seen = fresh();
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Idle,
+                false,
+                true
+            ),
+            vec!["热角：右上".to_owned()]
+        );
+        assert!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Idle,
+                false,
+                true
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Dwelling,
+                false,
+                true
+            ),
+            vec!["热角：进入，开始停留".to_owned()]
+        );
+        assert!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Dwelling,
+                false,
+                true
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Disarmed,
+                true,
+                true
+            ),
+            vec!["热角：停留到点，请求打开面板".to_owned()]
+        );
+        assert!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Disarmed,
+                false,
+                true
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Idle,
+                false,
+                true
+            ),
+            vec!["热角：离开，重新武装".to_owned()]
+        );
+    }
+
+    #[test]
+    fn suppress_and_corner_change_have_their_own_lines() {
+        let mut seen = fresh();
+        let _ = note_logs(
+            &mut seen,
+            HotCorner::TopRight,
+            WatchPhase::Dwelling,
+            false,
+            true,
+        );
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Disarmed,
+                false,
+                true
+            ),
+            vec!["热角：停留到点，全屏抑制，不打开".to_owned()]
+        );
+
+        let mut dwelling = fresh();
+        let _ = note_logs(
+            &mut dwelling,
+            HotCorner::TopRight,
+            WatchPhase::Dwelling,
+            false,
+            true,
+        );
+        assert_eq!(
+            note_logs(
+                &mut dwelling,
+                HotCorner::TopRight,
+                WatchPhase::Disarmed,
+                true,
+                false
+            ),
+            vec!["热角：停留到点，角已改变，不打开".to_owned()]
+        );
+
+        let mut switched = fresh();
+        let _ = note_logs(
+            &mut switched,
+            HotCorner::TopRight,
+            WatchPhase::Dwelling,
+            false,
+            true,
+        );
+        assert_eq!(
+            note_logs(&mut switched, HotCorner::Off, WatchPhase::Idle, false, true),
+            vec!["热角：关闭".to_owned()]
+        );
+
+        let mut still_inside = fresh();
+        let _ = note_logs(
+            &mut still_inside,
+            HotCorner::TopRight,
+            WatchPhase::Dwelling,
+            false,
+            true,
+        );
+        assert_eq!(
+            note_logs(
+                &mut still_inside,
+                HotCorner::TopLeft,
+                WatchPhase::Dwelling,
+                false,
+                true
+            ),
+            vec!["热角：左上".to_owned(), "热角：进入，开始停留".to_owned(),]
+        );
+    }
+
+    #[test]
+    fn a_real_dwell_logs_each_transition_once() {
+        use lanwork_core::shell::hotcorner::{Observation, PxRect};
+
+        let mut watch = CornerWatch::new(HotCorner::Off);
+        let mut seen = fresh();
+        let t0 = Instant::now();
+        let monitors = [PxRect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        }];
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut step = |cursor: (i32, i32), now| {
+            let open = watch.poll(
+                HotCorner::TopRight,
+                Some(&Observation {
+                    cursor,
+                    monitors: &monitors,
+                    foreground: None,
+                    exclusive_d3d: false,
+                }),
+                now,
+            );
+            note_logs(&mut seen, watch.corner(), watch.phase(), open, true)
+        };
+
+        assert_eq!(step((100, 100), t0), vec!["热角：右上".to_owned()]);
+        assert_eq!(step((1919, 0), t0), vec!["热角：进入，开始停留".to_owned()]);
+        assert!(step((1919, 0), at(100)).is_empty());
+        assert_eq!(
+            step((1919, 0), at(350)),
+            vec!["热角：停留到点，请求打开面板".to_owned()]
+        );
+        assert!(step((1919, 0), at(700)).is_empty());
+        assert_eq!(
+            step((100, 100), at(800)),
+            vec!["热角：离开，重新武装".to_owned()]
+        );
     }
 }

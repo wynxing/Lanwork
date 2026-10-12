@@ -192,7 +192,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     platform.set_theme_callback(Box::new(move || {
         refresh_theme(&config_theme, &store_theme);
     }));
-    if let Err(err) = crate::hotcorner::start(config.current().hot_corner) {
+    if let Err(err) = crate::hotcorner::start(config.current().hot_corner, Some(store.clone())) {
         store.log_warn(&format!("热角轮询没有启动：{err}"));
     }
 

@@ -17,14 +17,21 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+    VK_MENU,
+};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_STYLE, GetCursorPos, GetWindowLongPtrW, GetWindowRect, STYLESTRUCT, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_STYLECHANGING,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+    BringWindowToTop, GA_ROOT, GWL_STYLE, GetAncestor, GetCursorPos, GetForegroundWindow,
+    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    STYLESTRUCT, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_STYLECHANGING, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_SYSMENU,
 };
 
 use crate::registry::read_transparency_enabled;
@@ -305,10 +312,133 @@ unsafe extern "system" fn strip_caption_buttons(
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
-pub(crate) fn bring_to_front(hwnd: HWND) {
-    // SAFETY: 本进程刚收到热键消息，系统允许它把自己的窗口放到前台。失败时窗口仍显示。
+/// 把本进程的窗口放到前台并激活。返回结束时它是不是前台窗口。
+///
+/// 热角、托盘菜单和别的程序里按下的热键，都不算「用户正在操作这个窗口」。
+/// 前台锁会拒绝单独的 `SetForegroundWindow`：调用进程不是前台，也不是最近一次输入的接收者。
+/// 窗口可以已经可见，但落在别的窗口后面。
+///
+/// 先直接激活。还不是前台、并且 Alt 没有按着时，用 `SendInput` 送一次 Alt 键抬起，再激活。
+/// 键抬起让本线程成为最近一次输入的来源，前台锁的允许条件里有这一条；只送抬起、不送按下，
+/// 避免把当前前台程序的菜单点亮。Alt 已经按着时不送，否则会松开用户还按着的键
+/// （搜索条热键默认带 Alt）。仍不是前台时，把本线程的输入队列接到前台线程上再激活一次，
+/// 随即解开，附上期间不抽消息。`AttachThreadInput` 不作为第一步：它不产生输入，
+/// 也不在前台锁的允许条件里，而且附上另一个线程有死锁风险。
+///
+/// 空句柄直接返回假，不调用窗口 API。
+pub(crate) fn bring_to_front(hwnd: HWND) -> bool {
+    if hwnd.0.is_null() {
+        return false;
+    }
+    if is_foreground(hwnd) {
+        return true;
+    }
+    activate(hwnd);
+    if is_foreground(hwnd) {
+        return true;
+    }
+    if !alt_held() {
+        send_alt_keyup();
+        activate(hwnd);
+        if is_foreground(hwnd) {
+            return true;
+        }
+    }
+    // 附上之后不再送按键，避免键抬起进了前台线程的输入队列。
+    let attached = attach_to_foreground();
+    activate(hwnd);
+    if let Some(attached) = attached {
+        detach_foreground(attached);
+    }
+    is_foreground(hwnd)
+}
+
+fn is_foreground(hwnd: HWND) -> bool {
+    // SAFETY: 没有参数。没有前台窗口时句柄为空。
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground == hwnd {
+        return true;
+    }
+    if foreground.0.is_null() || hwnd.0.is_null() {
+        return false;
+    }
+    // SAFETY: 只读窗口的根，不保留句柄以外的状态。
+    (unsafe { GetAncestor(foreground, GA_ROOT) }) == hwnd
+}
+
+fn activate(hwnd: HWND) {
+    // SAFETY: hwnd 是本进程的窗口。已经可见时不再 ShowWindow，避免多一次失败的激活
+    // 把失焦消息排进来。最小化时先还原；还不可见时再显示。然后提到 Z 序顶部并请求前台。
     unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        } else if !IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        let _ = BringWindowToTop(hwnd);
         let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+/// Alt 此刻是否按着。高位为 1 表示按着。
+fn alt_held() -> bool {
+    // SAFETY: 只查询按键状态，没有输出指针。
+    let state = unsafe { GetAsyncKeyState(i32::from(VK_MENU.0)) };
+    state < 0
+}
+
+fn send_alt_keyup() {
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VK_MENU,
+                wScan: 0,
+                dwFlags: KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    // SAFETY: 输入是本函数的局部变量，调用期间有效。只送一次键抬起。
+    let _ = unsafe {
+        SendInput(
+            &[input],
+            i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0),
+        )
+    };
+}
+
+struct AttachedForeground {
+    current: u32,
+    foreground: u32,
+}
+
+fn attach_to_foreground() -> Option<AttachedForeground> {
+    // SAFETY: 没有参数。没有前台窗口时句柄为空。
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.0.is_null() {
+        return None;
+    }
+    // SAFETY: 不需要进程 id。
+    let foreground_thread = unsafe { GetWindowThreadProcessId(foreground, None) };
+    // SAFETY: 没有参数。
+    let current = unsafe { GetCurrentThreadId() };
+    if foreground_thread == 0 || foreground_thread == current {
+        return None;
+    }
+    // SAFETY: 只附上输入队列。失败时不记成已附上。
+    let attached = (unsafe { AttachThreadInput(current, foreground_thread, true) }).as_bool();
+    attached.then_some(AttachedForeground {
+        current,
+        foreground: foreground_thread,
+    })
+}
+
+fn detach_foreground(attached: AttachedForeground) {
+    // SAFETY: 与上面成功的附上配对，马上解开。
+    unsafe {
+        let _ = AttachThreadInput(attached.current, attached.foreground, false);
     }
 }
 
@@ -375,4 +505,14 @@ fn set_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: &T) -> boo
     // SAFETY: value 指向一个大小为 size 的有效值，调用期间不被修改。
     unsafe { DwmSetWindowAttribute(hwnd, attribute, std::ptr::from_ref(value).cast(), size) }
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_window_is_not_brought_forward() {
+        assert!(!bring_to_front(HWND::default()));
+    }
 }
