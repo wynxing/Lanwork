@@ -4,6 +4,8 @@
 //! 换热角；热键先注册新的、再写盘、再卸旧的。这里只把结果推给界面，并在失败时用配置里的原值重推，
 //! 让控件回到原状。错误显示在面板底部的错误条，与其他标签一致。
 //! 录入热键时已注册的热键由平台线程卸掉，按键由 `keycap` 在窗口上拦截。
+//! 「录入中」只有一个出口 [`SettingsPage::end_recording`]：录到组合、Esc、再点一次、失焦、收起、
+//! 切标签、关闭和进程退出都走它，它把卸掉的热键注册回去。
 
 use std::time::Duration;
 
@@ -12,7 +14,7 @@ use lanwork_core::panel::{
     change_hot_corner, change_launch_at_startup, hot_corner_at, hot_corner_titles, settings_rows,
     startup_error_text,
 };
-use lanwork_core::shell::Recorded;
+use lanwork_core::shell::{EndReason, HotkeyRecording, HotkeyRole, Recorded};
 use lanwork_core::storage::Store;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -22,20 +24,22 @@ use crate::platform::HotkeyControl;
 use crate::registry::apply_startup;
 use crate::{Panel, SettingsPageData};
 
-const INVALID_HOTKEY: &str = "热键无效";
 const CAPTURE_UNAVAILABLE: &str = "热键录入不可用";
 
 /// 设置页要用的服务：配置，和平台线程上的热键注册。
 pub(crate) struct SettingsServices {
     pub(crate) config: ConfigCommands,
     pub(crate) hotkeys: HotkeyControl,
+    /// 启动时按配置没注册上的热键。
+    pub(crate) unregistered: Vec<HotkeyRole>,
 }
 
 pub(crate) struct SettingsPage {
     commands: ConfigCommands,
     hotkeys: HotkeyControl,
     store: Store,
-    recording: bool,
+    /// 录入状态和没注册上的热键提示，决定在 core 里。收起面板不清提示，注册上之后才清。
+    recording: HotkeyRecording,
     capture_ready: bool,
 }
 
@@ -49,11 +53,16 @@ impl SettingsPage {
         });
         data.on_choose_corner(|index| with_settings(move |page, ui| page.choose_corner(ui, index)));
         data.on_toggle_recording(|| with_settings(SettingsPage::toggle_recording));
+        let SettingsServices {
+            config,
+            hotkeys,
+            unregistered,
+        } = services;
         let page = Self {
-            commands: services.config,
-            hotkeys: services.hotkeys,
+            commands: config,
+            hotkeys,
             store,
-            recording: false,
+            recording: HotkeyRecording::new(unregistered),
             capture_ready: false,
         };
         page.push(ui);
@@ -71,14 +80,35 @@ impl SettingsPage {
         self.push(ui);
     }
 
-    /// 离开设置标签、面板收起时调用。正在录入就放弃，并把热键注册回去。
+    /// 离开设置标签、面板收起或失焦、进程退出时调用。正在录入就放弃，并把热键注册回去。
     pub(crate) fn cancel_recording(&mut self, ui: &Panel) {
-        keycap::reset();
-        if !self.recording {
-            return;
+        self.end_recording(ui, EndReason::Abandon);
+    }
+
+    /// 面板错误条要显示的热键提示：配置里有、此刻没注册上的热键。没有时为空。
+    pub(crate) fn hotkey_error(&self) -> Option<String> {
+        self.recording.hotkey_error()
+    }
+
+    /// 「录入中」状态的唯一出口，见 [`HotkeyRecording::end`]。没在录入时什么也不做。
+    ///
+    /// 先让平台线程把卸掉的热键按配置注册回去（逐条，一条失败不影响其余），再保存录到的组合。
+    /// 注册不上的写日志，记下来直到下次注册上。
+    fn end_recording(&mut self, ui: &Panel, reason: EndReason) {
+        if reason == EndReason::Abandon {
+            keycap::reset();
         }
-        self.recording = false;
-        let result = self.hotkeys.resume_and_save(self.commands.clone(), None);
+        let Some(ending) = self.recording.end(reason) else {
+            return;
+        };
+        let report = self
+            .hotkeys
+            .end_recording(self.commands.clone(), ending.save.clone());
+        let result = self.recording.finish(&ending, report);
+        for role in self.recording.unregistered() {
+            self.store
+                .log_warn(&format!("设置页：{}没有注册上：热键已被占用", role.title()));
+        }
         self.finish(ui, result);
     }
 
@@ -88,7 +118,7 @@ impl SettingsPage {
         data.set_launch_at_startup(rows.launch_at_startup);
         data.set_corner(i32::try_from(rows.hot_corner).unwrap_or(0));
         data.set_hotkey(rows.search_hotkey.into());
-        data.set_recording(self.recording);
+        data.set_recording(self.recording.is_active());
     }
 
     fn fail(&self, ui: &Panel, message: &str) {
@@ -96,10 +126,11 @@ impl SettingsPage {
         ui.set_error(message.into());
     }
 
-    /// 一次操作的结果：成功清掉错误，失败显示原因；两种情况都按配置里的值重推界面。
+    /// 一次操作的结果：失败显示原因；成功时清掉错误，但没注册上的热键提示仍然留着。
+    /// 两种情况都按配置里的值重推界面。
     fn finish(&self, ui: &Panel, result: Result<(), String>) {
         match result {
-            Ok(()) => ui.set_error(SharedString::new()),
+            Ok(()) => ui.set_error(self.hotkey_error().unwrap_or_default().into()),
             Err(message) => self.fail(ui, &message),
         }
         self.push(ui);
@@ -136,7 +167,7 @@ impl SettingsPage {
 
     /// 点热键框：开始录入；录入中再点一次放弃。
     fn toggle_recording(&mut self, ui: &Panel) {
-        if self.recording {
+        if self.recording.is_active() {
             self.cancel_recording(ui);
             return;
         }
@@ -144,39 +175,22 @@ impl SettingsPage {
             self.fail(ui, CAPTURE_UNAVAILABLE);
             return;
         }
-        ui.set_error(SharedString::new());
+        ui.set_error(self.hotkey_error().unwrap_or_default().into());
+        self.recording.begin();
         if let Err(message) = self.hotkeys.suspend() {
+            // 平台线程没应答，那次卸载任务可能迟一点才执行，所以也要走出口把热键注册回去。
+            self.end_recording(ui, EndReason::Abandon);
             self.fail(ui, &message);
             return;
         }
         keycap::begin();
-        self.recording = true;
         self.push(ui);
-    }
-
-    /// 录入结束：先把卸掉的热键注册回去，再保存录到的组合。
-    fn recorded(&mut self, ui: &Panel, recorded: Recorded) {
-        if !self.recording {
-            return;
-        }
-        self.recording = false;
-        let (text, rejected) = match recorded {
-            Recorded::Captured(hotkey) => (Some(hotkey.canonical()), false),
-            Recorded::Cancelled => (None, false),
-            Recorded::Rejected => (None, true),
-        };
-        let result = self.hotkeys.resume_and_save(self.commands.clone(), text);
-        let result = match result {
-            Ok(()) if rejected => Err(INVALID_HOTKEY.to_owned()),
-            other => other,
-        };
-        self.finish(ui, result);
     }
 }
 
 /// 子类在窗口过程里收到录入结果。排到下一轮事件循环再处理，不在窗口过程里写盘和改界面。
 pub(crate) fn on_recorded(recorded: Recorded) {
     slint::Timer::single_shot(Duration::ZERO, move || {
-        with_settings(move |page, ui| page.recorded(ui, recorded));
+        with_settings(move |page, ui| page.end_recording(ui, EndReason::Recorded(recorded)));
     });
 }

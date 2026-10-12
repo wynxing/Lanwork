@@ -9,6 +9,7 @@ mod bind;
 mod capture;
 pub mod hotcorner;
 mod icon;
+mod recording;
 mod startup;
 mod theme;
 
@@ -22,14 +23,15 @@ pub use bar::{
     to_physical,
 };
 pub use bind::{
-    BindError, HotkeyPort, PANEL_HOTKEY_ID, RegisteredHotkey, SEARCH_HOTKEY_ID, SaveHotkeyError,
-    apply_hotkeys, desired_bindings, resume_hotkeys, save_hotkeys, save_search_hotkey,
+    BindError, HotkeyBinding, HotkeyPort, HotkeyRole, RegisteredHotkey, Restored, SaveHotkeyError,
+    apply_hotkeys, desired_bindings, restore_hotkeys, role_of, save_hotkeys, save_search_hotkey,
     suspend_hotkeys,
 };
 pub use capture::{
     CaptureStep, HotkeyRecorder, KeyEvent, KeyGate, KeyMods, Recorded, Route, capture_step,
 };
 pub use icon::{TRAY_ICON_PX, has_badge_pixels, tray_icon_rgba};
+pub use recording::{EndReason, EndReport, Ending, HotkeyRecording};
 pub use startup::{RunValueAction, quoted_executable, run_value_action};
 pub use theme::{
     ResolvedTheme, SystemLight, is_immersive_color_set, resolve_theme, system_light_from_dword,

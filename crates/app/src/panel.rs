@@ -143,6 +143,17 @@ pub(crate) fn install(
     PANEL.with(|cell| *cell.borrow_mut() = Some(controller));
 }
 
+/// 进程退出前调用：录入热键中就结束录入，把热键注册回去。
+pub(crate) fn end_hotkey_recording() {
+    PANEL.with(|cell| {
+        if let Ok(mut slot) = cell.try_borrow_mut()
+            && let Some(panel) = slot.as_mut()
+        {
+            panel.settings.cancel_recording(&panel.ui);
+        }
+    });
+}
+
 /// 托盘「打开面板」「设置」和面板热键。`tab` 为空时保持收起前的标签。
 pub(crate) fn show(tab: Option<PanelTab>) {
     with_panel(move |panel| panel.show(tab));
@@ -468,6 +479,8 @@ impl Controller {
     }
 
     fn blur(&mut self) {
+        // 录入中失焦，哪怕在刚显示的宽限期内，也要结束录入并把热键注册回去。
+        self.settings.cancel_recording(&self.ui);
         let settling = self
             .shown_at
             .is_some_and(|shown| shown.elapsed() < BLUR_GRACE);
@@ -631,9 +644,14 @@ impl Controller {
         self.ui.set_detail(detail);
     }
 
+    /// 面板自己的错误优先；没有时显示设置页留着的热键没注册上的提示，它收起时不清。
     fn push_error(&mut self) {
-        self.ui
-            .set_error(self.error.clone().unwrap_or_default().into());
+        let text = self
+            .error
+            .clone()
+            .or_else(|| self.settings.hotkey_error())
+            .unwrap_or_default();
+        self.ui.set_error(text.into());
     }
 
     /// 命令成功后清掉错误并重读；失败时停在当前状态并显示错误。
