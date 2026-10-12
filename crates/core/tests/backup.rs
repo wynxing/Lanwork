@@ -111,9 +111,10 @@ fn export_includes_user_apps_and_omits_logs_env_and_referenced_file() {
     )
     .unwrap();
     let dest = fx._temp.path().join("out.zip");
-    let overview = commands.export(&dest, false, 1_700_000_000_000).unwrap();
+    let overview = commands.export(&dest, 1_700_000_000_000).unwrap();
     assert!(overview.user_apps);
     assert!(overview.notes == 1);
+    assert!(!overview.watchlist);
     assert_eq!(overview.github_caches, 0);
     let bytes = std::fs::read(&dest).unwrap();
     let text = String::from_utf8_lossy(&bytes);
@@ -128,18 +129,12 @@ fn export_includes_user_apps_and_omits_logs_env_and_referenced_file() {
 
     let full = commands.backup_manual(50).unwrap();
     let backed = String::from_utf8_lossy(&std::fs::read(full).unwrap()).into_owned();
-    assert!(backed.contains("cache-marker-77"));
+    assert!(!backed.contains("cache-marker-77"));
+    assert!(!backed.contains("github/cache"));
+    assert!(!backed.contains("github/watchlist"));
     assert!(backed.contains("我的工具"));
     assert!(!backed.contains("log-secret-marker-77"));
-    assert_zip_omits_env(
-        &backed,
-        &[
-            "note-body-marker-77",
-            "我的工具",
-            "kept-ref",
-            "cache-marker-77",
-        ],
-    );
+    assert_zip_omits_env(&backed, &["note-body-marker-77", "我的工具", "kept-ref"]);
 }
 
 fn assert_zip_omits_env(text: &str, intentional: &[&str]) {
@@ -184,7 +179,7 @@ fn eighth_backup_deletes_the_oldest_and_keeps_import_copies() {
     let commands = BackupCommands::open(fx.store.clone());
     write_rel(&fx.store, "config.json", r#"{"schemaVersion":1}"#);
     let package = fx._temp.path().join("pkg.zip");
-    commands.export(&package, false, 10).unwrap();
+    commands.export(&package, 10).unwrap();
     commands.import(&package, 20).unwrap();
     assert!(
         zip_names(&fx.store)
@@ -223,7 +218,7 @@ fn import_replaces_data_and_drops_files_absent_from_the_package() {
         r#"{"schemaVersion":1,"portable":[{"name":"旧名称"}]}"#,
     );
     let package = fx._temp.path().join("pkg.zip");
-    commands.export(&package, true, 30).unwrap();
+    commands.export(&package, 30).unwrap();
 
     write_rel(
         &fx.store,
@@ -321,7 +316,7 @@ fn import_reloads_open_notes_so_a_later_save_does_not_restore_the_old_body() {
         .unwrap();
     let commands = BackupCommands::open(fx.store.clone());
     let package = fx._temp.path().join("pkg.zip");
-    commands.export(&package, false, 70).unwrap();
+    commands.export(&package, 70).unwrap();
     let edited = notes
         .save(
             &created.id,
@@ -364,34 +359,27 @@ fn import_reloads_open_notes_so_a_later_save_does_not_restore_the_old_body() {
 }
 
 #[test]
-fn import_without_github_cache_keeps_the_local_cache() {
+fn export_omits_github_files_that_are_already_on_disk() {
     let fx = fixture();
     let commands = BackupCommands::open(fx.store.clone());
     write_rel(
         &fx.store,
-        "notes/n.json",
-        r#"{"schemaVersion":1,"body":"from-package"}"#,
+        "github/watchlist.json",
+        r#"{"schemaVersion":1,"repos":["acme/app"]}"#,
     );
     write_rel(
         &fx.store,
-        "github/cache/acme%2Fapp.json",
-        r#"{"schemaVersion":1,"repo":"before-export"}"#,
+        "notes/n.json",
+        r#"{"schemaVersion":1,"body":"kept-note"}"#,
     );
     let package = fx._temp.path().join("pkg.zip");
-    commands.export(&package, false, 90).unwrap();
-    write_rel(
-        &fx.store,
-        "notes/n.json",
-        r#"{"schemaVersion":1,"body":"local-edit"}"#,
-    );
-    write_rel(
-        &fx.store,
-        "github/cache/acme%2Fapp.json",
-        r#"{"schemaVersion":1,"repo":"still-local"}"#,
-    );
-    commands.import(&package, 91).unwrap();
-    assert!(read_rel(&fx.store, "notes/n.json").contains("from-package"));
-    assert!(read_rel(&fx.store, "github/cache/acme%2Fapp.json").contains("still-local"));
+    let overview = commands.export(&package, 90).unwrap();
+    assert!(!overview.watchlist);
+    assert_eq!(overview.github_caches, 0);
+    let text = String::from_utf8_lossy(&std::fs::read(&package).unwrap()).into_owned();
+    assert!(text.contains("kept-note"));
+    assert!(!text.contains("acme/app"));
+    assert!(!text.contains("github/watchlist"));
 }
 
 fn zip_names(store: &Store) -> Vec<String> {
@@ -429,7 +417,7 @@ fn float_geometry_goes_through_export_and_import() {
 
     let commands = BackupCommands::open(fx.store.clone());
     let package = fx._temp.path().join("float.zip");
-    commands.export(&package, true, 30).unwrap();
+    commands.export(&package, 30).unwrap();
     notes
         .set_float(&note.id, FloatGeometry { x: 0, ..geometry })
         .unwrap();
@@ -466,7 +454,7 @@ fn float_pinned_goes_through_export_import_and_backup_restore() {
 
     let commands = BackupCommands::open(fx.store.clone());
     let package = fx._temp.path().join("pin.zip");
-    commands.export(&package, true, 30).unwrap();
+    commands.export(&package, 30).unwrap();
     notes.set_float_pinned(&note.id, false).unwrap();
     shelves.set_float_pinned(&pinned_group.id, false).unwrap();
     shelves.set_float_pinned(&plain_group.id, true).unwrap();
@@ -503,7 +491,7 @@ fn shelf_links_go_through_export_and_import_including_the_old_single_field() {
 
     let commands = BackupCommands::open(fx.store.clone());
     let package = fx._temp.path().join("shelves.zip");
-    commands.export(&package, true, 30).unwrap();
+    commands.export(&package, 30).unwrap();
     shelves.unlink_todo(&many.id, "t-1").unwrap();
     shelves.link_todo("old", "t-extra").unwrap();
 

@@ -52,8 +52,6 @@ pub enum DocumentId {
     Todo(String),
     Note(String),
     Shelf(String),
-    GithubWatchlist,
-    GithubCache(String),
 }
 
 impl DocumentId {
@@ -63,16 +61,13 @@ impl DocumentId {
             Self::Todo(_) => EntityKind::Todo,
             Self::Note(_) => EntityKind::Note,
             Self::Shelf(_) => EntityKind::Shelf,
-            Self::GithubWatchlist => EntityKind::GithubWatchlist,
-            Self::GithubCache(_) => EntityKind::GithubCache,
         }
     }
 
     pub fn change_id(&self) -> &str {
         match self {
             Self::Config => "config",
-            Self::GithubWatchlist => "watchlist",
-            Self::Todo(id) | Self::Note(id) | Self::Shelf(id) | Self::GithubCache(id) => id,
+            Self::Todo(id) | Self::Note(id) | Self::Shelf(id) => id,
         }
     }
 }
@@ -82,7 +77,6 @@ pub enum CollectionKind {
     Todos,
     Notes,
     Shelves,
-    GithubCaches,
 }
 
 impl CollectionKind {
@@ -91,7 +85,6 @@ impl CollectionKind {
             Self::Todos => EntityKind::Todo,
             Self::Notes => EntityKind::Note,
             Self::Shelves => EntityKind::Shelf,
-            Self::GithubCaches => EntityKind::GithubCache,
         }
     }
 }
@@ -164,16 +157,7 @@ impl Store {
     pub fn open_with(paths: StorePaths, log_settings: LogSettings) -> Result<Self, Error> {
         let data_dir = absolute_lexical(&paths.data_dir)?;
         reject_maydolist(&data_dir, &paths.user_profile)?;
-        for relative in [
-            "",
-            "todos",
-            "notes",
-            "shelves",
-            "github",
-            "github/cache",
-            "backups",
-            "logs",
-        ] {
+        for relative in ["", "todos", "notes", "shelves", "backups", "logs"] {
             let dir = join_relative(&data_dir, relative);
             fsutil::create_dir_all(&dir)
                 .map_err(|source| Error::io(IoAction::CreateDir, dir, source))?;
@@ -825,8 +809,6 @@ fn document_path(data_dir: &Path, doc: &DocumentId) -> Result<PathBuf, Error> {
         DocumentId::Todo(id) => file_in(data_dir, "todos", id),
         DocumentId::Note(id) => file_in(data_dir, "notes", id),
         DocumentId::Shelf(id) => file_in(data_dir, "shelves", id),
-        DocumentId::GithubWatchlist => Ok(data_dir.join("github").join("watchlist.json")),
-        DocumentId::GithubCache(id) => file_in(data_dir, "github/cache", id),
     }
 }
 
@@ -844,7 +826,6 @@ fn collection_dir(data_dir: &Path, kind: CollectionKind) -> PathBuf {
         CollectionKind::Todos => data_dir.join("todos"),
         CollectionKind::Notes => data_dir.join("notes"),
         CollectionKind::Shelves => data_dir.join("shelves"),
-        CollectionKind::GithubCaches => data_dir.join("github").join("cache"),
     }
 }
 

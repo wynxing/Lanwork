@@ -6,7 +6,6 @@
 use super::error::ConfigError;
 use super::model::Config;
 use super::service::{ConfigService, Fallback};
-use crate::github::GithubSettings;
 use crate::storage::Store;
 
 /// 界面和外壳调用的配置命令。
@@ -40,10 +39,5 @@ impl ConfigCommands {
     /// 校验后整份写入。运行中改热键不从这里开始，先注册的入口是 [`crate::shell::save_hotkeys`]。
     pub fn replace(&self, next: Config) -> Result<Config, ConfigError> {
         self.service.replace(next)
-    }
-
-    #[must_use]
-    pub fn github_settings(&self) -> GithubSettings {
-        self.current().github_settings()
     }
 }

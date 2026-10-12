@@ -33,14 +33,16 @@ enum Kind {
     Manifest,
     Config,
     UserApps,
-    Watchlist,
     Todo,
     Note,
     Shelf,
-    GithubCache,
+    /// 旧包里的 `github/watchlist.json`。导入时忽略，不写入。
+    LegacyWatchlist,
+    /// 旧包里的 `github/cache/<id>.json`。导入时忽略，不写入。
+    LegacyCache,
 }
 
-pub(crate) fn collect(store: &Store, include_cache: bool) -> Result<Vec<StoredFile>, BackupError> {
+pub(crate) fn collect(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
     let mut files = Vec::new();
     push_optional(
         &mut files,
@@ -51,14 +53,6 @@ pub(crate) fn collect(store: &Store, include_cache: bool) -> Result<Vec<StoredFi
     push_dir(&mut files, store, "todos")?;
     push_dir(&mut files, store, "notes")?;
     push_dir(&mut files, store, "shelves")?;
-    push_optional(
-        &mut files,
-        "github/watchlist.json",
-        &store.data_dir().join("github").join("watchlist.json"),
-    )?;
-    if include_cache {
-        push_dir(&mut files, store, "github/cache")?;
-    }
     for file in &files {
         check_entry(&file.name, &file.bytes)?;
     }
@@ -122,10 +116,6 @@ pub(crate) fn list_data_files(store: &Store) -> Result<Vec<(String, PathBuf)>, B
     push_dir_names(&mut names, store, "todos")?;
     push_dir_names(&mut names, store, "notes")?;
     push_dir_names(&mut names, store, "shelves")?;
-    if storage::fs_exists(&store.data_dir().join("github").join("watchlist.json")) {
-        names.push("github/watchlist.json".to_owned());
-    }
-    push_dir_names(&mut names, store, "github/cache")?;
     let mut found = Vec::new();
     for name in names {
         found.push((name.clone(), disk_path(store, &name)?));
@@ -141,11 +131,12 @@ pub(crate) fn disk_path(store: &Store, name: &str) -> Result<PathBuf, BackupErro
         }
         Kind::Config => store.document_path(&DocumentId::Config)?,
         Kind::UserApps => store.user_apps_path(),
-        Kind::Watchlist => store.document_path(&DocumentId::GithubWatchlist)?,
         Kind::Todo => store.document_path(&DocumentId::Todo(id_of(name)?))?,
         Kind::Note => store.document_path(&DocumentId::Note(id_of(name)?))?,
         Kind::Shelf => store.document_path(&DocumentId::Shelf(id_of(name)?))?,
-        Kind::GithubCache => store.document_path(&DocumentId::GithubCache(id_of(name)?))?,
+        Kind::LegacyWatchlist | Kind::LegacyCache => {
+            return Err(BackupError::entry(name, "压缩包含有不允许的路径"));
+        }
     };
     Ok(path)
 }
@@ -191,11 +182,11 @@ fn recount_refs(
             Kind::Manifest => return Err(BackupError::entry(&file.name, "压缩包含有重复路径")),
             Kind::Config => overview.config = true,
             Kind::UserApps => overview.user_apps = true,
-            Kind::Watchlist => overview.watchlist = true,
+            Kind::LegacyWatchlist => overview.watchlist = true,
             Kind::Todo => overview.todos += 1,
             Kind::Note => overview.notes += 1,
             Kind::Shelf => overview.shelves += 1,
-            Kind::GithubCache => overview.github_caches += 1,
+            Kind::LegacyCache => overview.github_caches += 1,
         }
     }
     Ok(overview)
@@ -210,14 +201,6 @@ fn manifest_bytes(overview: &PackageOverview) -> Result<Vec<u8>, BackupError> {
     counts.insert(
         "userApps".to_owned(),
         Value::from(u64::from(overview.user_apps)),
-    );
-    counts.insert(
-        "watchlist".to_owned(),
-        Value::from(u64::from(overview.watchlist)),
-    );
-    counts.insert(
-        "githubCaches".to_owned(),
-        Value::from(overview.github_caches),
     );
     let mut root = Map::new();
     root.insert(
@@ -269,9 +252,19 @@ fn parse_manifest(bytes: &[u8]) -> Result<PackageOverview, BackupError> {
         shelves: count_field(counts, "shelves")?,
         config: count_field(counts, "config")? == 1,
         user_apps: count_field(counts, "userApps")? == 1,
-        watchlist: count_field(counts, "watchlist")? == 1,
-        github_caches: count_field(counts, "githubCaches")?,
+        watchlist: optional_count(counts, "watchlist")? == 1,
+        github_caches: optional_count(counts, "githubCaches")?,
     })
+}
+
+/// 旧清单里有这两项。新包不再写。缺了按 0。
+fn optional_count(counts: &Map<String, Value>, name: &str) -> Result<u64, BackupError> {
+    match counts.get(name) {
+        None => Ok(0),
+        Some(value) => value
+            .as_u64()
+            .ok_or(BackupError::entry(MANIFEST, "压缩包中的 JSON 无法解析")),
+    }
 }
 
 fn count_field(counts: &Map<String, Value>, name: &str) -> Result<u64, BackupError> {
@@ -326,7 +319,7 @@ fn classify(name: &str) -> Result<Kind, BackupError> {
         MANIFEST => Kind::Manifest,
         "config.json" => Kind::Config,
         "user-apps.json" => Kind::UserApps,
-        "github/watchlist.json" => Kind::Watchlist,
+        "github/watchlist.json" => Kind::LegacyWatchlist,
         _ => kind_from_collection(name)?,
     };
     Ok(kind)
@@ -344,9 +337,16 @@ fn kind_from_collection(name: &str) -> Result<Kind, BackupError> {
         "todos" => Ok(Kind::Todo),
         "notes" => Ok(Kind::Note),
         "shelves" => Ok(Kind::Shelf),
-        "github/cache" => Ok(Kind::GithubCache),
+        "github/cache" => Ok(Kind::LegacyCache),
         _ => Err(BackupError::entry(name, "压缩包含有不允许的路径")),
     }
+}
+
+pub(crate) fn is_legacy_github(name: &str) -> bool {
+    matches!(
+        classify(name),
+        Ok(Kind::LegacyWatchlist | Kind::LegacyCache)
+    )
 }
 
 fn id_of(name: &str) -> Result<String, BackupError> {

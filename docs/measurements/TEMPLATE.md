@@ -53,7 +53,7 @@
 
 场景：固定数据为 5,000 个应用、10,000 条待办、1,000 篇约 2 KiB 的便签、20 个收纳分组共 1,000 条引用。预热搜索条和面板搜索，打开收纳标签，在搜索条里各提交一次待办和便签收集，并打开再关闭便签悬浮窗。然后收起全部窗口，连续采样 5 分钟。
 
-GitHub 快照不放进这组固定数据。刷新 GitHub 时另记内存。Everything 客户端、Everything 服务、Windows Search 索引服务和安装程序单独记录，不计入 Lanwork 进程。随包的 Everything SDK DLL 加载在 Lanwork 进程内，计入。
+Everything 客户端、Everything 服务、Windows Search 索引服务和安装程序单独记录，不计入 Lanwork 进程。随包的 Everything SDK DLL 加载在 Lanwork 进程内，计入。
 
 | 项 | 目标 | 结果 | 有效样本数 | 是否足 100 | P95 | 被取代查询数 | 原始时间戳 |
 | --- | --- | --- | --- | --- | --- | --- | --- |

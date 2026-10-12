@@ -21,8 +21,6 @@ pub enum EntityKind {
     Todo,
     Note,
     Shelf,
-    GithubWatchlist,
-    GithubCache,
 }
 
 /// 随一次成功写入带上的附加信息。存储层不解释 revision 是否与正文一致。

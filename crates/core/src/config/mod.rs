@@ -1,8 +1,9 @@
 //! 配置。
 //!
 //! 不依赖 Slint，也不调用 Win32。热键注册、主题监听、开机启动的注册表项在 `crates/app`。
-//! 字段和缺省见 [`model`]。安静时段的时间格式、GitHub 刷新间隔的含义、
-//! 以及若干缺省值，产品规格没有写，不能从这里推断成产品规则。
+//! 字段和缺省见 [`model`]。安静时段的时间格式，以及若干缺省值，产品规格没有写，
+//! 不能从这里推断成产品规则。旧文件里的 `githubRefreshIntervalMs`、`staleDays`、
+//! `sourceSync`、`autoCompleteOnClose` 在读取时忽略，写回时不再写出。
 
 mod command;
 mod error;
@@ -77,12 +78,10 @@ mod tests {
         assert_eq!(config.hot_corner, HotCorner::TopRight);
         assert_eq!(config.theme, Theme::System);
         assert!(!config.launch_at_startup);
-        assert_eq!(config.stale_days, 14);
         assert_eq!(config.process_snooze_days, 3);
         assert_eq!(config.pomodoro_work_minutes, 25);
         assert_eq!(config.pomodoro_break_minutes, 5);
         assert_eq!(config.pomodoro_long_break_minutes, 15);
-        assert_eq!(config.github_refresh_interval_ms, 0);
         assert_eq!(config.web_search_engine, WebSearchEngine::Google);
         assert!(config.search_bar_origin.is_none());
         assert!(!store.document_path(&DocumentId::Config).unwrap().exists());
@@ -94,7 +93,6 @@ mod tests {
         let mut next = commands.current();
         next.theme = Theme::Dark;
         next.launch_at_startup = true;
-        next.stale_days = 0;
         next.panel_hotkey = Some("ctrl+shift+f2".into());
         next.web_search_engine = WebSearchEngine::Baidu;
         commands.replace(next).unwrap();
@@ -103,9 +101,7 @@ mod tests {
         let config = again.current();
         assert_eq!(config.theme, Theme::Dark);
         assert!(config.launch_at_startup);
-        assert_eq!(config.stale_days, 0);
         assert_eq!(config.panel_hotkey.as_deref(), Some("Ctrl+Shift+F2"));
-        assert_eq!(config.github_settings().stale_days, 0);
         assert_eq!(config.web_search_engine, WebSearchEngine::Baidu);
         let saved: serde_json::Value = serde_json::from_slice(
             &std::fs::read(store.document_path(&DocumentId::Config).unwrap()).unwrap(),
@@ -322,6 +318,48 @@ mod tests {
         commands.replace(next).unwrap();
         assert_eq!(events.try_recv().unwrap().kind, EntityKind::Config);
         assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+N");
+    }
+
+    #[test]
+    fn removed_github_fields_are_ignored_and_omitted_on_write() {
+        let (_temp, store, _) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let original = br#"{"schemaVersion":1,"theme":"dark","searchHotkey":"Ctrl+Alt+M","githubRefreshIntervalMs":"soon","staleDays":false,"sourceSync":1,"autoCompleteOnClose":"yes","processSnoozeDays":4}"#;
+        std::fs::write(&path, original).unwrap();
+        let commands = ConfigCommands::open(store.clone()).unwrap();
+        assert_eq!(commands.fallback(), None);
+        let config = commands.current();
+        assert_eq!(config.theme, Theme::Dark);
+        assert_eq!(config.search_hotkey, "Ctrl+Alt+M");
+        assert_eq!(config.process_snooze_days, 4);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        let mut next = commands.current();
+        next.launch_at_startup = true;
+        commands.replace(next).unwrap();
+        assert!(path.exists());
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["theme"], "dark");
+        assert_eq!(saved["processSnoozeDays"], 4);
+        assert_eq!(saved["launchAtStartup"], true);
+        for key in [
+            "githubRefreshIntervalMs",
+            "staleDays",
+            "sourceSync",
+            "autoCompleteOnClose",
+        ] {
+            assert!(saved.get(key).is_none(), "{key} was written back");
+        }
+        let parent = path.parent().unwrap();
+        let quarantined = std::fs::read_dir(parent).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("config.json.corrupt-")
+        });
+        assert!(!quarantined);
     }
 
     #[test]

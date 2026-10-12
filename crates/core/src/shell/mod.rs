@@ -41,7 +41,6 @@ pub enum ShellCommand {
     OpenPanel,
     OpenSettings,
     NewNote,
-    RefreshGithub,
     Quit,
     /// 搜索条热键。显示或收起搜索条由搜索条窗口实现。
     SearchHotkey,
@@ -51,8 +50,8 @@ pub enum ShellCommand {
     SecondInstance,
 }
 
-/// 右键菜单的五项。退出在最后。
-pub const TRAY_MENU: [TrayItem; 5] = [
+/// 右键菜单的四项。退出在最后。
+pub const TRAY_MENU: [TrayItem; 4] = [
     TrayItem {
         title: "打开面板",
         command: ShellCommand::OpenPanel,
@@ -64,10 +63,6 @@ pub const TRAY_MENU: [TrayItem; 5] = [
     TrayItem {
         title: "新建便签",
         command: ShellCommand::NewNote,
-    },
-    TrayItem {
-        title: "刷新 GitHub",
-        command: ShellCommand::RefreshGithub,
     },
     TrayItem {
         title: "退出",
@@ -201,11 +196,11 @@ mod tests {
 
     #[test]
     fn tray_menu_ends_with_quit_and_renderer_order_is_fixed() {
-        assert_eq!(TRAY_MENU[4].title, "退出");
-        assert_eq!(TRAY_MENU[4].command, ShellCommand::Quit);
+        assert_eq!(TRAY_MENU[3].title, "退出");
+        assert_eq!(TRAY_MENU[3].command, ShellCommand::Quit);
         assert_eq!(
             TRAY_MENU.map(|item| item.title),
-            ["打开面板", "设置", "新建便签", "刷新 GitHub", "退出"]
+            ["打开面板", "设置", "新建便签", "退出"]
         );
         assert_eq!(RENDERER_ORDER, ["femtovg", "software"]);
         assert_eq!(quit_decision(0), QuitDecision::Exit);

@@ -2,7 +2,7 @@
 
 改代码之前先读 [docs/product.md](docs/product.md)。可见行为以该文件为准。机制以 [docs/architecture.md](docs/architecture.md) 为准。该架构文档是目标，不是已有代码地图。
 
-实现范围是 Windows 11 上的 Slint 界面：搜索条（含快速收集）、面板、搜索、待办、便签、收纳、GitHub、设置。快速收集不另开窗口，也没有独立热键。运行时不引入 Vue、Tauri 或 WebView2。
+实现范围是 Windows 11 上的 Slint 界面：搜索条（含快速收集）、面板、搜索、待办、便签、收纳、设置。快速收集不另开窗口，也没有独立热键。运行时不引入 Vue、Tauri 或 WebView2。
 
 架构文档「技术验证」中的某一项没有通过记录之前，不写依赖该项的界面代码。
 
