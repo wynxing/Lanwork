@@ -1,6 +1,6 @@
 //! 搜索条用到的 Win32：窗口句柄、光标所在显示器、DWM 背景、系统版本和节电。
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 
 use lanwork_core::shell::{
@@ -19,6 +19,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+use windows::Win32::UI::Accessibility::SetWinEventHook;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -27,11 +28,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GA_ROOT, GWL_STYLE, GetAncestor, GetCursorPos, GetForegroundWindow,
-    GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, STYLESTRUCT, SW_RESTORE, SW_SHOW,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY,
-    WM_STYLECHANGING, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+    BringWindowToTop, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GWL_STYLE, GetAncestor, GetCursorPos,
+    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible,
+    STYLESTRUCT, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    WINEVENT_OUTOFCONTEXT, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_STYLECHANGING,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
 
 use crate::registry::read_transparency_enabled;
@@ -223,13 +225,40 @@ const CAPTION_BUTTONS: u32 = WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
 const CAPTION_SUBCLASS_ID: usize = 1;
 const MOVE_SUBCLASS_ID: usize = 2;
 
+type MoveHook = fn(isize, bool, i32, i32, u32, u32);
+
 thread_local! {
-    static MOVE_LOOP: Cell<Option<fn(bool)>> = const { Cell::new(None) };
+    static MOVE_HOOKS: RefCell<Vec<MoveHook>> = const { RefCell::new(Vec::new()) };
+    /// 正在移动或改大小的窗口。进入时加上，结束时去掉。悬浮窗用它挡住拖动循环里的失焦。
+    static SIZING: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+    /// 移动刚结束。拖动循环带出来的失焦会晚到，这两轮里先不让贴边窗口收回。
+    static BLUR_HOLD: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+    static TOPMOST: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+    static FOREGROUND_HOOK: Cell<bool> = const { Cell::new(false) };
 }
 
-/// 拖动循环开始（`true`）或结束（`false`）时调用。只由搜索条登记。
-pub(crate) fn set_move_loop_hook(hook: fn(bool)) {
-    MOVE_LOOP.with(|cell| cell.set(Some(hook)));
+/// 拖动或改大小开始、结束时调用。`entering` 为真是开始。坐标和大小是这一刻的窗口矩形。
+/// 搜索条和每个悬浮窗各登记一次，回调里按窗口句柄自己认。
+pub(crate) fn add_move_hook(hook: MoveHook) {
+    MOVE_HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        if !hooks.contains(&hook) {
+            hooks.push(hook);
+        }
+    });
+}
+
+pub(crate) fn hwnd_key(hwnd: HWND) -> isize {
+    hwnd.0 as isize
+}
+
+pub(crate) fn size_move_blocks_blur(key: isize) -> bool {
+    SIZING.with(|list| list.borrow().contains(&key))
+        || BLUR_HOLD.with(|list| list.borrow().contains(&key))
+}
+
+pub(crate) fn clear_blur_hold(key: isize) {
+    BLUR_HOLD.with(|list| list.borrow_mut().retain(|item| *item != key));
 }
 
 /// 观察这个窗口的 `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`。和标题栏子类互不替换。
@@ -248,11 +277,24 @@ unsafe extern "system" fn observe_move_loop(
 ) -> LRESULT {
     if message == WM_ENTERSIZEMOVE || message == WM_EXITSIZEMOVE {
         let entering = message == WM_ENTERSIZEMOVE;
-        MOVE_LOOP.with(|cell| {
-            if let Some(hook) = cell.get() {
-                hook(entering);
+        let mut rect = RECT::default();
+        // SAFETY: hwnd 是本进程的窗口，输出指针指向局部变量。
+        if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
+            let key = hwnd_key(hwnd);
+            if entering {
+                SIZING.with(|list| set_flag(list, key, true));
+            } else {
+                // 先挡住失焦，再标成已经结束，中间没有空隙。
+                BLUR_HOLD.with(|list| set_flag(list, key, true));
+                SIZING.with(|list| set_flag(list, key, false));
             }
-        });
+            let width = u32::try_from(rect.right.saturating_sub(rect.left)).unwrap_or(0);
+            let height = u32::try_from(rect.bottom.saturating_sub(rect.top)).unwrap_or(0);
+            let hooks = MOVE_HOOKS.with(|hooks| hooks.borrow().clone());
+            for hook in hooks {
+                hook(key, entering, rect.left, rect.top, width, height);
+            }
+        }
     } else if message == WM_NCDESTROY {
         // SAFETY: 窗口正在销毁，移除本模块装上的子类。之后的消息直接交给下一层。
         unsafe {
@@ -261,6 +303,111 @@ unsafe extern "system" fn observe_move_loop(
     }
     // SAFETY: 参数原样交给子类链的下一层。
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+fn set_flag(list: &RefCell<Vec<isize>>, key: isize, on: bool) {
+    let mut list = list.borrow_mut();
+    if on {
+        if !list.contains(&key) {
+            list.push(key);
+        }
+    } else {
+        list.retain(|item| *item != key);
+    }
+}
+
+/// 改位置和大小，并保持在最上层。不激活窗口。
+pub(crate) fn place_topmost(hwnd: HWND, x: i32, y: i32, width: u32, height: u32) {
+    let width = i32::try_from(width).unwrap_or(i32::MAX);
+    let height = i32::try_from(height).unwrap_or(i32::MAX);
+    // SAFETY: hwnd 是本进程的悬浮窗。HWND_TOPMOST 只改层次，SWP_NOACTIVATE 不抢走焦点。
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOACTIVATE,
+        );
+    }
+}
+
+fn keep_topmost(key: isize) {
+    let hwnd = HWND(key as *mut c_void);
+    // SAFETY: 句柄是登记过的本进程悬浮窗。不移动、不改大小、不激活。
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// 这个悬浮窗要一直留在最上层。别的程序（包括全屏）到前台时再置一次。
+/// 前台如果就是某个悬浮窗，不动它们之间的先后。
+pub(crate) fn watch_topmost(hwnd: HWND) -> bool {
+    let key = hwnd_key(hwnd);
+    TOPMOST.with(|list| set_flag(list, key, true));
+    keep_topmost(key);
+    ensure_foreground_hook()
+}
+
+pub(crate) fn unwatch_topmost(hwnd: HWND) {
+    let key = hwnd_key(hwnd);
+    TOPMOST.with(|list| set_flag(list, key, false));
+    SIZING.with(|list| set_flag(list, key, false));
+    BLUR_HOLD.with(|list| set_flag(list, key, false));
+}
+
+fn ensure_foreground_hook() -> bool {
+    if FOREGROUND_HOOK.with(Cell::get) {
+        return true;
+    }
+    // SAFETY: 回调不带引用数据，进程结束前不卸。OUTOFCONTEXT 在装钩子的线程上回调。
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(on_foreground),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    // 这个句柄没有 Drop，不调用 UnhookWinEvent，进程结束前钩子一直留着。
+    let installed = !hook.is_invalid();
+    if installed {
+        FOREGROUND_HOOK.with(|cell| cell.set(true));
+    }
+    installed
+}
+
+unsafe extern "system" fn on_foreground(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    let key = hwnd_key(hwnd);
+    let ours = TOPMOST.with(|list| list.borrow().contains(&key));
+    if ours {
+        return;
+    }
+    let keys = TOPMOST.with(|list| list.borrow().clone());
+    for key in keys {
+        keep_topmost(key);
+    }
 }
 
 /// 去掉标题栏按钮，并在之后每次改样式时继续去掉。保留 `WS_CAPTION`，DWM 仍画阴影和圆角。

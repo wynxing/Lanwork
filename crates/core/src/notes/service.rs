@@ -13,8 +13,8 @@ use crate::storage::{ChangeMeta, CollectionKind, DocumentId, Store, lock_mutex};
 
 use super::error::NoteError;
 use super::model::{
-    FloatGeometry, Note, NoteFile, NoteInput, SkipReason, TimestampMillis, normalize_query_tag,
-    normalize_tags, sort_for_list,
+    FloatDock, FloatGeometry, Note, NoteFile, NoteInput, SkipReason, TimestampMillis,
+    normalize_query_tag, normalize_tags, sort_for_list,
 };
 
 #[derive(Default)]
@@ -98,7 +98,7 @@ impl NoteService {
             deleted_at: None,
             revision: 1,
             float: None,
-            float_pinned: false,
+            float_dock: None,
         };
         self.persist(note)
     }
@@ -131,33 +131,24 @@ impl NoteService {
         })
     }
 
-    /// 记下这一篇悬浮窗的位置和大小。
+    /// 记下这一篇悬浮窗的展开位置、大小和贴边。
     ///
     /// 不带 `revision`，也不改 `revision` 和 `updatedAt`：编辑区手里的版本号不会因此过期，
-    /// 列表顺序也不变。回收站里的便签同样可以记。
-    pub fn set_float(&self, id: &str, geometry: FloatGeometry) -> Result<Note, NoteError> {
+    /// 列表顺序也不变。回收站里的便签同样可以记。`dock` 为 `None` 表示不贴边。
+    pub fn set_float(
+        &self,
+        id: &str,
+        geometry: FloatGeometry,
+        dock: Option<FloatDock>,
+    ) -> Result<Note, NoteError> {
         self.check_id(id)?;
         let _write = lock_mutex(&self.inner.write);
         let mut next = self.cached(id)?;
-        if next.float == Some(geometry) {
+        if next.float == Some(geometry) && next.float_dock == dock {
             return Ok(next);
         }
         next.float = Some(geometry);
-        self.persist(next)
-    }
-
-    /// 记下这一篇悬浮窗是否钉住。
-    ///
-    /// 与 [`Self::set_float`] 一样不带 `revision`，也不改 `revision`、`updatedAt` 和列表里的置顶：
-    /// 编辑区手里的版本号不会因此过期，也不会引出冲突提示。回收站里的便签同样可以记。值没变时不写盘。
-    pub fn set_float_pinned(&self, id: &str, pinned: bool) -> Result<Note, NoteError> {
-        self.check_id(id)?;
-        let _write = lock_mutex(&self.inner.write);
-        let mut next = self.cached(id)?;
-        if next.float_pinned == pinned {
-            return Ok(next);
-        }
-        next.float_pinned = pinned;
+        next.float_dock = dock;
         self.persist(next)
     }
 

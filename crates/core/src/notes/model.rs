@@ -43,12 +43,85 @@ impl TimestampMillis {
 /// 悬浮窗的位置和大小，物理像素，位置是虚拟屏幕坐标。
 ///
 /// 存在便签文件的 `floatWindow` 里。这是界面记下的值，服务不判断它是否还在某个显示器内。
+/// 贴边时这里仍是展开后的矩形，不是细条。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FloatGeometry {
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
+}
+
+/// 贴住的屏幕外边。底边不贴。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockEdge {
+    Left,
+    Right,
+    Top,
+}
+
+/// 悬浮窗贴边。存在便签或分组文件的 `floatDock` 里。
+///
+/// `offset` 是沿边的位置，物理像素：左、右是 y，上是 x。`collapsed` 为真时窗口收成细条。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloatDock {
+    pub edge: DockEdge,
+    pub offset: i32,
+    pub collapsed: bool,
+}
+
+impl Serialize for FloatDock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("FloatDock", 3)?;
+        out.serialize_field(
+            "edge",
+            match self.edge {
+                DockEdge::Left => "left",
+                DockEdge::Right => "right",
+                DockEdge::Top => "top",
+            },
+        )?;
+        out.serialize_field("offset", &self.offset)?;
+        out.serialize_field("collapsed", &self.collapsed)?;
+        out.end()
+    }
+}
+
+impl FloatDock {
+    pub(crate) fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let obj = value.as_object()?;
+        let edge = match obj.get("edge").and_then(serde_json::Value::as_str)? {
+            "left" => DockEdge::Left,
+            "right" => DockEdge::Right,
+            "top" => DockEdge::Top,
+            _ => return None,
+        };
+        let offset = obj
+            .get("offset")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let collapsed = obj
+            .get("collapsed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Some(Self {
+            edge,
+            offset: i32::try_from(offset).unwrap_or(0),
+            collapsed,
+        })
+    }
+}
+
+pub(crate) fn flexible_dock<'de, D>(deserializer: D) -> Result<Option<FloatDock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(FloatDock::from_json(&value))
 }
 
 /// 一篇便签。文件名是 [`Self::id`]，路径为 `notes/<id>.json`。
@@ -65,10 +138,10 @@ pub struct Note {
     pub updated_at: TimestampMillis,
     pub deleted_at: Option<TimestampMillis>,
     pub revision: u64,
-    /// 这一篇的悬浮窗上次关闭时的位置和大小。没有记录时为 `None`。
+    /// 这一篇的悬浮窗上次的展开位置和大小。没有记录时为 `None`。
     pub float: Option<FloatGeometry>,
-    /// 这一篇的悬浮窗是否钉住（始终在其他窗口之上）。与列表里的 `pinned`（置顶）无关。旧文件没有这个字段，按未钉住。
-    pub float_pinned: bool,
+    /// 贴边。没有记录时不贴边。旧文件里的 `floatPinned` 不进这个字段。
+    pub float_dock: Option<FloatDock>,
 }
 
 impl Note {
@@ -215,11 +288,15 @@ pub(crate) struct NoteFile {
     )]
     float: Option<FloatGeometry>,
     #[serde(
-        rename = "floatPinned",
+        rename = "floatDock",
         default,
-        skip_serializing_if = "std::ops::Not::not"
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_dock"
     )]
-    float_pinned: bool,
+    float_dock: Option<FloatDock>,
+    /// 旧的逐窗钉住。读进来就丢掉，不再写回。缺了这个字段也照常打开。
+    #[serde(rename = "floatPinned", default, skip_serializing)]
+    _legacy_float_pinned: bool,
 }
 
 impl NoteFile {
@@ -236,7 +313,8 @@ impl NoteFile {
             deleted_at: note.deleted_at,
             revision: note.revision,
             float: note.float,
-            float_pinned: note.float_pinned,
+            float_dock: note.float_dock,
+            _legacy_float_pinned: false,
         }
     }
 
@@ -258,7 +336,7 @@ impl NoteFile {
             deleted_at: self.deleted_at,
             revision: self.revision,
             float: self.float,
-            float_pinned: self.float_pinned,
+            float_dock: self.float_dock,
         })
     }
 }
@@ -281,7 +359,7 @@ mod tests {
             deleted_at: None,
             revision: 1,
             float: None,
-            float_pinned: false,
+            float_dock: None,
         }
     }
 

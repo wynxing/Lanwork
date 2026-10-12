@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::notes::FloatGeometry;
+use crate::notes::{FloatDock, FloatGeometry};
 use crate::storage::{CollectionKind, DocumentId, Store, lock_mutex};
 use crate::todos::{TodoCommands, TodoNotice};
 
@@ -128,7 +128,7 @@ impl ShelfService {
             todo_ids: Vec::new(),
             refs: Vec::new(),
             float: None,
-            float_pinned: false,
+            float_dock: None,
         };
         self.persist_one(&shelf)?;
         Ok(shelf)
@@ -216,7 +216,7 @@ impl ShelfService {
                     todo_ids: Vec::new(),
                     refs: Vec::new(),
                     float: None,
-                    float_pinned: false,
+                    float_dock: None,
                 }
             }
             None => return Err(ShelfError::TargetGroupRequired),
@@ -291,32 +291,25 @@ impl ShelfService {
         Ok(shelf)
     }
 
-    /// 记下这个分组的悬浮窗的位置和大小。不改名称、顺序、关联和引用。
+    /// 记下这个分组的悬浮窗的展开位置、大小和贴边。不改名称、顺序、关联和引用。
     ///
     /// 这是界面记下的值，服务不判断它是否还在某个显示器内。值没有变化时不写盘。
-    pub fn set_float(&self, id: &str, geometry: FloatGeometry) -> Result<Shelf, ShelfError> {
+    /// `dock` 为 `None` 表示不贴边。
+    pub fn set_float(
+        &self,
+        id: &str,
+        geometry: FloatGeometry,
+        dock: Option<FloatDock>,
+    ) -> Result<Shelf, ShelfError> {
         self.check_group_id(id)?;
         let _write = lock_mutex(&self.inner.write);
         self.ensure_usable()?;
         let mut shelf = self.group(id)?;
-        if shelf.float == Some(geometry) {
+        if shelf.float == Some(geometry) && shelf.float_dock == dock {
             return Ok(shelf);
         }
         shelf.float = Some(geometry);
-        self.persist_one(&shelf)?;
-        Ok(shelf)
-    }
-
-    /// 记下这个分组的悬浮窗是否钉住。不改名称、顺序、关联、引用和悬浮窗的位置大小。值没有变化时不写盘。
-    pub fn set_float_pinned(&self, id: &str, pinned: bool) -> Result<Shelf, ShelfError> {
-        self.check_group_id(id)?;
-        let _write = lock_mutex(&self.inner.write);
-        self.ensure_usable()?;
-        let mut shelf = self.group(id)?;
-        if shelf.float_pinned == pinned {
-            return Ok(shelf);
-        }
-        shelf.float_pinned = pinned;
+        shelf.float_dock = dock;
         self.persist_one(&shelf)?;
         Ok(shelf)
     }

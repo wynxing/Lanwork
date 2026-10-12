@@ -1,8 +1,8 @@
-// 便签悬浮窗。只有正文：上沿一条可拖动的细条，右侧是钉住和关闭，下面是正文。没有说明文字。
-// 风格与面板一致：亚克力时客户区透明，纯色时由这里画满；深浅两套配色。
+// 便签悬浮窗。只有正文：上沿一条可拖动的细条，右侧是关闭，下面是正文。没有说明文字。
+// 窗口始终在最上层。贴边收起时整窗变成细条。风格与面板一致。
 
 import { Palette } from "std-widgets.slint";
-import { Ink, PinBtn } from "widgets.slint";
+import { Ink } from "widgets.slint";
 import { NoteEditor } from "noteeditor.slint";
 
 export component NoteFloat inherits Window {
@@ -13,11 +13,10 @@ export component NoteFloat inherits Window {
     default-font-size: 14px;
     preferred-width: 320px;
     preferred-height: 360px;
-    min-width: 200px;
-    min-height: 120px;
-    resize-border-width: 6px;
-    // 钉住：窗口始终在其他窗口之上。属性变化后 Slint 在下一轮事件循环里改窗口层级。
-    always-on-top: pinned;
+    min-width: thin ? 1px : 200px;
+    min-height: thin ? 1px : 120px;
+    resize-border-width: thin ? 0px : 6px;
+    always-on-top: true;
 
     in property <bool> dark;
     // 亚克力时客户区透明，DWM 画背景。
@@ -26,16 +25,18 @@ export component NoteFloat inherits Window {
     in property <int> problem;
     in property <string> problem-text;
     in property <bool> closing;
-    in property <bool> pinned;
-    // 钉住状态写盘失败时的错误，显示在标题条上。
-    in property <string> pin-error;
+    // 收起或正在滑向细条时，最小尺寸放开，避免细条被 200px 挡住。
+    in property <bool> thin;
+    in property <bool> collapsed;
+    // ""、"left"、"right"、"top"。
+    in property <string> dock-edge;
     in-out property <string> body <=> editor.body;
     out property <string> preedit: editor.preedit;
 
     callback body-edited(string);
     callback close-clicked();
-    callback pin-clicked();
     callback drag-window();
+    callback strip-clicked();
     callback retry();
     callback discard();
     callback keep-mine();
@@ -53,12 +54,14 @@ export component NoteFloat inherits Window {
         critical: dark ? #ff99a4 : #c42b1c,
     };
 
-    // 布局检查用：钉住按钮和关闭按钮在窗口里的位置。
-    out property <length> pin-x: pin-btn.absolute-position.x;
-    out property <length> pin-y: pin-btn.absolute-position.y;
-    out property <length> pin-width: pin-btn.width;
-    out property <length> pin-height: pin-btn.height;
+    // 布局检查用：关闭按钮在窗口里的位置。细条厚度和贴边色块也导出，测试用来点。
     out property <length> close-x: close-box.absolute-position.x;
+    out property <length> close-y: close-box.absolute-position.y;
+    out property <length> strip-x: edge-strip.absolute-position.x;
+    out property <length> strip-y: edge-strip.absolute-position.y;
+    out property <length> strip-width: edge-strip.width;
+    out property <length> strip-height: edge-strip.height;
+    property <length> band: 8px;
 
     background: acrylic ? transparent : solid-color;
 
@@ -73,7 +76,7 @@ export component NoteFloat inherits Window {
         editor.focus-body();
     }
 
-    Rectangle {
+    if !collapsed: Rectangle {
         x: 0px;
         y: 0px;
         width: parent.width;
@@ -86,57 +89,82 @@ export component NoteFloat inherits Window {
                 }
             }
         }
+    }
 
-        if pin-error != "": Text {
-            x: 10px;
-            y: 0px;
-            width: parent.width - 56px - 14px;
-            height: parent.height;
-            text: root.pin-error;
-            color: c.critical;
-            font-size: 12px;
-            vertical-alignment: center;
-            overflow: elide;
+    close-box := Rectangle {
+        x: parent.width - 28px;
+        y: 0px;
+        width: 28px;
+        height: 28px;
+        visible: !collapsed;
+        background: close-touch.has-hover ? c.hover : transparent;
+
+        Path {
+            x: 9px;
+            y: 9px;
+            width: 10px;
+            height: 10px;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            fill: transparent;
+            stroke: c.secondary;
+            stroke-width: 1.2px;
+            commands: "M1 1l8 8 M9 1l-8 8";
         }
 
-        pin-btn := PinBtn {
-            x: parent.width - 56px;
-            y: 0px;
-            pinned: root.pinned;
-            c: root.c;
-            toggled => {
-                root.pin-clicked();
+        close-touch := TouchArea {
+            clicked => {
+                root.close-clicked();
             }
         }
+    }
 
-        close-box := Rectangle {
-            x: parent.width - 28px;
-            width: 28px;
-            height: parent.height;
-            background: close-touch.has-hover ? c.hover : transparent;
+    if collapsed: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: c.accent;
 
-            Path {
-                x: 9px;
-                y: 9px;
-                width: 10px;
-                height: 10px;
-                viewbox-width: 10;
-                viewbox-height: 10;
-                fill: transparent;
-                stroke: c.secondary;
-                stroke-width: 1.2px;
-                commands: "M1 1l8 8 M9 1l-8 8";
-            }
+        // 细条中间一条浅色，让几像素的色块在全屏画面上也认得出。
+        Rectangle {
+            x: parent.width > parent.height ? (parent.width - 10px) / 2 : (parent.width - 2px) / 2;
+            y: parent.width > parent.height ? (parent.height - 2px) / 2 : (parent.height - 10px) / 2;
+            width: parent.width > parent.height ? 10px : 2px;
+            height: parent.width > parent.height ? 2px : 10px;
+            background: #ffffff;
+        }
 
-            close-touch := TouchArea {
-                clicked => {
-                    root.close-clicked();
+        TouchArea {
+            accessible-role: button;
+            accessible-label: "细条";
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.drag-window();
                 }
             }
         }
     }
 
+    // 展开并且贴边时，靠边的这一条再点一次就收回。不盖住关闭按钮。
+    edge-strip := Rectangle {
+        x: dock-edge == "right" ? parent.width - band : 0px;
+        y: dock-edge == "top" ? 0px : dock-edge == "right" ? 28px : 0px;
+        width: dock-edge == "top" ? parent.width - 28px : band;
+        height: dock-edge == "top" ? band : dock-edge == "right" ? parent.height - 28px : parent.height;
+        visible: !collapsed && dock-edge != "";
+        background: c.accent;
+        TouchArea {
+            accessible-role: button;
+            accessible-label: "细条";
+            clicked => {
+                root.strip-clicked();
+            }
+        }
+    }
+
     editor := NoteEditor {
+        visible: !root.collapsed;
         x: 10px;
         y: 28px;
         width: parent.width - 20px;

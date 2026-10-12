@@ -195,7 +195,7 @@ mod tests {
             deleted_at: deleted.map(TimestampMillis::from_millis),
             revision: 1,
             float: None,
-            float_pinned: false,
+            float_dock: None,
         }
     }
 

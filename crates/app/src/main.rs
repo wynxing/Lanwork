@@ -18,6 +18,8 @@ mod settings_layout_tests;
 #[cfg(windows)]
 mod bar_win;
 #[cfg(windows)]
+mod float_dock;
+#[cfg(windows)]
 mod host;
 #[cfg(windows)]
 mod hotcorner;

@@ -98,7 +98,7 @@ pub(crate) fn install(
     ui.on_shortcut(|digit| with_bar(move |bar| bar.shortcut(digit)));
     ui.on_scrolled(|top| with_bar(move |bar| bar.scrolled(top)));
     ui.on_drag_window(|| with_bar(Bar::drag));
-    bar_win::set_move_loop_hook(move_loop);
+    bar_win::add_move_hook(move_loop);
 
     let render_marks = Rc::clone(&marks);
     let notifier = ui.window().set_rendering_notifier(move |state, _| {
@@ -239,6 +239,10 @@ impl Bar {
         } else {
             None
         }
+    }
+
+    fn hwnd_key(&self) -> Option<isize> {
+        self.hwnd().map(bar_win::hwnd_key)
     }
 
     fn refresh_backdrop(&mut self) {
@@ -951,12 +955,21 @@ fn worker_main(dispatch: &Dispatch, rx: &Receiver<Job>) {
 }
 
 /// 窗口过程里调用。转到界面队列，避免在模态循环的窗口过程里写盘。
-fn move_loop(entering: bool) {
+/// 悬浮窗的拖动也走同一个通知，这里只认搜索条自己的句柄。
+fn move_loop(key: isize, entering: bool, _x: i32, _y: i32, _width: u32, _height: u32) {
     let posted = slint::invoke_from_event_loop(move || {
-        with_bar(move |bar| bar.on_move_loop(entering));
+        with_bar(move |bar| {
+            if bar.hwnd_key() == Some(key) {
+                bar.on_move_loop(entering);
+            }
+        });
     });
     if posted.is_err() {
-        with_bar(move |bar| bar.on_move_loop(entering));
+        with_bar(move |bar| {
+            if bar.hwnd_key() == Some(key) {
+                bar.on_move_loop(entering);
+            }
+        });
     }
 }
 

@@ -1,9 +1,8 @@
-// 收纳分组的悬浮窗。只显示该分组的条目：上沿一条可拖动的细条，右侧是钉住和关闭，下面是条目列表。
-// 条目列表和面板的收纳页是同一个组件；全局 ShelvesPageData 在每个窗口里各有一份，
-// 所以这个窗口的数据和回调由它自己的 Rust 对象接。风格与便签悬浮窗一致。
+// 收纳分组的悬浮窗。只显示该分组的条目：上沿一条可拖动的细条，右侧是关闭，下面是条目列表。
+// 窗口始终在最上层。贴边收起时整窗变成细条。条目列表和面板的收纳页是同一个组件。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Check, Ink, PinBtn } from "widgets.slint";
+import { Btn, Check, Ink } from "widgets.slint";
 import { RefsList, ShelvesPageData } from "shelvespage.slint";
 
 export component ShelfFloat inherits Window {
@@ -14,22 +13,24 @@ export component ShelfFloat inherits Window {
     default-font-size: 14px;
     preferred-width: 320px;
     preferred-height: 360px;
-    min-width: 200px;
-    min-height: 120px;
-    resize-border-width: 6px;
-    // 钉住：窗口始终在其他窗口之上。属性变化后 Slint 在下一轮事件循环里改窗口层级。
-    always-on-top: pinned;
+    min-width: thin ? 1px : 200px;
+    min-height: thin ? 1px : 120px;
+    resize-border-width: thin ? 0px : 6px;
+    always-on-top: true;
 
     in property <bool> dark;
     // 亚克力时客户区透明，DWM 画背景。
     in property <bool> acrylic;
     in property <color> solid-color: #f3f3f3;
     in property <string> error;
-    in property <bool> pinned;
+    in property <bool> thin;
+    in property <bool> collapsed;
+    // ""、"left"、"right"、"top"。
+    in property <string> dock-edge;
 
     callback close-clicked();
-    callback pin-clicked();
     callback drag-window();
+    callback strip-clicked();
 
     property <Ink> c: {
         ink: dark ? #ffffff : #1b1b1b,
@@ -58,11 +59,10 @@ export component ShelfFloat inherits Window {
     out property <length> refs-area-y: refs-area.absolute-position.y;
     out property <length> refs-area-height: refs-area.height;
     out property <length> action-y: action-bar.absolute-position.y;
-    out property <length> pin-x: pin-btn.absolute-position.x;
-    out property <length> pin-y: pin-btn.absolute-position.y;
-    out property <length> pin-width: pin-btn.width;
-    out property <length> pin-height: pin-btn.height;
     out property <length> close-x: close-box.absolute-position.x;
+    out property <length> strip-x: edge-strip.absolute-position.x;
+    out property <length> strip-width: edge-strip.width;
+    property <length> band: 8px;
 
     background: acrylic ? transparent : solid-color;
 
@@ -87,7 +87,7 @@ export component ShelfFloat inherits Window {
             reject
         }
 
-        Rectangle {
+        if !root.collapsed: Rectangle {
             x: 0px;
             y: 0px;
             width: parent.width;
@@ -100,45 +100,80 @@ export component ShelfFloat inherits Window {
                     }
                 }
             }
+        }
 
-            pin-btn := PinBtn {
-                x: parent.width - 56px;
-                y: 0px;
-                pinned: root.pinned;
-                c: root.c;
-                toggled => {
-                    root.pin-clicked();
-                }
+        close-box := Rectangle {
+            x: parent.width - 28px;
+            y: 0px;
+            width: 28px;
+            height: 28px;
+            visible: !root.collapsed;
+            background: close-touch.has-hover ? c.hover : transparent;
+
+            Path {
+                x: 9px;
+                y: 9px;
+                width: 10px;
+                height: 10px;
+                viewbox-width: 10;
+                viewbox-height: 10;
+                fill: transparent;
+                stroke: c.secondary;
+                stroke-width: 1.2px;
+                commands: "M1 1l8 8 M9 1l-8 8";
             }
 
-            close-box := Rectangle {
-                x: parent.width - 28px;
-                width: 28px;
-                height: parent.height;
-                background: close-touch.has-hover ? c.hover : transparent;
-
-                Path {
-                    x: 9px;
-                    y: 9px;
-                    width: 10px;
-                    height: 10px;
-                    viewbox-width: 10;
-                    viewbox-height: 10;
-                    fill: transparent;
-                    stroke: c.secondary;
-                    stroke-width: 1.2px;
-                    commands: "M1 1l8 8 M9 1l-8 8";
+            close-touch := TouchArea {
+                clicked => {
+                    root.close-clicked();
                 }
+            }
+        }
 
-                close-touch := TouchArea {
-                    clicked => {
-                        root.close-clicked();
+        if root.collapsed: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            background: c.accent;
+
+            Rectangle {
+                x: parent.width > parent.height ? (parent.width - 10px) / 2 : (parent.width - 2px) / 2;
+                y: parent.width > parent.height ? (parent.height - 2px) / 2 : (parent.height - 10px) / 2;
+                width: parent.width > parent.height ? 10px : 2px;
+                height: parent.width > parent.height ? 2px : 10px;
+                background: #ffffff;
+            }
+
+            TouchArea {
+                accessible-role: button;
+                accessible-label: "细条";
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.drag-window();
                     }
                 }
             }
         }
 
+        edge-strip := Rectangle {
+            x: dock-edge == "right" ? parent.width - band : 0px;
+            y: dock-edge == "top" ? 0px : dock-edge == "right" ? 28px : 0px;
+            width: dock-edge == "top" ? parent.width - 28px : band;
+            height: dock-edge == "top" ? band : dock-edge == "right" ? parent.height - 28px : parent.height;
+            visible: !root.collapsed && dock-edge != "";
+            background: c.accent;
+            TouchArea {
+                accessible-role: button;
+                accessible-label: "细条";
+                clicked => {
+                    root.strip-clicked();
+                }
+            }
+        }
+
         Rectangle {
+            visible: !root.collapsed;
             x: 10px;
             y: 28px;
             width: parent.width - 20px;
@@ -256,6 +291,7 @@ export component ShelfFloat inherits Window {
         }
 
         refs-area := Rectangle {
+            visible: !root.collapsed;
             x: 10px;
             y: 28px + links-height;
             width: parent.width - 20px;
@@ -283,6 +319,7 @@ export component ShelfFloat inherits Window {
 
         // 选中条目时：完整路径和「移除引用」。触发方式沿用面板的按钮，不加 Delete 键或右键。
         action-bar := Rectangle {
+            visible: !root.collapsed;
             x: 10px;
             y: parent.height - error-height - 4px - action-height;
             width: parent.width - 20px;
@@ -314,7 +351,7 @@ export component ShelfFloat inherits Window {
             }
         }
 
-        if error != "": Text {
+        if !root.collapsed && error != "": Text {
             x: 10px;
             y: parent.height - error-height - 4px;
             width: parent.width - 20px;

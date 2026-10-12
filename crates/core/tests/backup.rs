@@ -413,13 +413,13 @@ fn float_geometry_goes_through_export_and_import() {
         width: 420,
         height: 300,
     };
-    notes.set_float(&note.id, geometry).unwrap();
+    notes.set_float(&note.id, geometry, None).unwrap();
 
     let commands = BackupCommands::open(fx.store.clone());
     let package = fx._temp.path().join("float.zip");
     commands.export(&package, 30).unwrap();
     notes
-        .set_float(&note.id, FloatGeometry { x: 0, ..geometry })
+        .set_float(&note.id, FloatGeometry { x: 0, ..geometry }, None)
         .unwrap();
 
     commands.import(&package, 40).unwrap();
@@ -427,12 +427,12 @@ fn float_geometry_goes_through_export_and_import() {
 }
 
 #[test]
-fn float_pinned_goes_through_export_import_and_backup_restore() {
+fn float_dock_goes_through_export_import_and_backup_restore() {
     let fx = fixture();
     let notes = NoteCommands::open(fx.store.clone()).unwrap();
     let note = notes
         .create(&NoteInput {
-            title: "钉住".to_owned(),
+            title: "贴边".to_owned(),
             body: "正文".to_owned(),
             tags: Vec::new(),
             pinned: false,
@@ -440,39 +440,59 @@ fn float_pinned_goes_through_export_import_and_backup_restore() {
         .unwrap();
     let other = notes
         .create(&NoteInput {
-            title: "不钉".to_owned(),
+            title: "不贴".to_owned(),
             body: "正文".to_owned(),
             tags: Vec::new(),
             pinned: false,
         })
         .unwrap();
+    let geometry = FloatGeometry {
+        x: 0,
+        y: 20,
+        width: 300,
+        height: 200,
+    };
+    let dock = lanwork_core::notes::FloatDock {
+        edge: lanwork_core::notes::DockEdge::Top,
+        offset: 20,
+        collapsed: true,
+    };
     let shelves = ShelfCommands::open(fx.store.clone()).unwrap();
-    let pinned_group = shelves.create_group("钉住").unwrap();
-    let plain_group = shelves.create_group("不钉").unwrap();
-    notes.set_float_pinned(&note.id, true).unwrap();
-    shelves.set_float_pinned(&pinned_group.id, true).unwrap();
+    let docked_group = shelves.create_group("贴边").unwrap();
+    let plain_group = shelves.create_group("不贴").unwrap();
+    notes.set_float(&note.id, geometry, Some(dock)).unwrap();
+    shelves
+        .set_float(&docked_group.id, geometry, Some(dock))
+        .unwrap();
 
     let commands = BackupCommands::open(fx.store.clone());
-    let package = fx._temp.path().join("pin.zip");
+    let package = fx._temp.path().join("dock.zip");
     commands.export(&package, 30).unwrap();
-    notes.set_float_pinned(&note.id, false).unwrap();
-    shelves.set_float_pinned(&pinned_group.id, false).unwrap();
-    shelves.set_float_pinned(&plain_group.id, true).unwrap();
+    notes.set_float(&note.id, geometry, None).unwrap();
+    shelves.set_float(&docked_group.id, geometry, None).unwrap();
+    shelves
+        .set_float(&plain_group.id, geometry, Some(dock))
+        .unwrap();
 
     commands.import(&package, 40).unwrap();
-    assert!(notes.get(&note.id).unwrap().float_pinned);
-    assert!(!notes.get(&other.id).unwrap().float_pinned);
-    assert!(shelves.get(&pinned_group.id).unwrap().float_pinned);
-    assert!(!shelves.get(&plain_group.id).unwrap().float_pinned);
+    assert_eq!(notes.get(&note.id).unwrap().float_dock, Some(dock));
+    assert!(notes.get(&other.id).unwrap().float_dock.is_none());
+    assert_eq!(
+        shelves.get(&docked_group.id).unwrap().float_dock,
+        Some(dock)
+    );
+    assert!(shelves.get(&plain_group.id).unwrap().float_dock.is_none());
 
-    notes.set_float_pinned(&note.id, false).unwrap();
-    shelves.set_float_pinned(&pinned_group.id, false).unwrap();
+    notes.set_float(&note.id, geometry, None).unwrap();
+    shelves.set_float(&docked_group.id, geometry, None).unwrap();
     let backup = commands.backup_manual(50).unwrap();
-    notes.set_float_pinned(&note.id, true).unwrap();
-    shelves.set_float_pinned(&pinned_group.id, true).unwrap();
+    notes.set_float(&note.id, geometry, Some(dock)).unwrap();
+    shelves
+        .set_float(&docked_group.id, geometry, Some(dock))
+        .unwrap();
     commands.import(&backup, 60).unwrap();
-    assert!(!notes.get(&note.id).unwrap().float_pinned);
-    assert!(!shelves.get(&pinned_group.id).unwrap().float_pinned);
+    assert!(notes.get(&note.id).unwrap().float_dock.is_none());
+    assert!(shelves.get(&docked_group.id).unwrap().float_dock.is_none());
 }
 
 #[test]
