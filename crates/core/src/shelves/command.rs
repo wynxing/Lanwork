@@ -8,7 +8,7 @@ use crate::todos::TodoCommands;
 use super::error::ShelfError;
 use super::model::{AddRefsOutcome, IncomingRef, Shelf};
 use super::service::ShelfService;
-use crate::notes::FloatGeometry;
+use crate::notes::{FloatDock, FloatGeometry};
 
 /// 界面调用的收纳命令。克隆与对应的 [`ShelfService`] 共享状态。
 #[derive(Clone, Debug)]
@@ -97,16 +97,15 @@ impl ShelfCommands {
         self.service.link_todo(id, todo_id)
     }
 
-    /// 记下这个分组的悬浮窗的位置和大小。
-    pub fn set_float(&self, id: &str, geometry: FloatGeometry) -> Result<Shelf, ShelfError> {
+    /// 记下这个分组的悬浮窗的展开位置、大小和贴边。
+    pub fn set_float(
+        &self,
+        id: &str,
+        geometry: FloatGeometry,
+        dock: Option<FloatDock>,
+    ) -> Result<Shelf, ShelfError> {
         self.service.check_group_id(id)?;
-        self.service.set_float(id, geometry)
-    }
-
-    /// 记下这个分组的悬浮窗是否钉住。
-    pub fn set_float_pinned(&self, id: &str, pinned: bool) -> Result<Shelf, ShelfError> {
-        self.service.check_group_id(id)?;
-        self.service.set_float_pinned(id, pinned)
+        self.service.set_float(id, geometry, dock)
     }
 
     /// 解除这个分组对一条待办的关联，其余关联不动。

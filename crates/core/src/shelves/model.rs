@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::notes::FloatGeometry;
+use crate::notes::{FloatDock, FloatGeometry, flexible_dock};
 use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 
 use super::error::ShelfError;
@@ -30,10 +30,10 @@ pub struct Shelf {
     /// 关联的待办 id，按关联的先后。同一条只出现一次。旧文件的单条 `todoId` 读入时成为第一项。
     pub todo_ids: Vec<String>,
     pub refs: Vec<ShelfRef>,
-    /// 这个分组的悬浮窗上次关闭时的位置和大小。没有记录时为 `None`。旧文件没有这个字段。
+    /// 这个分组的悬浮窗上次的展开位置和大小。没有记录时为 `None`。旧文件没有这个字段。
     pub float: Option<FloatGeometry>,
-    /// 这个分组的悬浮窗是否钉住（始终在其他窗口之上）。旧文件没有这个字段，按未钉住。
-    pub float_pinned: bool,
+    /// 贴边。没有记录时不贴边。旧文件里的 `floatPinned` 不进这个字段。
+    pub float_dock: Option<FloatDock>,
 }
 
 /// 一条路径引用。不包含文件内容。
@@ -107,11 +107,15 @@ pub(crate) struct ShelfFile {
     )]
     float: Option<FloatGeometry>,
     #[serde(
-        rename = "floatPinned",
+        rename = "floatDock",
         default,
-        skip_serializing_if = "std::ops::Not::not"
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_dock"
     )]
-    float_pinned: bool,
+    float_dock: Option<FloatDock>,
+    /// 旧的逐窗钉住。读进来就丢掉，不再写回。
+    #[serde(rename = "floatPinned", default, skip_serializing)]
+    _legacy_float_pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +145,8 @@ impl ShelfFile {
             legacy_todo_id: None,
             todo_ids: shelf.todo_ids.clone(),
             float: shelf.float,
-            float_pinned: shelf.float_pinned,
+            float_dock: shelf.float_dock,
+            _legacy_float_pinned: false,
             refs: shelf
                 .refs
                 .iter()
@@ -200,7 +205,7 @@ impl ShelfFile {
             todo_ids,
             refs,
             float: self.float,
-            float_pinned: self.float_pinned,
+            float_dock: self.float_dock,
         })
     }
 }

@@ -1,8 +1,9 @@
 //! 收纳分组的悬浮窗：只显示该分组条目的独立窗口，使用时创建，关闭时释放。
 //!
-//! 同一分组已经有悬浮窗时只聚焦它。每个分组记住自己的位置和大小：关闭和退出时写进分组文件的
-//! `floatWindow`，再悬浮时放回；写不成时，本进程里还记着这个值。屏幕变了、位置不在任何工作区内时
-//! 拉回工作区，做法与便签悬浮窗相同。窗口失焦不关闭；面板自己的失焦收起不受影响。
+//! 同一分组已经有悬浮窗时只聚焦它，不把已经收起的细条展开。窗口始终在最上层。
+//! 每个分组记住自己的展开位置、大小和贴边：写进分组文件的 `floatWindow` 和 `floatDock`。
+//! 贴边对得上当前屏幕时按细条或展开的位置打开；对不上时这一次丢掉贴边，拉回工作区。
+//! 写不成时，本进程里还记着这个值。窗口失焦不关闭，贴边展开时失焦会收回成细条；面板自己的失焦收起不受影响。
 //!
 //! 条目列表逻辑在 `shelf_refs`，和面板的收纳页共用。每个窗口单独登记 OLE 放下目标（`shelf_dnd`），
 //! 关闭时先撤销登记再隐藏。窗口上方有一个可折叠的「关联待办」，默认收起：列出分组关联的待办，
@@ -18,27 +19,22 @@ use std::time::Duration;
 use lanwork_core::dispatch::IconCache;
 use lanwork_core::panel::{
     DropZone, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH, FLOAT_WIDTH, LinkedTodo,
-    PanelTarget, float_default_origin, linked_todos, restore_float,
+    PanelTarget, PxBox, float_default_origin, linked_todos,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
-use lanwork_core::shelves::{FloatGeometry, IncomingRef, ShelfCommands, ShelfError, ShelfRef};
+use lanwork_core::shelves::{IncomingRef, ShelfCommands, ShelfError, ShelfRef};
 use lanwork_core::storage::Store;
 use lanwork_core::todos::TodoCommands;
-use slint::winit_030::WinitWindowAccessor;
+use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle, SharedString};
 
+use crate::float_dock::{self, Motion, SavedFloat};
 use crate::shelf_dnd::{DragOutcome, DropState, Registration, register};
 use crate::shelf_refs::{
     InlineDrag, Moved, ProbeResult, RefsView, drag_error, drag_now, parent_folder, prepare_drop,
     push_links, release_grab, schedule_drag, skipped_message, spawn_launch, spawn_probe,
 };
 use crate::{ShelfFloat, ShelvesPageData, bar_win};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Geometry {
-    origin: (i32, i32),
-    size: (u32, u32),
-}
 
 struct FloatWindow {
     ui: ShelfFloat,
@@ -49,11 +45,15 @@ struct FloatWindow {
     view: RefsView,
     drop_state: Arc<DropState>,
     registration: Option<Registration>,
+    session: float_dock::Session,
+    timer: slint::Timer,
     hwnd_ready: bool,
     origin: Option<(i32, i32)>,
-    /// 已经隐藏、等着从表里去掉。位置和大小在 `last`。
+    /// 贴边变了，等这次借用结束再写盘。
+    pending: Option<SavedFloat>,
+    /// 已经隐藏、等着从表里去掉。展开位置和贴边在 `last`。
     closed: bool,
-    last: Option<Geometry>,
+    last: Option<SavedFloat>,
 }
 
 struct Floats {
@@ -63,8 +63,8 @@ struct Floats {
     store: Store,
     dark: bool,
     windows: HashMap<String, FloatWindow>,
-    /// 写进分组文件没有成功的位置和大小，本进程里先用这个。
-    remembered: HashMap<String, Geometry>,
+    /// 写进分组文件没有成功的展开位置和贴边，本进程里先用这个。
+    remembered: HashMap<String, SavedFloat>,
 }
 
 thread_local! {
@@ -78,6 +78,7 @@ pub(crate) fn install(
     icons: Arc<Mutex<IconCache>>,
     store: Store,
 ) {
+    bar_win::add_move_hook(on_move);
     FLOATS.with(|cell| {
         *cell.borrow_mut() = Some(Floats {
             shelves,
@@ -116,27 +117,7 @@ struct Ctx<'a> {
 
 fn with_window(id: &str, action: impl FnOnce(&mut FloatWindow, &Ctx<'_>) + 'static) {
     let id = id.to_owned();
-    with_floats(move |floats| {
-        let ctx = Ctx {
-            shelves: &floats.shelves,
-            todos: &floats.todos,
-            icons: &floats.icons,
-            store: &floats.store,
-            dark: floats.dark,
-        };
-        if let Some(window) = floats.windows.get_mut(&id) {
-            action(window, &ctx);
-        }
-    });
-}
-
-fn to_float(geometry: Geometry) -> FloatGeometry {
-    FloatGeometry {
-        x: geometry.origin.0,
-        y: geometry.origin.1,
-        width: geometry.size.0,
-        height: geometry.size.1,
-    }
+    with_floats(move |floats| floats.dispatch(&id, action));
 }
 
 fn rgb(value: u32) -> slint::Color {
@@ -199,20 +180,41 @@ pub(crate) fn save_for_quit() {
         let Some(floats) = slot.as_mut() else {
             return;
         };
-        let open: Vec<(String, Geometry)> = floats
+        let open: Vec<(String, SavedFloat)> = floats
             .windows
             .values()
             .filter(|window| !window.closed)
-            .filter_map(|window| Some((window.group_id.clone(), window.geometry()?)))
+            .map(|window| (window.group_id.clone(), window.session.saved()))
             .collect();
-        for (id, geometry) in open {
-            floats.remember(&id, geometry);
+        for (id, saved) in open {
+            floats.remember(&id, saved);
         }
     });
 }
 
 impl Floats {
-    /// 把已经关闭的窗口从表里去掉，并记下它的位置和大小。窗口随之释放。
+    fn dispatch(&mut self, id: &str, action: impl FnOnce(&mut FloatWindow, &Ctx<'_>)) {
+        let pending = {
+            let ctx = Ctx {
+                shelves: &self.shelves,
+                todos: &self.todos,
+                icons: &self.icons,
+                store: &self.store,
+                dark: self.dark,
+            };
+            if let Some(window) = self.windows.get_mut(id) {
+                action(window, &ctx);
+                window.pending.take()
+            } else {
+                None
+            }
+        };
+        if let Some(saved) = pending {
+            self.remember(id, saved);
+        }
+    }
+
+    /// 把已经关闭的窗口从表里去掉，并记下它的展开位置和贴边。窗口随之释放。
     fn reap(&mut self, group_id: &str) {
         let closed = self
             .windows
@@ -228,15 +230,15 @@ impl Floats {
         }
     }
 
-    fn remember(&mut self, group_id: &str, geometry: Geometry) {
-        match self.shelves.set_float(group_id, to_float(geometry)) {
+    fn remember(&mut self, group_id: &str, saved: SavedFloat) {
+        match self.shelves.set_float(group_id, saved.geometry, saved.dock) {
             Ok(_) => {
                 self.remembered.remove(group_id);
             }
             Err(err) => {
                 self.store
                     .log_warn(&format!("收纳悬浮窗位置没有写进分组：{err}"));
-                self.remembered.insert(group_id.to_owned(), geometry);
+                self.remembered.insert(group_id.to_owned(), saved);
             }
         }
     }
@@ -251,7 +253,6 @@ impl Floats {
         }
         let shelf = self.shelves.get(group_id).map_err(|err| err.to_string())?;
         let ui = ShelfFloat::new().map_err(|err| format!("悬浮窗没有创建：{err}"))?;
-        ui.set_pinned(shelf.float_pinned);
         ui.set_dark(self.dark);
         ui.set_solid_color(rgb(solid_rgb(self.dark)));
         wire(&ui, group_id);
@@ -265,45 +266,48 @@ impl Floats {
             },
             lanwork_core::shell::BASE_DPI,
         ));
-        let saved = self.remembered.get(group_id).copied().or_else(|| {
-            shelf.float.map(|float| Geometry {
-                origin: (float.x, float.y),
-                size: (float.width, float.height),
-            })
-        });
+        let (saved_geometry, saved_dock) = self
+            .remembered
+            .get(group_id)
+            .map(|saved| (Some(saved.geometry), saved.dock))
+            .unwrap_or((shelf.float, shelf.float_dock));
         let min = (
             u32::try_from(to_physical(FLOAT_MIN_WIDTH, dpi)).unwrap_or(FLOAT_MIN_WIDTH),
             u32::try_from(to_physical(FLOAT_MIN_HEIGHT, dpi)).unwrap_or(FLOAT_MIN_HEIGHT),
         );
-        let geometry = saved.map_or_else(
-            || {
-                let size = (
-                    u32::try_from(to_physical(FLOAT_WIDTH, dpi)).unwrap_or(FLOAT_WIDTH),
-                    u32::try_from(to_physical(FLOAT_HEIGHT, dpi)).unwrap_or(FLOAT_HEIGHT),
-                );
-                let origin = float_default_origin(
-                    work,
-                    i32::try_from(size.0).unwrap_or(i32::MAX),
-                    i32::try_from(size.1).unwrap_or(i32::MAX),
-                    dpi,
-                    self.windows.len(),
-                );
-                Geometry { origin, size }
-            },
-            |saved| {
-                let placed = restore_float(to_float(saved), &bar_win::work_areas(), work, min);
-                Geometry {
-                    origin: placed.origin,
-                    size: placed.size,
-                }
-            },
+        let default_size = (
+            u32::try_from(to_physical(FLOAT_WIDTH, dpi)).unwrap_or(FLOAT_WIDTH),
+            u32::try_from(to_physical(FLOAT_HEIGHT, dpi)).unwrap_or(FLOAT_HEIGHT),
         );
+        let default_origin = float_default_origin(
+            work,
+            i32::try_from(default_size.0).unwrap_or(i32::MAX),
+            i32::try_from(default_size.1).unwrap_or(i32::MAX),
+            dpi,
+            self.windows.len(),
+        );
+        let session = float_dock::session_for_open(
+            saved_geometry,
+            saved_dock,
+            PxBox {
+                x: default_origin.0,
+                y: default_origin.1,
+                width: default_size.0,
+                height: default_size.1,
+            },
+            &bar_win::work_areas(),
+            work,
+            min,
+        );
+        let chrome = session.chrome();
+        ui.set_thin(chrome.thin);
+        ui.set_collapsed(chrome.collapsed);
+        ui.set_dock_edge(chrome.edge.into());
+        let visible = session.visible();
         ui.window()
-            .set_size(slint::PhysicalSize::new(geometry.size.0, geometry.size.1));
-        ui.window().set_position(slint::PhysicalPosition::new(
-            geometry.origin.0,
-            geometry.origin.1,
-        ));
+            .set_size(slint::PhysicalSize::new(visible.width, visible.height));
+        ui.window()
+            .set_position(slint::PhysicalPosition::new(visible.x, visible.y));
         ui.show().map_err(|err| format!("悬浮窗没有显示：{err}"))?;
 
         let id = group_id.to_owned();
@@ -328,8 +332,11 @@ impl Floats {
             view: RefsView::new(),
             drop_state: Arc::new(DropState::default()),
             registration: None,
+            session,
+            timer: slint::Timer::default(),
             hwnd_ready: false,
-            origin: Some(geometry.origin),
+            origin: Some((visible.x, visible.y)),
+            pending: None,
             closed: false,
             last: None,
         };
@@ -358,18 +365,21 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
             CloseRequestResponse::KeepWindowShown
         }
     });
-    ui.on_pin_clicked({
+    ui.on_strip_clicked({
         let id = id.clone();
-        move || with_window(&id, |window, ctx| window.toggle_pin(ctx))
+        move || with_window(&id, |window, _| window.on_strip())
     });
     ui.on_drag_window({
         let id = id.clone();
-        move || {
-            with_window(&id, |window, _| {
-                let _ = window.ui.window().with_winit_window(|window| {
-                    let _ = window.drag_window();
-                });
-            });
+        move || with_window(&id, |window, _| window.drag())
+    });
+    ui.window().on_winit_window_event({
+        let id = id.clone();
+        move |_, event| {
+            if matches!(event, winit::event::WindowEvent::Focused(false)) {
+                with_window(&id, |window, _| window.on_blur());
+            }
+            EventResult::Propagate
         }
     });
     let data = ui.global::<ShelvesPageData>();
@@ -461,11 +471,17 @@ impl FloatWindow {
                 ctx.store
                     .log_warn("收纳悬浮窗样式子类没有装上，显示时可能出现标题栏按钮");
             }
-            if let Some(origin) = self.origin
-                && bar_win::window_origin(hwnd) != Some(origin)
-            {
-                bar_win::move_window(hwnd, origin.0, origin.1);
+            if !bar_win::watch_move_loop(hwnd) {
+                ctx.store
+                    .log_warn("收纳悬浮窗拖动结束通知没有装上，松手后可能不贴边");
             }
+            if !bar_win::watch_topmost(hwnd) {
+                ctx.store
+                    .log_warn("收纳悬浮窗的前台通知没有装上，全屏时细条可能被盖住");
+            }
+            let visible = self.session.visible();
+            float_dock::place(self.ui.window(), Some(hwnd), visible);
+            self.origin = Some((visible.x, visible.y));
             self.drop_state.set_accepting(true);
             self.drop_state.set_zone(DropZone::everywhere());
             let id = self.group_id.clone();
@@ -480,6 +496,7 @@ impl FloatWindow {
                     .log_warn(&format!("收纳悬浮窗拖入没有装上，不能拖入文件：{message}")),
             }
         }
+        self.sync_chrome();
         self.refresh_backdrop(ctx.dark);
         self.reload(ctx, true);
         self.raise();
@@ -491,6 +508,131 @@ impl FloatWindow {
         } else {
             None
         }
+    }
+
+    fn hwnd_key(&self) -> Option<isize> {
+        self.hwnd().map(bar_win::hwnd_key)
+    }
+
+    fn sync_chrome(&self) {
+        let chrome = self.session.chrome();
+        self.ui.set_thin(chrome.thin);
+        self.ui.set_collapsed(chrome.collapsed);
+        self.ui.set_dock_edge(chrome.edge.into());
+    }
+
+    fn place(&mut self, rect: PxBox) {
+        float_dock::place(self.ui.window(), self.hwnd(), rect);
+        self.origin = Some((rect.x, rect.y));
+    }
+
+    fn follow(&mut self, motion: Motion) {
+        if motion.animate {
+            self.ui.set_thin(true);
+            self.sync_chrome();
+            self.place(motion.from);
+            self.start_anim();
+        } else {
+            self.ui.set_thin(self.session.chrome().thin);
+            self.place(motion.to);
+            self.sync_chrome();
+        }
+        if motion.persist {
+            self.pending = Some(self.session.saved());
+        }
+    }
+
+    fn start_anim(&mut self) {
+        if self.timer.running() {
+            return;
+        }
+        let id = self.group_id.clone();
+        self.timer.start(
+            slint::TimerMode::Repeated,
+            float_dock::frame_interval(),
+            move || with_window(&id, |window, _| window.anim_tick()),
+        );
+    }
+
+    fn anim_tick(&mut self) {
+        let Some(frame) = self.session.next_frame() else {
+            self.timer.stop();
+            self.sync_chrome();
+            return;
+        };
+        if self.session.animating() {
+            self.ui.set_thin(true);
+            self.sync_chrome();
+            self.place(frame);
+        } else {
+            self.timer.stop();
+            self.place(frame);
+            self.sync_chrome();
+        }
+    }
+
+    fn drag(&mut self) {
+        if self.closed {
+            return;
+        }
+        let origin = self
+            .hwnd()
+            .and_then(bar_win::window_origin)
+            .or(self.origin)
+            .unwrap_or((0, 0));
+        let size = self.ui.window().size();
+        self.timer.stop();
+        self.session.begin_drag(origin, (size.width, size.height));
+        let _ = self.ui.window().with_winit_window(|window| {
+            let _ = window.drag_window();
+        });
+    }
+
+    fn on_strip(&mut self) {
+        if self.closed {
+            return;
+        }
+        let motion = self.session.strip_click();
+        self.follow(motion);
+    }
+
+    fn on_blur(&mut self) {
+        if self.closed {
+            return;
+        }
+        if self.hwnd_key().is_some_and(bar_win::size_move_blocks_blur) {
+            return;
+        }
+        if let Some(motion) = self.session.blur() {
+            self.follow(motion);
+        }
+    }
+
+    fn on_size_move(&mut self, entering: bool, rect: PxBox) {
+        if self.closed {
+            return;
+        }
+        if entering {
+            self.timer.stop();
+            self.session
+                .begin_drag((rect.x, rect.y), (rect.width, rect.height));
+            return;
+        }
+        let motion = self.session.end_drag(rect);
+        let generation = self.session.hold_generation();
+        self.follow(motion);
+        let Some(key) = self.hwnd_key() else {
+            return;
+        };
+        let id = self.group_id.clone();
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                bar_win::clear_blur_hold(key);
+                with_window(&id, move |window, _| {
+                    window.session.release_hold(generation)
+                });
+            });
+        });
     }
 
     fn refresh_backdrop(&mut self, dark: bool) {
@@ -738,26 +880,6 @@ impl FloatWindow {
         }
     }
 
-    /// 点「钉住」：先写进分组文件，成功后窗口才改层级，所以按钮的外观总是和已保存的状态一致。
-    /// 写不成时状态不变，错误显示在窗口里。
-    fn toggle_pin(&mut self, ctx: &Ctx<'_>) {
-        if self.closed {
-            return;
-        }
-        let next = !self.ui.get_pinned();
-        match ctx.shelves.set_float_pinned(&self.group_id, next) {
-            Ok(_) => {
-                self.ui.set_pinned(next);
-                self.clear_error();
-            }
-            Err(err) => {
-                ctx.store
-                    .log_warn(&format!("收纳悬浮窗的钉住状态没有写进分组：{err}"));
-                self.fail(&err.to_string());
-            }
-        }
-    }
-
     fn request_close(&mut self, _: &Ctx<'_>) {
         if self.closed {
             return;
@@ -765,26 +887,52 @@ impl FloatWindow {
         self.finish_close();
     }
 
-    fn geometry(&self) -> Option<Geometry> {
-        let origin = self.hwnd().and_then(bar_win::window_origin).or(self.origin);
-        let size = self.ui.window().size();
-        origin.map(|origin| Geometry {
-            origin,
-            size: (size.width, size.height),
-        })
-    }
-
-    /// 撤销放下目标，记下位置和大小，隐藏窗口，然后在下一轮把它从表里去掉，释放绘图资源。
-    /// 分组和条目留在收纳里；这里不删除分组。
+    /// 撤销放下目标，记下展开位置和贴边，隐藏窗口，然后在下一轮把它从表里去掉，释放绘图资源。
+    /// 分组和条目留在收纳里；这里不删除分组。细条的矩形不写入文件。
     fn finish_close(&mut self) {
         let id = self.group_id.clone();
+        self.timer.stop();
         self.drop_state.set_accepting(false);
         self.registration = None;
-        self.last = self.geometry();
+        if let Some(hwnd) = self.hwnd() {
+            bar_win::unwatch_topmost(hwnd);
+        }
+        self.last = Some(self.session.saved());
         self.closed = true;
         let _ = self.ui.hide();
         slint::Timer::single_shot(Duration::ZERO, move || {
             with_floats(move |floats| floats.reap(&id));
         });
     }
+}
+
+fn on_move(key: isize, entering: bool, x: i32, y: i32, width: u32, height: u32) {
+    let posted = slint::invoke_from_event_loop(move || {
+        deliver_move(key, entering, x, y, width, height);
+    });
+    if posted.is_err() {
+        deliver_move(key, entering, x, y, width, height);
+    }
+}
+
+fn deliver_move(key: isize, entering: bool, x: i32, y: i32, width: u32, height: u32) {
+    with_floats(move |floats| {
+        let id = floats
+            .windows
+            .iter()
+            .find_map(|(id, window)| (window.hwnd_key() == Some(key)).then(|| id.clone()));
+        if let Some(id) = id {
+            floats.dispatch(&id, move |window, _| {
+                window.on_size_move(
+                    entering,
+                    PxBox {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
+                );
+            });
+        }
+    });
 }

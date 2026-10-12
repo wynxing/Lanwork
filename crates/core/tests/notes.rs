@@ -935,7 +935,7 @@ fn float_geometry_survives_restart_without_touching_revision_or_order() {
         width: 480,
         height: 360,
     };
-    let after = commands.set_float(&note.id, geometry).unwrap();
+    let after = commands.set_float(&note.id, geometry, None).unwrap();
     assert_eq!(after.revision, note.revision);
     assert_eq!(after.updated_at, note.updated_at);
     assert_eq!(after.float, Some(geometry));
@@ -954,7 +954,7 @@ fn float_geometry_survives_restart_without_touching_revision_or_order() {
     let trashed = reopened.soft_delete(&note.id, loaded.revision).unwrap();
     let other = FloatGeometry { x: 5, ..geometry };
     assert_eq!(
-        reopened.set_float(&note.id, other).unwrap().float,
+        reopened.set_float(&note.id, other, None).unwrap().float,
         Some(other)
     );
     assert_eq!(
@@ -965,94 +965,93 @@ fn float_geometry_survives_restart_without_touching_revision_or_order() {
 }
 
 #[test]
-fn float_pinned_is_per_note_optional_and_independent_of_list_pin_and_revision() {
+fn float_dock_is_per_note_optional_and_does_not_touch_revision_or_list_pin() {
     let fix = fixture();
     let commands = NoteCommands::open(fix.store.clone()).unwrap();
     let first = commands.create(&input("甲", "正文")).unwrap();
     let second = commands.create(&input("乙", "正文")).unwrap();
-    assert!(!first.float_pinned);
-    assert!(
-        json_file(&fix.store, &first.id)
-            .get("floatPinned")
-            .is_none()
-    );
+    assert!(first.float_dock.is_none());
+    let geometry = FloatGeometry {
+        x: 0,
+        y: 40,
+        width: 320,
+        height: 360,
+    };
+    let dock = lanwork_core::notes::FloatDock {
+        edge: lanwork_core::notes::DockEdge::Left,
+        offset: 40,
+        collapsed: true,
+    };
+    let saved = commands.set_float(&first.id, geometry, Some(dock)).unwrap();
+    assert_eq!(saved.float_dock, Some(dock));
+    assert!(!saved.pinned, "贴边不是列表置顶");
+    assert_eq!(saved.revision, first.revision);
+    assert_eq!(saved.updated_at, first.updated_at);
+    assert!(second.float_dock.is_none());
+    let file = json_file(&fix.store, &first.id);
+    assert_eq!(file["floatDock"]["edge"], "left");
+    assert_eq!(file["floatDock"]["collapsed"], true);
+    assert!(file.get("floatPinned").is_none());
 
-    let pinned = commands.set_float_pinned(&first.id, true).unwrap();
-    assert!(pinned.float_pinned);
-    assert!(!pinned.pinned, "钉住不是列表置顶");
-    assert_eq!(pinned.revision, first.revision);
-    assert_eq!(pinned.updated_at, first.updated_at);
-    assert_eq!(json_file(&fix.store, &first.id)["floatPinned"], true);
-    assert!(
-        json_file(&fix.store, &second.id)
-            .get("floatPinned")
-            .is_none()
-    );
-
-    let saved = commands
+    let edited = commands
         .save(&first.id, first.revision, &input("甲", "改过"))
         .unwrap();
-    assert!(saved.float_pinned, "保存正文不清钉住");
+    assert_eq!(edited.float_dock, Some(dock), "保存正文不清贴边");
     let list_pinned = commands
-        .set_pinned(&first.id, saved.revision, true)
+        .set_pinned(&first.id, edited.revision, true)
         .unwrap();
-    assert!(list_pinned.float_pinned);
-    commands
-        .set_float(
-            &first.id,
-            FloatGeometry {
-                x: 1,
-                y: 2,
-                width: 300,
-                height: 200,
-            },
-        )
-        .unwrap();
+    assert_eq!(list_pinned.float_dock, Some(dock));
+    assert!(list_pinned.pinned);
 
     let reopened = NoteCommands::open(fix.store.clone()).unwrap();
-    assert!(reopened.get(&first.id).unwrap().float_pinned);
-    assert!(!reopened.get(&second.id).unwrap().float_pinned);
-
+    assert_eq!(reopened.get(&first.id).unwrap().float_dock, Some(dock));
+    assert!(reopened.get(&second.id).unwrap().float_dock.is_none());
     let revision = reopened.get(&first.id).unwrap().revision;
-    let unpinned = reopened.set_float_pinned(&first.id, false).unwrap();
-    assert!(!unpinned.float_pinned);
-    assert_eq!(
-        unpinned.revision, revision,
-        "取消钉住不让编辑区的版本号过期"
-    );
-    assert!(
-        json_file(&fix.store, &first.id)
-            .get("floatPinned")
-            .is_none()
-    );
+    let cleared = reopened.set_float(&first.id, geometry, None).unwrap();
+    assert!(cleared.float_dock.is_none());
+    assert_eq!(cleared.revision, revision, "取消贴边不让编辑区的版本号过期");
+    assert!(json_file(&fix.store, &first.id).get("floatDock").is_none());
 }
 
 #[test]
-fn setting_the_same_float_pin_writes_nothing_and_trashed_notes_can_record_it() {
+fn the_same_float_dock_writes_nothing_and_a_trashed_note_can_record_it() {
     let fix = fixture();
     let commands = NoteCommands::open(fix.store.clone()).unwrap();
     let note = commands.create(&input("甲", "正文")).unwrap();
+    let geometry = FloatGeometry {
+        x: 1,
+        y: 2,
+        width: 300,
+        height: 200,
+    };
+    let dock = lanwork_core::notes::FloatDock {
+        edge: lanwork_core::notes::DockEdge::Top,
+        offset: 8,
+        collapsed: false,
+    };
     let events = fix.store.subscribe();
-    commands.set_float_pinned(&note.id, false).unwrap();
-    assert!(events.try_recv().is_err(), "没变的值不写盘");
-    commands.set_float_pinned(&note.id, true).unwrap();
+    commands.set_float(&note.id, geometry, None).unwrap();
     assert!(events.try_recv().is_ok());
-    commands.set_float_pinned(&note.id, true).unwrap();
+    commands.set_float(&note.id, geometry, None).unwrap();
+    assert!(events.try_recv().is_err(), "没变的值不写盘");
+    commands.set_float(&note.id, geometry, Some(dock)).unwrap();
+    assert!(events.try_recv().is_ok());
+    commands.set_float(&note.id, geometry, Some(dock)).unwrap();
     assert!(events.try_recv().is_err());
 
     let trashed = commands.soft_delete(&note.id, note.revision).unwrap();
-    let after = commands.set_float_pinned(&note.id, false).unwrap();
-    assert!(!after.float_pinned);
+    let after = commands.set_float(&note.id, geometry, None).unwrap();
+    assert!(after.float_dock.is_none());
     assert_eq!(after.revision, trashed.revision);
-    assert!(commands.set_float_pinned("../x", true).is_err());
+    assert!(commands.set_float("../x", geometry, None).is_err());
     assert!(matches!(
-        commands.set_float_pinned("missing", true).unwrap_err(),
+        commands.set_float("missing", geometry, None).unwrap_err(),
         NoteError::NotFound { .. }
     ));
 }
 
 #[test]
-fn a_note_file_without_float_pinned_opens_unpinned_and_is_not_rewritten_with_it() {
+fn an_old_note_file_with_float_pinned_still_opens_and_the_field_is_not_written_back() {
     let fix = fixture();
     let path = fix
         .store
@@ -1061,22 +1060,44 @@ fn a_note_file_without_float_pinned_opens_unpinned_and_is_not_rewritten_with_it(
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
-        r#"{"schemaVersion":1,"id":"old","title":"旧","body":"b","revision":3,"floatWindow":{"x":1,"y":2,"width":300,"height":200}}"#,
+        r#"{"schemaVersion":1,"id":"old","title":"旧","body":"b","revision":3,"pinned":false,"floatPinned":true,"floatWindow":{"x":1,"y":2,"width":300,"height":200},"floatDock":{"edge":"right","offset":12,"collapsed":true,"extra":1}}"#,
     )
     .unwrap();
     let commands = NoteCommands::open(fix.store.clone()).unwrap();
     let note = commands.get("old").unwrap();
-    assert!(!note.float_pinned);
-    commands.set_float_pinned("old", false).unwrap();
-    assert!(
-        !std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("floatPinned")
+    assert_eq!(
+        note.float_dock,
+        Some(lanwork_core::notes::FloatDock {
+            edge: lanwork_core::notes::DockEdge::Right,
+            offset: 12,
+            collapsed: true,
+        })
     );
-    commands.set_float_pinned("old", true).unwrap();
-    assert!(
-        std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("floatPinned")
-    );
+    assert!(!note.pinned, "旧的悬浮钉住不是列表置顶");
+    let geometry = note.float.unwrap();
+    commands
+        .set_float(
+            "old",
+            FloatGeometry {
+                x: geometry.x + 1,
+                ..geometry
+            },
+            note.float_dock,
+        )
+        .unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(!raw.contains("floatPinned"), "再写这篇时不再留下钉住字段");
+    assert!(raw.contains("\"edge\":\"right\""));
+
+    let bad = fix
+        .store
+        .document_path(&DocumentId::Note("bad".into()))
+        .unwrap();
+    std::fs::write(
+        &bad,
+        r#"{"schemaVersion":1,"id":"bad","title":"坏边","body":"b","revision":1,"floatDock":{"edge":"bottom","offset":1,"collapsed":true}}"#,
+    )
+    .unwrap();
+    let commands = NoteCommands::open(fix.store.clone()).unwrap();
+    assert!(commands.get("bad").unwrap().float_dock.is_none());
 }

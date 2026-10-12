@@ -3,6 +3,7 @@
 //!
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
+mod float_snap;
 mod note_edit;
 mod note_page;
 mod settings_page;
@@ -10,6 +11,12 @@ mod shelf_dnd;
 mod shelf_page;
 mod todo_page;
 
+pub use float_snap::{
+    ANIM_STEPS, DRAG_MOVE_LOGICAL, DockInput, DockState, OuterEdge, PxBox, SNAP_SLOP_LOGICAL,
+    STRIP_LOGICAL_PX, ScreenBounds, Transition, dock_applies, dpi_at, edge_label, lerp_box,
+    moved_enough, outer_edges, snap_on_release, snap_slop, strip_thickness, transition,
+    visible_box,
+};
 pub use note_edit::{AUTOSAVE_IDLE_MS, EditSession, SaveOutcome, SaveProblem};
 pub use note_page::{
     FLOAT_CASCADE, FLOAT_CASCADE_STEPS, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH,
