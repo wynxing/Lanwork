@@ -135,6 +135,104 @@ impl HotkeyRecorder {
     }
 }
 
+/// 窗口收到的一条键盘消息，由外壳从 `WM_KEYDOWN`、`WM_KEYUP`、`WM_CHAR` 等换算而来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyEvent {
+    Down {
+        vk: u32,
+        mods: KeyMods,
+        repeat: bool,
+    },
+    Up {
+        vk: u32,
+    },
+    /// `WM_CHAR` 一类由按键翻译出来的字符消息。
+    Char,
+}
+
+/// 窗口过程对这条消息的处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// 交给下一层，照常处理。
+    Pass,
+    /// 吞掉，不让窗口和系统菜单看到。
+    Swallow,
+    /// 录入结束，这条消息也被吞掉。
+    Recorded(Recorded),
+}
+
+/// 录入期间的按键过滤。
+///
+/// 录入时所有键盘消息都被吞掉，Alt 组合键不会激活窗口菜单，Esc 不会收起面板。
+/// 结束录入的那个键还没松开时，它的自动重复、字符消息和抬起也继续吞掉，
+/// 否则 Esc 取消录入后按住不放，面板会在重复的 Esc 上收起。
+#[derive(Debug, Default)]
+pub struct KeyGate {
+    recorder: HotkeyRecorder,
+    draining: Option<u32>,
+}
+
+impl KeyGate {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            recorder: HotkeyRecorder::new(),
+            draining: None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_recording()
+    }
+
+    /// 开始录入。已经在录入时返回 false。
+    pub fn begin(&mut self) -> bool {
+        self.draining = None;
+        self.recorder.start()
+    }
+
+    /// 放弃录入并忘掉等待抬起的键。窗口失焦、收起时调用。
+    pub fn reset(&mut self) {
+        self.recorder.stop();
+        self.draining = None;
+    }
+
+    pub fn route(&mut self, event: KeyEvent) -> Route {
+        if self.recorder.is_recording() {
+            return match event {
+                KeyEvent::Down { vk, mods, .. } => match self.recorder.feed(vk, mods) {
+                    Some(recorded) => {
+                        self.draining = Some(vk);
+                        Route::Recorded(recorded)
+                    }
+                    None => Route::Swallow,
+                },
+                KeyEvent::Up { .. } | KeyEvent::Char => Route::Swallow,
+            };
+        }
+        let Some(held) = self.draining else {
+            return Route::Pass;
+        };
+        match event {
+            KeyEvent::Char => Route::Swallow,
+            KeyEvent::Down { vk, repeat, .. } if vk == held => {
+                if repeat {
+                    Route::Swallow
+                } else {
+                    self.draining = None;
+                    Route::Pass
+                }
+            }
+            KeyEvent::Up { vk } if vk == held => {
+                self.draining = None;
+                Route::Swallow
+            }
+            _ => Route::Pass,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +395,84 @@ mod tests {
         recorder.stop();
         assert_eq!(recorder.feed(u32::from(b'M'), CTRL_ALT), None);
         assert!(recorder.start());
+    }
+
+    fn down(vk: u32, mods: KeyMods) -> KeyEvent {
+        KeyEvent::Down {
+            vk,
+            mods,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn gate_passes_everything_until_recording_starts() {
+        let mut gate = KeyGate::new();
+        assert_eq!(gate.route(down(u32::from(b'M'), CTRL_ALT)), Route::Pass);
+        assert_eq!(gate.route(KeyEvent::Up { vk: 0x4D }), Route::Pass);
+        assert_eq!(gate.route(KeyEvent::Char), Route::Pass);
+    }
+
+    #[test]
+    fn gate_swallows_every_key_while_recording_and_reports_the_decisive_one() {
+        let mut gate = KeyGate::new();
+        assert!(gate.begin());
+        assert!(!gate.begin());
+        assert_eq!(gate.route(down(VK_CONTROL, CTRL_ALT)), Route::Swallow);
+        assert_eq!(gate.route(down(VK_MENU, CTRL_ALT)), Route::Swallow);
+        assert_eq!(gate.route(KeyEvent::Up { vk: VK_MENU }), Route::Swallow);
+        assert_eq!(gate.route(KeyEvent::Char), Route::Swallow);
+        assert!(gate.is_recording());
+
+        let expected = Recorded::Captured(parse_hotkey("Ctrl+Alt+K").unwrap());
+        assert_eq!(
+            gate.route(down(u32::from(b'K'), CTRL_ALT)),
+            Route::Recorded(expected)
+        );
+        assert!(!gate.is_recording());
+    }
+
+    #[test]
+    fn gate_keeps_swallowing_the_decisive_key_until_it_is_released() {
+        let mut gate = KeyGate::new();
+        gate.begin();
+        assert_eq!(
+            gate.route(down(VK_ESCAPE, KeyMods::default())),
+            Route::Recorded(Recorded::Cancelled)
+        );
+        assert_eq!(gate.route(KeyEvent::Char), Route::Swallow);
+        assert_eq!(
+            gate.route(KeyEvent::Down {
+                vk: VK_ESCAPE,
+                mods: KeyMods::default(),
+                repeat: true
+            }),
+            Route::Swallow
+        );
+        assert_eq!(
+            gate.route(down(u32::from(b'A'), KeyMods::default())),
+            Route::Pass
+        );
+        assert_eq!(gate.route(KeyEvent::Up { vk: VK_ESCAPE }), Route::Swallow);
+        assert_eq!(gate.route(down(VK_ESCAPE, KeyMods::default())), Route::Pass);
+    }
+
+    #[test]
+    fn gate_stops_draining_on_a_fresh_press_and_on_reset() {
+        let mut gate = KeyGate::new();
+        gate.begin();
+        gate.route(down(0x20, CTRL_ALT));
+        assert_eq!(gate.route(down(0x20, CTRL_ALT)), Route::Pass);
+        assert_eq!(gate.route(KeyEvent::Char), Route::Pass);
+
+        gate.begin();
+        gate.route(down(0x20, CTRL_ALT));
+        gate.reset();
+        assert!(!gate.is_recording());
+        assert_eq!(gate.route(KeyEvent::Char), Route::Pass);
+
+        gate.begin();
+        gate.reset();
+        assert_eq!(gate.route(down(u32::from(b'M'), CTRL_ALT)), Route::Pass);
     }
 }

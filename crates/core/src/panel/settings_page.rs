@@ -15,13 +15,6 @@ pub const HOT_CORNER_CHOICES: [HotCorner; 5] = [
     HotCorner::Off,
 ];
 
-/// 设置页各行的名称。
-pub const LAUNCH_AT_STARTUP_TITLE: &str = "开机启动";
-pub const HOT_CORNER_TITLE: &str = "热角";
-pub const SEARCH_HOTKEY_TITLE: &str = "搜索条热键";
-/// 热键框在录入时显示的状态。
-pub const RECORDING_STATE: &str = "录入中";
-
 #[must_use]
 pub fn hot_corner_title(corner: HotCorner) -> &'static str {
     match corner {

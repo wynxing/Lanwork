@@ -18,8 +18,7 @@ pub use note_page::{
 };
 
 pub use settings_page::{
-    HOT_CORNER_CHOICES, HOT_CORNER_TITLE, LAUNCH_AT_STARTUP_TITLE, RECORDING_STATE,
-    SEARCH_HOTKEY_TITLE, SettingsRows, StartupChange, change_hot_corner, change_launch_at_startup,
+    HOT_CORNER_CHOICES, SettingsRows, StartupChange, change_hot_corner, change_launch_at_startup,
     hot_corner_at, hot_corner_index, hot_corner_title, hot_corner_titles, settings_rows,
     startup_error_text,
 };
@@ -79,17 +78,6 @@ impl PanelTab {
             .ok()
             .and_then(|index| Self::ALL.get(index).copied())
     }
-
-    /// 还没有内容的标签只显示一行对象名。这些标签的内容由各自的界面实现。
-    #[must_use]
-    pub fn empty_label(self) -> &'static str {
-        match self {
-            Self::Todo => "没有待办",
-            Self::Notes => "没有便签",
-            Self::Shelves => "没有分组",
-            Self::Settings => "没有设置项",
-        }
-    }
 }
 
 /// 打开面板时要定位的对象。
@@ -138,12 +126,6 @@ mod tests {
         }
         assert_eq!(PanelTab::from_index(-1), None);
         assert_eq!(PanelTab::from_index(4), None);
-    }
-
-    #[test]
-    fn empty_state_is_one_object_name() {
-        assert_eq!(PanelTab::Todo.empty_label(), "没有待办");
-        assert_eq!(PanelTab::Shelves.empty_label(), "没有分组");
     }
 
     #[test]

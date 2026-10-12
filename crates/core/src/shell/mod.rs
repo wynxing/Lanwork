@@ -26,7 +26,9 @@ pub use bind::{
     apply_hotkeys, desired_bindings, resume_hotkeys, save_hotkeys, save_search_hotkey,
     suspend_hotkeys,
 };
-pub use capture::{CaptureStep, HotkeyRecorder, KeyMods, Recorded, capture_step};
+pub use capture::{
+    CaptureStep, HotkeyRecorder, KeyEvent, KeyGate, KeyMods, Recorded, Route, capture_step,
+};
 pub use icon::{TRAY_ICON_PX, has_badge_pixels, tray_icon_rgba};
 pub use startup::{RunValueAction, quoted_executable, run_value_action};
 pub use theme::{
