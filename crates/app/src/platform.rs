@@ -10,11 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
-use lanwork_core::config::Hotkey;
+use lanwork_core::config::{ConfigCommands, Hotkey};
 use lanwork_core::dispatch::{Monotonic, SystemClock};
 use lanwork_core::shell::{
-    BindError, HotkeyPort, RegisteredHotkey, apply_hotkeys, is_immersive_color_set,
+    BindError, HotkeyPort, RegisteredHotkey, apply_hotkeys, is_immersive_color_set, resume_hotkeys,
+    save_search_hotkey, suspend_hotkeys,
 };
 use windows::Win32::Foundation::{
     GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
@@ -34,14 +36,18 @@ use windows::core::PCWSTR;
 use crate::instance::Primary;
 use crate::winutil::{from_wide, pcwstr, wide};
 
-const WM_REBIND: u32 = WM_USER + 1;
+const WM_JOB: u32 = WM_USER + 1;
 const WM_STOP: u32 = WM_USER + 2;
 const CLASS_NAME: &str = "Lanwork.Shell";
 
-struct RebindRequest {
-    next: Vec<RegisteredHotkey>,
-    reply: Sender<Result<(), BindError>>,
-}
+/// 在平台线程上执行的一次热键操作。`RegisterHotKey` 属于创建窗口的线程，所以只能在那里调用。
+type Job = Box<dyn FnOnce(&mut WinPort, &mut Vec<RegisteredHotkey>) + Send>;
+
+/// 平台线程应答的最长等待。线程已经退出时，队列里的任务不会再有人执行。
+const JOB_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 设置页正在录入热键。已注册的热键此时已卸掉，迟到的 `WM_HOTKEY` 也不处理。
+static RECORDING: AtomicBool = AtomicBool::new(false);
 
 struct PortState {
     hwnd: HWND,
@@ -52,8 +58,8 @@ thread_local! {
     static PORT: RefCell<Option<PortState>> = const { RefCell::new(None) };
 }
 
-fn rebind_queue() -> &'static Mutex<VecDeque<RebindRequest>> {
-    static QUEUE: OnceLock<Mutex<VecDeque<RebindRequest>>> = OnceLock::new();
+fn job_queue() -> &'static Mutex<VecDeque<Job>> {
+    static QUEUE: OnceLock<Mutex<VecDeque<Job>>> = OnceLock::new();
     QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
@@ -132,10 +138,66 @@ impl Platform {
 
 impl HotkeyControl {
     pub(crate) fn rebind(self, next: Vec<RegisteredHotkey>) -> Result<(), BindError> {
+        self.run(move |port, current| {
+            let result = apply_hotkeys(port, current, &next);
+            if result.is_ok() {
+                *current = next;
+            }
+            result
+        })
+        .unwrap_or(Err(BindError::Occupied { id: 0 }))
+    }
+
+    /// 开始录入：卸掉已注册的热键，之后按下它们不会再被系统截走。
+    pub(crate) fn suspend(self) -> Result<(), String> {
+        self.run(|port, current| {
+            suspend_hotkeys(port, current);
+            RECORDING.store(true, Ordering::Release);
+        })
+        .ok_or_else(|| no_reply().to_owned())
+    }
+
+    /// 结束录入：先把卸掉的热键注册回去，再按需保存搜索条热键。
+    ///
+    /// 注册回去时有一条被别的程序占用，就不再保存，并把「当前已注册」记成空，
+    /// 这样下一次保存会把整组重新注册。`text` 为空表示只恢复，不保存。
+    pub(crate) fn resume_and_save(
+        self,
+        commands: ConfigCommands,
+        text: Option<String>,
+    ) -> Result<(), String> {
+        self.run(move |port, current| {
+            let resumed = resume_hotkeys(port, current);
+            RECORDING.store(false, Ordering::Release);
+            if let Err(err) = resumed {
+                current.clear();
+                return Err(err.to_string());
+            }
+            let Some(text) = text else {
+                return Ok(());
+            };
+            match save_search_hotkey(port, &commands, current, &text) {
+                Ok(next) => {
+                    *current = next;
+                    Ok(())
+                }
+                Err(err) => Err(err.to_string()),
+            }
+        })
+        .unwrap_or_else(|| Err(no_reply().to_owned()))
+    }
+
+    /// 把一次操作交给平台线程执行并等结果。线程没有应答时返回 `None`。
+    fn run<T: Send + 'static>(
+        self,
+        job: impl FnOnce(&mut WinPort, &mut Vec<RegisteredHotkey>) -> T + Send + 'static,
+    ) -> Option<T> {
         let (tx, rx) = mpsc::channel();
-        lock(rebind_queue()).push_back(RebindRequest { next, reply: tx });
-        self.post(WM_REBIND);
-        rx.recv().unwrap_or(Err(BindError::Occupied { id: 0 }))
+        lock(job_queue()).push_back(Box::new(move |port, current| {
+            let _ = tx.send(job(port, current));
+        }));
+        self.post(WM_JOB);
+        rx.recv_timeout(JOB_TIMEOUT).ok()
     }
 
     fn post(self, message: u32) {
@@ -155,6 +217,10 @@ impl Drop for Platform {
             let _ = thread.join();
         }
     }
+}
+
+fn no_reply() -> &'static str {
+    "热键服务没有应答"
 }
 
 struct WinPort {
@@ -335,7 +401,7 @@ unsafe extern "system" fn wndproc(
             }
             LRESULT(0)
         }
-        WM_REBIND => {
+        WM_JOB => {
             apply_rebind();
             LRESULT(0)
         }
@@ -369,6 +435,9 @@ fn lparam_text(lparam: LPARAM) -> Option<String> {
 }
 
 fn signal_hotkey(id: i32) {
+    if RECORDING.load(Ordering::Acquire) {
+        return;
+    }
     // 热召回的起点是收到热键消息的这一刻，不是界面线程开始处理的时刻。
     let received_ns = SystemClock.now_ns();
     let _ = slint::invoke_from_event_loop(move || crate::host::on_hotkey(id, received_ns));
@@ -388,21 +457,15 @@ fn signal_theme() {
 }
 
 fn apply_rebind() {
-    let Some(request) = lock(rebind_queue()).pop_front() else {
+    let Some(job) = lock(job_queue()).pop_front() else {
         return;
     };
-    let RebindRequest { next, reply } = request;
-    let result = PORT.with(|slot| {
+    PORT.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(state) = slot.as_mut() else {
-            return Err(BindError::Occupied { id: 0 });
+            return;
         };
         let mut port = WinPort { hwnd: state.hwnd };
-        let result = apply_hotkeys(&mut port, &state.current, &next);
-        if result.is_ok() {
-            state.current = next;
-        }
-        result
+        job(&mut port, &mut state.current);
     });
-    let _ = reply.send(result);
 }

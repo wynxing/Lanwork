@@ -110,10 +110,6 @@ pub(crate) fn start(corner: HotCorner) -> Result<(), String> {
 ///
 /// `Off` 停止轮询，搜索条热键不受影响。还没 [`start`] 时先记下，启动时用这份。
 /// 可以在界面线程上调用。
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "设置页保存 hotCorner 后调用，设置页还没有")
-)]
 pub(crate) fn apply(corner: HotCorner) {
     let mut slot = lock_slot();
     slot.pending = Some(corner);

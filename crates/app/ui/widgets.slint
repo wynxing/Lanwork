@@ -249,3 +249,76 @@ export component Field inherits Rectangle {
         }
     }
 }
+
+// 几个互斥选项排成一行，当前项用选中色。
+export component Segments inherits Rectangle {
+    in property <[string]> items;
+    in property <int> current;
+    in property <Ink> c;
+    callback chosen(int);
+
+    height: 30px;
+    width: row.preferred-width;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: c.divider;
+    clip: true;
+
+    row := HorizontalLayout {
+        for item[index] in items: Rectangle {
+            width: label.preferred-width + 20px;
+            background: index == root.current ? c.selection : touch.has-hover ? c.hover : transparent;
+
+            label := Text {
+                x: 10px;
+                text: item;
+                color: index == root.current ? c.accent : c.ink;
+                font-size: 13px;
+                font-weight: index == root.current ? 600 : 400;
+                vertical-alignment: center;
+                height: 100%;
+            }
+
+            touch := TouchArea {
+                clicked => {
+                    root.chosen(index);
+                }
+            }
+        }
+    }
+}
+
+// 开关。只显示 checked，点击时请求相反的值，不自己翻转：写盘失败时界面保持原状。
+export component ToggleSwitch inherits Rectangle {
+    in property <bool> checked;
+    in property <Ink> c;
+    in property <color> on-fill: #ffffff;
+    in property <string> label;
+    callback toggled(bool);
+
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    border-width: 1.5px;
+    border-color: checked ? c.accent : c.secondary;
+    background: checked ? c.accent : touch.has-hover ? c.hover : transparent;
+    accessible-role: switch;
+    accessible-label: label;
+    accessible-checkable: true;
+    accessible-checked: checked;
+
+    Rectangle {
+        x: checked ? parent.width - self.width - 5px : 3px;
+        y: (parent.height - self.height) / 2 - 1.5px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: checked ? root.on-fill : c.secondary;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.toggled(!root.checked);
+        }
+    }
+}
