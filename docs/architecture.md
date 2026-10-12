@@ -8,8 +8,8 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除只删除回收站里的条目。删除前把 id 写入 `todo-purge-pending.json`，清单写入成功后发出 `TodoNotice::Purged`。进入回收站满 30 天（30×86400000 毫秒）时，启动加载和 `purge_expired` 清除。原清单已删除时恢复到系统收件箱，没有收件箱则创建一次；这个收件箱就是默认清单。每月重复的日是 31、目标月没有 31 日时落到该月最后一天。锚点日写在周期的 `monthDay`。旧记录没有该字段时，用当前到期日的日子。下一次仍按这个日子，所以 1 月 31 日完成后是 2 月的最后一天，再完成回到 3 月 31 日。29 日或 30 日在目标月不存在时仍不猜测。在重复截止日当天完成不再生成下一次。已完成的条目可以取消完成，`order` 不变。重复待办完成时把下一次记在 `generatedNext`；取消完成时只在它仍是当时生成的那一条时从清单移除。下一次已被改过或已完成时不删除，该处理仍待定。没有这条记录的旧数据不猜测要删哪一条。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。备份与导入 `backup`（`lanwork_core::backup`）已接入，见「数据」。 |
-| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板。搜索条已有界面并调用查询调度，见「程序外壳」的「搜索条」。面板有标签框架、待办页和便签页，便签悬浮窗也在这里，见「程序外壳」的「面板」和「便签页与悬浮窗」。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除只删除回收站里的条目。删除前把 id 写入 `todo-purge-pending.json`，清单写入成功后发出 `TodoNotice::Purged`。进入回收站满 30 天（30×86400000 毫秒）时，启动加载和 `purge_expired` 清除。原清单已删除时恢复到系统收件箱，没有收件箱则创建一次；这个收件箱就是默认清单。每月重复的日是 31、目标月没有 31 日时落到该月最后一天。锚点日写在周期的 `monthDay`。旧记录没有该字段时，用当前到期日的日子。下一次仍按这个日子，所以 1 月 31 日完成后是 2 月的最后一天，再完成回到 3 月 31 日。29 日或 30 日在目标月不存在时仍不猜测。在重复截止日当天完成不再生成下一次。已完成的条目可以取消完成，`order` 不变。重复待办完成时把下一次记在 `generatedNext`；取消完成时只在它仍是当时生成的那一条时从清单移除。下一次已被改过或已完成时不删除，该处理仍待定。没有这条记录的旧数据不猜测要删哪一条。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。热角的角判定、350ms 停留、离开后重新武装和全屏抑制在 `shell::hotcorner`。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。备份与导入 `backup`（`lanwork_core::backup`）已接入，见「数据」。 |
+| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板。搜索条已有界面并调用查询调度，见「程序外壳」的「搜索条」。面板有标签框架、待办页和便签页，便签悬浮窗也在这里，见「程序外壳」的「面板」和「便签页与悬浮窗」。热角的 50ms 轮询在 `crates/app/src/hotcorner.rs`，见「热角」。没有 Windows 验收。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。产品渲染器见「运行时」。 |
@@ -29,7 +29,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板搜索框还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角的 50ms 轮询还没有接上 |
+| 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板搜索框还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
 
@@ -63,8 +63,8 @@
 - 搜索条和面板在启动时创建并保持隐藏，以满足热召回目标；隐藏中不做整页重绘。快速收集是搜索条的一种输入状态，不另建窗口。便签悬浮窗、番茄钟在使用时创建，关闭时释放文本、图标和绘图资源。到期提醒的调度保留在主进程里。
 - Slint 1.18.1 编进本仓库的 winit 后端没有实现 `start_drag`（`i-slint-backend-winit` 1.18.1 的 `WinitWindowAdapter` 只实现了 `start_window_move`；`WindowAdapterInternal::start_drag` 的默认实现返回 false）。因此 `DragArea` 的拖动留在窗口内。`spikes/dnd` 用 `dispatch_event` 观察到：同一窗口里文件路径以复制放下，目标要求移动时放下被拒绝。winit 0.30.13 创建窗口时调用 `OleInitialize` 并 `RegisterDragDrop` 注册自己的 `FileDropHandler`；探针在我们注册之前得到 already-registered。资源管理器方向的手测见 [roadmap.md](roadmap.md)。`--slint` 拖放没有路径，外部拖放按「收纳」的原生 OLE 实现。
 - 托盘用 Slint 1.18.1 的 `SystemTrayIcon`。它有菜单，图标是一张图，逾期数字画在这张图的右下角。因此没有改用 Win32 `Shell_NotifyIcon`。
-- 热角检测用 50ms 轮询读取光标位置，不用低级鼠标钩子。
-- `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。
+- 热角检测用 50ms 轮询读取光标位置，不用低级鼠标钩子。机制、全屏抑制和待定项见「热角」。产品不依赖 `spikes/hotcorner`。
+- `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。那是 spike，不是 `lanwork.exe` 的验收。
 
 Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写进界面回调里。
 
@@ -74,7 +74,7 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 
 发布版 `lanwork.exe` 的 PE 子系统是 2（`IMAGE_SUBSYSTEM_WINDOWS_GUI`）。`crates/app/src/main.rs` 在 Windows 且没有 `debug_assertions` 时写 `windows_subsystem = "windows"`。`cargo build --release` 默认关掉 `debug_assertions`，安装包和便携版里的就是这个 GUI 程序。双击或从开始菜单启动时 Windows 不分配控制台，关掉一个控制台窗口也不会结束进程。调试构建不写这个属性，仍是控制台子系统，`cargo run` 能看到标准错误。日志在数据目录的 `logs/app.log`，不写到控制台。存储已经打开时，启动失败调用 `Store::log_error`；panic 也写入同一份日志。存储还没打开、但数据目录已经能解析、且目录不是 MayDolist 时，启动失败直接写 `logs/app.log`。`eprintln` 只是调试控制台的副本，发布版没有控制台接收它。数据目录解析失败时还没有日志文件，发布版也不弹出控制台，没有对话框。
 
-启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条、面板宿主和托盘。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。存储启动之后打开 `NoteCommands`、`AppIndex::open_from_process`（随后用 `load_user_catalog` 读 `user-apps.json` 交给 `set_user_catalog`）和 `FileCommands`，组成 `Dispatch` 并 `build`。这几步任一失败只写日志，进程继续，搜索条不安装，按热键不出现。同一时刻打开 `ShelfCommands` 并调用 `watch_todo_notices`，待办被永久删除时分组的关联由它解除；打不开时只写日志，收纳页显示错误。旧 `config.json` 里的 `githubRefreshIntervalMs`、`staleDays`、`sourceSync`、`autoCompleteOnClose` 读取时忽略，不报错，也不隔离文件；写回时不再写这些字段。
+启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条、面板宿主和托盘，再按 `hotCorner` 启动热角轮询。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。存储启动之后打开 `NoteCommands`、`AppIndex::open_from_process`（随后用 `load_user_catalog` 读 `user-apps.json` 交给 `set_user_catalog`）和 `FileCommands`，组成 `Dispatch` 并 `build`。这几步任一失败只写日志，进程继续，搜索条不安装，按热键不出现。同一时刻打开 `ShelfCommands` 并调用 `watch_todo_notices`，待办被永久删除时分组的关联由它解除；打不开时只写日志，收纳页显示错误。旧 `config.json` 里的 `githubRefreshIntervalMs`、`staleDays`、`sourceSync`、`autoCompleteOnClose` 读取时忽略，不报错，也不隔离文件；写回时不再写这些字段。
 
 - **单实例。** 命名互斥量 `Local\Lanwork.SingleInstance.Mutex`，加上信号量 `Local\Lanwork.SingleInstance.Activate`（初值 0）。第一个进程拥有互斥量并等待信号量。后来的进程发现互斥量已存在，就对信号量加一，然后退出，退出码 0。信号量的计数会留到第一个进程来取，所以通知发生在等待之前也不会丢。第一个进程收到通知后不打开窗口。产品规格没有写这时要显示什么。
 - **应用图标。** 源文件是 `crates/app/assets/lanwork.svg`，按给出的字节原样放进仓库，不改花瓣，也不改颜色。同目录的 `lanwork-256.png` 是这张图的 256×256 渲染，同样原样提交。16、20、24、32、40、48、64 的 PNG，托盘底图 `lanwork-32.rgba`，以及含这八个尺寸的 `lanwork.ico`，由 `tools/render_app_icon.py` 从这张 256px 图做整数面积平均得到。脚本只用 Python 标准库，不重新解释 SVG。产物提交在仓库里。构建不运行这个脚本，也不需要 SVG 工具。Windows 目标上，`crates/app/build.rs` 用 `winresource`（与 `spikes/dnd` 同一个 crate）把 `lanwork.ico` 编成资源 ID 1，链进 `lanwork.exe`，资源管理器和任务栏用它。同一份资源写入版本信息：字符串 `FileVersion` 和 `ProductVersion` 取 Cargo 包版本，当前是 `0.1.0`。数值 `FILEVERSION` 和 `PRODUCTVERSION` 是 Windows 要求的四段整数 `0.1.0.0`，对应这个 `0.1.0`，不是另一个版本。`ProductName` 和 `FileDescription` 写 `Lanwork`。非 Windows 目标不嵌入。搜索条、面板、便签悬浮窗和收纳悬浮窗的 Slint `Window` `icon` 用 `lanwork-256.png`。技术验证的「背景」和「渲染器」仍没有通过记录，给这些窗口设图标不改变那两项。
@@ -115,14 +115,27 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 
 技术验证的「背景」和「渲染器」两项仍没有通过记录。面板的界面代码依赖这两项，写在通过之前；两项的记录不因此改变。窗口外观沿用搜索条的做法：`no-frame`，`bar_win` 里的子类去掉标题栏按钮，DWM 圆角与暗色，亚克力或纯色回退，主题变化时重新判断，任务栏不显示。
 
-- **已有。** 标题栏（产品名、四个标签、关闭）、待办页、便签页、收纳页、设置标签的一行空状态。待办行和字段区有收纳标记和「打开关联收纳」。托盘「打开面板」「设置」、面板热键和搜索条的待办结果会打开面板。关闭按钮、失焦和 Esc 收起，不退出进程；收起后再打开，标签和所选清单保持。
-- **还没有。** 面板搜索框、热角、设置页和处理模式。到期通知点击定位属于 #25；入口 `panel::open_target(PanelTarget::Todo { .. })` 已留好，搜索条已经在用。
+- **已有。** 标题栏（产品名、四个标签、关闭）、待办页、便签页、收纳页、设置标签的一行空状态。待办行和字段区有收纳标记和「打开关联收纳」。托盘「打开面板」「设置」、面板热键、搜索条的待办结果和热角会打开面板。关闭按钮、失焦和 Esc 收起，不退出进程；收起后再打开，标签和所选清单保持。热角见下一节，没有 Windows 验收。
+- **还没有。** 面板搜索框、设置页和处理模式。到期通知点击定位属于 #25；入口 `panel::open_target(PanelTarget::Todo { .. })` 已留好，搜索条已经在用。
 - **定位。** `open_target` 先切到待办标签，读最新数据，找到条目后切到它所在的清单、选中并滚动到可见。找不到时停在待办标签并显示「找不到待办」。条目在回收站时切到回收站视图并选中。后者产品规格没有写。
 - **当前标记。** 任何状态下都能清除：未完成和已完成的条目在字段区有「设为当前」「清除当前」，回收站里带当前标记的条目在字段区有「清除当前」，行上始终显示「当前」。完成和软删除不自动清除当前标记，规格没有写，服务也不清；清除只通过 `clear_current`。
 - **待办页。** 左侧是清单（收件箱按服务给出的顺序，不另外提前）和「回收站」，右侧是新建框、行列表和选中条目的字段区。启动时和每次打开面板都调用 `ensure_inbox`，所以收件箱存在且不重复创建。行上的标记是当前、到期日（逾期时加「逾期」）、周期、来源。来源标记的文字是已保存的 `repo` 和 `number` 拼成的 `仓库#编号`。产品规格没有写标记怎么写，这是当前实现，不是新规则。已完成且不在回收站的行，在勾选旁边显示「取消完成」。点击它或再次点击勾选，都调用取消完成。回收站行显示还剩几天被清除，天数向上取整；30 天的清除由服务在启动时和 `purge_expired` 里做，面板不另建定时器。命令成功后重读服务并推给界面；失败时保留当前状态，在窗口底部显示错误，输入框里的文字不重置。
 - **输入。** 输入框用 `TextInput`，因为要读 `preedit-text`：组合输入期间 Enter 不提交。到期日和重复截止日写 `YYYY-MM-DD`（分隔符可以是 `-`、`/`、`.`，月日可以只写一位），提醒写 `HH:MM`，留空是清除。字段只在 Enter 时提交。
 - **窗口。** 逻辑尺寸最大 760×560，工作区放不下时每边留 24px 后收小。位置在光标所在显示器的工作区居中。标题栏空白处按下后调用 winit 的 `drag_window`。窗口显示之后拿到过焦点，并且距显示已过 400ms，才把 `Focused(false)` 当成失焦收起，避免从托盘菜单打开时被菜单关闭带来的、迟到的焦点变化立刻收起。每次 `open_target` 或显示都重新计时。这段时间内真的失焦时面板不会自己收起，用户再点外面、按 Esc 或点关闭即可。上面这些数值和位置是实现选择，产品规格没有写。
 - **产品规格没有写的点，这里的做法，都不是产品规则。** 已完成的条目留在清单里，排在未完成之后。字段（标题、到期日、提醒、周期）仍可改，与服务一致，回收站里的条目不可改，服务拒绝；到期日、提醒、重复截止日的输入格式（`YYYY-MM-DD`、`HH:MM`，留空清除）；回收站行的「剩 N 天」（向上取整）；排序用「上移」「下移」，只和相邻的未完成条目互换；新建框空白或只有空白时显示服务的「标题为空」；清单只提供新建和删除（清单非空时服务拒绝），没有改名和排序；设置标签的空状态文字是「没有设置项」。
+
+### 热角
+
+可见行为见产品规格「面板」。判定在 `lanwork_core::shell::hotcorner`，不调用 Win32。轮询在 `crates/app/src/hotcorner.rs`。不依赖 `spikes/hotcorner` 这个 crate；那份程序和 `docs/measurements/2026-10-08-hotcorner.md` 只是技术验证记录。没有对 `lanwork.exe` 的 Windows 验收，也不把 spike 的采样当成性能测量已经达到。
+
+- **轮询。** 线程名 `lanwork-hotcorner`。`hotCorner` 不是 `off` 时，用条件变量超时等待 50ms，醒来读 `GetCursorPos`，并用 `EnumDisplayMonitors` 读每块显示器的 `rcMonitor`。不调用 `timeBeginPeriod`，不安装低级鼠标钩子。光标不在所选角里时不读前台窗口。关闭时同一线程停在条件变量上，不再调用 `GetCursorPos`。搜索条热键仍由平台线程 `RegisterHotKey`，关闭热角不卸热键。
+- **角。** 每一块显示器的 `rcMonitor` 都参加。区域边长是 `CORNER_EDGE_PX`，当前 32 个物理像素，不按 DPI 放大。规格没有写边长，待定。矩形的右、下是开区间，与 Win32 一致。点同时落在多块重叠矩形的角里时，命中的每一块都算；其中一块被全屏抑制则这一拍不打开。重叠怎么取，规格没有写，待定。点不在任何 `rcMonitor` 内时不在角内。
+- **停留。** 从角外进入角内开始用 `Instant` 计时，第一次观察到已经满 350ms 的那一拍打开面板，然后解除武装。停在角内不再打开。这一拍不在任何所选角内时重新武装；角内中途离开再进入，停留从头算。轮询可能让打开晚 0 到 50ms。进程开始，以及从关闭恢复成某个角时，把状态看成在角外：第一拍若已经在角内会开始计时。启动时已经在角内要不要打开，规格没有写，待定。
+- **打开。** 到点后在界面线程调用 `panel::show(None)`，与托盘「打开面板」相同。
+- **配置。** 启动时用 `config.json` 的 `hotCorner`。外壳调用 `hotcorner::apply` 立即换角或关闭；设置页还没有，保存这个字段之后要调用它。还没启动线程时先记下，启动时用记下的值。换角或关掉时清掉未完成的停留并重新武装。规格没有写切换的瞬间，待定。
+- **全屏抑制。** 只看光标命中的那一块显示器上的前台窗口，不枚举别的窗口。抑制条件：前台窗口的类名不是桌面或外壳，并且 `GetWindowRect` 盖住该显示器的整个 `rcMonitor`（左、上小于等于显示器，右、下大于等于显示器）；或者 `SHQueryUserNotificationState` 返回 `QUNS_RUNNING_D3D_FULL_SCREEN`，并且前台窗口与这块显示器相交、矩形为空或读不到。独占全屏的窗口矩形经常不可靠，所以加上后一条。桌面和外壳的类名是 `Progman`、`WorkerW`、`Shell_TrayWnd`、`Shell_SecondaryTrayWnd`、`#32769`，即使盖住显示器也不抑制。不用 `QUNS_BUSY` 和 `QUNS_PRESENTATION_MODE`：前者的官方说明同时包括全屏应用和演示设置，而且不指出是哪一块显示器；后者是演示设置。这两项是否抑制，规格没有写，待定。另一块显示器上的全屏窗口不抑制这一块。规格写的是「有全屏应用时不触发」，没有分开写跨屏，待定。非前台的全屏窗口不看，待定。任务栏自动隐藏时，最大化窗口可能盖住整块 `rcMonitor`，会按同一条几何判定抑制；规格没有写最大化算不算全屏，待定。全屏期间停留到点则解除武装但不打开；全屏结束而光标仍在角内不补开，要先离开再进入。是否应补开，规格没有写，待定。读不到光标或枚举不到显示器时这一拍跳过，不重新武装，也不打开。规格没有写读失败算不算离开，待定。
+- **拖动。** 不检测鼠标按键，也不看是不是正在拖窗口。光标在角内停满 350ms 就会按上面的规则打开。拖动窗口时是否应触发，规格没有写，待定。轮询的自然行为先保持这样。
+- **空闲。** 关闭时线程阻塞，不再轮询。打开时大约每 50ms 醒一次，只做上面这些查询。没有按「性能测量」对 `lanwork.exe` 采样，不写成已经达到 CPU 或唤醒目标。
 
 ### 便签页与悬浮窗
 

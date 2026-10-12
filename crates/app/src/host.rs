@@ -1,7 +1,7 @@
 //! 启动顺序：先占住单实例，再打开数据目录，完成导入恢复和待办加载，加载配置，按本地日期自动备份，然后选渲染器、注册热键、创建隐藏窗口和托盘。
 //! 便签服务、收纳服务、应用索引和文件索引在存储启动之后打开；应用索引和文件索引交给搜索条的查询调度。
 //!
-//! 面板在 `panel`，搜索条在 `searchbar`。设置页还没有。
+//! 面板在 `panel`，搜索条在 `searchbar`，热角轮询在 `hotcorner`。设置页还没有。
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -187,9 +187,13 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     platform.set_theme_callback(Box::new(move || {
         refresh_theme(&config_theme, &store_theme);
     }));
+    if let Err(err) = crate::hotcorner::start(config.current().hot_corner) {
+        store.log_warn(&format!("热角轮询没有启动：{err}"));
+    }
 
     // 搜索条收起时所有窗口都隐藏，事件循环不能因此结束。
     let run = slint::run_event_loop_until_quit().map_err(|err| err.to_string());
+    crate::hotcorner::shutdown();
     searchbar::shutdown();
     drop(search);
     drop(panel_ui);

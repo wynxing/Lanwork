@@ -18,6 +18,8 @@ mod bar_win;
 #[cfg(windows)]
 mod host;
 #[cfg(windows)]
+mod hotcorner;
+#[cfg(windows)]
 mod instance;
 #[cfg(windows)]
 mod note_editor;
