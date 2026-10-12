@@ -946,7 +946,9 @@ mod tests {
             "",
             "   ",
             "Ctrl+Nope",
-            "Ctrl+Alt+Space",
+            "Space",
+            "M",
+            "5",
             "Ctrl+Alt",
             "Ctrl+Alt+M+K",
         ] {
@@ -959,6 +961,24 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), before, "{text}");
             assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+M", "{text}");
         }
+    }
+
+    #[test]
+    fn widened_hotkeys_save_and_bare_space_does_not() {
+        let (_temp, _store, commands) = open_config();
+        commands.replace(commands.current()).unwrap();
+        let mut port = Win32Port::new();
+        let mut current = registered(&mut port, "Ctrl+Alt+M", None);
+        for text in ["Ctrl+Space", "Alt+Left", "Ctrl+Shift+/", "Ctrl+Numpad1"] {
+            current = save_search_hotkey(&mut port, &commands, &current, text).unwrap();
+            let canonical = parse_hotkey(text).unwrap().canonical();
+            assert_eq!(commands.current().search_hotkey, canonical, "{text}");
+            assert_eq!(port.firing(), combos(&[canonical.as_str()]), "{text}");
+        }
+        let err = save_search_hotkey(&mut port, &commands, &current, "Space").unwrap_err();
+        assert_eq!(err.to_string(), "热键无效");
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Numpad1");
+        assert_eq!(port.firing(), combos(&["Ctrl+Numpad1"]));
     }
 
     #[test]

@@ -20,6 +20,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const SUBCLASS_ID: usize = 3;
 /// `WM_KEYDOWN` 的 lParam 第 30 位：这个键在这条消息之前已经按下。
 const REPEAT_BIT: isize = 1 << 30;
+/// lParam 第 24 位：扩展键。小键盘数字在 NumLock 关掉时和导航键共用虚拟键码，靠这一位区分。
+const EXTENDED_BIT: isize = 1 << 24;
 
 struct State {
     gate: KeyGate,
@@ -64,13 +66,23 @@ fn current_mods() -> KeyMods {
     }
 }
 
+fn down_flags(lparam: isize) -> (bool, bool) {
+    let repeat = lparam & REPEAT_BIT != 0;
+    let extended = lparam & EXTENDED_BIT != 0;
+    (repeat, extended)
+}
+
 fn key_event(message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<KeyEvent> {
     match message {
-        WM_KEYDOWN | WM_SYSKEYDOWN => Some(KeyEvent::Down {
-            vk: u32::try_from(wparam.0).unwrap_or(0),
-            mods: current_mods(),
-            repeat: lparam.0 & REPEAT_BIT != 0,
-        }),
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let (repeat, extended) = down_flags(lparam.0);
+            Some(KeyEvent::Down {
+                vk: u32::try_from(wparam.0).unwrap_or(0),
+                mods: current_mods(),
+                repeat,
+                extended,
+            })
+        }
         WM_KEYUP | WM_SYSKEYUP => Some(KeyEvent::Up {
             vk: u32::try_from(wparam.0).unwrap_or(0),
         }),
@@ -110,4 +122,17 @@ unsafe extern "system" fn capture_keys(
     }
     // SAFETY: 参数原样交给子类链的下一层。
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::down_flags;
+
+    #[test]
+    fn the_extended_flag_is_bit_24_and_not_the_repeat_bit() {
+        assert_eq!(down_flags(0), (false, false));
+        assert_eq!(down_flags(1 << 24), (false, true));
+        assert_eq!(down_flags(1 << 30), (true, false));
+        assert_eq!(down_flags((1 << 24) | (1 << 30)), (true, true));
+    }
 }

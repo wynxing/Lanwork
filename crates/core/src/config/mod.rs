@@ -190,6 +190,56 @@ mod tests {
     }
 
     #[test]
+    fn old_legal_hotkeys_load_and_bare_space_does_not() {
+        let (_temp, store, _) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"schemaVersion":1,"searchHotkey":"Ctrl+Alt+M","panelHotkey":"F12"}"#,
+        )
+        .unwrap();
+        let commands = ConfigCommands::open(store.clone()).unwrap();
+        assert_eq!(commands.fallback(), None);
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+M");
+        assert_eq!(commands.current().panel_hotkey.as_deref(), Some("F12"));
+
+        std::fs::write(
+            &path,
+            br#"{"schemaVersion":1,"searchHotkey":"ctrl+shift+f2","panelHotkey":"alt + 7"}"#,
+        )
+        .unwrap();
+        let commands = ConfigCommands::open(store.clone()).unwrap();
+        assert_eq!(commands.fallback(), None);
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Shift+F2");
+        assert_eq!(commands.current().panel_hotkey.as_deref(), Some("Alt+7"));
+
+        let mut next = commands.current();
+        next.search_hotkey = "Ctrl+Space".into();
+        next.panel_hotkey = Some("Alt+Left".into());
+        commands.replace(next).unwrap();
+        let mut next = commands.current();
+        next.search_hotkey = "Ctrl+Shift+/".into();
+        next.panel_hotkey = Some("Ctrl+Numpad1".into());
+        commands.replace(next).unwrap();
+        let again = ConfigCommands::open(store.clone()).unwrap();
+        assert_eq!(again.fallback(), None);
+        assert_eq!(again.current().search_hotkey, "Ctrl+Shift+/");
+        assert_eq!(
+            again.current().panel_hotkey.as_deref(),
+            Some("Ctrl+Numpad1")
+        );
+        drop(again);
+        drop(commands);
+
+        let original = br#"{"schemaVersion":1,"searchHotkey":"Space"}"#;
+        std::fs::write(&path, original).unwrap();
+        let commands = ConfigCommands::open(store).unwrap();
+        assert_eq!(commands.fallback(), Some(Fallback::Invalid));
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+M");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
     fn ranges_reject_without_writing() {
         let (_temp, store, commands) = open();
         commands.replace(commands.current()).unwrap();
