@@ -1157,6 +1157,49 @@ fn unreadable_purge_record_does_not_fail_boot_or_drop_the_file() {
 }
 
 #[test]
+fn legacy_github_source_types_still_open_over_http() {
+    let temp = TempDir::new();
+    let paths = StorePaths {
+        data_dir: temp.path().join("data"),
+        cache_dir: temp.path().join("cache"),
+        user_profile: temp.path().join("profile"),
+        local_app_data: temp.path().join("local"),
+    };
+    let store = Store::open(paths).unwrap();
+    write_raw(
+        &store,
+        "work",
+        r#"{"schemaVersion":1,"id":"work","name":"工作","kind":"normal","items":[{"id":"pr","title":"旧的 PR","source":{"type":"github-pr","url":"https://example.com/pull/12","repo":"acme/app","number":12}},{"id":"issue","title":"旧的 Issue","source":{"type":"github-issue","url":"http://example.com/issues/3","repo":"acme/app","number":3}}]}"#,
+    );
+    let todos = TodoCommands::open(store);
+    todos.boot().unwrap();
+    assert_eq!(todos.item("pr").unwrap().item.title, "旧的 PR");
+    assert_eq!(
+        todos.item("pr").unwrap().item.source.as_ref().unwrap().kind,
+        SourceKind::GithubPr
+    );
+    assert_eq!(
+        todos.open_source("pr").unwrap(),
+        "https://example.com/pull/12"
+    );
+    assert_eq!(
+        todos
+            .item("issue")
+            .unwrap()
+            .item
+            .source
+            .as_ref()
+            .unwrap()
+            .kind,
+        SourceKind::GithubIssue
+    );
+    assert_eq!(
+        todos.open_source("issue").unwrap(),
+        "http://example.com/issues/3"
+    );
+}
+
+#[test]
 fn http_sources_open_and_other_schemes_are_rejected() {
     let fixture = Fixture::new();
     let list_id = fixture.todos.create_list("工作").unwrap();

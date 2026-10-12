@@ -14,7 +14,6 @@ use lanwork_core::backup::BackupCommands;
 use lanwork_core::config::{ConfigCommands, Fallback, Theme};
 use lanwork_core::dispatch::{Dispatch, IconCache, Services};
 use lanwork_core::files::FileCommands;
-use lanwork_core::github::{GithubCommands, GithubError, ProcessGh, RefreshReport, RepoResult};
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::PanelTab;
 use lanwork_core::shell::{
@@ -181,7 +180,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     );
     refresh_theme(&config, store);
     refresh_badge(&tray, &todos, store);
-    wire_tray(&tray, &config, store, &todos);
+    wire_tray(&tray);
     watch_changes(&tray, &todos, store);
     let config_theme = config.clone();
     let store_theme = store.clone();
@@ -286,30 +285,10 @@ fn select_renderer() -> Result<(), String> {
     Err("渲染器初始化失败".to_owned())
 }
 
-fn wire_tray(tray: &Tray, config: &ConfigCommands, store: &Store, todos: &TodoCommands) {
+fn wire_tray(tray: &Tray) {
     tray.on_open_panel(|| panel::show(None));
     tray.on_open_settings(|| panel::show(Some(PanelTab::Settings)));
     tray.on_new_note(panel::new_note);
-
-    let busy = Arc::new(AtomicBool::new(false));
-    let github = GithubCommands::open(store.clone(), Arc::new(ProcessGh::system()), todos.clone());
-    let config = config.clone();
-    let store = store.clone();
-    tray.on_refresh_github(move || {
-        if busy.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let busy = Arc::clone(&busy);
-        let github = github.clone();
-        let config = config.clone();
-        let store = store.clone();
-        std::thread::spawn(move || {
-            let result = refresh_github(&github, &config);
-            busy.store(false, Ordering::Release);
-            log_refresh(&store, result);
-        });
-    });
-
     TRAY.with(|cell| *cell.borrow_mut() = Some(tray.as_weak()));
     tray.on_quit(request_quit);
 }
@@ -378,36 +357,6 @@ pub(crate) fn unix_now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
-}
-
-fn refresh_github(
-    github: &GithubCommands,
-    config: &ConfigCommands,
-) -> Result<RefreshReport, GithubError> {
-    github.load()?;
-    let now_ms = unix_now_ms();
-    let settings = config.github_settings();
-    github.refresh_all(now_ms, &settings)
-}
-
-fn log_refresh(store: &Store, result: Result<RefreshReport, GithubError>) {
-    match result {
-        Ok(report) => {
-            for outcome in report.repos {
-                match outcome.result {
-                    RepoResult::Unchanged { failure } => {
-                        store.log_warn(&format!("刷新 GitHub 未写入快照：{failure}"));
-                    }
-                    RepoResult::Updated { sync, .. } => {
-                        for failure in sync.failures {
-                            store.log_warn(&format!("来源同步未完成：{}", failure.message));
-                        }
-                    }
-                }
-            }
-        }
-        Err(err) => store.log_warn(&format!("刷新 GitHub 失败：{err}")),
-    }
 }
 
 fn refresh_badge(tray: &Tray, todos: &TodoCommands, store: &Store) {

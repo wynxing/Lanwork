@@ -34,16 +34,9 @@ impl BackupService {
         &self.store
     }
 
-    /// 写出一份导出包。`include_cache` 为假时不含 `github/cache`。
-    pub fn export(
-        &self,
-        dest: &Path,
-        include_cache: bool,
-        now_ms: i64,
-    ) -> Result<PackageOverview, BackupError> {
-        let (files, overview) = self
-            .store
-            .with_write_lock(|| self.snapshot(include_cache, now_ms))?;
+    /// 写出一份导出包。不含 `github/watchlist.json` 和 `github/cache`。
+    pub fn export(&self, dest: &Path, now_ms: i64) -> Result<PackageOverview, BackupError> {
+        let (files, overview) = self.store.with_write_lock(|| self.snapshot(now_ms))?;
         write_bytes(dest, &zipstore::write_stored(&files)?)?;
         Ok(overview)
     }
@@ -104,17 +97,13 @@ impl BackupService {
         }));
     }
 
-    fn snapshot(
-        &self,
-        include_cache: bool,
-        now_ms: i64,
-    ) -> Result<(Vec<StoredFile>, PackageOverview), BackupError> {
-        let files = package::collect(&self.store, include_cache)?;
+    fn snapshot(&self, now_ms: i64) -> Result<(Vec<StoredFile>, PackageOverview), BackupError> {
+        let files = package::collect(&self.store)?;
         package::with_manifest(files, now_ms)
     }
 
     fn write_named(&self, file_name: &str, now_ms: i64) -> Result<PathBuf, BackupError> {
-        let (files, _) = self.snapshot(true, now_ms)?;
+        let (files, _) = self.snapshot(now_ms)?;
         let path = self.store.backups_dir().join(file_name);
         write_bytes(&path, &zipstore::write_stored(&files)?)?;
         Ok(path)
@@ -204,13 +193,10 @@ fn restore_backup(store: &Store, path: &Path) -> Result<(), BackupError> {
 }
 
 fn apply(store: &Store, files: &[StoredFile]) -> Result<Vec<EntityChanged>, BackupError> {
-    let keep_local_cache = !files
-        .iter()
-        .any(|file| file.name.starts_with("github/cache/"));
     let mut keep = std::collections::BTreeSet::new();
     let mut events = Vec::new();
     for file in files {
-        if file.name == "manifest.json" {
+        if file.name == "manifest.json" || package::is_legacy_github(&file.name) {
             continue;
         }
         let path = package::disk_path(store, &file.name)?;
@@ -226,9 +212,6 @@ fn apply(store: &Store, files: &[StoredFile]) -> Result<Vec<EntityChanged>, Back
         }
     }
     for (name, path) in package::list_data_files(store)? {
-        if keep_local_cache && name.starts_with("github/cache/") {
-            continue;
-        }
         if !keep.contains(&name) {
             storage::fs_remove_file(&path).map_err(|_| BackupError::io("无法删除", &path))?;
             if let Some(event) = change_for(&name) {
@@ -242,7 +225,6 @@ fn apply(store: &Store, files: &[StoredFile]) -> Result<Vec<EntityChanged>, Back
 fn change_for(name: &str) -> Option<EntityChanged> {
     let (kind, id) = match name {
         "config.json" => (EntityKind::Config, "config".to_owned()),
-        "github/watchlist.json" => (EntityKind::GithubWatchlist, "watchlist".to_owned()),
         _ => {
             let (dir, file) = name.rsplit_once('/')?;
             let id = file.strip_suffix(".json")?.to_owned();
@@ -250,7 +232,6 @@ fn change_for(name: &str) -> Option<EntityChanged> {
                 "todos" => EntityKind::Todo,
                 "notes" => EntityKind::Note,
                 "shelves" => EntityKind::Shelf,
-                "github/cache" => EntityKind::GithubCache,
                 _ => return None,
             };
             (kind, id)
@@ -378,7 +359,7 @@ mod tests {
             .unwrap();
         let package = temp.path().join("pkg.zip");
         let commands = BackupService::open(store.clone());
-        commands.export(&package, false, 1).unwrap();
+        commands.export(&package, 1).unwrap();
         let edited = notes
             .save(
                 &created.id,
@@ -421,5 +402,81 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, NoteError::Conflict { .. }), "{err}");
+    }
+
+    #[test]
+    fn import_accepts_old_packages_that_still_contain_github_files() {
+        let (temp, store) = store();
+        std::fs::create_dir_all(store.data_dir().join("github").join("cache")).unwrap();
+        std::fs::write(
+            store
+                .data_dir()
+                .join("github")
+                .join("cache")
+                .join("local.json"),
+            br#"{"schemaVersion":1,"repo":"left-alone"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            store.data_dir().join("notes").join("old.json"),
+            br#"{"schemaVersion":1,"body":"will-go"}"#,
+        )
+        .unwrap();
+        let manifest = br#"{"packageSchemaVersion":1,"exportedAt":5,"appVersion":"0.1.0","counts":{"todos":0,"notes":1,"shelves":0,"config":0,"userApps":0,"watchlist":1,"githubCaches":1}}"#;
+        let package = evil(
+            &temp,
+            vec![
+                StoredFile {
+                    name: "manifest.json".to_owned(),
+                    bytes: manifest.to_vec(),
+                },
+                StoredFile {
+                    name: "notes/n.json".to_owned(),
+                    bytes: br#"{"schemaVersion":1,"body":"from-old-package"}"#.to_vec(),
+                },
+                StoredFile {
+                    name: "github/watchlist.json".to_owned(),
+                    bytes: br#"{"schemaVersion":1,"repos":["acme/app"]}"#.to_vec(),
+                },
+                StoredFile {
+                    name: "github/cache/acme%2Fapp.json".to_owned(),
+                    bytes: br#"{"schemaVersion":1,"repo":"from-package"}"#.to_vec(),
+                },
+            ],
+        );
+        let overview = BackupService::open(store.clone())
+            .import(&package, 8)
+            .unwrap();
+        assert!(overview.watchlist);
+        assert_eq!(overview.github_caches, 1);
+        assert_eq!(overview.notes, 1);
+        let note = std::fs::read_to_string(store.data_dir().join("notes").join("n.json")).unwrap();
+        assert!(note.contains("from-old-package"));
+        assert!(!store.data_dir().join("notes").join("old.json").exists());
+        assert!(
+            !store
+                .data_dir()
+                .join("github")
+                .join("watchlist.json")
+                .exists()
+        );
+        assert!(
+            !store
+                .data_dir()
+                .join("github")
+                .join("cache")
+                .join("acme%2Fapp.json")
+                .exists()
+        );
+        let left = std::fs::read_to_string(
+            store
+                .data_dir()
+                .join("github")
+                .join("cache")
+                .join("local.json"),
+        )
+        .unwrap();
+        assert!(left.contains("left-alone"));
+        assert!(store.read_import_pending().unwrap().is_none());
     }
 }

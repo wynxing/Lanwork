@@ -38,25 +38,18 @@ pub const PANEL_HEIGHT: u32 = 560;
 /// 面板与工作区边缘至少留出的逻辑像素。
 pub const PANEL_MARGIN: u32 = 24;
 
-/// 面板的五个标签，顺序固定。
+/// 面板的四个标签，顺序固定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelTab {
     #[default]
     Todo,
     Notes,
     Shelves,
-    Github,
     Settings,
 }
 
 impl PanelTab {
-    pub const ALL: [Self; 5] = [
-        Self::Todo,
-        Self::Notes,
-        Self::Shelves,
-        Self::Github,
-        Self::Settings,
-    ];
+    pub const ALL: [Self; 4] = [Self::Todo, Self::Notes, Self::Shelves, Self::Settings];
 
     #[must_use]
     pub fn title(self) -> &'static str {
@@ -64,7 +57,6 @@ impl PanelTab {
             Self::Todo => "待办",
             Self::Notes => "便签",
             Self::Shelves => "收纳",
-            Self::Github => "GitHub",
             Self::Settings => "设置",
         }
     }
@@ -88,7 +80,6 @@ impl PanelTab {
             Self::Todo => "没有待办",
             Self::Notes => "没有便签",
             Self::Shelves => "没有分组",
-            Self::Github => "没有条目",
             Self::Settings => "没有设置项",
         }
     }
@@ -128,7 +119,7 @@ mod tests {
     fn tabs_are_in_the_fixed_order_with_todo_as_default() {
         assert_eq!(
             PanelTab::ALL.map(PanelTab::title),
-            ["待办", "便签", "收纳", "GitHub", "设置"]
+            ["待办", "便签", "收纳", "设置"]
         );
         assert_eq!(PanelTab::default(), PanelTab::Todo);
         for (index, tab) in PanelTab::ALL.iter().enumerate() {
@@ -139,7 +130,7 @@ mod tests {
             );
         }
         assert_eq!(PanelTab::from_index(-1), None);
-        assert_eq!(PanelTab::from_index(5), None);
+        assert_eq!(PanelTab::from_index(4), None);
     }
 
     #[test]

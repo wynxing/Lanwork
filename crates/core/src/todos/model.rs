@@ -105,7 +105,8 @@ impl Recurrence {
     }
 }
 
-/// GitHub 来源种类。序列化值为 `github-pr` 与 `github-issue`。
+/// 旧记录里的来源种类。序列化值仍是 `github-pr` 与 `github-issue`，这样已有待办能打开。
+/// 打开来源只看 URL 是不是 `http` / `https`，不按仓库或编号另做处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
     #[serde(rename = "github-pr")]

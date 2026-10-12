@@ -27,13 +27,8 @@ impl BackupCommands {
         &self.service
     }
 
-    pub fn export(
-        &self,
-        dest: &Path,
-        include_cache: bool,
-        now_ms: i64,
-    ) -> Result<PackageOverview, BackupError> {
-        self.service.export(dest, include_cache, now_ms)
+    pub fn export(&self, dest: &Path, now_ms: i64) -> Result<PackageOverview, BackupError> {
+        self.service.export(dest, now_ms)
     }
 
     pub fn backup_manual(&self, now_ms: i64) -> Result<PathBuf, BackupError> {

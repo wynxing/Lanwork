@@ -9,7 +9,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::github::{DEFAULT_STALE_DAYS, GithubSettings};
 use crate::search::WebSearchEngine;
 use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 use crate::todos::{DEFAULT_DEFER_DAYS, MAX_DEFER_DAYS, MIN_DEFER_DAYS};
@@ -36,10 +35,6 @@ const WORK_RANGE: &str = "工作时长只接受 1 至 120 分钟";
 const BREAK_RANGE: &str = "休息时长只接受 1 至 60 分钟";
 const LONG_BREAK_RANGE: &str = "长休息时长只接受 1 至 60 分钟";
 const SNOOZE_RANGE: &str = "处理模式顺延天数只接受 1 至 30";
-
-fn default_stale_days() -> u32 {
-    DEFAULT_STALE_DAYS
-}
 
 fn default_snooze_days() -> u32 {
     DEFAULT_DEFER_DAYS
@@ -115,15 +110,6 @@ pub struct Config {
     pub theme: Theme,
     #[serde(rename = "launchAtStartup", default)]
     pub launch_at_startup: bool,
-    /// 毫秒。缺省 0。GitHub 服务不解释这个数，外壳也不为此建定时器。
-    #[serde(rename = "githubRefreshIntervalMs", default)]
-    pub github_refresh_interval_ms: u64,
-    #[serde(rename = "staleDays", default = "default_stale_days")]
-    pub stale_days: u32,
-    #[serde(rename = "sourceSync", default)]
-    pub source_sync: bool,
-    #[serde(rename = "autoCompleteOnClose", default)]
-    pub auto_complete_on_close: bool,
     #[serde(rename = "processSnoozeDays", default = "default_snooze_days")]
     pub process_snooze_days: u32,
     #[serde(rename = "pomodoroWorkMinutes", default = "default_work_minutes")]
@@ -158,10 +144,6 @@ impl Default for Config {
             quiet_hours: None,
             theme: Theme::System,
             launch_at_startup: false,
-            github_refresh_interval_ms: 0,
-            stale_days: DEFAULT_STALE_DAYS,
-            source_sync: false,
-            auto_complete_on_close: false,
             process_snooze_days: DEFAULT_DEFER_DAYS,
             pomodoro_work_minutes: DEFAULT_WORK_MINUTES,
             pomodoro_break_minutes: DEFAULT_BREAK_MINUTES,
@@ -173,17 +155,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// 交给 GitHub 服务的那一组值。不在这里解释刷新间隔，包括 0。
-    #[must_use]
-    pub fn github_settings(&self) -> GithubSettings {
-        GithubSettings {
-            stale_days: self.stale_days,
-            auto_complete_on_close: self.auto_complete_on_close,
-            source_sync: self.source_sync,
-            refresh_interval_ms: self.github_refresh_interval_ms,
-        }
-    }
-
     #[must_use]
     pub fn search_hotkey_parsed(&self) -> Option<Hotkey> {
         parse_hotkey(&self.search_hotkey).ok()

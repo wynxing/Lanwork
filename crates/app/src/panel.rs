@@ -2,7 +2,7 @@
 //!
 //! 窗口启动时创建并保持隐藏。待办页调用 `TodoCommands`，规则在服务里，这里只把命令结果
 //! 排成界面要的行。便签页在 `notes_page`，收纳页在 `shelves_page`，拖入的 OLE 放下目标登记在
-//! 这个窗口的句柄上（`shelf_dnd`）。面板搜索框、热角、GitHub 页和设置页还没有。
+//! 这个窗口的句柄上（`shelf_dnd`）。面板搜索框、热角和设置页还没有。
 
 use std::cell::RefCell;
 use std::collections::HashSet;

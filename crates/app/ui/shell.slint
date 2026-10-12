@@ -15,7 +15,6 @@ export component Tray inherits SystemTrayIcon {
     callback open-panel();
     callback open-settings();
     callback new-note();
-    callback refresh-github();
     callback quit();
 
     Menu {
@@ -30,10 +29,6 @@ export component Tray inherits SystemTrayIcon {
         MenuItem {
             title: "新建便签";
             activated => { root.new-note(); }
-        }
-        MenuItem {
-            title: "刷新 GitHub";
-            activated => { root.refresh-github(); }
         }
         MenuItem {
             title: "退出";
