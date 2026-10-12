@@ -12,6 +12,8 @@ slint::include_modules!();
 
 #[cfg(test)]
 mod float_layout_tests;
+#[cfg(test)]
+mod settings_layout_tests;
 
 #[cfg(windows)]
 mod bar_win;
@@ -21,6 +23,8 @@ mod host;
 mod hotcorner;
 #[cfg(windows)]
 mod instance;
+#[cfg(windows)]
+mod keycap;
 #[cfg(windows)]
 mod note_editor;
 #[cfg(windows)]
@@ -35,6 +39,8 @@ mod platform;
 mod registry;
 #[cfg(windows)]
 mod searchbar;
+#[cfg(windows)]
+mod settings_page;
 #[cfg(windows)]
 mod shelf_dnd;
 #[cfg(windows)]

@@ -2,8 +2,9 @@
 // 风格与搜索条一致：亚克力时客户区透明，纯色时由这里画满；深浅两套配色。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Check, Chip, Field, Ink } from "widgets.slint";
+import { Btn, Check, Chip, Field, Ink, Segments } from "widgets.slint";
 import { NotesPage } from "notespage.slint";
+import { SettingsPage } from "settingspage.slint";
 import { ShelvesPage } from "shelvespage.slint";
 
 export struct PanelRow {
@@ -40,43 +41,6 @@ export struct PanelDetail {
     can-down: bool,
 }
 
-component Segments inherits Rectangle {
-    in property <[string]> items;
-    in property <int> current;
-    in property <Ink> c;
-    callback chosen(int);
-
-    height: 30px;
-    width: row.preferred-width;
-    border-radius: 6px;
-    border-width: 1px;
-    border-color: c.divider;
-    clip: true;
-
-    row := HorizontalLayout {
-        for item[index] in items: Rectangle {
-            width: label.preferred-width + 20px;
-            background: index == root.current ? c.selection : touch.has-hover ? c.hover : transparent;
-
-            label := Text {
-                x: 10px;
-                text: item;
-                color: index == root.current ? c.accent : c.ink;
-                font-size: 13px;
-                font-weight: index == root.current ? 600 : 400;
-                vertical-alignment: center;
-                height: 100%;
-            }
-
-            touch := TouchArea {
-                clicked => {
-                    root.chosen(index);
-                }
-            }
-        }
-    }
-}
-
 export component Panel inherits Window {
     title: "Lanwork";
     icon: @image-url("../assets/lanwork-256.png");
@@ -93,7 +57,6 @@ export component Panel inherits Window {
 
     in property <[string]> tab-titles;
     in-out property <int> tab;
-    in property <string> empty-label;
 
     in property <[PanelList]> lists;
     // 回收站被选中时是 -1。
@@ -301,15 +264,14 @@ export component Panel inherits Window {
                 background: c.divider;
             }
 
-            // 标签内容。待办、便签和收纳有内容，其他标签只显示一行对象名。
-            if root.tab >= 3: Text {
-                x: 24px;
-                y: title-height + 20px;
-                width: parent.width - 48px;
-                text: empty-label;
-                color: c.secondary;
-                font-size: 14px;
-                overflow: elide;
+            // 标签内容。
+            if root.tab == 3: SettingsPage {
+                x: 0px;
+                y: title-height + 1px;
+                width: parent.width;
+                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                c: root.c;
+                dark: root.dark;
             }
 
             if root.tab == 1: NotesPage {

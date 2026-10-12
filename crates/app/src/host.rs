@@ -1,7 +1,7 @@
 //! 启动顺序：先占住单实例，再打开数据目录，完成导入恢复和待办加载，加载配置，按本地日期自动备份，然后选渲染器、注册热键、创建隐藏窗口和托盘。
 //! 便签服务、收纳服务、应用索引和文件索引在存储启动之后打开；应用索引和文件索引交给搜索条的查询调度。
 //!
-//! 面板在 `panel`，搜索条在 `searchbar`，热角轮询在 `hotcorner`。设置页还没有。
+//! 面板在 `panel`，设置页在 `settings_page`，搜索条在 `searchbar`，热角轮询在 `hotcorner`。
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,9 +17,8 @@ use lanwork_core::files::FileCommands;
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::PanelTab;
 use lanwork_core::shell::{
-    PANEL_HOTKEY_ID, QuitDecision, QuitGate, SEARCH_HOTKEY_ID, ShellCommand, SystemLight,
-    TRAY_ICON_PX, desired_bindings, quit_decision, resolve_theme, resume_quit_later,
-    tray_icon_rgba,
+    HotkeyRole, QuitDecision, QuitGate, ShellCommand, SystemLight, TRAY_ICON_PX, quit_decision,
+    resolve_theme, resume_quit_later, tray_icon_rgba,
 };
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::{
@@ -35,6 +34,7 @@ use crate::panel;
 use crate::platform::{HotkeyControl, Platform};
 use crate::registry::{apply_startup, read_system_theme};
 use crate::searchbar;
+use crate::settings_page::SettingsServices;
 use crate::shelf_float;
 use crate::{Panel, SearchBar, Tray};
 
@@ -130,7 +130,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     select_renderer()?;
     let platform = Platform::start(primary)?;
     let hotkeys = platform.control();
-    apply_configured_hotkeys(&hotkeys, &config, store);
+    let unregistered = register_configured_hotkeys(&hotkeys, &config, store);
     match std::env::current_exe() {
         Ok(executable) => {
             if let Err(err) = apply_startup(config.current().launch_at_startup, &executable) {
@@ -176,6 +176,11 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         notes,
         shelves,
         icons,
+        SettingsServices {
+            config: config.clone(),
+            hotkeys,
+            unregistered,
+        },
         store.clone(),
     );
     refresh_theme(&config, store);
@@ -193,6 +198,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
 
     // 搜索条收起时所有窗口都隐藏，事件循环不能因此结束。
     let run = slint::run_event_loop_until_quit().map_err(|err| err.to_string());
+    panel::end_hotkey_recording();
     crate::hotcorner::shutdown();
     searchbar::shutdown();
     drop(search);
@@ -265,15 +271,20 @@ fn open_dispatch(
     Some(Arc::new(dispatch))
 }
 
-fn apply_configured_hotkeys(hotkeys: &HotkeyControl, config: &ConfigCommands, store: &Store) {
-    match desired_bindings(&config.current()) {
-        Ok(next) => {
-            if let Err(err) = hotkeys.rebind(next) {
-                store.log_warn(&err.to_string());
-            }
-        }
-        Err(err) => store.log_warn(&err.to_string()),
+/// 按配置注册热键，逐条进行。注册不上的写日志并返回，设置页把它们留在错误条里。
+fn register_configured_hotkeys(
+    hotkeys: &HotkeyControl,
+    config: &ConfigCommands,
+    store: &Store,
+) -> Vec<HotkeyRole> {
+    let Some(unregistered) = hotkeys.register(config.clone()) else {
+        store.log_warn("热键服务没有应答，热键没有注册");
+        return Vec::new();
+    };
+    for role in &unregistered {
+        store.log_warn(&format!("{}没有注册上：热键已被占用", role.title()));
     }
+    unregistered
 }
 
 fn select_renderer() -> Result<(), String> {
@@ -464,11 +475,10 @@ fn attempt_quit() {
 }
 
 /// `received_ns` 是平台线程收到热键消息时的单调时间，热召回从这里算起。
-pub(crate) fn on_hotkey(id: i32, received_ns: u64) {
-    if id == SEARCH_HOTKEY_ID {
-        searchbar::toggle(received_ns);
-    } else if id == PANEL_HOTKEY_ID {
-        panel::show(None);
+pub(crate) fn on_hotkey(role: HotkeyRole, received_ns: u64) {
+    match role {
+        HotkeyRole::Search => searchbar::toggle(received_ns),
+        HotkeyRole::Panel => panel::show(None),
     }
 }
 

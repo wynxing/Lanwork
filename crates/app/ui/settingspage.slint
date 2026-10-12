@@ -1,0 +1,138 @@
+// 面板的设置页：开机启动、热角、搜索条热键，每项一行。版式由这里决定，数据和动作在 Rust。
+// 数据和回调放在 SettingsPageData 里，面板窗口只负责把这个页面摆在标签内容区。
+// 控件只显示配置里的值；请求被拒绝或写盘失败时，Rust 重新推送原值，界面随之回到原状。
+
+import { Ink, Segments, ToggleSwitch } from "widgets.slint";
+
+export global SettingsPageData {
+    in property <bool> launch-at-startup;
+    in property <[string]> corner-titles;
+    in property <int> corner;
+    in property <string> hotkey;
+    in property <bool> recording;
+
+    callback set-launch-at-startup(bool);
+    callback choose-corner(int);
+    callback toggle-recording();
+}
+
+component Row inherits Rectangle {
+    in property <string> name;
+    in property <Ink> c;
+
+    height: 48px;
+
+    Text {
+        x: 0px;
+        width: 140px;
+        height: parent.height - 1px;
+        text: root.name;
+        color: c.ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: c.divider;
+    }
+
+    @children
+}
+
+component HotkeyBox inherits Rectangle {
+    in property <string> text;
+    in property <bool> recording;
+    in property <Ink> c;
+    callback clicked();
+
+    width: 180px;
+    height: 30px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: recording ? c.accent : c.divider;
+    background: recording ? c.selection : touch.has-hover ? c.hover : c.field;
+    accessible-role: button;
+    accessible-label: text;
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: recording ? "录入中" : root.text;
+        color: recording ? c.accent : c.ink;
+        font-size: 13px;
+        font-weight: recording ? 600 : 400;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component SettingsPage inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> dark;
+
+    VerticalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 8px;
+        alignment: start;
+
+        Row {
+            name: "开机启动";
+            c: root.c;
+
+            ToggleSwitch {
+                x: 140px;
+                y: (parent.height - self.height) / 2;
+                checked: SettingsPageData.launch-at-startup;
+                label: "开机启动";
+                c: root.c;
+                on-fill: root.dark ? #000000 : #ffffff;
+                toggled(value) => {
+                    SettingsPageData.set-launch-at-startup(value);
+                }
+            }
+        }
+
+        Row {
+            name: "热角";
+            c: root.c;
+
+            Segments {
+                x: 140px;
+                y: (parent.height - self.height) / 2;
+                items: SettingsPageData.corner-titles;
+                current: SettingsPageData.corner;
+                c: root.c;
+                chosen(index) => {
+                    SettingsPageData.choose-corner(index);
+                }
+            }
+        }
+
+        Row {
+            name: "搜索条热键";
+            c: root.c;
+
+            HotkeyBox {
+                x: 140px;
+                y: (parent.height - self.height) / 2;
+                text: SettingsPageData.hotkey;
+                recording: SettingsPageData.recording;
+                c: root.c;
+                clicked => {
+                    SettingsPageData.toggle-recording();
+                }
+            }
+        }
+    }
+}

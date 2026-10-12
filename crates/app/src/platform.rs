@@ -10,11 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
-use lanwork_core::config::Hotkey;
+use lanwork_core::config::{ConfigCommands, Hotkey};
 use lanwork_core::dispatch::{Monotonic, SystemClock};
 use lanwork_core::shell::{
-    BindError, HotkeyPort, RegisteredHotkey, apply_hotkeys, is_immersive_color_set,
+    EndReport, HotkeyBinding, HotkeyPort, HotkeyRole, RegisteredHotkey, desired_bindings,
+    is_immersive_color_set, restore_hotkeys, role_of, save_search_hotkey, suspend_hotkeys,
 };
 use windows::Win32::Foundation::{
     GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
@@ -34,14 +36,18 @@ use windows::core::PCWSTR;
 use crate::instance::Primary;
 use crate::winutil::{from_wide, pcwstr, wide};
 
-const WM_REBIND: u32 = WM_USER + 1;
+const WM_JOB: u32 = WM_USER + 1;
 const WM_STOP: u32 = WM_USER + 2;
 const CLASS_NAME: &str = "Lanwork.Shell";
 
-struct RebindRequest {
-    next: Vec<RegisteredHotkey>,
-    reply: Sender<Result<(), BindError>>,
-}
+/// 在平台线程上执行的一次热键操作。`RegisterHotKey` 属于创建窗口的线程，所以只能在那里调用。
+type Job = Box<dyn FnOnce(&mut WinPort, &mut Vec<RegisteredHotkey>) + Send>;
+
+/// 平台线程应答的最长等待。线程已经退出时，队列里的任务不会再有人执行。
+const JOB_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 设置页正在录入热键。已注册的热键此时已卸掉，迟到的 `WM_HOTKEY` 也不处理。
+static RECORDING: AtomicBool = AtomicBool::new(false);
 
 struct PortState {
     hwnd: HWND,
@@ -52,8 +58,8 @@ thread_local! {
     static PORT: RefCell<Option<PortState>> = const { RefCell::new(None) };
 }
 
-fn rebind_queue() -> &'static Mutex<VecDeque<RebindRequest>> {
-    static QUEUE: OnceLock<Mutex<VecDeque<RebindRequest>>> = OnceLock::new();
+fn job_queue() -> &'static Mutex<VecDeque<Job>> {
+    static QUEUE: OnceLock<Mutex<VecDeque<Job>>> = OnceLock::new();
     QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
@@ -131,11 +137,69 @@ impl Platform {
 }
 
 impl HotkeyControl {
-    pub(crate) fn rebind(self, next: Vec<RegisteredHotkey>) -> Result<(), BindError> {
+    /// 按配置注册热键，逐条进行：一条失败，其余仍然注册。返回没注册上的角色。
+    ///
+    /// 启动时调用。平台线程没有应答时返回 `None`。
+    pub(crate) fn register(self, commands: ConfigCommands) -> Option<Vec<HotkeyRole>> {
+        self.run(move |port, current| {
+            let wanted = wanted_bindings(&commands);
+            restore_into(port, current, &wanted)
+        })
+    }
+
+    /// 开始录入：卸掉已注册的热键，之后按下它们不会再被系统截走。
+    pub(crate) fn suspend(self) -> Result<(), String> {
+        self.run(|port, current| {
+            suspend_hotkeys(port, current);
+            current.clear();
+            RECORDING.store(true, Ordering::Release);
+        })
+        .ok_or_else(|| no_reply().to_owned())
+    }
+
+    /// 结束录入的唯一出口：把卸掉的热键按配置注册回去，再按需保存搜索条热键。
+    ///
+    /// 注册回去逐条进行，一条失败不影响其余，失败的角色在 [`EndReport::unregistered`]。
+    /// `text` 为空表示只恢复，不保存。平台线程没有应答时返回 `None`；那次任务仍留在队列里，
+    /// 线程活着就会执行。
+    pub(crate) fn end_recording(
+        self,
+        commands: ConfigCommands,
+        text: Option<String>,
+    ) -> Option<EndReport> {
+        self.run(move |port, current| {
+            let wanted = wanted_bindings(&commands);
+            restore_into(port, current, &wanted);
+            RECORDING.store(false, Ordering::Release);
+            let saved = match text {
+                None => Ok(()),
+                Some(text) => match save_search_hotkey(port, &commands, current, &text) {
+                    Ok(next) => {
+                        *current = next;
+                        Ok(())
+                    }
+                    Err(err) => Err(err.to_string()),
+                },
+            };
+            let unregistered = missing_roles(&commands, current);
+            EndReport {
+                saved,
+                unregistered,
+            }
+        })
+    }
+
+    /// 把一次操作交给平台线程执行并等结果。线程没有应答时返回 `None`。
+    fn run<T: Send + 'static>(
+        self,
+        job: impl FnOnce(&mut WinPort, &mut Vec<RegisteredHotkey>) -> T + Send + 'static,
+    ) -> Option<T> {
         let (tx, rx) = mpsc::channel();
-        lock(rebind_queue()).push_back(RebindRequest { next, reply: tx });
-        self.post(WM_REBIND);
-        rx.recv().unwrap_or(Err(BindError::Occupied { id: 0 }))
+        lock(job_queue()).push_back(Box::new(move |port, current| {
+            let _ = tx.send(job(port, current));
+        }));
+        self.post(WM_JOB);
+        rx.recv_timeout(JOB_TIMEOUT).ok()
     }
 
     fn post(self, message: u32) {
@@ -157,6 +221,35 @@ impl Drop for Platform {
     }
 }
 
+/// 配置里要注册的热键。配置读出来时已经校验过；不合法时当作没有，由日志之外的路径报告。
+fn wanted_bindings(commands: &ConfigCommands) -> Vec<HotkeyBinding> {
+    desired_bindings(&commands.current()).unwrap_or_default()
+}
+
+/// 把端口上的热键换成 `wanted`，逐条注册。先卸掉还在的注册，所以同一个组合不会因为自己占着而失败。
+fn restore_into(
+    port: &mut WinPort,
+    current: &mut Vec<RegisteredHotkey>,
+    wanted: &[HotkeyBinding],
+) -> Vec<HotkeyRole> {
+    suspend_hotkeys(port, current);
+    let restored = restore_hotkeys(port, wanted);
+    *current = restored.registered;
+    restored.failed
+}
+
+fn missing_roles(commands: &ConfigCommands, current: &[RegisteredHotkey]) -> Vec<HotkeyRole> {
+    wanted_bindings(commands)
+        .into_iter()
+        .map(|binding| binding.role)
+        .filter(|role| !current.iter().any(|item| item.role == *role))
+        .collect()
+}
+
+fn no_reply() -> &'static str {
+    "热键服务没有应答"
+}
+
 struct WinPort {
     hwnd: HWND,
 }
@@ -176,7 +269,7 @@ impl HotkeyPort for WinPort {
         if hotkey.win {
             modifiers |= MOD_WIN;
         }
-        // SAFETY: 窗口属于本线程。id 是 1 或 2。
+        // SAFETY: 窗口属于本线程。id 是 bind 模块给出的正整数，每次注册各不相同。
         unsafe { RegisterHotKey(Some(self.hwnd), id, modifiers, hotkey.virtual_key()) }.is_ok()
     }
 
@@ -335,7 +428,7 @@ unsafe extern "system" fn wndproc(
             }
             LRESULT(0)
         }
-        WM_REBIND => {
+        WM_JOB => {
             apply_rebind();
             LRESULT(0)
         }
@@ -369,9 +462,19 @@ fn lparam_text(lparam: LPARAM) -> Option<String> {
 }
 
 fn signal_hotkey(id: i32) {
+    if RECORDING.load(Ordering::Acquire) {
+        return;
+    }
+    let role = PORT.with(|slot| {
+        let slot = slot.try_borrow().ok()?;
+        role_of(&slot.as_ref()?.current, id)
+    });
+    let Some(role) = role else {
+        return;
+    };
     // 热召回的起点是收到热键消息的这一刻，不是界面线程开始处理的时刻。
     let received_ns = SystemClock.now_ns();
-    let _ = slint::invoke_from_event_loop(move || crate::host::on_hotkey(id, received_ns));
+    let _ = slint::invoke_from_event_loop(move || crate::host::on_hotkey(role, received_ns));
 }
 
 fn signal_second_instance() {
@@ -388,21 +491,15 @@ fn signal_theme() {
 }
 
 fn apply_rebind() {
-    let Some(request) = lock(rebind_queue()).pop_front() else {
+    let Some(job) = lock(job_queue()).pop_front() else {
         return;
     };
-    let RebindRequest { next, reply } = request;
-    let result = PORT.with(|slot| {
+    PORT.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(state) = slot.as_mut() else {
-            return Err(BindError::Occupied { id: 0 });
+            return;
         };
         let mut port = WinPort { hwnd: state.hwnd };
-        let result = apply_hotkeys(&mut port, &state.current, &next);
-        if result.is_ok() {
-            state.current = next;
-        }
-        result
+        job(&mut port, &mut state.current);
     });
-    let _ = reply.send(result);
 }

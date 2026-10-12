@@ -1,8 +1,8 @@
 //! 面板窗口：标签框架、待办页和定位接口。
 //!
 //! 窗口启动时创建并保持隐藏。待办页调用 `TodoCommands`，规则在服务里，这里只把命令结果
-//! 排成界面要的行。便签页在 `notes_page`，收纳页在 `shelves_page`，拖入的 OLE 放下目标登记在
-//! 这个窗口的句柄上（`shelf_dnd`）。面板搜索框和设置页还没有。
+//! 排成界面要的行。便签页在 `notes_page`，收纳页在 `shelves_page`，设置页在 `settings_page`，
+//! 拖入的 OLE 放下目标登记在这个窗口的句柄上（`shelf_dnd`）。面板搜索框还没有。
 //! 热角在 `hotcorner`，到点调用 [`show`](crate::panel::show)。
 
 use std::cell::RefCell;
@@ -29,7 +29,9 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::bar_win;
 use crate::host::{local_today, unix_now_ms};
+use crate::keycap;
 use crate::notes_page::NotesPage;
+use crate::settings_page::{self, SettingsPage, SettingsServices};
 use crate::shelf_dnd::{self, DropState, Registration};
 use crate::shelves_page::{self, ShelvesPage};
 use crate::{Panel, PanelDetail, PanelList, PanelRow};
@@ -67,6 +69,11 @@ pub(crate) fn with_shelves(action: impl FnOnce(&mut ShelvesPage, &Panel) + 'stat
     with_panel(move |panel| action(&mut panel.shelves, &panel.ui));
 }
 
+/// 设置页的动作。和面板共用同一个借用，所以也走 [`with_panel`]。
+pub(crate) fn with_settings(action: impl FnOnce(&mut SettingsPage, &Panel) + 'static) {
+    with_panel(move |panel| action(&mut panel.settings, &panel.ui));
+}
+
 /// 启动时调用一次。窗口保持隐藏，直到托盘或搜索结果打开它。
 pub(crate) fn install(
     ui: Panel,
@@ -74,6 +81,7 @@ pub(crate) fn install(
     notes: Option<NoteCommands>,
     shelves: Option<ShelfCommands>,
     icons: Arc<Mutex<IconCache>>,
+    settings: SettingsServices,
     store: Store,
 ) {
     let tab_titles: Vec<slint::SharedString> =
@@ -110,6 +118,7 @@ pub(crate) fn install(
     let controller = Controller {
         notes: NotesPage::new(&ui, notes, store.clone()),
         shelves: ShelvesPage::new(&ui, shelves, todos.clone(), icons, store.clone()),
+        settings: SettingsPage::new(&ui, settings, store.clone()),
         drop_state: Arc::new(DropState::default()),
         drop_registration: None,
         linked: HashSet::new(),
@@ -132,6 +141,17 @@ pub(crate) fn install(
         hwnd_ready: false,
     };
     PANEL.with(|cell| *cell.borrow_mut() = Some(controller));
+}
+
+/// 进程退出前调用：录入热键中就结束录入，把热键注册回去。
+pub(crate) fn end_hotkey_recording() {
+    PANEL.with(|cell| {
+        if let Ok(mut slot) = cell.try_borrow_mut()
+            && let Some(panel) = slot.as_mut()
+        {
+            panel.settings.cancel_recording(&panel.ui);
+        }
+    });
 }
 
 /// 托盘「打开面板」「设置」和面板热键。`tab` 为空时保持收起前的标签。
@@ -272,6 +292,7 @@ pub(crate) struct Controller {
     ui: Panel,
     notes: NotesPage,
     shelves: ShelvesPage,
+    settings: SettingsPage,
     drop_state: Arc<DropState>,
     drop_registration: Option<Registration>,
     /// 被收纳分组关联的待办 id。待办页的标记和「打开关联收纳」用它。
@@ -303,6 +324,14 @@ impl Controller {
         {
             self.store
                 .log_warn("面板样式子类没有装上，显示时可能出现标题栏按钮");
+        }
+        let capture_ready = self
+            .hwnd()
+            .is_some_and(|hwnd| keycap::install(hwnd, settings_page::on_recorded));
+        self.settings.set_capture_ready(capture_ready);
+        if !capture_ready {
+            self.store
+                .log_warn("面板按键子类没有装上，设置页不能录入热键");
         }
         if let Some(hwnd) = self.hwnd() {
             match shelf_dnd::register(
@@ -375,13 +404,17 @@ impl Controller {
         self.reload();
         self.ui
             .set_tab(i32::try_from(self.tab.index()).unwrap_or(0));
-        self.ui.set_empty_label(self.tab.empty_label().into());
         self.push_error();
         if self.tab == PanelTab::Notes {
             self.notes.entered(&self.ui);
         }
         if self.tab == PanelTab::Shelves {
             self.shelves.entered(&self.ui);
+        }
+        if self.tab == PanelTab::Settings {
+            self.settings.entered(&self.ui);
+        } else {
+            self.settings.cancel_recording(&self.ui);
         }
     }
 
@@ -438,6 +471,7 @@ impl Controller {
     }
 
     fn hide(&mut self) {
+        self.settings.cancel_recording(&self.ui);
         self.visible = false;
         self.error = None;
         self.sync_drop();
@@ -445,6 +479,8 @@ impl Controller {
     }
 
     fn blur(&mut self) {
+        // 录入中失焦，哪怕在刚显示的宽限期内，也要结束录入并把热键注册回去。
+        self.settings.cancel_recording(&self.ui);
         let settling = self
             .shown_at
             .is_some_and(|shown| shown.elapsed() < BLUR_GRACE);
@@ -462,11 +498,17 @@ impl Controller {
     fn select_tab(&mut self, tab: PanelTab) {
         self.tab = tab;
         self.ui.set_tab(i32::try_from(tab.index()).unwrap_or(0));
-        self.ui.set_empty_label(tab.empty_label().into());
+        if tab != PanelTab::Settings {
+            self.settings.cancel_recording(&self.ui);
+        }
         if tab == PanelTab::Notes {
             self.notes.entered(&self.ui);
         } else if tab == PanelTab::Shelves {
             self.shelves.entered(&self.ui);
+        } else if tab == PanelTab::Settings {
+            self.error = None;
+            self.push_error();
+            self.settings.entered(&self.ui);
         } else {
             self.reload();
             self.push_error();
@@ -602,9 +644,14 @@ impl Controller {
         self.ui.set_detail(detail);
     }
 
+    /// 面板自己的错误优先；没有时显示设置页留着的热键没注册上的提示，它收起时不清。
     fn push_error(&mut self) {
-        self.ui
-            .set_error(self.error.clone().unwrap_or_default().into());
+        let text = self
+            .error
+            .clone()
+            .or_else(|| self.settings.hotkey_error())
+            .unwrap_or_default();
+        self.ui.set_error(text.into());
     }
 
     /// 命令成功后清掉错误并重读；失败时停在当前状态并显示错误。
