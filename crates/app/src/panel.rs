@@ -455,17 +455,22 @@ impl Controller {
         }
         // 没拿到前台就收起。visible 已经是真，但失焦收起还要求曾经拿到焦点；
         // 焦点没到时会停在已显示，下一次热角再 show 也出不来。规格没写这种失败，待定。
-        if !hwnd.is_some_and(bar_win::bring_to_front) {
-            self.store.log_warn(if hwnd.is_none() {
-                "面板没有窗口句柄，已收起"
-            } else {
-                "面板没有到前台，已收起"
-            });
-            self.focused = false;
-            self.hide();
-            return;
+        match hwnd.map(bar_win::bring_to_front) {
+            Some(bar_win::ForegroundTake::Plain) => {}
+            Some(bar_win::ForegroundTake::AfterInput) => {
+                self.store.log_info("面板在注入输入后到前台");
+            }
+            Some(bar_win::ForegroundTake::Failed) | None => {
+                self.store.log_warn(if hwnd.is_none() {
+                    "面板没有窗口句柄，已收起"
+                } else {
+                    "面板没有到前台，已收起"
+                });
+                self.focused = false;
+                self.hide();
+                return;
+            }
         }
-        self.store.log_info("面板已到前台");
         self.ui.invoke_focus_root();
         self.ui.invoke_ensure_row_visible(self.selected_index());
         self.sync_drop();

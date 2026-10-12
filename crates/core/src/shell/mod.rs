@@ -2,11 +2,13 @@
 //!
 //! 单实例的互斥量、托盘菜单、热键注册、主题和开机启动的系统调用在 `crates/app`。
 //! 热角的角判定、停留和全屏抑制也在这里（[`hotcorner`]）；50ms 轮询在 `crates/app`。
+//! 置前要等多久、以及零位移鼠标坐标，由 [`nudge_wait`] 和 [`zero_move`] 决定；真正的 `SendInput` 在 `crates/app`。
 //! 这里固定菜单文字、热键修改顺序、图标像素、主题解析，以及退出时是否还有没写盘的便签窗口。
 
 mod bar;
 mod bind;
 mod capture;
+mod foreground;
 pub mod hotcorner;
 mod icon;
 mod recording;
@@ -29,6 +31,10 @@ pub use bind::{
 };
 pub use capture::{
     CaptureStep, HotkeyRecorder, KeyEvent, KeyGate, KeyMods, Recorded, Route, capture_step,
+};
+pub use foreground::{
+    NUDGE_MAX_WAIT_MS, NUDGE_MIN_WAIT_MS, NudgeWait, VirtualScreen, ZeroMove, absolute_to_pixel,
+    nudge_wait, tick_after, zero_move,
 };
 pub use icon::{TRAY_ICON_PX, has_badge_pixels, tray_icon_rgba};
 pub use recording::{EndReason, EndReport, Ending, HotkeyRecording};

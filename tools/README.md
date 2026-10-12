@@ -167,6 +167,30 @@ Write-Output "记录: $record"
 
 填写副本是 `measurements-out\empty-window.md`。环境、空窗口勾选和上面算出的 Private Bytes、工作集、平均 CPU、唤醒次数会写进去。技术验证和「性能测量」协议表填「未测」。这次不设置 `LANWORK_DATA_DIR`：空窗口不读它，这次也不加载夹具数据。
 
+## 前台探测
+
+热角打开面板时，若直接 `SetForegroundWindow` 被前台锁拒绝，Lanwork 会 `SendInput` 一次相对位移为 0 的鼠标移动，等这次输入被取走后再置前。这个程序在真机上把这套办法和几种对照分开跑。它不写数据目录，也不代替验收。
+
+只能在有桌面的 Windows 会话里跑。运行后会出现标题为「Lanwork 前台探测（不要点这个窗口）」的窗口。每一项开始前，点击别的程序（例如浏览器），然后松开鼠标和键盘约 2 秒。不要点探测窗口，也不要在这个控制台里按键：那一下会让本进程变成最后一次输入的接收者，`plain` 会误判为成功。一项结束时会试着把前台还给原来的窗口；若探测窗口还在前面，下一项会再等你点击别处。
+
+```text
+cargo build -p lanwork-foreground --release
+.\target\release\lanwork-foreground.exe
+.\target\release\lanwork-foreground.exe --method relative-wait
+.\target\release\lanwork-foreground.exe --include-alt --include-attach
+```
+
+默认依次试四项：
+
+- `plain`：直接 `SetForegroundWindow`。别的程序刚收到过输入、前台锁还没超时时，这一项应当失败。
+- `relative-immediate`：相对位移 0 的鼠标移动后立刻置前。用来看和输入线程的竞争。
+- `relative-wait`：同一次移动，等到最后输入时刻推进后再置前。Lanwork 的面板、搜索条和悬浮窗用这个。
+- `absolute-wait`：绝对坐标移到当前像素（按公式回投后必须仍是同一像素才发），再等待后置前。若光标偏了 1 到 2 像素，测完会移回。产品路径不用这一项。
+
+`--include-alt` 会多试只送 Alt 抬起再立刻置前。这可能打开前台程序的菜单，或打断正在进行的中文输入。`--include-attach` 会把本线程 `AttachThreadInput` 到前台线程再置前，随即解开；附上期间不抽消息，仍可能和对方线程互相等待。卡住就结束进程。这两项都不是产品路径。
+
+输出里看每一项的 `SetForegroundWindow` 返回值、调用返回时和 200ms 后本窗口是不是前台、最后输入时刻有没有推进、光标位移。开头会打印 `SPI_GETFOREGROUNDLOCKTIMEOUT`。全部跑完的退出码是 0，窗口创建失败或中途关掉窗口是 1。
+
 ## 延迟汇总
 
 #20 写结果延迟的起点和查询序号，#21 写热召回的起点，并在 `AfterRendering` 写同序号的终点。两边都把原始记录追加成 JSONL，本工具只读这个文件。`lanwork.exe` 在环境变量 `LANWORK_LATENCY_OUT` 非空时把这些记录追加到它指向的文件；搜索条每次收起时写出结果记录，热召回在渲染后立即写出。进程启动后的第一次热召回和第一个查询序号标为 `warmup: true`。
