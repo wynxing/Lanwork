@@ -3,6 +3,10 @@
 //! 不调用 Win32。按键从哪里来、录入期间怎样让已注册的全局热键不抢键，在 `crates/app`。
 //! 能录入的键和修饰键规则与 [`crate::config::parse_hotkey`] 相同：除 `F1`–`F24` 外必须
 //! 至少有一个修饰键，功能键可以单独使用。
+//!
+//! NumLock 关掉时，小键盘数字的虚拟键码和导航键相同，只有扩展位不同。扩展位为 0 的记成
+//! 对应的 `Numpad0`–`Numpad9`；扩展位为 1 的才是独立导航键。不读 NumLock。小键盘小数点是
+//! 非扩展的 Delete，不在键名表里，拒绝。
 
 use crate::config::{Hotkey, HotkeyKey};
 
@@ -16,6 +20,17 @@ const VK_LSHIFT: u32 = 0xA0;
 const VK_RMENU: u32 = 0xA5;
 /// 输入法正在处理这次按键，真正的键码拿不到。
 const VK_PROCESSKEY: u32 = 0xE5;
+const VK_CLEAR: u32 = 0x0C;
+const VK_PRIOR: u32 = 0x21;
+const VK_NEXT: u32 = 0x22;
+const VK_END: u32 = 0x23;
+const VK_HOME: u32 = 0x24;
+const VK_LEFT: u32 = 0x25;
+const VK_UP: u32 = 0x26;
+const VK_RIGHT: u32 = 0x27;
+const VK_DOWN: u32 = 0x28;
+const VK_INSERT: u32 = 0x2D;
+const VK_DELETE: u32 = 0x2E;
 
 /// 按下时的修饰键状态。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -49,16 +64,49 @@ fn is_modifier_key(vk: u32) -> bool {
         || (VK_LSHIFT..=VK_RMENU).contains(&vk)
 }
 
-/// 把一次按下换成录入结果。`vk` 是 Win32 虚拟键码。
+/// 非扩展的导航键来自小键盘。小数点不在键名表里。
+enum NumpadAlias {
+    Digit(HotkeyKey),
+    Decimal,
+}
+
+/// `extended` 为假且 `vk` 是导航键或 `VK_CLEAR` 时，这是小键盘数字。
+fn numpad_alias(vk: u32) -> Option<NumpadAlias> {
+    Some(match vk {
+        VK_INSERT => NumpadAlias::Digit(HotkeyKey::Numpad(0)),
+        VK_END => NumpadAlias::Digit(HotkeyKey::Numpad(1)),
+        VK_DOWN => NumpadAlias::Digit(HotkeyKey::Numpad(2)),
+        VK_NEXT => NumpadAlias::Digit(HotkeyKey::Numpad(3)),
+        VK_LEFT => NumpadAlias::Digit(HotkeyKey::Numpad(4)),
+        VK_CLEAR => NumpadAlias::Digit(HotkeyKey::Numpad(5)),
+        VK_RIGHT => NumpadAlias::Digit(HotkeyKey::Numpad(6)),
+        VK_HOME => NumpadAlias::Digit(HotkeyKey::Numpad(7)),
+        VK_UP => NumpadAlias::Digit(HotkeyKey::Numpad(8)),
+        VK_PRIOR => NumpadAlias::Digit(HotkeyKey::Numpad(9)),
+        VK_DELETE => NumpadAlias::Decimal,
+        _ => return None,
+    })
+}
+
+/// 把一次按下换成录入结果。`vk` 是 Win32 虚拟键码。`extended` 是 `WM_KEYDOWN` 的扩展位。
 #[must_use]
-pub fn capture_step(vk: u32, mods: KeyMods) -> CaptureStep {
+pub fn capture_step(vk: u32, mods: KeyMods, extended: bool) -> CaptureStep {
     if is_modifier_key(vk) || vk == VK_PROCESSKEY {
         return CaptureStep::Waiting;
     }
     if vk == VK_ESCAPE && !mods.any() {
         return CaptureStep::Cancelled;
     }
-    let Some(key) = HotkeyKey::from_virtual_key(vk) else {
+    let key = if extended {
+        HotkeyKey::from_virtual_key(vk)
+    } else {
+        match numpad_alias(vk) {
+            Some(NumpadAlias::Digit(key)) => Some(key),
+            Some(NumpadAlias::Decimal) => return CaptureStep::Rejected,
+            None => HotkeyKey::from_virtual_key(vk),
+        }
+    };
+    let Some(key) = key else {
         return CaptureStep::Rejected;
     };
     if key.requires_modifier() && !mods.any() {
@@ -114,11 +162,11 @@ impl HotkeyRecorder {
 
     /// 喂一次按下。结束录入的按键返回结果并退出录入；只按了修饰键，或没有在录入，返回 `None`。
     /// 录入结束之后迟到的按键不会再产生结果。
-    pub fn feed(&mut self, vk: u32, mods: KeyMods) -> Option<Recorded> {
+    pub fn feed(&mut self, vk: u32, mods: KeyMods, extended: bool) -> Option<Recorded> {
         if !self.recording {
             return None;
         }
-        let recorded = match capture_step(vk, mods) {
+        let recorded = match capture_step(vk, mods, extended) {
             CaptureStep::Waiting => return None,
             CaptureStep::Cancelled => Recorded::Cancelled,
             CaptureStep::Captured(hotkey) => Recorded::Captured(hotkey),
@@ -136,6 +184,8 @@ pub enum KeyEvent {
         vk: u32,
         mods: KeyMods,
         repeat: bool,
+        /// `WM_KEYDOWN` lParam 第 24 位。为 0 时，导航键虚拟键码来自小键盘。
+        extended: bool,
     },
     Up {
         vk: u32,
@@ -195,7 +245,9 @@ impl KeyGate {
     pub fn route(&mut self, event: KeyEvent) -> Route {
         if self.recorder.is_recording() {
             return match event {
-                KeyEvent::Down { vk, mods, .. } => match self.recorder.feed(vk, mods) {
+                KeyEvent::Down {
+                    vk, mods, extended, ..
+                } => match self.recorder.feed(vk, mods, extended) {
                     Some(recorded) => {
                         self.draining = Some(vk);
                         Route::Recorded(recorded)
@@ -243,7 +295,7 @@ mod tests {
     };
 
     fn captured(vk: u32, mods: KeyMods) -> String {
-        match capture_step(vk, mods) {
+        match capture_step(vk, mods, true) {
             CaptureStep::Captured(hotkey) => hotkey.canonical(),
             other => panic!("expected a hotkey, got {other:?}"),
         }
@@ -291,7 +343,7 @@ mod tests {
         let keys = (0u32..=0xFF).filter(|vk| HotkeyKey::from_virtual_key(*vk).is_some());
         for vk in keys {
             for item in mods {
-                if let CaptureStep::Captured(hotkey) = capture_step(vk, item) {
+                if let CaptureStep::Captured(hotkey) = capture_step(vk, item, true) {
                     let parsed = parse_hotkey(&hotkey.canonical()).unwrap();
                     assert_eq!(parsed, hotkey);
                     assert_eq!(parsed.virtual_key(), vk);
@@ -305,19 +357,19 @@ mod tests {
         assert_eq!(captured(VK_F1, KeyMods::default()), "F1");
         assert_eq!(captured(VK_F24, KeyMods::default()), "F24");
         assert_eq!(
-            capture_step(u32::from(b'M'), KeyMods::default()),
+            capture_step(u32::from(b'M'), KeyMods::default(), true),
             CaptureStep::Rejected
         );
         assert_eq!(
-            capture_step(u32::from(b'5'), KeyMods::default()),
+            capture_step(u32::from(b'5'), KeyMods::default(), true),
             CaptureStep::Rejected
         );
         assert_eq!(
-            capture_step(0x20, KeyMods::default()),
+            capture_step(0x20, KeyMods::default(), true),
             CaptureStep::Rejected
         );
         assert_eq!(
-            capture_step(VK_F24 + 1, KeyMods::default()),
+            capture_step(VK_F24 + 1, KeyMods::default(), true),
             CaptureStep::Rejected
         );
     }
@@ -363,19 +415,116 @@ mod tests {
             assert_eq!(captured(vk, mods), text);
             let parsed = parse_hotkey(text).unwrap();
             assert_eq!(parsed.virtual_key(), vk);
-            assert_eq!(capture_step(vk, mods), CaptureStep::Captured(parsed));
+            assert_eq!(capture_step(vk, mods, true), CaptureStep::Captured(parsed));
         }
         assert_eq!(
-            capture_step(0x20, KeyMods::default()),
+            capture_step(0x20, KeyMods::default(), true),
             CaptureStep::Rejected
         );
         assert!(parse_hotkey("Space").is_err());
     }
 
     #[test]
+    fn non_extended_navigation_keys_are_numpad_digits() {
+        let ctrl = KeyMods {
+            control: true,
+            ..KeyMods::default()
+        };
+        let digits = [
+            (VK_INSERT, "Ctrl+Numpad0"),
+            (VK_END, "Ctrl+Numpad1"),
+            (VK_DOWN, "Ctrl+Numpad2"),
+            (VK_NEXT, "Ctrl+Numpad3"),
+            (VK_LEFT, "Ctrl+Numpad4"),
+            (VK_CLEAR, "Ctrl+Numpad5"),
+            (VK_RIGHT, "Ctrl+Numpad6"),
+            (VK_HOME, "Ctrl+Numpad7"),
+            (VK_UP, "Ctrl+Numpad8"),
+            (VK_PRIOR, "Ctrl+Numpad9"),
+        ];
+        for (vk, text) in digits {
+            let parsed = parse_hotkey(text).unwrap();
+            assert_eq!(
+                capture_step(vk, ctrl, false),
+                CaptureStep::Captured(parsed),
+                "{text}"
+            );
+            if vk == VK_CLEAR {
+                assert_eq!(capture_step(vk, ctrl, true), CaptureStep::Rejected);
+            } else {
+                let extended = match capture_step(vk, ctrl, true) {
+                    CaptureStep::Captured(hotkey) => hotkey,
+                    other => panic!("{text}: {other:?}"),
+                };
+                assert_eq!(extended.virtual_key(), vk, "{text}");
+                assert_ne!(extended, parsed, "{text}");
+            }
+        }
+        assert_eq!(capture_step(VK_DELETE, ctrl, false), CaptureStep::Rejected);
+        assert_eq!(
+            capture_step(VK_DELETE, ctrl, true),
+            CaptureStep::Captured(parse_hotkey("Ctrl+Delete").unwrap())
+        );
+        assert_eq!(
+            capture_step(0x64, ctrl, false),
+            CaptureStep::Captured(parse_hotkey("Ctrl+Numpad4").unwrap())
+        );
+
+        let shifted = KeyMods {
+            control: true,
+            shift: true,
+            ..KeyMods::default()
+        };
+        assert_eq!(
+            capture_step(VK_LEFT, shifted, false),
+            CaptureStep::Captured(parse_hotkey("Ctrl+Shift+Numpad4").unwrap())
+        );
+        assert_eq!(
+            capture_step(VK_LEFT, shifted, true),
+            CaptureStep::Captured(parse_hotkey("Ctrl+Shift+Left").unwrap())
+        );
+    }
+
+    #[test]
+    fn the_gate_passes_the_extended_bit_into_the_same_rule() {
+        let ctrl = KeyMods {
+            control: true,
+            ..KeyMods::default()
+        };
+        let mut gate = KeyGate::new();
+        gate.begin();
+        assert_eq!(
+            gate.route(down_ext(VK_LEFT, ctrl, false)),
+            Route::Recorded(Recorded::Captured(parse_hotkey("Ctrl+Numpad4").unwrap()))
+        );
+
+        gate.begin();
+        assert_eq!(
+            gate.route(down_ext(VK_LEFT, ctrl, true)),
+            Route::Recorded(Recorded::Captured(parse_hotkey("Ctrl+Left").unwrap()))
+        );
+
+        gate.begin();
+        assert_eq!(
+            gate.route(down_ext(VK_DELETE, ctrl, false)),
+            Route::Recorded(Recorded::Rejected)
+        );
+
+        gate.begin();
+        assert_eq!(
+            gate.route(down_ext(VK_CLEAR, ctrl, false)),
+            Route::Recorded(Recorded::Captured(parse_hotkey("Ctrl+Numpad5").unwrap()))
+        );
+    }
+
+    #[test]
     fn keys_outside_the_table_are_rejected() {
         for vk in [0x0D, 0x09, 0x08, 0x6C, 0x6E, 0x2C] {
-            assert_eq!(capture_step(vk, CTRL_ALT), CaptureStep::Rejected, "{vk:#x}");
+            assert_eq!(
+                capture_step(vk, CTRL_ALT, true),
+                CaptureStep::Rejected,
+                "{vk:#x}"
+            );
         }
     }
 
@@ -395,37 +544,44 @@ mod tests {
             VK_RMENU,
             VK_PROCESSKEY,
         ] {
-            assert_eq!(capture_step(vk, CTRL_ALT), CaptureStep::Waiting, "{vk:#x}");
+            assert_eq!(
+                capture_step(vk, CTRL_ALT, true),
+                CaptureStep::Waiting,
+                "{vk:#x}"
+            );
         }
     }
 
     #[test]
     fn escape_cancels_only_without_a_modifier() {
         assert_eq!(
-            capture_step(VK_ESCAPE, KeyMods::default()),
+            capture_step(VK_ESCAPE, KeyMods::default(), true),
             CaptureStep::Cancelled
         );
-        assert_eq!(capture_step(VK_ESCAPE, CTRL_ALT), CaptureStep::Rejected);
+        assert_eq!(
+            capture_step(VK_ESCAPE, CTRL_ALT, true),
+            CaptureStep::Rejected
+        );
     }
 
     #[test]
     fn recorder_ends_on_the_first_decisive_key_and_ignores_later_ones() {
         let mut recorder = HotkeyRecorder::new();
-        assert_eq!(recorder.feed(u32::from(b'M'), CTRL_ALT), None);
+        assert_eq!(recorder.feed(u32::from(b'M'), CTRL_ALT, false), None);
         assert!(recorder.start());
         assert!(!recorder.start());
         assert!(recorder.is_recording());
-        assert_eq!(recorder.feed(VK_CONTROL, CTRL_ALT), None);
-        assert_eq!(recorder.feed(VK_MENU, CTRL_ALT), None);
+        assert_eq!(recorder.feed(VK_CONTROL, CTRL_ALT, false), None);
+        assert_eq!(recorder.feed(VK_MENU, CTRL_ALT, false), None);
         assert!(recorder.is_recording());
 
-        let done = recorder.feed(u32::from(b'N'), CTRL_ALT);
+        let done = recorder.feed(u32::from(b'N'), CTRL_ALT, false);
         assert_eq!(
             done,
             Some(Recorded::Captured(parse_hotkey("Ctrl+Alt+N").unwrap()))
         );
         assert!(!recorder.is_recording());
-        assert_eq!(recorder.feed(u32::from(b'K'), CTRL_ALT), None);
+        assert_eq!(recorder.feed(u32::from(b'K'), CTRL_ALT, false), None);
     }
 
     #[test]
@@ -433,26 +589,34 @@ mod tests {
         let mut recorder = HotkeyRecorder::new();
         recorder.start();
         assert_eq!(
-            recorder.feed(VK_ESCAPE, KeyMods::default()),
+            recorder.feed(VK_ESCAPE, KeyMods::default(), false),
             Some(Recorded::Cancelled)
         );
         assert!(!recorder.is_recording());
 
         recorder.start();
-        assert_eq!(recorder.feed(0x0D, CTRL_ALT), Some(Recorded::Rejected));
+        assert_eq!(
+            recorder.feed(0x0D, CTRL_ALT, false),
+            Some(Recorded::Rejected)
+        );
         assert!(!recorder.is_recording());
 
         recorder.start();
         recorder.stop();
-        assert_eq!(recorder.feed(u32::from(b'M'), CTRL_ALT), None);
+        assert_eq!(recorder.feed(u32::from(b'M'), CTRL_ALT, false), None);
         assert!(recorder.start());
     }
 
     fn down(vk: u32, mods: KeyMods) -> KeyEvent {
+        down_ext(vk, mods, false)
+    }
+
+    fn down_ext(vk: u32, mods: KeyMods, extended: bool) -> KeyEvent {
         KeyEvent::Down {
             vk,
             mods,
             repeat: false,
+            extended,
         }
     }
 
@@ -496,7 +660,8 @@ mod tests {
             gate.route(KeyEvent::Down {
                 vk: VK_ESCAPE,
                 mods: KeyMods::default(),
-                repeat: true
+                repeat: true,
+                extended: false,
             }),
             Route::Swallow
         );
