@@ -300,7 +300,8 @@ impl Bar {
             self.store.log_warn(&format!("搜索条没有显示：{err}"));
             return;
         }
-        if let Some(hwnd) = self.hwnd() {
+        let hwnd = self.hwnd();
+        let foreground = if let Some(hwnd) = hwnd {
             // 跨 DPI 移动时系统建议的矩形可能偏离目标位置，显示后再对一次。
             if bar_win::window_origin(hwnd) != Some(origin) {
                 bar_win::move_window(hwnd, origin.0, origin.1);
@@ -308,7 +309,26 @@ impl Bar {
             if bar_win::window_origin(hwnd).is_some_and(|actual| actual.1 != origin.1) {
                 self.refit_results_to_window();
             }
-            bar_win::bring_to_front(hwnd);
+            Some(bar_win::bring_to_front(hwnd))
+        } else {
+            None
+        };
+        // 与面板同一套前台办法。没到前台就收起，避免 visible 为真但窗口在别的程序后面。
+        // 规格没写搜索条拿不到前台时怎么办，待定。
+        match foreground {
+            Some(bar_win::ForegroundTake::Plain) => {}
+            Some(bar_win::ForegroundTake::AfterInput) => {
+                self.store.log_info("搜索条在注入输入后到前台");
+            }
+            Some(bar_win::ForegroundTake::Failed) | None => {
+                self.store.log_warn(if hwnd.is_none() {
+                    "搜索条没有窗口句柄，已收起"
+                } else {
+                    "搜索条没有到前台，已收起"
+                });
+                self.hide();
+                return;
+            }
         }
         self.ui.invoke_focus_input();
     }

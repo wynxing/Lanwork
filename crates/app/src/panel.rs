@@ -446,11 +446,30 @@ impl Controller {
             self.store.log_warn(&format!("面板没有显示：{err}"));
             return;
         }
-        if let Some(hwnd) = self.hwnd() {
-            if bar_win::window_origin(hwnd) != Some(origin) && !self.focused {
-                bar_win::move_window(hwnd, origin.0, origin.1);
+        let hwnd = self.hwnd();
+        if let Some(hwnd) = hwnd
+            && bar_win::window_origin(hwnd) != Some(origin)
+            && !self.focused
+        {
+            bar_win::move_window(hwnd, origin.0, origin.1);
+        }
+        // 没拿到前台就收起。visible 已经是真，但失焦收起还要求曾经拿到焦点；
+        // 焦点没到时会停在已显示，下一次热角再 show 也出不来。规格没写这种失败，待定。
+        match hwnd.map(bar_win::bring_to_front) {
+            Some(bar_win::ForegroundTake::Plain) => {}
+            Some(bar_win::ForegroundTake::AfterInput) => {
+                self.store.log_info("面板在注入输入后到前台");
             }
-            bar_win::bring_to_front(hwnd);
+            Some(bar_win::ForegroundTake::Failed) | None => {
+                self.store.log_warn(if hwnd.is_none() {
+                    "面板没有窗口句柄，已收起"
+                } else {
+                    "面板没有到前台，已收起"
+                });
+                self.focused = false;
+                self.hide();
+                return;
+            }
         }
         self.ui.invoke_focus_root();
         self.ui.invoke_ensure_row_visible(self.selected_index());

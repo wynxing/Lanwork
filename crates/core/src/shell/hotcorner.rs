@@ -150,6 +150,19 @@ pub fn monitor_suppressed(
     }
 }
 
+/// 停留状态。轮询线程只在它变化时记日志，不把每一拍都记下来。
+///
+/// 这是实现里的观察，不是产品规格里的状态名。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WatchPhase {
+    /// 武装着，没有在计时。关闭时也是这个。
+    Idle,
+    /// 在角内，停留还没到 350ms。
+    Dwelling,
+    /// 到点之后解除武装，等光标离开。
+    Disarmed,
+}
+
 /// 停留和当前选中的角。换角或关掉时清掉未完成的停留。
 #[derive(Clone, Debug)]
 pub struct CornerWatch {
@@ -165,6 +178,23 @@ impl CornerWatch {
             corner,
             armed: true,
             since: None,
+        }
+    }
+
+    #[must_use]
+    pub fn corner(&self) -> HotCorner {
+        self.corner
+    }
+
+    /// 这一拍的停留状态。
+    #[must_use]
+    pub fn phase(&self) -> WatchPhase {
+        if !self.armed {
+            WatchPhase::Disarmed
+        } else if self.since.is_some() {
+            WatchPhase::Dwelling
+        } else {
+            WatchPhase::Idle
         }
     }
 
@@ -339,6 +369,84 @@ mod tests {
             false,
             t0 + at(5_000)
         ));
+    }
+
+    #[test]
+    fn phase_tracks_dwell_open_leave_and_suppress() {
+        let mut watch = CornerWatch::new(HotCorner::TopRight);
+        let t0 = Instant::now();
+        let monitors = [screen()];
+        assert_eq!(watch.phase(), WatchPhase::Idle);
+        assert_eq!(watch.corner(), HotCorner::TopRight);
+        assert!(!watch_at(
+            &mut watch,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            None,
+            false,
+            t0
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Dwelling);
+        assert!(watch_at(
+            &mut watch,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            None,
+            false,
+            t0 + at(350)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Disarmed);
+        assert!(!watch_at(
+            &mut watch,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            None,
+            false,
+            t0 + at(700)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Disarmed);
+        assert!(!watch_at(
+            &mut watch,
+            HotCorner::TopRight,
+            (100, 100),
+            &monitors,
+            None,
+            false,
+            t0 + at(800)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Idle);
+
+        let mut suppressed = CornerWatch::new(HotCorner::TopRight);
+        let video = Foreground {
+            class_name: "Chrome_WidgetWin_1",
+            rect: Some(screen()),
+        };
+        assert!(!watch_at(
+            &mut suppressed,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            Some(video),
+            false,
+            t0
+        ));
+        assert_eq!(suppressed.phase(), WatchPhase::Dwelling);
+        assert!(!watch_at(
+            &mut suppressed,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            Some(video),
+            false,
+            t0 + at(350)
+        ));
+        assert_eq!(suppressed.phase(), WatchPhase::Disarmed);
+        assert!(!suppressed.poll(HotCorner::Off, None, t0 + at(400)));
+        assert_eq!(suppressed.corner(), HotCorner::Off);
+        assert_eq!(suppressed.phase(), WatchPhase::Idle);
     }
 
     #[test]

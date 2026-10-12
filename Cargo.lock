@@ -2725,6 +2725,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lanwork-foreground"
+version = "0.1.0"
+dependencies = [
+ "lanwork-core",
+ "windows",
+]
+
+[[package]]
 name = "lanwork-render-spike"
 version = "0.1.0"
 dependencies = [

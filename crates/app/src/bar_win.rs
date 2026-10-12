@@ -3,7 +3,9 @@
 use std::cell::Cell;
 use std::ffi::c_void;
 
-use lanwork_core::shell::{Backdrop, BackdropInput, WorkArea, choose_backdrop};
+use lanwork_core::shell::{
+    Backdrop, BackdropInput, NudgeWait, WorkArea, choose_backdrop, nudge_wait, tick_after,
+};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
@@ -19,12 +21,17 @@ use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetLastInputInfo, INPUT, INPUT_0, INPUT_MOUSE, LASTINPUTINFO, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_MOVE_NOCOALESCE, MOUSEINPUT, SendInput,
+};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_STYLE, GetCursorPos, GetWindowLongPtrW, GetWindowRect, STYLESTRUCT, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_STYLECHANGING,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+    BringWindowToTop, GA_ROOT, GWL_STYLE, GetAncestor, GetCursorPos, GetForegroundWindow,
+    GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, STYLESTRUCT, SW_RESTORE, SW_SHOW,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY,
+    WM_STYLECHANGING, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
 
 use crate::registry::read_transparency_enabled;
@@ -305,10 +312,133 @@ unsafe extern "system" fn strip_caption_buttons(
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
-pub(crate) fn bring_to_front(hwnd: HWND) {
-    // SAFETY: 本进程刚收到热键消息，系统允许它把自己的窗口放到前台。失败时窗口仍显示。
+/// 这次置前走到了哪一步。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ForegroundTake {
+    /// 本来就是前台，或第一次 `SetForegroundWindow` 就成功。没有注入输入。
+    Plain,
+    /// 注入一次鼠标移动并等它被取走之后才到前台。
+    AfterInput,
+    Failed,
+}
+
+/// 把本进程的窗口放到前台并激活。
+///
+/// 热角、托盘菜单和别的程序里按下的热键，都不算「用户正在操作这个窗口」。
+/// 前台锁会拒绝单独的 `SetForegroundWindow`：调用进程不是前台，也不是最近一次输入的接收者。
+/// 窗口可以已经可见，但落在别的窗口后面。收到 `WM_HOTKEY` 的进程被允许置前，所以热键这一步经常就够。
+///
+/// 还不是前台时，本进程 `SendInput` 一次相对位移为 0 的鼠标移动，等原始输入线程把它取走，
+/// 再 `SetForegroundWindow`。这样「本进程收到了最后一次输入」才成立。`SendInput` 返回时事件
+/// 只是进了输入流，立刻置前会和输入线程竞争。不送任何按键：单独的 Alt 抬起不是文档里的
+/// 「用户按下 Alt」，还会以 `WM_SYSKEYUP` 进到当前前台程序的菜单或正在进行的中文输入。
+/// 不调用 `AttachThreadInput`：置前会同步把激活消息发给前台线程，两边的输入队列附在一起时
+/// 可能互相等待。相对位移 0 不会移动光标；系统若把它丢掉，等待结束后再试一次置前，仍然失败
+/// 就由调用方收起。空句柄直接失败，不调用窗口 API。
+pub(crate) fn bring_to_front(hwnd: HWND) -> ForegroundTake {
+    if hwnd.0.is_null() {
+        return ForegroundTake::Failed;
+    }
+    if is_foreground(hwnd) {
+        return ForegroundTake::Plain;
+    }
+    activate(hwnd);
+    if is_foreground(hwnd) {
+        return ForegroundTake::Plain;
+    }
+    let before = last_input_tick();
+    if !send_relative_zero() {
+        return ForegroundTake::Failed;
+    }
+    wait_for_nudge(before);
+    activate(hwnd);
+    if is_foreground(hwnd) {
+        ForegroundTake::AfterInput
+    } else {
+        ForegroundTake::Failed
+    }
+}
+
+fn is_foreground(hwnd: HWND) -> bool {
+    // SAFETY: 没有参数。没有前台窗口时句柄为空。
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground == hwnd {
+        return true;
+    }
+    if foreground.0.is_null() || hwnd.0.is_null() {
+        return false;
+    }
+    // SAFETY: 只读窗口的根，不保留句柄以外的状态。
+    (unsafe { GetAncestor(foreground, GA_ROOT) }) == hwnd
+}
+
+fn activate(hwnd: HWND) {
+    // SAFETY: hwnd 是本进程的窗口。已经可见时不再 ShowWindow，避免多一次失败的激活
+    // 把失焦消息排进来。最小化时先还原；还不可见时再显示。然后提到 Z 序顶部并请求前台。
     unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        } else if !IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        let _ = BringWindowToTop(hwnd);
         let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+fn last_input_tick() -> Option<u32> {
+    let mut info = LASTINPUTINFO {
+        cbSize: u32::try_from(std::mem::size_of::<LASTINPUTINFO>()).ok()?,
+        dwTime: 0,
+    };
+    // SAFETY: cbSize 已设为结构体大小，指针指向局部变量。
+    unsafe { GetLastInputInfo(&mut info) }
+        .as_bool()
+        .then_some(info.dwTime)
+}
+
+/// 相对位移 0，并要求不要和别的移动合并。没有按下、抬起或滚轮。
+fn send_relative_zero() -> bool {
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    // SAFETY: 输入是本函数的局部变量，调用期间有效。只送一次鼠标移动。
+    let sent = unsafe {
+        SendInput(
+            &[input],
+            i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0),
+        )
+    };
+    sent == 1
+}
+
+/// 等到注入被取走，或等到上限。不抽消息：调用方还借着面板或搜索条的状态。
+fn wait_for_nudge(before: Option<u32>) {
+    let start = std::time::Instant::now();
+    let mut settled = false;
+    loop {
+        let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let advanced = before.is_some_and(|previous| {
+            last_input_tick().is_some_and(|current| tick_after(previous, current))
+        });
+        match nudge_wait(elapsed, advanced, settled) {
+            NudgeWait::Done => break,
+            NudgeWait::Sleep { ms } => std::thread::sleep(std::time::Duration::from_millis(ms)),
+            NudgeWait::Settle { ms } => {
+                settled = true;
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
     }
 }
 
@@ -375,4 +505,17 @@ fn set_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: &T) -> boo
     // SAFETY: value 指向一个大小为 size 的有效值，调用期间不被修改。
     unsafe { DwmSetWindowAttribute(hwnd, attribute, std::ptr::from_ref(value).cast(), size) }
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_window_is_not_brought_forward() {
+        assert!(matches!(
+            bring_to_front(HWND::default()),
+            ForegroundTake::Failed
+        ));
+    }
 }
