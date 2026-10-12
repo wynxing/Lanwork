@@ -363,6 +363,85 @@ mod tests {
     }
 
     #[test]
+    fn launch_at_startup_and_hot_corner_persist_across_reopen() {
+        let (_temp, store, commands) = open();
+        let saved = commands.set_launch_at_startup(true).unwrap();
+        assert!(saved.launch_at_startup);
+        commands.set_hot_corner(HotCorner::BottomLeft).unwrap();
+        for corner in [
+            HotCorner::TopLeft,
+            HotCorner::BottomRight,
+            HotCorner::Off,
+            HotCorner::TopRight,
+        ] {
+            commands.set_hot_corner(corner).unwrap();
+            let again = ConfigCommands::open(store.clone()).unwrap();
+            assert_eq!(again.current().hot_corner, corner);
+            assert!(again.current().launch_at_startup);
+        }
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["launchAtStartup"], true);
+        assert_eq!(saved["hotCorner"], "topRight");
+        assert_eq!(saved["searchHotkey"], "Ctrl+Alt+M");
+
+        commands.set_launch_at_startup(false).unwrap();
+        let again = ConfigCommands::open(store).unwrap();
+        assert!(!again.current().launch_at_startup);
+    }
+
+    #[test]
+    fn unchanged_value_does_not_write_or_publish() {
+        let (_temp, store, commands) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let events = store.subscribe();
+        commands.set_launch_at_startup(false).unwrap();
+        commands.set_hot_corner(HotCorner::TopRight).unwrap();
+        assert!(!path.exists());
+        assert!(events.try_recv().is_err());
+
+        commands.set_hot_corner(HotCorner::Off).unwrap();
+        assert_eq!(events.try_recv().unwrap().kind, EntityKind::Config);
+        let before = std::fs::read(&path).unwrap();
+        commands.set_hot_corner(HotCorner::Off).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_failed_write_keeps_memory_file_and_other_fields() {
+        let (_temp, store, commands) = open();
+        let mut start = commands.current();
+        start.theme = Theme::Dark;
+        start.search_hotkey = "Ctrl+Alt+N".into();
+        commands.replace(start).unwrap();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let blocker = path.with_file_name("config.json.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        let events = store.subscribe();
+
+        let err = commands.set_launch_at_startup(true).unwrap_err();
+        assert!(matches!(err, ConfigError::Store(_)), "{err}");
+        let err = commands.set_hot_corner(HotCorner::Off).unwrap_err();
+        assert!(matches!(err, ConfigError::Store(_)), "{err}");
+
+        let config = commands.current();
+        assert!(!config.launch_at_startup);
+        assert_eq!(config.hot_corner, HotCorner::TopRight);
+        assert_eq!(config.theme, Theme::Dark);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(events.try_recv().is_err());
+
+        std::fs::remove_dir(&blocker).unwrap();
+        commands.set_hot_corner(HotCorner::Off).unwrap();
+        let again = ConfigCommands::open(store).unwrap();
+        assert_eq!(again.current().hot_corner, HotCorner::Off);
+        assert_eq!(again.current().search_hotkey, "Ctrl+Alt+N");
+    }
+
+    #[test]
     fn quiet_hours_object_is_rejected() {
         let (_temp, _store, commands) = open();
         let mut next = commands.current();

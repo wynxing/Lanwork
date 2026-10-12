@@ -75,6 +75,23 @@ pub fn apply_hotkeys<P: HotkeyPort>(
     Ok(())
 }
 
+/// 录入热键期间卸掉 `current`，否则按下已注册的组合会被系统当成热键，窗口收不到这次按键。
+///
+/// 只动端口，不写配置。录入结束时先 [`resume_hotkeys`] 再保存。
+pub fn suspend_hotkeys<P: HotkeyPort>(port: &mut P, current: &[RegisteredHotkey]) {
+    for item in current {
+        port.unregister(item.id);
+    }
+}
+
+/// 把 [`suspend_hotkeys`] 卸掉的 `current` 注册回去。有一条被别的程序占用时，全部不注册。
+pub fn resume_hotkeys<P: HotkeyPort>(
+    port: &mut P,
+    current: &[RegisteredHotkey],
+) -> Result<(), BindError> {
+    apply_hotkeys(port, &[], current)
+}
+
 /// 修改热键失败。注册失败时配置没有写入。
 #[derive(Debug)]
 pub enum SaveHotkeyError {
@@ -123,6 +140,20 @@ pub fn save_hotkeys<P: HotkeyPort>(
         CommitError::Occupied(err) => SaveHotkeyError::Bind(err),
         CommitError::Persist(err) => SaveHotkeyError::Config(err),
     })
+}
+
+/// 设置页改搜索条热键：面板热键保持配置里的值，只换搜索条的。
+///
+/// 走 [`save_hotkeys`]：字符串不合法、与面板热键相同、被别的程序占用或写盘失败时，
+/// 端口和 `config.json` 都保持原样。
+pub fn save_search_hotkey<P: HotkeyPort>(
+    port: &mut P,
+    commands: &ConfigCommands,
+    current: &[RegisteredHotkey],
+    search: &str,
+) -> Result<Vec<RegisteredHotkey>, SaveHotkeyError> {
+    let panel = commands.current().panel_hotkey;
+    save_hotkeys(port, commands, current, search, panel.as_deref())
 }
 
 #[derive(Debug)]
@@ -651,6 +682,203 @@ mod tests {
         );
         assert_eq!(port.live, live_map(&saved));
         assert_ne!(std::fs::read(&path).unwrap(), before);
+    }
+
+    fn config_with_panel_hotkey() -> (TempDir, crate::storage::Store, ConfigCommands) {
+        let (temp, store, commands) = open_config();
+        let mut start = commands.current();
+        start.panel_hotkey = Some("Ctrl+Shift+P".into());
+        commands.replace(start).unwrap();
+        (temp, store, commands)
+    }
+
+    #[test]
+    fn suspend_frees_every_key_and_resume_registers_the_same_ones() {
+        let current = desired_bindings(&Config {
+            panel_hotkey: Some("Ctrl+Shift+P".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+        assert_eq!(port.live, live_map(&current));
+
+        suspend_hotkeys(&mut port, &current);
+        assert!(port.live.is_empty());
+        suspend_hotkeys(&mut port, &current);
+        assert!(port.live.is_empty());
+
+        resume_hotkeys(&mut port, &current).unwrap();
+        assert_eq!(port.live, live_map(&current));
+    }
+
+    #[test]
+    fn resume_registers_nothing_when_another_program_took_one_meanwhile() {
+        let current = desired_bindings(&Config {
+            panel_hotkey: Some("Ctrl+Shift+P".into()),
+            ..Config::default()
+        })
+        .unwrap();
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: Some(current[1].hotkey),
+        };
+        let err = resume_hotkeys(&mut port, &current).unwrap_err();
+        assert_eq!(
+            err,
+            BindError::Occupied {
+                id: PANEL_HOTKEY_ID
+            }
+        );
+        assert_eq!(err.to_string(), "热键已被占用");
+        assert!(port.live.is_empty());
+    }
+
+    #[test]
+    fn recording_pressing_the_same_combo_again_changes_nothing() {
+        let (_temp, store, commands) = open_config();
+        commands.replace(commands.current()).unwrap();
+        let current = desired_bindings(&commands.current()).unwrap();
+        let path = store
+            .document_path(&crate::storage::DocumentId::Config)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let events = store.subscribe();
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+
+        suspend_hotkeys(&mut port, &current);
+        resume_hotkeys(&mut port, &current).unwrap();
+        let saved = save_search_hotkey(&mut port, &commands, &current, "Ctrl+Alt+M").unwrap();
+
+        assert_eq!(saved, current);
+        assert_eq!(port.live, live_map(&current));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn search_hotkey_save_keeps_the_panel_hotkey_and_refuses_the_same_combo() {
+        let (_temp, store, commands) = config_with_panel_hotkey();
+        let current = desired_bindings(&commands.current()).unwrap();
+        let path = store
+            .document_path(&crate::storage::DocumentId::Config)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+
+        let err = save_search_hotkey(&mut port, &commands, &current, "shift+ctrl+p").unwrap_err();
+        assert_eq!(err.to_string(), "搜索条热键与面板热键相同");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(port.live, live_map(&current));
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+M");
+
+        let saved = save_search_hotkey(&mut port, &commands, &current, "Ctrl+Alt+K").unwrap();
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+K");
+        assert_eq!(
+            commands.current().panel_hotkey.as_deref(),
+            Some("Ctrl+Shift+P")
+        );
+        assert_eq!(port.live, live_map(&saved));
+        assert_eq!(saved[1], current[1]);
+    }
+
+    #[test]
+    fn an_invalid_hotkey_leaves_the_working_one_registered_and_the_file_alone() {
+        let (_temp, store, commands) = open_config();
+        commands.replace(commands.current()).unwrap();
+        let current = desired_bindings(&commands.current()).unwrap();
+        let path = store
+            .document_path(&crate::storage::DocumentId::Config)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+
+        for text in [
+            "",
+            "   ",
+            "Ctrl+Nope",
+            "Ctrl+Alt+Space",
+            "Ctrl+Alt",
+            "Ctrl+Alt+M+K",
+        ] {
+            let err = save_search_hotkey(&mut port, &commands, &current, text).unwrap_err();
+            assert!(
+                matches!(err.to_string().as_str(), "热键无效" | "搜索条热键不能为空"),
+                "{text}: {err}"
+            );
+            assert_eq!(port.live, live_map(&current), "{text}");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{text}");
+            assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+M", "{text}");
+        }
+    }
+
+    #[test]
+    fn a_failed_config_write_unregisters_the_new_key_and_keeps_the_old_one() {
+        let (_temp, store, commands) = open_config();
+        commands.replace(commands.current()).unwrap();
+        let current = desired_bindings(&commands.current()).unwrap();
+        let path = store
+            .document_path(&crate::storage::DocumentId::Config)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        std::fs::create_dir(path.with_file_name("config.json.tmp")).unwrap();
+        let events = store.subscribe();
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: None,
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+
+        let err = save_search_hotkey(&mut port, &commands, &current, "Ctrl+Alt+K").unwrap_err();
+        assert!(
+            matches!(err, SaveHotkeyError::Config(ConfigError::Store(_))),
+            "{err}"
+        );
+        assert_eq!(port.live, live_map(&current));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+M");
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn saving_a_key_another_program_holds_keeps_the_old_registration_and_file() {
+        let (_temp, store, commands) = open_config();
+        commands.replace(commands.current()).unwrap();
+        let current = desired_bindings(&commands.current()).unwrap();
+        let path = store
+            .document_path(&crate::storage::DocumentId::Config)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut taken = commands.current();
+        taken.search_hotkey = "Ctrl+Alt+K".into();
+        let occupied = desired_bindings(&taken).unwrap()[0].hotkey;
+        let mut port = MapPort {
+            live: BTreeMap::new(),
+            fail_key: Some(occupied),
+        };
+        apply_hotkeys(&mut port, &[], &current).unwrap();
+
+        let err = save_search_hotkey(&mut port, &commands, &current, "Ctrl+Alt+K").unwrap_err();
+        assert!(matches!(err, SaveHotkeyError::Bind(_)));
+        assert_eq!(err.to_string(), "热键已被占用");
+        assert_eq!(port.live, live_map(&current));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(commands.current().search_hotkey, "Ctrl+Alt+M");
     }
 
     fn open_config() -> (TempDir, crate::storage::Store, ConfigCommands) {

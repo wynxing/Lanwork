@@ -5,6 +5,7 @@
 
 mod note_edit;
 mod note_page;
+mod settings_page;
 mod shelf_dnd;
 mod shelf_page;
 mod todo_page;
@@ -16,6 +17,12 @@ pub use note_page::{
     restore_float, tag_names, trash_rows,
 };
 
+pub use settings_page::{
+    HOT_CORNER_CHOICES, HOT_CORNER_TITLE, LAUNCH_AT_STARTUP_TITLE, RECORDING_STATE,
+    SEARCH_HOTKEY_TITLE, SettingsRows, StartupChange, change_hot_corner, change_launch_at_startup,
+    hot_corner_at, hot_corner_index, hot_corner_title, hot_corner_titles, settings_rows,
+    startup_error_text,
+};
 pub use shelf_dnd::{
     DragContinue, DropZone, EFFECT_COPY, EFFECT_LINK, EFFECT_MOVE, EFFECT_NONE, OUTGOING_EFFECTS,
     continue_drag, drop_effect, passed_drag_threshold,
