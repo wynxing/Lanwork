@@ -981,9 +981,9 @@ mod tests {
         assert_eq!(lerp_box(from, to, 0, 8), from);
         assert_eq!(lerp_box(from, to, 8, 8), to);
         assert_eq!(lerp_box(from, to, 4, 8).width, 104);
-        assert_eq!(moved_enough((0, 0), (5, 0), 96), true);
-        assert_eq!(moved_enough((0, 0), (4, 0), 96), false);
-        assert_eq!(moved_enough((0, 0), (7, 0), 144), true);
+        assert!(moved_enough((0, 0), (5, 0), 96));
+        assert!(!moved_enough((0, 0), (4, 0), 96));
+        assert!(moved_enough((0, 0), (7, 0), 144));
         assert_eq!(dpi_at(&[screen(100, 0, 200, 100, 144)], 150, 10), 144);
         assert_eq!(dpi_at(&[screen(100, 0, 200, 100, 144)], 0, 0), 96);
     }
