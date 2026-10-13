@@ -492,7 +492,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 外部拖入和拖出用原生 OLE。Slint 1.18.1 的窗口内拖放不能代替它，原因见「运行时」。2026-10-09 的资源管理器手测见 [roadmap.md](roadmap.md)。`24b7624` 上长路径拖入失败；同日 10:56（UTC+8）在 `3311ecc` 上拖入通过。同日 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。`--slint` 拖放没有路径。通过条件表七条都通过，该项按该表通过，产品用 OLE。下面是 `spikes/dnd` 里已经观察到的做法。
 
-- 拖入：事件循环线程调用 `OleInitialize`。本机该线程是 `APTTYPE_MAINSTA`（主 STA），不是 MTA。`MainWindow::new` 之前 COM 尚未初始化；进入 winit 事件循环后由 winit 初始化。拿到 HWND 后 `RegisterDragDrop` 返回 `DRAGDROP_E_ALREADYREGISTERED`，于是 `RevokeDragDrop` 再注册自己的 `IDropTarget`。注册之后窗口属性 `OleDropTargetInterface` 的指针与自己的接口相同。验证程序只接受 `CF_HDROP`。产品里的放下目标另外识别「网页引用」里的网址格式；读到网址时不再取 `CF_HDROP`。指针在收纳区域外返回 `DROPEFFECT_NONE`；区域内只从源提供的效果里选复制，其次快捷方式，不返回移动。验证程序没有标签，用一个矩形代替收纳区域，区域外的判定有单元测试。产品里仍只在收纳标签显示时接受放下。
+- 拖入：事件循环线程调用 `OleInitialize`。本机该线程是 `APTTYPE_MAINSTA`（主 STA），不是 MTA。`MainWindow::new` 之前 COM 尚未初始化；进入 winit 事件循环后由 winit 初始化。拿到 HWND 后 `RegisterDragDrop` 返回 `DRAGDROP_E_ALREADYREGISTERED`，于是 `RevokeDragDrop` 再注册自己的 `IDropTarget`。注册之后窗口属性 `OleDropTargetInterface` 的指针与自己的接口相同。验证程序只接受 `CF_HDROP`。产品里的放下目标另外识别「网页引用」里的网址格式。`DragEnter` 只 `QueryGetData`，不 `GetData`。`Drop` 才 `GetData`，先试 `CF_HTML`、`UniformResourceLocatorW`、`text/x-moz-url`、`CF_UNICODETEXT`。读到网址时不再取 `CF_HDROP` 或 `FileContents`。带 `FileGroupDescriptorW` 但解析不出网址时拒绝这次放下，不把虚拟 `.url` 存成路径。指针在收纳区域外返回 `DROPEFFECT_NONE`；区域内只从源提供的效果里选复制，其次快捷方式，不返回移动。验证程序没有标签，用一个矩形代替收纳区域，区域外的判定有单元测试。产品里仍只在收纳标签显示时接受放下。
 - 拖出：按下后，物理像素位移严格超过 `SM_CXDRAG` 或 `SM_CYDRAG` 才调用 `DoDragDrop`。`IDataObject` 用 `IShellItemArray::BindToHandler(BHID_DataObject)`。允许的效果只有 `DROPEFFECT_COPY | DROPEFFECT_LINK`。取消由 `IDropSource::QueryContinueDrag` 返回 `DRAGDROP_S_CANCEL`。`DoDragDrop` 的模态循环会吃掉鼠标抬起，列表行的 `TouchArea` 会一直抓着鼠标，下一次按下仍落在刚才那一行。拖出结束（成功、取消或出错）后要向窗口补 `PointerReleased` 和 `PointerExited`。自动化没有调用 `DoDragDrop`：它要等键盘或鼠标状态变化才会第一次询问是否继续，调用会作用到光标下的窗口。自测用 `dispatch_event` 先拖长路径那一行，再拖文件夹那一行，第二次必须是文件夹。
 - 不解析 `.lnk`。合成的 `CF_HDROP` 能读回超过 260 个 UTF-16 单元的路径，`DragQueryFileW` 先问长度再分配。Shell 的 `IDataObject` 对 269 个 UTF-16 单元的路径调用 `GetData(CF_HDROP)` 仍返回 `0x8007007A`：外壳用固定 260 单元组 `CF_HDROP`，这时还没有 `HDROP`。失败后改用 `SHCreateShellItemArrayFromDataObject` 和 `IShellItem::GetDisplayName(SIGDN_FILESYSPATH)`，单元测试读回了原路径，快捷方式路径没有被解析成目标。2026-10-09 10:56（UTC+8）在 `3311ecc` 的 `--ole` 上，资源管理器把这条长路径拖进红色矩形，控制台给出完整 `paths=`，`effect=1`，没有再出现 `0x8007007A`。这次走的是上述外壳项退路。
 - 路径是否存在只对可见条目调用上面的 `check_exists`，结果回到界面线程更新。不监视文件系统。
@@ -507,7 +507,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 已经定下的机制：
 
 - 与路径引用一样只存引用。不调用会关闭或移动浏览器标签的接口，不把页面正文写入数据目录。
-- 面板收纳页和收纳悬浮窗的 OLE 放下目标都识别网址。接受的格式是注册剪贴板格式 `HTML Format`（`CF_HTML`）、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url`。地址栏锁图标和页面链接都走这一条。读到可保存的网址时，不再调用 `CF_HDROP` 或 `FileContents` 的 `GetData`，虚拟 `.url` 不存成路径，也不复制进数据目录。标题取 `FileGroupDescriptorW` 里第一个以 `.url` 结尾的文件名，去掉这个后缀，大小写不敏感。`Cursor Status.url` 的标题是 `Cursor Status`。不用 `CF_HTML` 的文档标题，也不用 `SourceURL`，也不用 `text/x-moz-url` 的第二行。2026-10-13 手测：锁图标没有 `CF_HTML`，页面链接有，文档标题为空；两种拖放都没有 `text/uri-list`。网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。Chrome 与 Edge 都通过。
+- 面板收纳页和收纳悬浮窗的 OLE 放下目标都识别网址。接受的格式是注册剪贴板格式 `HTML Format`（`CF_HTML`）、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url`。地址栏锁图标和页面链接都走这一条。`DragEnter` 只 `QueryGetData`。`Drop` 才 `GetData`。读到可保存的网址时，不再调用 `CF_HDROP` 或 `FileContents` 的 `GetData`，虚拟 `.url` 不存成路径，也不复制进数据目录。带 `FileGroupDescriptorW` 但解析不出网址时拒绝这次放下。标题取 `FileGroupDescriptorW` 里第一个以 `.url` 结尾的文件名，去掉这个后缀，大小写不敏感。`Cursor Status.url` 的标题是 `Cursor Status`。不用 `CF_HTML` 的文档标题，也不用 `SourceURL`，也不用 `text/x-moz-url` 的第二行。2026-10-13 手测：锁图标没有 `CF_HTML`，页面链接有，文档标题为空；两种拖放都没有 `text/uri-list`。网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。Chrome 与 Edge 都通过。
 - 打开与「打开网址」相同：把保存的网址作为 `LaunchTarget::Url` 交给 `ShellExecuteExW`，动词 `open`，由默认浏览器处理。`crates/core` 不启动浏览器。搜索里的「网页」组走同一条打开，见上面的 `allocate_display`。
 - 去重键按产品规格「同一网址只保留一条」：去掉首尾空白，协议和主机名小写，去掉路径末尾的一个 `/`（含问号或井号前的那个）。不改路径其余大小写、`www`、端口、用户名、查询和片段，也不套用路径引用的简单大写。比较范围是全部分组。键相同则不新增，保留先加入的那一条的网址原文、标题和分组。加载时内存里也按这个键只留先加入的一条，写盘要等这个分组下次保存。
 - 分组文件另有可选数组 `webRefs`。每项是 `url`、`title`、`addedAt`。`url` 是去掉首尾空白后的原文，不是规范化键。没有这个数组的旧文件读成空列表。路径引用的 `refs` 读法不变。列表里路径引用在前，网页引用在后。分组计数是两者之和。
@@ -517,7 +517,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 - 格式顺序：先取 `CF_HTML` 里第一个能规范化的 `<a href>`，然后 `UniformResourceLocatorW`，然后 `text/x-moz-url` 的第一行非空行，最后整段去掉首尾空白的 `CF_UNICODETEXT`。一次只保存一条。
 - 怎样才算网址：去掉首尾空白后，长度不超过 16384 个字符，中间没有空白，有方案、`://` 和非空主机。方案由 ASCII 字母、数字、`+`、`-`、`.` 组成。不拒绝 `http` / `https` 以外的方案。搜索里「像网址」的判断不拿来当收纳的接受条件。不是一整段网址的纯文本忽略，不显示错误。`CF_TEXT`、ANSI 的 `UniformResourceLocator` 和 `text/uri-list` 仍不读取。
-- 同一次拖放里已经读出网址时，只保存这一条网页引用，不另存真实文件。没有读出网址时，仍按原来的路径引用处理。资源管理器里的真实 `.url` 文件仍是路径引用，不解析文件内容。
+- 同一次拖放里已经读出网址时，只保存这一条网页引用，不另存真实文件。带 `FileGroupDescriptorW` 但四种网址格式都解析不出网址时，这次放下拒绝，不读 `CF_HDROP`。没有 `FileGroupDescriptorW`、也没有读出网址时，仍按原来的路径引用处理。资源管理器里只有 `CF_HDROP` 的真实 `.url` 文件仍是路径引用，不解析文件内容。
 - 没有 `.url` 文件名时标题存空字符串。列表和搜索里的名称退回保存的网址。
 - 打开：双击、Enter 和现有的「打开」按钮打开保存的网址。单击只选中。Ctrl+Enter 不做任何事，不打开上一级，也不显示错误。搜索里 Enter 或单击打开保存的网址并计一次使用；Ctrl+Enter 和 Ctrl+Shift+Enter 没有动作。
 - 网页行不开始拖出。图标位置留空，不标「路径不存在」。后来打不开的网址也不另做「路径不存在」那种提示。

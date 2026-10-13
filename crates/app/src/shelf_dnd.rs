@@ -3,7 +3,8 @@
 //!
 //! 放下目标注册在面板和收纳悬浮窗的窗口句柄上。只在接受区域内、数据里有文件或可识别的网址时才接受。
 //! 允许的效果只有复制和快捷方式，不返回移动。路径只读，不打开、不复制、不移动、不删除用户文件。
-//! 网址只从已接受的剪贴板格式里取，不读 `FileContents`，也不读 `CF_HDROP` 里的虚拟 `.url`。
+//! `DragEnter` 只 `QueryGetData`。`Drop` 才 `GetData`，先试网址格式，再读路径。
+//! 带 `FileGroupDescriptorW` 但解析不出网址时拒绝，不把虚拟 `.url` 存成路径。不读 `FileContents`。
 
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -126,7 +127,7 @@ struct ShelfDrop {
     sink: DropSink,
     /// 这一轮 `DragEnter` 看到数据里有文件。`DragOver` 没有数据对象，靠它判断。
     has_files: AtomicBool,
-    /// 这一轮 `DragEnter` 已经读出可保存的网址。
+    /// 这一轮 `DragEnter` 用 `QueryGetData` 看到网址格式或 `FileGroupDescriptorW`。不调用 `GetData`。
     has_web: AtomicBool,
 }
 
@@ -140,9 +141,7 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
         let files = data.as_ref().is_some_and(has_hdrop);
-        let web = data
-            .as_ref()
-            .is_some_and(|data| read_web_drop(data).is_some());
+        let web = data.as_ref().is_some_and(offers_web);
         self.has_files.store(files, Ordering::Release);
         self.has_web.store(web, Ordering::Release);
         write_effect(
@@ -194,14 +193,16 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
             write_effect(effect, EFFECT_NONE);
             return Ok(());
         };
-        if cached_web {
-            match read_web_drop(data) {
-                Some(picked) => (self.sink)(IncomingDrop::Web {
-                    url: picked.url,
-                    title: picked.title,
-                }),
-                None => write_effect(effect, EFFECT_NONE),
-            }
+        if let Some(picked) = read_web_drop(data) {
+            (self.sink)(IncomingDrop::Web {
+                url: picked.url,
+                title: picked.title,
+            });
+            return Ok(());
+        }
+        // 浏览器拖放带虚拟 .url 时有 FileGroupDescriptorW。解析不出网址就拒绝，不把这份虚拟文件存成路径。
+        if has_file_group_descriptor(data) {
+            write_effect(effect, EFFECT_NONE);
             return Ok(());
         }
         match paths_from_data_object(data) {
@@ -226,6 +227,35 @@ fn has_hdrop(data: &IDataObject) -> bool {
     let format = hdrop_format();
     // SAFETY: format 是局部变量，调用期间有效；只查询格式，不取数据。
     unsafe { data.QueryGetData(&format) }.is_ok()
+}
+
+fn query_clipboard(data: &IDataObject, id: u16) -> bool {
+    if id == 0 {
+        return false;
+    }
+    let format = FORMATETC {
+        cfFormat: id,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32 | TYMED_ISTREAM.0 as u32,
+    };
+    // SAFETY: format 指向局部变量。只查询，不取数据。
+    unsafe { data.QueryGetData(&format) }.is_ok()
+}
+
+/// `DragEnter` 用来决定光标。只 `QueryGetData`，不 `GetData`。
+fn offers_web(data: &IDataObject) -> bool {
+    let ids = web_format_ids();
+    query_clipboard(data, ids.html)
+        || query_clipboard(data, ids.url_w)
+        || query_clipboard(data, ids.moz)
+        || query_clipboard(data, CF_UNICODETEXT.0)
+        || query_clipboard(data, ids.descriptor)
+}
+
+fn has_file_group_descriptor(data: &IDataObject) -> bool {
+    query_clipboard(data, web_format_ids().descriptor)
 }
 
 const WEB_READ_LIMIT: usize = 1024 * 1024;
@@ -1044,6 +1074,12 @@ mod tests {
         probe.state.set_accepting(true);
         let all = EFFECT_COPY | EFFECT_MOVE | EFFECT_LINK;
         assert_eq!(offer(&probe, &data, 10, all), EFFECT_COPY);
+        assert!(
+            gets.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "DragEnter 只 QueryGetData，不 GetData"
+        );
 
         let point = POINTL { x: 10, y: 10 };
         let mut effect = DROPEFFECT(all);
@@ -1078,6 +1114,64 @@ mod tests {
                 .iter()
                 .all(|id| *id != contents_id && *id != CF_HDROP.0),
             "virtual file was read: {recorded:?}"
+        );
+    }
+
+    #[test]
+    fn descriptor_without_a_parsed_url_rejects_instead_of_reading_hdrop() {
+        ensure_ole();
+        let ids = web_format_ids();
+        let contents_id = register_clipboard_format("FileContents");
+        let gets = Arc::new(Mutex::new(Vec::new()));
+        let data: IDataObject = MemData {
+            items: vec![
+                (ids.html, b"Version:0.9\r\nStartHTML:00000000\r\n".to_vec()),
+                (ids.url_w, encode_utf16_text("not a url")),
+                (
+                    ids.moz,
+                    encode_utf16_text("also not\nhttps://example.com/second"),
+                ),
+                (CF_UNICODETEXT.0, encode_utf16_text("C:\\virtual\\page.url")),
+                (ids.descriptor, descriptor_w(&["page.url"])),
+                (
+                    contents_id,
+                    b"[InternetShortcut]\r\nURL=https://secret.example/hidden\r\n".to_vec(),
+                ),
+                (CF_HDROP.0, b"C:\\virtual\\page.url\0".to_vec()),
+            ],
+            gets: Arc::clone(&gets),
+        }
+        .into();
+        let probe = probe();
+        probe.state.set_accepting(true);
+        let all = EFFECT_COPY | EFFECT_MOVE | EFFECT_LINK;
+        assert_eq!(offer(&probe, &data, 10, all), EFFECT_COPY);
+        assert!(
+            gets.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "DragEnter 只 QueryGetData，不 GetData"
+        );
+
+        let point = POINTL { x: 10, y: 10 };
+        let mut effect = DROPEFFECT(all);
+        unsafe {
+            probe
+                .target
+                .Drop(&data, MODIFIERKEYS_FLAGS(0), point, &mut effect)
+        }
+        .expect("Drop");
+        assert_eq!(effect.0, EFFECT_NONE);
+        assert!(
+            probe.received.try_recv().is_err(),
+            "解析不出网址时不把虚拟 .url 存成路径"
+        );
+        let recorded = gets.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert!(
+            recorded
+                .iter()
+                .all(|id| *id != contents_id && *id != CF_HDROP.0),
+            "rejected drop still read a virtual file: {recorded:?}"
         );
     }
 
