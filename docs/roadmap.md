@@ -8,23 +8,42 @@
 | --- | --- |
 | `tools/fixture`、`tools/sample`、[docs/measurements/TEMPLATE.md](measurements/TEMPLATE.md) | 代码已在仓库中 |
 | 符合架构「性能测量」协议的记录 | 无 |
-| Windows 11 桌面上对空 Slint 窗口采样 5 分钟 | 2026-10-08，commit `0b7fd5f`，release。脚本通过：300 行，首尾 298.989 秒。Private Bytes 峰值 49,729,536 字节，工作集峰值 77,799,424 字节，平均 CPU 0.204%，唤醒平均 69.150/秒，句柄 326–343，USER 23，GDI 17。见 [measurements/2026-10-08-empty-window.md](measurements/2026-10-08-empty-window.md)。不是性能协议验收 |
+| Windows 11 桌面上对空 Slint 窗口采样 5 分钟 | 结论在下方「技术验证」。不是性能协议验收 |
 
 ## 技术验证
 
-各项的通过标准见 [architecture.md](architecture.md)「技术验证」。
+本文是技术验证结论的唯一出处。通过标准在下表。结论表里，已经从工作树删掉的原始记录都写明日期，并标出 `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。
 
-| 项 | 记录 |
+每份记录写明日期、commit、Slint 精确版本、渲染器、机器、Windows build、GPU 与驱动、构建配置，每个通过条件分别标「通过」「失败」或「未测」。只有全部条件都通过才算该项通过。技术验证里的测量只说明该场景，不算 architecture.md「性能测量」的验收。某项没有通过记录之前，不写依赖它的界面代码。
+
+### 通过标准
+
+| 项 | 通过标准 | 依赖它的界面 |
+| --- | --- | --- |
+| 中文输入法 | 微软拼音在 Slint 文本框里能组合、上屏，候选窗贴在光标处；组合期间 Enter 不触发提交 | 全部 |
+| 背景 | 选定渲染器下，透明窗口加 DWM Acrylic 正确显示；透明失败时能检测到并退回纯色 | 搜索条、面板 |
+| 渲染器 | FemtoVG、Skia、软件渲染各做一个空面板和一个 200 行列表，按 architecture.md「性能测量」记录 Private Bytes、工作集和中文字形效果，选定一个写进 architecture.md「运行时」 | 全部 |
+| 外部拖放 | 从资源管理器拖入多个文件能拿到路径；从窗口拖出到资源管理器时，只出现复制和创建快捷方式两种效果。先测固定版本 Slint 自带的拖放，不满足再测原生 OLE | 收纳 |
+| 网址拖放 | 在独立的最小程序里，从地址栏锁图标和页面链接的拖放中取出网址。格式包括 `CF_HTML`、`text/uri-list` 和纯文本网址。不关闭、不移动浏览器标签。收纳悬浮窗不在本项通过标准里。图标是否获取不在本项通过标准里，仍按产品规格待定。重复按产品规格「同一网址只保留一条」，不在本项里另测 | 收纳的网页引用 |
+| Everything | 通过随包的 SDK DLL，Everything 1.4 和 1.5 都能返回结果，并能区分「未运行」和「未就绪」 | 搜索 |
+| Windows Search | Everything 不可用时，Rust 进程只按文件名查询 Windows Search 索引，正文命中不返回；记录结果 P95 和查询带来的 Private Bytes 增量 | 搜索 |
+| 通知 | 到期通知能显示。安装版点击后打开面板并定位该条。便携版只显示提醒，点击不定位。安装版和便携版分开记录 | 待办 |
+| 热角 | 收起状态下光标在屏幕上移动 5 分钟、静止 5 分钟，记录 Lanwork 的 CPU 占用和每秒唤醒次数（口径见 architecture.md「性能测量」） | 面板 |
+
+### 结论
+
+| 项 | 结论 |
 | --- | --- |
-| 中文输入法 | [记录](verification/ime.md)。100% 缩放下用户报告单行、多行、候选窗、拖动后的候选窗、Enter 和数字键没有问题。2026-10-10 在 DESKTOP-HDJS01V 上复测 main `52b5a3b`（含 #74），主屏 100%、副屏 150%。外框不再变形，preedit 保留。跨 DPI 拖动松手后候选窗仍不显示，再输入一个字母后候选窗重新出现。用户判定可接受，不再继续修。条件 5 与该项都记为「通过（附已知问题）」 |
-| 背景 | 部分记录，未通过。见 [render-2026-10-08.md](measurements/render-2026-10-08.md)。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，FemtoVG、软件渲染、Skia 软件、Skia OpenGL 的窗口都是磨砂、能透出背景、没有黑色客户区。系统浅色/深色主题切换通过，深色下也清楚。关闭/打开「透明效果」通过。节电模式通过。默认渲染器已写入 architecture.md「运行时」。2026-10-10 在 DESKTOP-HDJS01V（Windows 11 build 26300，Intel UHD + NVIDIA GeForce RTX 4050 Laptop GPU，当时为远程控制）上，FemtoVG 场景 A：亚克力背景正常，没有黑框，`graphics_api=NativeOpenGL`，`render_failed=false`，`backdrop_hresult=0`。进程 GPU Engine 计数器里出现了 ofa、vr、两个 videoencode，这些是 NVIDIA 适配器常见的引擎名。没有 3D 引擎名和适配器 LUID，当时是远程控制，不能证明客户区画在 RTX 4050 上。这一项仍未通过：独显只有 FemtoVG 场景 A 的目视，失败回退和主题切换没有这次记录。真实透明渲染失败没有新的记录。观察（不是失败判定）：自定义标题栏导致窗口拖不动；有两个关闭按钮。2026-10-10 在 DESKTOP-7C3P6OG 上运行产品搜索条（PR #77 头 `873c5cc`，release）：亚克力显示正确，切换系统深浅色后颜色跟随，关闭「透明效果」后呼出为纯色、没有黑框，用户确认。这次没有记实际渲染器、Windows build 和 GPU。节电模式未测。透明渲染失败时退回纯色仍未满足：产品运行时检测不到真实的透明失败，也没有在透明渲染有问题的机器上看过。这一项仍未通过，见 [render-2026-10-08.md](measurements/render-2026-10-08.md)「2026-10-10 产品搜索条」 |
-| 渲染器 | 部分记录，未通过。同上。2026-10-09 四种窗口的文字清楚（含中文和 0OIl1）。默认 FemtoVG，初始化失败自动退回软件渲染，已写入 architecture.md「运行时」。外壳按此选择。2026-10-10 独显只补了 FemtoVG 场景 A 的目视（中文和 0OIl1 清楚），没有内存采样，场景 B 和另外三种渲染器没有在这台机器上做。2026-10-10 产品搜索条在 DESKTOP-7C3P6OG 上外观正常，但没有记实际渲染器，没有内存数字；没有 OpenGL 时退回软件渲染未测。这一项仍未通过 |
+| 中文输入法 | 2026-10-08～09，100% 缩放下单行、多行、候选窗、拖动后的候选窗、Enter 和数字键没有问题。2026-10-10 在 DESKTOP-HDJS01V 上复测 main `52b5a3b`（含 #74），主屏 100%、副屏 150%：外框不再变形、preedit 保留，跨 DPI 拖动松手后候选窗仍不显示、再输入一个字母后重新出现，用户判定可接受，条件 5 与该项记为「通过（附已知问题）」。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
+| 背景 | 2026-10-09 至 2026-10-10。四种渲染器在 DESKTOP-7C3P6OG 上是磨砂并能透出背景，主题切换、关闭透明效果和节电通过，产品搜索条的亚克力与关闭透明效果后的纯色也由用户确认。透明渲染失败时退回纯色仍未满足，独显只有 FemtoVG 场景 A 的目视，这一项仍未通过。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
+| 渲染器 | 2026-10-08 至 2026-10-10。核显上 FemtoVG、Skia 软件、Skia OpenGL 和软件渲染各有空面板与 200 行列表的约 60 秒采样，文字目视清楚，但独显只补了 FemtoVG 场景 A，内存数字和没有 OpenGL 时退回软件渲染都未凑齐。默认 FemtoVG 已写入 architecture.md「运行时」，这一项仍未通过。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | 外部拖放 | 通过条件表七条都通过，产品用 OLE。`--slint` 拖放仍失败，没有路径。2026-10-09 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。见下方「外部拖放」。 |
 | 网址拖放 | 无记录。通过标准是独立的最小程序从地址栏锁图标和页面链接取出网址（`CF_HTML`、`text/uri-list`、纯文本），不关闭、不移动浏览器标签。收纳悬浮窗不在这项通过标准里。外部拖放的通过条件表只覆盖文件，不覆盖这一项。没有通过记录之前，不写收纳网页引用的界面 |
-| Everything | [fileidx.md](measurements/fileidx.md)：1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪 |
-| Windows Search | [fileidx.md](measurements/fileidx.md)：文件名查询、正文不返回、P95 和 Private Bytes 已记下。2026-10-09 14:24（UTC+8）停止 `WSearch` 后，`fileidx.exe wsearch --text notepad` 的 `ok` 为 false，`hresult` 为 2147614729（`0x80020009`，`DISP_E_EXCEPTION`），`message` 为空字符串，约 5.3 ms，`returned` 为 0，没有崩溃或卡住。随后服务恢复为 Running/Manual。错误提示文案不能依赖空的 `message`，列为后续。 |
+| Everything | 2026-10-09。Everything 1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪。单次查询远低于 150 ms，但样本不是 100 次，也不含 60 ms 等待和界面渲染，不写「已达到」。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
+| Windows Search | 2026-10-09。文件名查询通过且正文不返回，100 个有效样本的 P95 为 52.705 ms，第一次 Execute 的 Private Bytes 增量为 454,656 字节，不含 60 ms 等待和界面渲染，不写「已达到」。同日 14:24（UTC+8）停止 `WSearch` 后查询失败（`hresult` 2147614729，`message` 为空）且没有崩溃，错误文案不能依赖空的 `message`。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | 通知 | 有记录，未通过。见下方「通知（#7）」 |
-| 热角 | 2026-10-08，`spikes/hotcorner`，release。停留一次、离开约 340ms、离开后再进入，以及静止 5 分钟的三种采样，在 1920×1200 的屏幕上有记录。2026-10-09 在 DESKTOP-7C3P6OG（Windows 11，屏幕 1280×800）上，钩子和 50ms 轮询各做了 5 分钟鼠标正常移动的采样（各 300 行）；100ms 轮询未测。检测用 50ms 轮询，不用鼠标钩子。2026-10-10 在 DESKTOP-HDJS01V、main `0a42c74` 的 release 上补了 #8 剩余人工项：主屏 0,0–2560,1440（100%），副屏在右 2560,0–3520,1707（150%）。50ms 轮询的 cursor 模式在副屏右上角通过（自测瞄准点 (3504, 15)，移入到触发约 396ms；人工移入触发 1 次 (3519, 0)）。钩子方案同一自测项无触发，仅记录，已不采用。primary 模式在副屏角触发 0 次。人手按住标题栏拖到副屏右上角停留，触发 1 次 (3519, 15)。当时规格未定。产品规格现已定为按住鼠标左键（含拖动窗口经过角）时不触发；那次是改规则之前的 spike，不能当作产品已经不触发。自动拖动窗口矩形未变，未测。主屏全屏视频时停在右上角触发 1 次 (2559, 0)：spike 未实现全屏抑制，产品规则是有全屏应用时不触发，未通过。此前在主屏误做的 3 次 (2559, 0) 不计。产品侧后来已接入 `lanwork.exe`（角判定、350ms 停留、离开后重新武装、按光标所在显示器的全屏抑制、按住左键时不计停留，以及关闭时停止轮询）。没有对 `lanwork.exe` 的 Windows 验收，拖动经过角不触发也还没有在 `lanwork.exe` 上复测。技术验证要求的移动 5 分钟和静止 5 分钟采样也还没有对 `lanwork.exe` 做。热角仍不算通过。见 [measurements/2026-10-08-hotcorner.md](measurements/2026-10-08-hotcorner.md) |
+| 热角 | 2026-10-08 至 2026-10-10。spike 上停留、离开再进入和静止 5 分钟有采样，2026-10-09 的移动 5 分钟里钩子与 50ms 轮询各 300 行（100ms 未测），产品用 50ms 轮询。副屏右上角的 50ms 轮询通过，但全屏时仍会触发，按住左键经过角不触发也还没有在 `lanwork.exe` 上复测，热角仍不算通过。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
+| 空窗口采样 | 2026-10-08，commit `0b7fd5f`，release：脚本通过，300 行，首尾 298.989 秒，Private Bytes 峰值 49,729,536 字节，工作集峰值 77,799,424 字节，平均 CPU 0.204%，唤醒平均 69.150/秒，句柄 326–343，USER 23，GDI 17。没有加载协议规定的固定数据，不是性能测量验收，也不算「已达到」。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 
 ## 通知（#7）
 

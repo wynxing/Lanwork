@@ -56,7 +56,7 @@ utc,pid,private_bytes,working_set_bytes,handles,user_objects,gdi_objects,cpu_tim
 
 第一行数据之前会先读一次基线，那一次不写进 CSV。没有裁剪工作集的参数。
 
-对空 Slint 窗口采样 5 分钟要在 Windows 11 桌面会话里做。仓库里的单元测试和 Windows CI 不能代替，这项仍是未测。在仓库根目录打开 PowerShell，整段粘贴。大约 5 分钟后结束。它会启动 release 版空窗口，按 PID 采样 300 秒，然后关掉窗口。CSV 和模板的填写副本写到仓库下的 `measurements-out\`，不写入 `%USERPROFILE%\Documents\Lanwork`，也不读取 MayDolist。空白的 `docs/measurements/TEMPLATE.md` 保持不动。
+对空 Slint 窗口采样 5 分钟要在 Windows 11 桌面会话里做。仓库里的单元测试和 Windows CI 不能代替。2026-10-08 的那次结论在 [docs/roadmap.md](../docs/roadmap.md)「技术验证」，偏离协议，不是性能测量验收。下面的脚本用来再跑一次。在仓库根目录打开 PowerShell，整段粘贴。大约 5 分钟后结束。它会启动 release 版空窗口，按 PID 采样 300 秒，然后关掉窗口。CSV 和模板的填写副本写到仓库下的 `measurements-out\`，不写入 `%USERPROFILE%\Documents\Lanwork`，也不读取 MayDolist。空白的 `docs/measurements/TEMPLATE.md` 保持不动。
 
 ```powershell
 $ErrorActionPreference = 'Stop'
