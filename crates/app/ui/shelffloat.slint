@@ -15,6 +15,10 @@ export component ShelfFloat inherits Window {
     preferred-height: 360px;
     min-width: thin ? 1px : 200px;
     min-height: thin ? 1px : 120px;
+    in property <length> limit-width: 100000px;
+    in property <length> limit-height: 100000px;
+    max-width: thin ? 100000px : limit-width;
+    max-height: thin ? 100000px : limit-height;
     resize-border-width: thin ? 0px : 6px;
     always-on-top: true;
 

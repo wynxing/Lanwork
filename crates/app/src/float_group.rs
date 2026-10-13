@@ -13,8 +13,8 @@ use lanwork_core::notes::{FloatGeometry, FloatStackSlot, NoteCommands};
 use lanwork_core::panel::{
     DockInput, DockState, DragOrigin, DropEffect, DropInput, Flip, OtherFloat, PageStack, PxBox,
     StackMember, StackPage, StartupPage, assemble_stacks, collapsed_handles_close, detach_page,
-    dock_merge_gap, dot_row_size, dpi_at, filter_open_pages, flip_index, handle_dot_count,
-    merge_stacks, moved_enough, pages_to_park, place_dots, plan_startup, restore_log_line,
+    dock_merge_gap, dot_row_size, dpi_at, filter_open_pages, fit_dot_row, flip_index,
+    handle_dot_count, merge_stacks, moved_enough, pages_to_park, plan_startup, restore_log_line,
     snap_on_release, stack_drop_effect, transition,
 };
 use lanwork_core::shelves::ShelfCommands;
@@ -983,19 +983,14 @@ impl Live {
         let dpi = dpi_at(&screens, frame.x, frame.y);
         let count = usize::try_from(pages.max(0)).unwrap_or(0);
         let (width, height) = dot_row_size(count.max(2), dpi);
-        let screen = screens.iter().find(|screen| {
-            frame.x >= screen.left
-                && frame.x < screen.right
-                && frame.y >= screen.top
-                && frame.y < screen.bottom
+        let work = crate::bar_win::monitors().into_iter().find_map(|reading| {
+            let on_screen = frame.x >= reading.bounds.left
+                && frame.x < reading.bounds.right
+                && frame.y >= reading.bounds.top
+                && frame.y < reading.bounds.bottom;
+            on_screen.then_some(reading.work)
         });
-        let placed = place_dots(
-            frame,
-            width,
-            height,
-            screen.map(|screen| screen.top),
-            screen.map(|screen| screen.bottom),
-        );
+        let placed = fit_dot_row(frame, width, height, work);
         let _ = tab.ui.show();
         float_dock::place(tab.ui.window(), self.tab_hwnd(stack_id), placed);
     }
@@ -1217,7 +1212,8 @@ fn solo_at(before: SavedFloat, released: PxBox) -> SavedFloat {
             size_changed: false,
         },
     );
-    saved_from(next.state.expanded, next.state.dock)
+    let settled = float_dock::settle(next.state);
+    saved_from(settled.expanded, settled.dock)
 }
 
 fn on_tab_move(key: isize, entering: bool, x: i32, y: i32, _width: u32, _height: u32) {

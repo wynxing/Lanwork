@@ -303,6 +303,8 @@ fn a_collapsed_float_paints_only_a_short_gray_handle() {
     window.set_size(slint::PhysicalSize::new(size.0, size.1));
 
     let note = NoteFloat::new().expect("note float");
+    note.set_limit_width(1920.0);
+    note.set_limit_height(1040.0);
     note.set_dock_edge("top".into());
     note.show().expect("show");
     slint::platform::update_timers_and_animations();
@@ -313,6 +315,8 @@ fn a_collapsed_float_paints_only_a_short_gray_handle() {
     assert_short_gray_handle(&window, &note, NoteFloat::set_dark, size, "便签悬浮窗");
 
     let shelf = ShelfFloat::new().expect("shelf float");
+    shelf.set_limit_width(1920.0);
+    shelf.set_limit_height(1040.0);
     shelf.set_dock_edge("top".into());
     shelf.show().expect("show");
     slint::platform::update_timers_and_animations();

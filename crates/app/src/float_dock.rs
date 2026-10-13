@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use lanwork_core::notes::{FloatDock, FloatGeometry};
 use lanwork_core::panel::{
-    ANIM_STEPS, DockInput, DockState, PxBox, ScreenBounds, dock_applies, dpi_at, edge_label,
-    lerp_box, moved_enough, restore_float, transition, visible_box,
+    ANIM_STEPS, DockInput, DockState, MonitorWork, PxBox, ScreenBounds, dpi_at, edge_label,
+    lerp_box, logical_work_limits, moved_enough, settle_float, transition, visible_box,
 };
 use lanwork_core::shell::WorkArea;
 use windows::Win32::Foundation::HWND;
@@ -60,6 +60,8 @@ pub(crate) struct Session {
     dragging: bool,
     hold_blur: bool,
     hold_generation: u8,
+    /// `place` 正在改窗口。这时来的尺寸变化是自己写回去的，不再收一次。
+    absorb_lock: bool,
 }
 
 impl Session {
@@ -71,6 +73,7 @@ impl Session {
             dragging: false,
             hold_blur: false,
             hold_generation: 0,
+            absorb_lock: false,
         }
     }
 
@@ -147,7 +150,86 @@ impl Session {
                 self.anim = None;
             }
         }
+        let settled = settle(self.state);
+        if settled != self.state {
+            self.state = settled;
+            let to = visible_box(&self.state, &screens);
+            motion.to = to;
+            motion.persist = true;
+            if let Some(anim) = &mut self.anim {
+                anim.to = to;
+                if anim.from == to {
+                    self.anim = None;
+                    motion.animate = false;
+                }
+            } else {
+                motion.animate = false;
+            }
+        }
         motion
+    }
+
+    pub(crate) fn set_absorb_lock(&mut self, locked: bool) {
+        self.absorb_lock = locked;
+    }
+
+    /// 内容把窗口撑大，或窗口尺寸在拖动循环之外变了。贴边对得上时按贴边重排，否则收进工作区。
+    /// 没有变化时返回 `None`。
+    pub(crate) fn absorb_size(
+        &mut self,
+        origin: (i32, i32),
+        width: u32,
+        height: u32,
+    ) -> Option<PxBox> {
+        if self.absorb_lock || self.dragging || self.anim.is_some() || width == 0 || height == 0 {
+            return None;
+        }
+        if self.state.dock.is_some_and(|dock| dock.collapsed) {
+            return None;
+        }
+        let visible = self.visible();
+        if visible.x == origin.0
+            && visible.y == origin.1
+            && visible.width == width
+            && visible.height == height
+        {
+            return None;
+        }
+        let rect = PxBox {
+            x: origin.0,
+            y: origin.1,
+            width,
+            height,
+        };
+        let before = self.state;
+        if self.state.dock.is_some() {
+            let change = transition(
+                &before,
+                &screens(),
+                DockInput::DragFinished {
+                    rect,
+                    moved: false,
+                    from_collapsed: false,
+                    size_changed: true,
+                },
+            );
+            self.state = settle(change.state);
+        } else {
+            self.state.expanded = rect;
+            self.state.dock = None;
+            self.state = settle(self.state);
+        }
+        (self.state != before).then(|| self.visible())
+    }
+
+    /// 不贴边时，窗口最大逻辑尺寸是所在工作区。贴边或滑动中不限制，避免把手和动画被工作区卡住。
+    pub(crate) fn limit_lengths(&self) -> (f32, f32) {
+        if self.state.dock.is_some() || self.anim.is_some() {
+            return (100_000.0, 100_000.0);
+        }
+        let (width, height) =
+            logical_work_limits(self.state.expanded, &work_monitors(), fallback_work());
+        (px(width), px(height))
     }
 
     pub(crate) fn strip_click(&mut self) -> Motion {
@@ -200,7 +282,7 @@ impl Session {
         self.anim = None;
         self.dragging = false;
         self.drag_from = None;
-        self.state = DockState { expanded, dock };
+        self.state = settle(DockState { expanded, dock });
     }
 
     fn arm_hold(&mut self) {
@@ -231,38 +313,59 @@ impl Session {
 }
 
 /// 有记下的贴边、并且这条边在当前屏幕上还对得上时，按贴边打开，不把窗口拉回工作区。
-/// 对不上（例如那块屏幕已经不在）时丢掉这一次的贴边，按原来的规则放回工作区。
+/// 对不上，或本来就没贴边时，整扇收进它所在显示器的工作区。
 /// 关掉窗口时会把丢掉贴边的结果写回去。拔掉显示器之后要不要一直忘掉，规格没有写，待定。
 pub(crate) fn session_for_open(
     saved: Option<FloatGeometry>,
     dock: Option<FloatDock>,
     default_box: PxBox,
-    areas: &[WorkArea],
-    fallback: WorkArea,
-    min: (u32, u32),
 ) -> Session {
-    let Some(saved) = saved else {
-        return Session::new(default_box, None);
-    };
-    let expanded = PxBox {
-        x: saved.x,
-        y: saved.y,
-        width: saved.width,
-        height: saved.height,
-    };
-    if dock.is_some() && dock_applies(&DockState { expanded, dock }, &screens()) {
-        return Session::new(expanded, dock);
-    }
-    let placed = restore_float(saved, areas, fallback, min);
-    Session::new(
-        PxBox {
-            x: placed.origin.0,
-            y: placed.origin.1,
-            width: placed.size.0,
-            height: placed.size.1,
+    let expanded = match saved {
+        Some(saved) => PxBox {
+            x: saved.x,
+            y: saved.y,
+            width: saved.width,
+            height: saved.height,
         },
-        None,
-    )
+        None => default_box,
+    };
+    let state = settle(DockState {
+        expanded,
+        dock: saved.and(dock),
+    });
+    Session::new(state.expanded, state.dock)
+}
+
+pub(crate) fn settle(state: DockState) -> DockState {
+    settle_float(state, &screens(), &work_monitors(), fallback_work())
+}
+
+fn work_monitors() -> Vec<MonitorWork> {
+    bar_win::monitors()
+        .into_iter()
+        .map(|reading| MonitorWork {
+            area: reading.work,
+            dpi: reading.dpi,
+        })
+        .collect()
+}
+
+fn fallback_work() -> MonitorWork {
+    let (area, dpi) = bar_win::cursor_monitor().unwrap_or((
+        WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        },
+        lanwork_core::shell::BASE_DPI,
+    ));
+    MonitorWork { area, dpi }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn px(value: u32) -> f32 {
+    value as f32
 }
 
 pub(crate) fn screens() -> Vec<ScreenBounds> {
