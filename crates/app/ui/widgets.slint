@@ -287,9 +287,9 @@ export component ToggleSwitch inherits Rectangle {
     }
 }
 
-// 贴边把手。看得见的是一条圆头、半透明的灰，厚 3 逻辑像素、长 40 逻辑像素。
-// 组件自己的大小是点击区：厚 9、长 48，把手在正中。四周多出来的像素是透明的，
-// 鼠标进这圈也算靠近，把手会更亮、更不透明。数字与 `float_snap` 的 HANDLE_*、STRIP_HIT_* 一致。
+// 贴边把手。厚 3 逻辑像素、长 40 逻辑像素，两端圆角，半透明灰。
+// 组件自己的大小就是这块看得见的把手，点击和悬停都落在它上面。
+// 数字与 `float_snap` 的 HANDLE_* 一致。
 export component EdgeHandle inherits Rectangle {
     in property <bool> dark;
     // 左、右贴边时把手是竖的；上贴边时是横的。
@@ -302,46 +302,36 @@ export component EdgeHandle inherits Rectangle {
     callback pressed();
     callback clicked();
 
-    property <length> hit-thick: 9px;
-    property <length> hit-long: 48px;
     property <length> grip-thick: 3px;
     property <length> grip-long: 40px;
     // 亮色用深灰，暗色用浅灰。靠近时更亮，透明度也提高。
     property <color> rest: dark ? #cfcfcfb8 : #5e5e5eb8;
     property <color> lit: dark ? #f4f4f4f2 : #b0b0b0f2;
 
-    width: along-vertical ? hit-thick : hit-long;
-    height: along-vertical ? hit-long : hit-thick;
-    background: transparent;
+    width: along-vertical ? grip-thick : grip-long;
+    height: along-vertical ? grip-long : grip-thick;
+    border-radius: grip-thick / 2;
+    background: area.has-hover ? lit : rest;
 
-    out property <length> grip-width: grip.width;
-    out property <length> grip-height: grip.height;
+    out property <length> grip-width: root.width;
+    out property <length> grip-height: root.height;
 
-    grip := Rectangle {
-        width: root.along-vertical ? root.grip-thick : root.grip-long;
-        height: root.along-vertical ? root.grip-long : root.grip-thick;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        border-radius: root.grip-thick / 2;
-        background: area.has-hover ? root.lit : root.rest;
+    // 点画在把手上，不另占一块。超过 16 页时只画前 16 个，待定。
+    if root.pages > 1: Rectangle {
+        width: 100%;
+        height: 100%;
+        property <[int]> marks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-        // 点画在把手上，不另占一块。超过 16 页时只画前 16 个，待定。
-        if root.pages > 1: Rectangle {
-            width: 100%;
-            height: 100%;
-            property <[int]> marks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-
-            for mark in marks: Rectangle {
-                visible: mark < root.pages;
-                property <length> dot: 2px;
-                property <length> slot: root.grip-long / max(root.pages, 1);
-                width: dot;
-                height: dot;
-                border-radius: dot;
-                background: mark == root.page-index ? #ffffff : #ffffff99;
-                x: root.along-vertical ? (parent.width - self.width) / 2 : mark * slot + (slot - self.width) / 2;
-                y: root.along-vertical ? mark * slot + (slot - self.height) / 2 : (parent.height - self.height) / 2;
-            }
+        for mark in marks: Rectangle {
+            visible: mark < root.pages;
+            property <length> dot: 2px;
+            property <length> slot: root.grip-long / max(root.pages, 1);
+            width: dot;
+            height: dot;
+            border-radius: dot;
+            background: mark == root.page-index ? #ffffff : #ffffff99;
+            x: root.along-vertical ? (parent.width - self.width) / 2 : mark * slot + (slot - self.width) / 2;
+            y: root.along-vertical ? mark * slot + (slot - self.height) / 2 : (parent.height - self.height) / 2;
         }
     }
 

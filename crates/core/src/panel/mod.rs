@@ -14,17 +14,16 @@ mod todo_page;
 
 pub use float_snap::{
     ANIM_STEPS, DRAG_MOVE_LOGICAL, DockInput, DockState, HANDLE_LENGTH_LOGICAL,
-    HANDLE_THICKNESS_LOGICAL, OuterEdge, PxBox, SNAP_SLOP_LOGICAL, STRIP_HIT_LENGTH_LOGICAL,
-    STRIP_HIT_THICKNESS_LOGICAL, ScreenBounds, Transition, dock_applies, dpi_at, edge_label,
-    lerp_box, moved_enough, outer_edges, snap_on_release, snap_slop, strip_hit_length,
-    strip_hit_thickness, transition, visible_box,
+    HANDLE_THICKNESS_LOGICAL, OuterEdge, PxBox, SNAP_SLOP_LOGICAL, ScreenBounds, Transition,
+    dock_applies, dpi_at, edge_label, lerp_box, moved_enough, outer_edges, snap_on_release,
+    snap_slop, transition, visible_box,
 };
 pub use float_stack::{
-    DOCK_MERGE_GAP_LOGICAL, DetachOutcome, DragOrigin, DropEffect, DropInput, FilteredPages, Flip,
-    HANDLE_DOT_CAP, OtherFloat, PageStack, StackMember, StackPage, TAB_LOGICAL_HEIGHT,
-    TAB_LOGICAL_WIDTH, assemble_stacks, collapsed_handles_close, detach_page, dock_merge_gap,
+    DOCK_MERGE_GAP_LOGICAL, DOT_ROW_LOGICAL_HEIGHT, DOT_SLOT_LOGICAL, DetachOutcome, DragOrigin,
+    DropEffect, DropInput, FilteredPages, Flip, HANDLE_DOT_CAP, OtherFloat, PageStack, StackMember,
+    StackPage, assemble_stacks, collapsed_handles_close, detach_page, dock_merge_gap, dot_row_size,
     drop_effect as stack_drop_effect, filter_open_pages, flip_index, handle_dot_count,
-    merge_stacks, overlaps_more_than_half, page_label, pages_to_park, place_tab, slots_for,
+    merge_stacks, overlaps_more_than_half, pages_to_park, place_dots, slots_for,
 };
 pub use note_edit::{AUTOSAVE_IDLE_MS, EditSession, SaveOutcome, SaveProblem};
 pub use note_page::{

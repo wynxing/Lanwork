@@ -144,12 +144,10 @@ export component NoteFloat inherits Window {
         }
     }
 
-    // 收起时整窗就是点击区，看得见的只有正中的把手。
+    // 收起时整窗就是把手。窗口由外壳收成 3×40，这里不再另铺一圈。
     if collapsed: EdgeHandle {
         x: 0px;
         y: 0px;
-        width: parent.width;
-        height: parent.height;
         dark: root.dark;
         along-vertical: dock-edge != "top";
         press-drags: true;

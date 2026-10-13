@@ -1,8 +1,10 @@
 //! 便签和收纳悬浮窗的叠页。不读光标，也不调用窗口 API。
 //!
-//! 产品规格写了：松手时重叠超过一半就合成一叠；左右键翻页；拖标题栏或页签离开就拆出当前页；
-//! 整叠一起贴边；两条已经收起的把手在同一条屏幕边上靠近时合成一叠；成员、当前页和贴边要能记下。
+//! 产品规格写了：松手时重叠超过一半就合成一叠；左右键翻页；拖标题栏只移动整叠；
+//! 把某一个页点拖出去就拆出那一页；点一个页点换到那一页；整叠一起贴边；
+//! 两条已经收起的把手在同一条屏幕边上靠近时合成一叠；成员、当前页和贴边要能记下。
 //! 一半按哪一边的面积算、合成后用谁的位置、页序、当前页、到头是否循环、多近算靠近，规格没有写。
+//! 页点的直径、间距和点击换页之外的细节，规格也没有写成唯一做法。
 //! 下面的选择是当前做法，不是产品规则，待定。
 
 use crate::notes::{DockEdge, FloatStackSlot};
@@ -12,12 +14,13 @@ use super::float_snap::{PxBox, ScreenBounds};
 
 /// 两条收起的把手沿边相距不超过这么多逻辑像素，就合成一叠。待定。
 ///
-/// 和收起点击区的长度同一个数，只是当前凑在一起用，不是产品规格。
+/// 两条收起的把手沿边离这么多逻辑像素以内就合成一叠。不是产品规格。
 pub const DOCK_MERGE_GAP_LOGICAL: u32 = 48;
 
-/// 页签的逻辑宽高。挂在窗口原有边框外面。待定。
-pub const TAB_LOGICAL_WIDTH: u32 = 40;
-pub const TAB_LOGICAL_HEIGHT: u32 = 16;
+/// 页点一行里，每个点占的槽宽。点画在槽的正中。待定。
+pub const DOT_SLOT_LOGICAL: u32 = 12;
+/// 页点那一行窗口的逻辑高度。挂在内容框外面。待定。
+pub const DOT_ROW_LOGICAL_HEIGHT: u32 = 16;
 
 /// 把手上最多画这么多个点。再多的页数仍只画这些点。待定。
 pub const HANDLE_DOT_CAP: usize = 16;
@@ -37,11 +40,11 @@ pub struct PageStack {
     pub current: usize,
 }
 
-/// 拖动从哪开始。标题栏拖的是整窗；页签拖的是当前页。
+/// 拖动从哪开始。标题栏拖的是整叠；页点拖的是被按住的那一页。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DragOrigin {
     TitleBar,
-    PageTab,
+    PageDot,
 }
 
 /// 左右键。到头就停，不循环。循环与否待定。
@@ -56,11 +59,12 @@ pub enum Flip {
 pub enum DropEffect {
     /// 整叠（或单独一个悬浮窗）保持在一起，接着走原来的移动或贴边。
     MoveTogether,
-    /// 把当前页拆出去。其余页留在拖动开始时的位置。
+    /// 把被拖的那一页拆出去。其余页留在拖动开始时的位置。
+    /// 页点拖动时是被按住的那一页，不一定是当时显示的页。
     DetachCurrent,
     /// 被拖的整叠并进 `target` 所在的那一叠。
     MergeUnit { target: StackPage },
-    /// 只把当前页并进 `target`。页签拖到另一个悬浮窗上时用这个。
+    /// 只把被拖的那一页并进 `target`。页点拖到另一个悬浮窗上时用这个。
     MergeCurrent { target: StackPage },
 }
 
@@ -70,7 +74,7 @@ pub struct DropInput {
     pub origin: DragOrigin,
     /// 按下时窗口看得见的矩形。
     pub start: PxBox,
-    /// 松开时窗口看得见的矩形。页签拖动时，这是当前页跟着页签挪过的矩形。
+    /// 松开时窗口看得见的矩形。页点拖动时，这是整叠的矩形跟着页点挪过的那一份。
     pub released: PxBox,
     pub moved: bool,
     /// 这次拖动开始时窗口是收起的把手。把手拖动移动整叠，不拆页。
@@ -123,14 +127,6 @@ pub fn overlaps_more_than_half(a: PxBox, b: PxBox) -> bool {
     }
     let inter = intersection_area(a, b);
     inter.saturating_mul(2) > area_a.min(area_b)
-}
-
-/// 页码文字，例如 `1/3`。`current` 从 0 起。
-#[must_use]
-pub fn page_label(current: usize, count: usize) -> String {
-    let shown = current.saturating_add(1);
-    let total = count.max(1);
-    format!("{shown}/{total}")
 }
 
 /// 把手上要画的点数。一页不画。超过 [`HANDLE_DOT_CAP`] 时只画那么多。待定。
@@ -327,8 +323,9 @@ fn screen_of(screens: &[ScreenBounds], rect: PxBox) -> Option<usize> {
 
 /// 松手时先看有没有盖住另一个悬浮窗超过一半，再决定拆页还是整叠移动。
 ///
-/// 页签拖动只带走当前页。标题栏在展开时，离开原来的位置（不再超过一半重叠）且没有贴边，才拆当前页。
-/// 收起的把手拖动不拆页。贴边优先于拆页，整叠一起贴。这些次序待定。
+/// 页点拖动只带走被按住的那一页。标题栏始终带走整叠，离开原处也不拆页。
+/// 收起的把手拖动不拆页。贴边优先于拆页，整叠一起贴。这些次序里，标题栏不拆页是规格；
+/// 其余次序待定。
 #[must_use]
 pub fn drop_effect(input: &DropInput) -> DropEffect {
     if !input.moved {
@@ -336,21 +333,15 @@ pub fn drop_effect(input: &DropInput) -> DropEffect {
     }
     if let Some(target) = best_overlap(&input.released, &input.others) {
         return match input.origin {
-            DragOrigin::PageTab => DropEffect::MergeCurrent { target },
+            DragOrigin::PageDot => DropEffect::MergeCurrent { target },
             DragOrigin::TitleBar => DropEffect::MergeUnit { target },
         };
     }
-    if input.origin == DragOrigin::PageTab {
+    if input.origin == DragOrigin::PageDot {
         if input.page_count >= 2 && !overlaps_more_than_half(input.released, input.start) {
             return DropEffect::DetachCurrent;
         }
         return DropEffect::MoveTogether;
-    }
-    if input.snapped || input.from_collapsed {
-        return DropEffect::MoveTogether;
-    }
-    if input.page_count >= 2 && !overlaps_more_than_half(input.released, input.start) {
-        return DropEffect::DetachCurrent;
     }
     DropEffect::MoveTogether
 }
@@ -425,17 +416,32 @@ pub fn slots_for(stack: &PageStack) -> Vec<(StackPage, FloatStackSlot)> {
         .collect()
 }
 
-/// 页签挂在窗口外面。优先贴着底边往下；底边放不下而顶上放得下时改挂在上边外面。待定。
+/// 页点那一行的物理宽高。一页不占地方，调用方在少于两页时不要显示。
+/// 超过 [`HANDLE_DOT_CAP`] 时宽度只按那么多个槽算。待定。
 #[must_use]
-pub fn place_tab(
+pub fn dot_row_size(pages: usize, dpi: u32) -> (u32, u32) {
+    let count = handle_dot_count(pages).max(1);
+    let slot = u32::try_from(to_physical(DOT_SLOT_LOGICAL, dpi).max(1)).unwrap_or(1);
+    let height = u32::try_from(to_physical(DOT_ROW_LOGICAL_HEIGHT, dpi).max(1)).unwrap_or(1);
+    let slots = u32::try_from(count).unwrap_or(1);
+    (slot.saturating_mul(slots).max(1), height)
+}
+
+/// 页点行挂在窗口外面，水平居中。优先贴着底边往下；底边放不下而顶上放得下时改挂在上边外面。
+/// 改挂到上边是当前做法，待定。
+#[must_use]
+pub fn place_dots(
     frame: PxBox,
-    tab_width: u32,
-    tab_height: u32,
+    row_width: u32,
+    row_height: u32,
     screen_top: Option<i32>,
     screen_bottom: Option<i32>,
 ) -> PxBox {
-    let width = tab_width.max(1);
-    let height = tab_height.max(1);
+    let width = row_width.max(1);
+    let height = row_height.max(1);
+    let frame_width = i32::try_from(frame.width).unwrap_or(0);
+    let row = i32::try_from(width).unwrap_or(0);
+    let x = frame.x.saturating_add(frame_width.saturating_sub(row) / 2);
     let below = frame.bottom();
     let y = match (screen_top, screen_bottom) {
         (Some(top), Some(bottom))
@@ -447,7 +453,7 @@ pub fn place_tab(
         _ => below,
     };
     PxBox {
-        x: frame.x,
+        x,
         y,
         width,
         height,
@@ -623,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn title_drag_merges_when_overlap_is_past_half_and_detaches_when_it_leaves() {
+    fn title_drag_merges_the_whole_stack_and_never_detaches_a_page() {
         let start = rect(0, 0, 200, 200);
         let target = other(shelf("g"), rect(20, 20, 200, 200));
         let merged = drop_at(
@@ -638,7 +644,7 @@ mod tests {
         );
         assert_eq!(merged, DropEffect::MergeUnit { target: shelf("g") });
 
-        let detached = drop_at(
+        let away = drop_at(
             DragOrigin::TitleBar,
             start,
             rect(400, 0, 200, 200),
@@ -648,7 +654,7 @@ mod tests {
             false,
             Vec::new(),
         );
-        assert_eq!(detached, DropEffect::DetachCurrent);
+        assert_eq!(away, DropEffect::MoveTogether, "标题栏离开原处也不拆页");
 
         let nudged = drop_at(
             DragOrigin::TitleBar,
@@ -700,10 +706,10 @@ mod tests {
     }
 
     #[test]
-    fn the_page_tab_detaches_unless_it_is_dropped_onto_another_float() {
+    fn a_page_dot_detaches_that_page_unless_it_is_dropped_onto_another_float() {
         let start = rect(0, 0, 200, 200);
         let away = drop_at(
-            DragOrigin::PageTab,
+            DragOrigin::PageDot,
             start,
             rect(300, 0, 200, 200),
             true,
@@ -715,7 +721,7 @@ mod tests {
         assert_eq!(away, DropEffect::DetachCurrent);
 
         let back = drop_at(
-            DragOrigin::PageTab,
+            DragOrigin::PageDot,
             start,
             rect(10, 0, 200, 200),
             true,
@@ -724,10 +730,10 @@ mod tests {
             false,
             Vec::new(),
         );
-        assert_eq!(back, DropEffect::MoveTogether, "页签落回原处不拆");
+        assert_eq!(back, DropEffect::MoveTogether, "页点落回原处不拆");
 
         let onto = drop_at(
-            DragOrigin::PageTab,
+            DragOrigin::PageDot,
             start,
             rect(500, 0, 180, 180),
             true,
@@ -949,16 +955,27 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_hangs_outside_the_frame_and_the_handle_dots_follow_the_page_count() {
+    fn the_dot_row_is_centered_under_the_frame_and_the_handle_dots_follow_the_page_count() {
         let frame = rect(10, 20, 200, 100);
-        let below = place_tab(frame, 40, 16, Some(0), Some(1080));
+        let (width, height) = dot_row_size(3, 96);
+        assert_eq!(width, 3 * DOT_SLOT_LOGICAL);
+        assert_eq!(height, DOT_ROW_LOGICAL_HEIGHT);
+        let below = place_dots(frame, width, height, Some(0), Some(1080));
         assert_eq!(below.y, frame.bottom());
-        assert_eq!(below.x, frame.x);
+        assert_eq!(
+            below.x,
+            frame.x + (i32::try_from(frame.width).unwrap() - i32::try_from(width).unwrap()) / 2
+        );
         assert!(below.y >= frame.bottom());
         let screen_bottom = frame.bottom() + 4;
-        let above = place_tab(frame, 40, 16, Some(0), Some(screen_bottom));
+        let above = place_dots(frame, width, height, Some(0), Some(screen_bottom));
         assert_eq!(above.y + i32::try_from(above.height).unwrap(), frame.y);
-        assert_eq!(page_label(0, 3), "1/3");
+        assert_eq!(above.x, below.x);
+        assert_eq!(dot_row_size(1, 96).0, DOT_SLOT_LOGICAL);
+        assert_eq!(dot_row_size(40, 144).0, {
+            let slot = u32::try_from(crate::shell::to_physical(DOT_SLOT_LOGICAL, 144)).unwrap();
+            slot * u32::try_from(HANDLE_DOT_CAP).unwrap()
+        });
         assert_eq!(handle_dot_count(1), 0);
         assert_eq!(handle_dot_count(3), 3);
         assert_eq!(handle_dot_count(40), HANDLE_DOT_CAP);

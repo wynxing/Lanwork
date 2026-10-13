@@ -1,6 +1,6 @@
 //! 便签和收纳悬浮窗的叠页。几何在 `lanwork_core::panel::float_stack`，这里只接窗口。
 //!
-//! 一叠同一时刻只显示一页。其余页的窗口藏着，不释放。页签是挂在边框外的小窗。
+//! 一叠同一时刻只显示一页。其余页的窗口藏着，不释放。页点是挂在边框外、居中的一排小点。
 //! 关掉窗口不拆叠，成员还在文件里；再悬浮时用记下的当前页和贴边。
 //! 下面没写进产品规格的做法都待定。
 
@@ -11,15 +11,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use lanwork_core::notes::{FloatGeometry, FloatStackSlot, NoteCommands};
 use lanwork_core::panel::{
     DockInput, DockState, DragOrigin, DropEffect, DropInput, Flip, OtherFloat, PageStack, PxBox,
-    StackMember, StackPage, TAB_LOGICAL_HEIGHT, TAB_LOGICAL_WIDTH, assemble_stacks,
-    collapsed_handles_close, detach_page, dock_merge_gap, dpi_at, filter_open_pages, flip_index,
-    merge_stacks, moved_enough, page_label, pages_to_park, place_tab, snap_on_release,
-    stack_drop_effect, transition,
+    StackMember, StackPage, assemble_stacks, collapsed_handles_close, detach_page, dock_merge_gap,
+    dot_row_size, dpi_at, filter_open_pages, flip_index, handle_dot_count, merge_stacks,
+    moved_enough, pages_to_park, place_dots, snap_on_release, stack_drop_effect, transition,
 };
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
+use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
-use slint::{ComponentHandle, SharedString};
 
 use crate::float_dock::{self, SavedFloat};
 use crate::{StackTab, note_float, shelf_float};
@@ -32,6 +31,8 @@ struct Tracked {
 struct TabDrag {
     page_at: PxBox,
     tab_at: (i32, i32),
+    /// 按下的是哪一页。不一定是当时显示的那一页。
+    page_index: usize,
 }
 
 struct PageTab {
@@ -59,6 +60,7 @@ thread_local! {
 
 pub(crate) fn install(notes: Option<NoteCommands>, shelves: Option<ShelfCommands>, store: Store) {
     crate::bar_win::add_move_hook(on_tab_move);
+    crate::float_frame::set_log(store.clone());
     LIVE.with(|cell| {
         *cell.borrow_mut() = Some(Live {
             notes,
@@ -279,6 +281,27 @@ impl Live {
 
     fn flip(&mut self, page: StackPage, dir: Flip) {
         self.ensure_loaded(&page);
+        let next = self
+            .stack_of(&page)
+            .and_then(|stack| flip_index(stack, dir));
+        self.reveal_index(page, next);
+    }
+
+    /// 点页点时换到那一页。已经是当前页就只把点的位置摆回去。
+    fn activate_index(&mut self, page: StackPage, index: usize) {
+        self.ensure_loaded(&page);
+        if self
+            .stack_of(&page)
+            .is_some_and(|stack| stack.current == index)
+        {
+            self.sync_tabs();
+            return;
+        }
+        self.reveal_index(page, Some(index));
+    }
+
+    /// `next` 为 `None` 时停在当前页（翻到头）。下标越界同样停住。
+    fn reveal_index(&mut self, page: StackPage, next: Option<usize>) {
         let Some(mut stack) = self.take_stack(&page) else {
             return;
         };
@@ -291,7 +314,8 @@ impl Live {
             self.sync_tabs();
             return;
         }
-        let Some(next) = flip_index(&stack, dir) else {
+        let next = next.filter(|index| *index < stack.pages.len() && *index != stack.current);
+        let Some(next) = next else {
             self.store_stack(&stack);
             if let Some(saved) = saved {
                 self.persist(&stack, saved);
@@ -806,16 +830,14 @@ impl Live {
             if tracked.saved.dock.is_some_and(|dock| dock.collapsed) {
                 continue;
             }
-            wanted.push((
-                stack.id.clone(),
-                page_label(stack.current, stack.pages.len()),
-                tracked.visible,
-            ));
+            let pages = i32::try_from(handle_dot_count(stack.pages.len())).unwrap_or(0);
+            let current = i32::try_from(stack.current).unwrap_or(0);
+            wanted.push((stack.id.clone(), pages, current, tracked.visible));
         }
         let stale: Vec<String> = self
             .tabs
             .keys()
-            .filter(|id| !wanted.iter().any(|(wanted_id, _, _)| wanted_id == *id))
+            .filter(|id| !wanted.iter().any(|(wanted_id, _, _, _)| wanted_id == *id))
             .cloned()
             .collect();
         for id in stale {
@@ -823,11 +845,11 @@ impl Live {
                 let _ = tab.ui.hide();
             }
         }
-        for (id, label, frame) in wanted {
+        for (id, pages, current, frame) in wanted {
             if !self.tabs.contains_key(&id) && !self.create_tab(&id) {
                 continue;
             }
-            self.place_tab_ui(&id, &label, frame);
+            self.place_tab_ui(&id, pages, current, frame);
         }
     }
 
@@ -842,17 +864,22 @@ impl Live {
         tab.set_dark(self.dark);
         let ui = tab.clone_strong();
         let id = stack_id.to_owned();
-        ui.on_drag_tab(move || {
+        ui.on_drag_dot(move |index| {
             let tab = LIVE.with(|cell| {
                 cell.borrow_mut()
                     .as_mut()
-                    .and_then(|live| live.begin_tab_drag(&id))
+                    .and_then(|live| live.begin_tab_drag(&id, index))
             });
             if let Some(tab) = tab {
                 let _ = tab.window().with_winit_window(|window| {
                     let _ = window.drag_window();
                 });
             }
+            // 拖动循环没起来时（点一下就松开），松手消息不会来。下一轮再看要不要换页。
+            let click_id = id.clone();
+            later(move || {
+                with_live(|live| live.click_if_still_pending(&click_id));
+            });
         });
         self.tabs.insert(
             stack_id.to_owned(),
@@ -866,23 +893,24 @@ impl Live {
         true
     }
 
-    fn place_tab_ui(&self, stack_id: &str, label: &str, frame: PxBox) {
+    fn place_tab_ui(&self, stack_id: &str, pages: i32, current: i32, frame: PxBox) {
         let Some(tab) = self.tabs.get(stack_id) else {
             return;
         };
-        tab.ui.set_label(SharedString::from(label));
+        tab.ui.set_pages(pages.max(0));
+        tab.ui.set_current(current.max(0));
         tab.ui.set_dark(self.dark);
         let screens = float_dock::screens();
         let dpi = dpi_at(&screens, frame.x, frame.y);
-        let width = u32::try_from(to_px(TAB_LOGICAL_WIDTH, dpi)).unwrap_or(TAB_LOGICAL_WIDTH);
-        let height = u32::try_from(to_px(TAB_LOGICAL_HEIGHT, dpi)).unwrap_or(TAB_LOGICAL_HEIGHT);
+        let count = usize::try_from(pages.max(0)).unwrap_or(0);
+        let (width, height) = dot_row_size(count.max(2), dpi);
         let screen = screens.iter().find(|screen| {
             frame.x >= screen.left
                 && frame.x < screen.right
                 && frame.y >= screen.top
                 && frame.y < screen.bottom
         });
-        let placed = place_tab(
+        let placed = place_dots(
             frame,
             width,
             height,
@@ -939,11 +967,16 @@ impl Live {
             .and_then(|tab| crate::bar_win::hwnd_of(tab.ui.window()))
     }
 
-    /// 记下按下时的位置。拖动本身在借用结束之后进行，避免松手回调再借这一层。
-    fn begin_tab_drag(&mut self, stack_id: &str) -> Option<StackTab> {
+    /// 记下按下的页和当时的位置。拖动本身在借用结束之后进行，避免松手回调再借这一层。
+    fn begin_tab_drag(&mut self, stack_id: &str, index: i32) -> Option<StackTab> {
         let tab = self.tabs.get(stack_id)?.ui.clone_strong();
-        let page = self.shown_current(stack_id)?;
-        let page_at = self.shown.get(&page).map(|tracked| tracked.visible)?;
+        let page_index = usize::try_from(index).ok()?;
+        let stack = self.stacks.get(stack_id)?;
+        if page_index >= stack.pages.len() || page_index >= handle_dot_count(stack.pages.len()) {
+            return None;
+        }
+        let shown = self.shown_current(stack_id)?;
+        let page_at = self.shown.get(&shown).map(|tracked| tracked.visible)?;
         let origin = self
             .tab_hwnd(stack_id)
             .and_then(crate::bar_win::window_origin)
@@ -952,6 +985,7 @@ impl Live {
             slot.drag = Some(TabDrag {
                 page_at,
                 tab_at: origin,
+                page_index,
             });
         }
         Some(tab)
@@ -984,7 +1018,12 @@ impl Live {
             self.sync_tabs();
             return;
         };
-        let Some(page) = self.shown_current(stack_id) else {
+        let Some(page) = self
+            .stacks
+            .get(stack_id)
+            .and_then(|stack| stack.pages.get(drag.page_index))
+            .cloned()
+        else {
             self.sync_tabs();
             return;
         };
@@ -993,35 +1032,80 @@ impl Live {
             x.saturating_sub(drag.tab_at.0),
             y.saturating_sub(drag.tab_at.1),
         );
-        let effect = self.classify(&page, DragOrigin::PageTab, drag.page_at, released, false);
+        let screens = float_dock::screens();
+        let dpi = dpi_at(&screens, x, y);
+        let moved = moved_enough(drag.tab_at, (x, y), dpi);
+        let effect = self.classify(&page, DragOrigin::PageDot, drag.page_at, released, false);
         match effect {
             DropEffect::DetachCurrent => {
-                let before = self
-                    .shown
-                    .get(&page)
-                    .map(|tracked| tracked.saved)
-                    .or_else(|| self.disk_saved(&page));
-                if let Some(before) = before {
-                    self.split_off(&page, before);
-                    let parked = solo_at(before, released);
-                    self.write_solo(&page, parked);
-                    let _ = self.show_page(&page, parked, 1, 0);
-                }
+                self.detach_dragged(&page, released);
                 self.sync_tabs();
             }
             DropEffect::MergeCurrent { target } => {
-                let before = self
-                    .shown
-                    .get(&page)
-                    .map(|tracked| tracked.saved)
-                    .or_else(|| self.disk_saved(&page));
+                let before = self.stack_saved(stack_id);
                 if let Some(before) = before {
                     self.split_off(&page, before);
                 }
                 self.merge_unit(page, target);
             }
-            DropEffect::MoveTogether | DropEffect::MergeUnit { .. } => self.sync_tabs(),
+            DropEffect::MoveTogether | DropEffect::MergeUnit { .. } => {
+                if !moved {
+                    self.activate_index(page, drag.page_index);
+                    return;
+                }
+                self.sync_tabs();
+            }
         }
+    }
+
+    fn click_if_still_pending(&mut self, stack_id: &str) {
+        let pending = self
+            .tabs
+            .get(stack_id)
+            .and_then(|tab| tab.drag.as_ref().map(|drag| drag.page_index));
+        let Some(page_index) = pending else {
+            return;
+        };
+        let key = self.tabs.get(stack_id).and_then(|tab| tab.key);
+        if key.is_some_and(crate::bar_win::size_move_blocks_blur) {
+            return;
+        }
+        if let Some(tab) = self.tabs.get_mut(stack_id) {
+            tab.drag = None;
+        }
+        let Some(page) = self
+            .stacks
+            .get(stack_id)
+            .and_then(|stack| stack.pages.get(page_index))
+            .cloned()
+        else {
+            self.sync_tabs();
+            return;
+        };
+        self.activate_index(page, page_index);
+    }
+
+    fn stack_saved(&self, stack_id: &str) -> Option<SavedFloat> {
+        let shown = self.shown_current(stack_id)?;
+        self.shown
+            .get(&shown)
+            .map(|tracked| tracked.saved)
+            .or_else(|| self.disk_saved(&shown))
+    }
+
+    fn detach_dragged(&mut self, page: &StackPage, released: PxBox) {
+        let before = self
+            .member
+            .get(page)
+            .and_then(|id| self.stack_saved(id))
+            .or_else(|| self.disk_saved(page));
+        let Some(before) = before else {
+            return;
+        };
+        self.split_off(page, before);
+        let parked = solo_at(before, released);
+        self.write_solo(page, parked);
+        let _ = self.show_page(page, parked, 1, 0);
     }
 }
 
@@ -1057,10 +1141,6 @@ fn solo_at(before: SavedFloat, released: PxBox) -> SavedFloat {
     saved_from(next.state.expanded, next.state.dock)
 }
 
-fn to_px(logical: u32, dpi: u32) -> i32 {
-    lanwork_core::shell::to_physical(logical, dpi)
-}
-
 fn on_tab_move(key: isize, entering: bool, x: i32, y: i32, _width: u32, _height: u32) {
     let posted = slint::invoke_from_event_loop(move || {
         deliver_tab(key, entering, x, y);
@@ -1076,11 +1156,17 @@ fn deliver_tab(key: isize, entering: bool, x: i32, y: i32) {
             return;
         };
         if entering {
+            let page_index = live
+                .tabs
+                .get(&id)
+                .and_then(|tab| tab.drag.as_ref().map(|drag| drag.page_index))
+                .or_else(|| live.stacks.get(&id).map(|stack| stack.current));
             let page = live.shown_current(&id);
             let drag = page.and_then(|page| {
                 live.shown.get(&page).map(|tracked| TabDrag {
                     page_at: tracked.visible,
                     tab_at: (x, y),
+                    page_index: page_index.unwrap_or(0),
                 })
             });
             if let Some(drag) = drag

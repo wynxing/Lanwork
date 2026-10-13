@@ -1,29 +1,39 @@
-//! 便签和收纳悬浮窗的 DWM 样式。收起时保持逐像素透明，展开时回到亚克力或纯色。
+//! 便签和收纳悬浮窗的 DWM 样式，以及收起后的窗口区域。
 //!
-//! winit 只在创建窗口时调用一次空区域的 `DwmEnableBlurBehindWindow`。一键回到桌面、
-//! 最小化后还原、主题或 DPI 变化，以及 `SetWindowPos`，都会把这次设置清掉，DWM 同时
-//! 把圆角和系统背景设回来。点击区（约 48×9 逻辑像素）就会变成一块不透明的圆角色块。
-//! 这里在那些消息上按当前状态重设，并在消息返回后再补一次。
+//! winit 只在创建窗口时调用一次空区域的 `DwmEnableBlurBehindWindow`。一键回到桌面
+//! （外壳抬起 `WorkerW`，不一定给这个窗口发最小化）之后，这次透明会被清掉，渲染器
+//! 再把客户区清成不透明的颜色。重设 DWM 属性盖不住这块颜色。收起后的窗口就是把手
+//! （3×40 逻辑像素，按 DPI 放大），再用 `SetWindowRgn` 收成圆角，方块的角不属于窗口。
+//! 悬停靠窗口自己的 `WM_MOUSEMOVE` / `WM_MOUSELEAVE`，不装全局鼠标钩子。
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use lanwork_core::storage::Store;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 #[cfg(test)]
 use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_NCRENDERING_POLICY, DWMWA_SYSTEMBACKDROP_TYPE,
     DWMWA_WINDOW_CORNER_PREFERENCE, DwmGetWindowAttribute,
 };
-use windows::Win32::Graphics::Gdi::{RDW_FRAME, RDW_INVALIDATE, RedrawWindow};
+use windows::Win32::Graphics::Gdi::{
+    ClientToScreen, CreateRoundRectRgn, DeleteObject, GDI_REGION_TYPE, GetWindowRgnBox, NULLREGION,
+    RDW_FRAME, RDW_INVALIDATE, RGN_ERROR, RedrawWindow, SetWindowRgn,
+};
+#[cfg(test)]
+use windows::Win32::Graphics::Gdi::{CreateRectRgn, GetWindowRgn, PtInRegion};
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, GetWindowPlacement, IsIconic, IsWindowVisible, PostMessageW,
-    STYLESTRUCT, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow,
-    WINDOWPLACEMENT, WINDOWPOS, WM_ACTIVATE, WM_APP, WM_DPICHANGED, WM_EXITSIZEMOVE, WM_NCDESTROY,
-    WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE, WM_STYLECHANGING, WM_SYSCOMMAND, WM_THEMECHANGED,
-    WM_WINDOWPOSCHANGING, WS_EX_TOOLWINDOW,
+    GWL_EXSTYLE, GetClientRect, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, IsIconic,
+    IsWindowVisible, PostMessageW, STYLESTRUCT, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+    SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW,
+    SetWindowPlacement, SetWindowPos, ShowWindow, WINDOWPLACEMENT, WINDOWPOS, WM_ACTIVATE,
+    WM_ACTIVATEAPP, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_EXITSIZEMOVE, WM_MOUSEMOVE,
+    WM_NCDESTROY, WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE, WM_STYLECHANGING, WM_SYSCOMMAND,
+    WM_THEMECHANGED, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WS_EX_TOOLWINDOW,
 };
 
 use slint::winit_030::winit;
@@ -37,17 +47,38 @@ const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
 const SC_MINIMIZE: usize = 0xF020;
 /// `SIZE_MINIMIZED`。
 const SIZE_MINIMIZED: usize = 1;
+const WA_INACTIVE: usize = 0;
 
+/// 客户区在窗口坐标系里的矩形。`SetWindowRgn` 的原点是窗口左上角，不是客户区左上角。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GripRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Copy)]
 struct FrameState {
     collapsed: bool,
     dark: bool,
     /// 已经投了一条补设消息，处理完之前不再投。
     follow_up: bool,
+    /// 已经为这一次进入调用过 `TrackMouseEvent`，离开消息到达前不再调。
+    tracking_leave: bool,
+    /// 上次成功设上的把手区域。展开时是 `None`。
+    grip: Option<GripRect>,
 }
 
 thread_local! {
     static FRAMES: RefCell<HashMap<isize, FrameState>> = RefCell::new(HashMap::new());
     static APPLY_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static LOG: RefCell<Option<Store>> = const { RefCell::new(None) };
+}
+
+/// 把收起窗口在 Win+D 上收到的消息写进 `logs/app.log`。探测测试不调用。
+pub(crate) fn set_log(store: Store) {
+    LOG.with(|cell| *cell.borrow_mut() = Some(store));
 }
 
 /// 还原、重新显示、主题或 DPI 变化时，Slint 这条事件也要重设样式。
@@ -86,15 +117,16 @@ pub(crate) fn forget(hwnd: HWND) {
 fn remember(hwnd: HWND, collapsed: bool, dark: bool) {
     FRAMES.with(|frames| {
         let mut frames = frames.borrow_mut();
-        let follow_up = frames
-            .get(&hwnd_key(hwnd))
-            .is_some_and(|frame| frame.follow_up);
+        let previous = frames.get(&hwnd_key(hwnd)).copied();
         frames.insert(
             hwnd_key(hwnd),
             FrameState {
                 collapsed,
                 dark,
-                follow_up,
+                follow_up: previous.is_some_and(|frame| frame.follow_up),
+                tracking_leave: previous
+                    .is_some_and(|frame| frame.tracking_leave && frame.collapsed && collapsed),
+                grip: previous.and_then(|frame| frame.grip),
             },
         );
     });
@@ -167,6 +199,9 @@ fn apply_current_inner(hwnd: HWND) -> lanwork_core::shell::Backdrop {
     } else {
         bar_win::apply_dwm(hwnd, bar_win::current_backdrop(), dark)
     };
+    // 区域放在 DWM 和扩展样式之后。扩展客户区会让客户区原点相对窗口原点挪开，
+    // 裁剪要用挪开之后的窗口坐标。裁剪不依赖透明有没有设上。
+    sync_shape(hwnd, collapsed);
     // SAFETY: hwnd 是本进程的悬浮窗。只让整窗失效，不在这里同步绘制，避免再进窗口过程。
     unsafe {
         let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_FRAME);
@@ -270,6 +305,260 @@ fn restore_without_activating(hwnd: HWND) {
     }
 }
 
+fn sync_shape(hwnd: HWND, collapsed: bool) {
+    if collapsed {
+        let Some(grip) = grip_for(hwnd) else {
+            return;
+        };
+        let remembered = FRAMES.with(|frames| {
+            frames
+                .borrow()
+                .get(&hwnd_key(hwnd))
+                .and_then(|frame| frame.grip)
+        });
+        // 同一块把手还在、外接矩形也对得上时不重复设，避免每次置顶都写一条日志。
+        // 只问「有没有区域」不够：DWM 重置会留下另一块区域，读回来却不是把手。
+        if remembered == Some(grip) && region_matches(hwnd, grip) {
+            return;
+        }
+        let repairing = remembered == Some(grip);
+        if set_grip_region(hwnd, grip) {
+            remember_grip(hwnd, Some(grip));
+            log_line(&format!(
+                "收起窗口区域{} hwnd={} grip={},{},{}x{}",
+                if repairing {
+                    "被清掉后已重设"
+                } else {
+                    "设为把手"
+                },
+                hwnd_key(hwnd),
+                grip.x,
+                grip.y,
+                grip.width,
+                grip.height
+            ));
+        } else {
+            log_line(&format!("收起窗口区域没有设上 hwnd={}", hwnd_key(hwnd)));
+        }
+    } else if has_region(hwnd) || grip_remembered(hwnd) {
+        clear_region(hwnd);
+        remember_grip(hwnd, None);
+        log_line(&format!("悬浮窗区域已去掉 hwnd={}", hwnd_key(hwnd)));
+    }
+}
+
+fn grip_remembered(hwnd: HWND) -> bool {
+    FRAMES.with(|frames| {
+        frames
+            .borrow()
+            .get(&hwnd_key(hwnd))
+            .is_some_and(|frame| frame.grip.is_some())
+    })
+}
+
+fn grip_for(hwnd: HWND) -> Option<GripRect> {
+    let mut window = RECT::default();
+    // SAFETY: hwnd 是本进程的窗口，输出指向局部变量。
+    unsafe { GetWindowRect(hwnd, &mut window) }.ok()?;
+    let mut origin = POINT { x: 0, y: 0 };
+    // SAFETY: 把客户区原点换成屏幕坐标。失败时设不出和读回一致的窗口区域。
+    if !unsafe { ClientToScreen(hwnd, &mut origin) }.as_bool() {
+        return None;
+    }
+    let mut client = RECT::default();
+    // SAFETY: hwnd 是本进程的窗口，输出指向局部变量。
+    unsafe { GetClientRect(hwnd, &mut client) }.ok()?;
+    let width = u32::try_from(client.right.max(0)).ok()?;
+    let height = u32::try_from(client.bottom.max(0)).ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(GripRect {
+        x: origin.x.saturating_sub(window.left),
+        y: origin.y.saturating_sub(window.top),
+        width,
+        height,
+    })
+}
+
+fn remember_grip(hwnd: HWND, grip: Option<GripRect>) {
+    FRAMES.with(|frames| {
+        if let Some(frame) = frames.borrow_mut().get_mut(&hwnd_key(hwnd)) {
+            frame.grip = grip;
+        }
+    });
+}
+
+fn set_grip_region(hwnd: HWND, grip: GripRect) -> bool {
+    let right = grip.x.saturating_add_unsigned(grip.width);
+    let bottom = grip.y.saturating_add_unsigned(grip.height);
+    let thick = i32::try_from(grip.width.min(grip.height))
+        .unwrap_or(1)
+        .max(1);
+    // `CreateRoundRectRgn` 的右、下是开区间，调用时再各少一像素。
+    // 直接传入把手的右、下时，40×3 读回来是 (1,0,38,2)，底边和右端被裁掉。
+    // 右、下各加 1，区域才盖住看得见的把手。圆角仍会吃掉方框的角。
+    // SAFETY: 圆角椭圆的直径等于把手厚度，两端是半圆。区域在设成功之后由系统接管。
+    let region = unsafe {
+        CreateRoundRectRgn(
+            grip.x,
+            grip.y,
+            right.saturating_add(1),
+            bottom.saturating_add(1),
+            thick,
+            thick,
+        )
+    };
+    if region.is_invalid() {
+        return false;
+    }
+    // SAFETY: hwnd 是本进程的窗口。成功时系统取得 region 的所有权，失败时由这里释放。
+    // 非 0 才算设上。`HRGN` 是复制句柄，离开作用域不会释放。
+    // 不在这里重绘：`SetWindowRgn` 的重绘会同步发出 `WM_WINDOWPOSCHANGING`，
+    // 调用方已经在设完样式之后统一 `RedrawWindow`。
+    let set = unsafe { SetWindowRgn(hwnd, Some(region), false) };
+    if set == 0 {
+        let _ = unsafe { DeleteObject(region.into()) };
+        return false;
+    }
+    true
+}
+
+fn clear_region(hwnd: HWND) {
+    // SAFETY: 空区域把窗口恢复成矩形。空句柄不需要释放。
+    let _ = unsafe { SetWindowRgn(hwnd, None, true) };
+}
+
+fn has_region(hwnd: HWND) -> bool {
+    region_box(hwnd).is_some()
+}
+
+fn region_matches(hwnd: HWND, grip: GripRect) -> bool {
+    region_box(hwnd).is_some_and(|bounds| region_covers_grip(bounds, grip))
+}
+
+fn region_box(hwnd: HWND) -> Option<RECT> {
+    let mut bounds = RECT::default();
+    // SAFETY: bounds 指向局部变量。外接矩形用窗口坐标，不经过一块空的目标区域。
+    let kind = unsafe { GetWindowRgnBox(hwnd, &mut bounds) };
+    region_present(kind).then_some(bounds)
+}
+
+fn region_covers_grip(bounds: RECT, grip: GripRect) -> bool {
+    let right = grip.x.saturating_add_unsigned(grip.width);
+    let bottom = grip.y.saturating_add_unsigned(grip.height);
+    // 圆角只该吃掉方框的角，每一边最多缩进 1 像素。缩得更多就把把手裁掉。
+    // GDI 有时会比传入的矩形多 1 像素，窗口外的部分不会画出来。
+    bounds.left <= grip.x.saturating_add(1)
+        && bounds.top <= grip.y.saturating_add(1)
+        && bounds.right >= right.saturating_sub(1)
+        && bounds.bottom >= bottom.saturating_sub(1)
+        && bounds.left >= grip.x.saturating_sub(1)
+        && bounds.top >= grip.y.saturating_sub(1)
+        && bounds.right <= right.saturating_add(1)
+        && bounds.bottom <= bottom.saturating_add(1)
+}
+
+fn region_present(kind: GDI_REGION_TYPE) -> bool {
+    kind != RGN_ERROR && kind != NULLREGION
+}
+
+fn note_pointer(hwnd: HWND, message: u32) {
+    if message == WM_MOUSEMOVE {
+        let armed = FRAMES.with(|frames| {
+            frames
+                .borrow()
+                .get(&hwnd_key(hwnd))
+                .is_some_and(|frame| frame.tracking_leave)
+        });
+        if !armed {
+            arm_mouse_leave(hwnd);
+        }
+    } else if message == WM_MOUSELEAVE {
+        FRAMES.with(|frames| {
+            if let Some(frame) = frames.borrow_mut().get_mut(&hwnd_key(hwnd)) {
+                frame.tracking_leave = false;
+            }
+        });
+    }
+}
+
+fn arm_mouse_leave(hwnd: HWND) {
+    let mut event = TRACKMOUSEEVENT {
+        cbSize: u32::try_from(std::mem::size_of::<TRACKMOUSEEVENT>()).unwrap_or(0),
+        dwFlags: TME_LEAVE,
+        hwndTrack: hwnd,
+        dwHoverTime: 0,
+    };
+    // SAFETY: event 指向局部变量。成功之后系统会在光标离开窗口时投递 `WM_MOUSELEAVE`。
+    if unsafe { TrackMouseEvent(&mut event) }.is_ok() {
+        FRAMES.with(|frames| {
+            if let Some(frame) = frames.borrow_mut().get_mut(&hwnd_key(hwnd)) {
+                frame.tracking_leave = true;
+            }
+        });
+    }
+}
+
+fn log_line(message: &str) {
+    LOG.with(|cell| {
+        if let Some(store) = cell.borrow().as_ref() {
+            store.log_info(message);
+        }
+    });
+}
+
+fn note_shell_message(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) {
+    let Some(summary) = shell_message(message, wparam, lparam) else {
+        return;
+    };
+    log_line(&format!(
+        "收起悬浮窗消息 hwnd={} {summary} visible={} iconic={}",
+        hwnd_key(hwnd),
+        u8::from(is_visible(hwnd)),
+        u8::from(is_minimized(hwnd))
+    ));
+}
+
+fn shell_message(message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<String> {
+    Some(match message {
+        WM_SIZE => format!("WM_SIZE wparam={:#x}", wparam.0),
+        WM_SHOWWINDOW => format!("WM_SHOWWINDOW show={}", wparam.0),
+        WM_ACTIVATE => format!("WM_ACTIVATE active={}", u8::from(wparam.0 != WA_INACTIVE)),
+        WM_ACTIVATEAPP => format!("WM_ACTIVATEAPP active={}", wparam.0),
+        WM_SYSCOMMAND => {
+            let command = wparam.0 & 0xFFF0;
+            if command != SC_MINIMIZE && command != 0xF120 && command != 0xF030 {
+                return None;
+            }
+            format!("WM_SYSCOMMAND cmd={command:#x}")
+        }
+        WM_WINDOWPOSCHANGING | WM_WINDOWPOSCHANGED if lparam.0 != 0 => {
+            let pos = unsafe { &*(lparam.0 as *const WINDOWPOS) };
+            let hide = pos.flags.contains(SWP_HIDEWINDOW);
+            let iconic = is_iconic_origin(pos.x, pos.y) && !pos.flags.contains(SWP_NOMOVE);
+            if !hide && !iconic {
+                return None;
+            }
+            let name = if message == WM_WINDOWPOSCHANGING {
+                "WM_WINDOWPOSCHANGING"
+            } else {
+                "WM_WINDOWPOSCHANGED"
+            };
+            format!(
+                "{name} hide={hide} iconic={iconic} flags={:#x}",
+                pos.flags.0
+            )
+        }
+        WM_THEMECHANGED => "WM_THEMECHANGED".to_owned(),
+        WM_DWMCOMPOSITIONCHANGED => "WM_DWMCOMPOSITIONCHANGED".to_owned(),
+        WM_SETTINGCHANGE => format!("WM_SETTINGCHANGE wparam={:#x}", wparam.0),
+        WM_DPICHANGED => format!("WM_DPICHANGED wparam={:#x}", wparam.0),
+        WM_DISPLAYCHANGE => "WM_DISPLAYCHANGE".to_owned(),
+        _ => return None,
+    })
+}
+
 fn block_pos_change(pos: &mut WINDOWPOS, action: FrameAction) {
     if !action.block_hide {
         return;
@@ -300,6 +589,10 @@ unsafe extern "system" fn frame_subclass(
     let Some((collapsed, _)) = state(hwnd) else {
         return unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
     };
+
+    if collapsed {
+        note_shell_message(hwnd, message, wparam, lparam);
+    }
 
     if message == WM_STYLECHANGING && wparam.0 as i32 == GWL_EXSTYLE.0 && lparam.0 != 0 && collapsed
     {
@@ -336,6 +629,10 @@ unsafe extern "system" fn frame_subclass(
     if message == WM_REAPPLY_FRAME {
         finish_follow_up(hwnd);
         return LRESULT(0);
+    }
+
+    if collapsed && (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
+        note_pointer(hwnd, message);
     }
 
     let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
@@ -414,11 +711,15 @@ fn read_u32(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lanwork_core::panel::{HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL};
     use windows::Win32::Graphics::Dwm::{
         DWMNCRP_DISABLED, DWMSBT_NONE, DWMWA_COLOR_NONE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
         DwmIsCompositionEnabled,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
         HMENU, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SW_MINIMIZE, TranslateMessage,
@@ -466,7 +767,14 @@ mod tests {
         // SAFETY: class 指向局部变量，类名在函数返回前一直有效；注册成功后类留到进程结束。
         // 类已经注册过时会失败，创建窗口会给出真正的错误。
         let _ = unsafe { RegisterClassW(&class) };
+        // 进程还没锁过感知时，让 CreateWindow 和 SetWindowRgn 用同一套物理像素。
+        // 已经锁过就沿用现状；断言比较的是同一窗口读回来的客户区，不依赖这次是否成功。
+        let _ =
+            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        let width = i32::try_from(HANDLE_LENGTH_LOGICAL).unwrap_or(40);
+        let height = i32::try_from(HANDLE_THICKNESS_LOGICAL).unwrap_or(3);
         // SAFETY: 类名指向仍有效的局部缓冲。窗口是无主弹出窗口，测试结束时 Drop 销毁。
+        // 尺寸就是横着的把手。收起后的窗口不再比把手大一圈。
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
@@ -475,8 +783,8 @@ mod tests {
                 WS_POPUP | WS_VISIBLE,
                 40,
                 40,
-                48,
-                9,
+                width,
+                height,
                 None,
                 None::<HMENU>,
                 Some(instance.into()),
@@ -552,6 +860,7 @@ mod tests {
         assert!(!read_frame(hwnd).tool_window);
         sync(hwnd, true, false);
         assert!(read_frame(hwnd).tool_window);
+        assert_grip_region(hwnd);
     }
 
     #[test]
@@ -574,5 +883,97 @@ mod tests {
         let fixed = read_frame(hwnd);
         assert_eq!(fixed.corner, Some(DWMWCP_DONOTROUND.0), "{fixed:?}");
         assert!(fixed.tool_window, "{fixed:?}");
+        assert_grip_region(hwnd);
+        assert!(is_visible(hwnd), "最小化之后应收起来的窗口还看得见");
+
+        // 模拟外壳先藏起窗口。子类在消息返回后把它再显示出来，区域仍是把手。
+        let _ = unsafe { ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_HIDE) };
+        pump(hwnd);
+        assert!(is_visible(hwnd), "藏起来之后应收起来的窗口再显示");
+        assert!(!is_minimized(hwnd));
+        assert_grip_region(hwnd);
+
+        sync(hwnd, false, false);
+        assert!(!has_region(hwnd), "展开后窗口应恢复成矩形，不再裁成把手");
+    }
+
+    fn assert_grip_region(hwnd: HWND) {
+        let mut client = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut client) }.expect("客户区");
+        let mut window = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut window) }.expect("窗口矩形");
+        let grip = grip_for(hwnd).expect("把手在窗口坐标里的矩形");
+        assert_eq!(
+            (client.right, client.bottom),
+            (
+                i32::try_from(HANDLE_LENGTH_LOGICAL).unwrap_or(40),
+                i32::try_from(HANDLE_THICKNESS_LOGICAL).unwrap_or(3),
+            ),
+            "探测窗口应是把手大小，客户区 {}x{}，窗口 ({},{},{},{})",
+            client.right,
+            client.bottom,
+            window.left,
+            window.top,
+            window.right,
+            window.bottom
+        );
+        let mut bounds = RECT::default();
+        // SAFETY: bounds 指向局部变量。外接矩形是窗口坐标。
+        let kind = unsafe { GetWindowRgnBox(hwnd, &mut bounds) };
+        assert!(
+            region_present(kind) && region_covers_grip(bounds, grip),
+            "窗口区域应盖住把手。kind={kind:?} bounds=({},{},{},{}) grip={grip:?} 客户区 {}x{} 窗口原点偏移 {},{}",
+            bounds.left,
+            bounds.top,
+            bounds.right,
+            bounds.bottom,
+            client.right,
+            client.bottom,
+            grip.x,
+            grip.y
+        );
+        // 复制区域时目标不能是空区域：`GetWindowRgn` 填进 `CreateRectRgn(0,0,0,0)` 会返回 `RGN_ERROR`。
+        let region = unsafe {
+            CreateRectRgn(
+                0,
+                0,
+                client.right.saturating_add(grip.x).max(1),
+                client.bottom.saturating_add(grip.y).max(1),
+            )
+        };
+        assert!(!region.is_invalid(), "能建一块用来抄窗口区域的区域");
+        // SAFETY: region 是刚创建的，调用后由这里释放。
+        let copied = unsafe { GetWindowRgn(hwnd, region) };
+        assert!(
+            region_present(copied),
+            "应能抄出窗口区域 kind={copied:?} bounds=({},{},{},{})",
+            bounds.left,
+            bounds.top,
+            bounds.right,
+            bounds.bottom
+        );
+        let right = grip.x.saturating_add_unsigned(grip.width);
+        let bottom = grip.y.saturating_add_unsigned(grip.height);
+        let mid_x = grip.x + i32::try_from(grip.width / 2).unwrap_or(0);
+        let mid_y = grip.y + i32::try_from(grip.height / 2).unwrap_or(0);
+        // 直边中点和两端往里 1 像素都在看得见的把手上。圆角只去掉方框的角。
+        let samples = [
+            (mid_x, mid_y, "中心"),
+            (grip.x.saturating_add(1), mid_y, "左端内侧"),
+            (right.saturating_sub(2), mid_y, "右端内侧"),
+            (mid_x, grip.y, "上沿"),
+            (mid_x, bottom.saturating_sub(1), "下沿"),
+        ];
+        for (x, y, label) in samples {
+            assert!(
+                unsafe { PtInRegion(region, x, y) }.as_bool(),
+                "把手{label} ({x},{y}) 应在区域内，bounds=({},{},{},{})",
+                bounds.left,
+                bounds.top,
+                bounds.right,
+                bounds.bottom
+            );
+        }
+        let _ = unsafe { DeleteObject(region.into()) };
     }
 }
