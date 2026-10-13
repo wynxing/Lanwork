@@ -32,7 +32,7 @@
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast`、`spikes/dnd` 与 `spikes/urldrop` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。见 [roadmap.md](roadmap.md)「技术验证」，这一项仍未通过 |
 | 外部 AI（本机 MCP）、扩展页与插件 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [extensions.md](extensions.md)。现在没有代码。技术验证表里没有对应项；没有通过记录之前，不写依赖它们的界面 |
-| 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。现在没有代码。拖放和打开见「收纳」的「网页引用」。依赖技术验证「网址拖放」；没有通过记录之前，不写这部分界面。验证程序在 `spikes/urldrop` |
+| 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。现在没有代码。拖放和打开见「收纳」的「网页引用」。依赖的技术验证「网址拖放」已通过，结论见 [roadmap.md](roadmap.md)。验证程序在 `spikes/urldrop`。收纳界面仍不识别网址 |
 | 待办悬浮窗 | `crates/app` 与 `crates/core`。可见行为见 [product.md](product.md)「待办」。现在没有代码。位置记在数据目录的 `todo-float.json`，不写进清单文件。贴边和叠页加入现有悬浮窗，见「待办悬浮窗」。「背景」和「渲染器」仍没有通过记录。窗口外观沿用便签悬浮窗，代码可以写在这两项通过之前；写了也不改变这两项的记录 |
 
 ## 技术验证
@@ -497,14 +497,14 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 ### 网页引用
 
-2026-10-13 决定，排在 v0.2.0 之后。可见行为以产品规格「收纳」的「网页引用」为准。收纳里现在没有代码。技术验证「网址拖放」要锁图标和页面链接都通过，才算该项通过。锁图标已有记录，页面链接未测，所以仍不写依赖它的界面。该项的通过标准是独立的最小程序取出网址，不包括收纳悬浮窗。产品里现有放下目标只接受 `CF_HDROP`，不识别网址。
+2026-10-13 决定，排在 v0.2.0 之后。可见行为以产品规格「收纳」的「网页引用」为准。收纳里现在没有代码。技术验证「网址拖放」已通过，结论见 [roadmap.md](roadmap.md)「技术验证」。通过标准是独立的最小程序取出网址，不包括收纳悬浮窗。产品里现有放下目标只接受 `CF_HDROP`，不识别网址。
 
-验证程序在 `spikes/urldrop`，包名 `urldrop`，不在 `lanwork` 的依赖里，不进发布包。它开一个窗口接受放下，从注册名 `HTML Format`（`CF_HTML`）、注册名 `text/uri-list`、`CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url` 读出内容并写入日志。标题另记一行：取 `FileGroupDescriptorW` 的文件名，去掉末尾的 `.url`。同一份数据里的 `FileContents` 不调用 `GetData`，不把字节写进磁盘，也不把虚拟 `.url` 存成路径。不调用会关闭或移动浏览器标签的接口。效果只返回复制或快捷方式，源只提供移动时拒绝。`CF_TEXT` 和 `UniformResourceLocator`（ANSI）若对方提供，日志里单独列出，产品是否接受仍待定。几种已接受格式同时出现时先用哪一个仍待定，程序全部列出，不选一个当作规则。2026-10-13 锁图标手测的结论见 [roadmap.md](roadmap.md)「技术验证」：Chrome 与 Edge 都通过，那次拖放没有 `CF_HTML` 和 `text/uri-list`。页面链接未测。收纳页和收纳悬浮窗仍不识别网址。
+验证程序在 `spikes/urldrop`，包名 `urldrop`，不在 `lanwork` 的依赖里，不进发布包。它开一个窗口接受放下，从注册名 `HTML Format`（`CF_HTML`）、`CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url` 读出内容并写入日志。`text/uri-list` 若出现也写入日志；2026-10-13 的锁图标和页面链接都没有提供它。标题另记一行：取 `FileGroupDescriptorW` 的文件名，去掉末尾的 `.url`。页面链接的标题是链接文字，与该文件名相同。同一份数据里的 `FileContents` 不调用 `GetData`，不把字节写进磁盘，也不把虚拟 `.url` 存成路径。不调用会关闭或移动浏览器标签的接口。效果只返回复制或快捷方式，源只提供移动时拒绝。`CF_TEXT` 和 `UniformResourceLocator`（ANSI）若对方提供，日志里单独列出，产品是否接受仍待定。几种已接受格式同时出现时先用哪一个仍待定，程序全部列出，不选一个当作规则。收纳页和收纳悬浮窗仍不识别网址。
 
 已经定下的机制：
 
 - 与路径引用一样只存引用。不调用会关闭或移动浏览器标签的接口，不把页面正文写入数据目录。
-- 第一版在现有 OLE 放下目标上增加识别，面板收纳页和收纳悬浮窗都要识别。接受的格式是注册剪贴板格式 `HTML Format`（`CF_HTML`）、`text/uri-list`、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url`。几种格式同时出现时先读哪一个，见下面的待定。地址栏锁图标和页面链接都走这一条。同一拖放里的虚拟 `.url` 文件（`FileGroupDescriptor` / `FileContents`）不存成路径引用，也不复制进数据目录。不调用 `FileContents` 的 `GetData`。标题取 `FileGroupDescriptorW` 的文件名，去掉末尾的 `.url`，大小写不敏感。`Cursor Status.url` 的标题是 `Cursor Status`。2026-10-13 锁图标手测里，Chrome 和 Edge 没有提供 `CF_HTML` 和 `text/uri-list`，网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。页面链接未测，前两种格式仍保留。
+- 第一版在现有 OLE 放下目标上增加识别，面板收纳页和收纳悬浮窗都要识别。接受的格式是注册剪贴板格式 `HTML Format`（`CF_HTML`）、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url`。几种格式同时出现时先读哪一个，见下面的待定。地址栏锁图标和页面链接都走这一条。同一拖放里的虚拟 `.url` 文件（`FileGroupDescriptor` / `FileContents`）不存成路径引用，也不复制进数据目录。不调用 `FileContents` 的 `GetData`。标题取 `FileGroupDescriptorW` 的文件名，去掉末尾的 `.url`，大小写不敏感。`Cursor Status.url` 的标题是 `Cursor Status`。页面链接的标题是链接文字，与该文件名相同。2026-10-13 手测：锁图标没有 `CF_HTML`，页面链接有，文档标题为空；两种拖放都没有 `text/uri-list`。网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。Chrome 与 Edge 都通过。
 - 打开与「打开网址」相同：把保存的网址作为 `LaunchTarget::Url` 交给 `ShellExecuteExW`，动词 `open`，由默认浏览器处理。`crates/core` 不启动浏览器。搜索里的「网页」组走同一条打开，见上面的 `allocate_display`。
 - 去重键按产品规格「同一网址只保留一条」：去掉首尾空白，协议和主机名小写，去掉路径末尾的一个 `/`（含问号或井号前的那个）。不改路径其余大小写、`www`、端口、用户名、查询和片段，也不套用路径引用的简单大写。比较范围是全部分组。键相同则不新增，保留先加入的那一条的网址原文、标题、图标和分组。
 - 一键浏览器扩展不在拖入这一版，先做 Chrome，其它浏览器更晚。扩展的宿主、安装方式，以及点一下写入的是当前页还是链接，都还没定。扩展落地时同样不得关闭或移动标签。
@@ -513,7 +513,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 - 网页引用在分组文件里的形状。现在的 `refs` 只有 `path`、`name`、`folder`、`addedAt`。网址、标题、图标是放进同一列表，还是另列一张表；图标是另一段网址、缓存文件名，还是内嵌字节，都待定。
 - 图标是向网站获取还是离线缓存，见产品规格待定。缓存目录今天固定是 `%LOCALAPPDATA%\Lanwork\cache`，可删除后重建，不进导出包。图标若放这里，删除缓存后条目仍在、图标可以没有；若放进分组文件，就随导出走。放哪边待定。在此之前不改导出白名单，也不把图标字节写进分组文件。
-- 多种已接受格式同时存在时先读哪一个。`text/uri-list` 在 Windows 上的注册格式名是不是字符串 `text/uri-list`，锁图标那次没有出现这个格式，还没有在本仓库验证。`CF_TEXT` 是否与 `CF_UNICODETEXT` 同样接受，待定。`UniformResourceLocator`（ANSI）是否读取，待定。`UniformResourceLocatorW` 和 `text/x-moz-url` 已经接受，不在这里重开。
+- 多种已接受格式同时存在时先读哪一个。`text/uri-list` 在 2026-10-13 的锁图标和页面链接里都没有出现，注册名未验证，是否接受待定。`CF_TEXT` 是否与 `CF_UNICODETEXT` 同样接受，待定。`UniformResourceLocator`（ANSI）是否读取，待定。`CF_HTML`、`UniformResourceLocatorW` 和 `text/x-moz-url` 已经接受，不在这里重开。
 - 纯文本怎样才算网址。搜索里「像网址」的判断是实现选择，不是产品规则，不要直接拿来当收纳的接受条件，除非以后写进产品规格。去重用的规范化已经写在产品规格里，不拿「像网址」来代替。
 
 ## 更新
