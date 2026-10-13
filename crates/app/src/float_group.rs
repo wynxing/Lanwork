@@ -19,11 +19,12 @@ use lanwork_core::panel::{
 };
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
+use lanwork_core::todos::{FloatWindowFile, TodoCommands};
 use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
 
 use crate::float_dock::{self, SavedFloat};
-use crate::{StackTab, note_float, shelf_float};
+use crate::{StackTab, note_float, shelf_float, todo_float};
 
 struct Tracked {
     saved: SavedFloat,
@@ -46,6 +47,7 @@ struct PageTab {
 struct Live {
     notes: Option<NoteCommands>,
     shelves: Option<ShelfCommands>,
+    todos: TodoCommands,
     store: Store,
     stacks: HashMap<String, PageStack>,
     member: HashMap<StackPage, String>,
@@ -60,13 +62,19 @@ thread_local! {
     static BUSY: Cell<bool> = const { Cell::new(false) };
 }
 
-pub(crate) fn install(notes: Option<NoteCommands>, shelves: Option<ShelfCommands>, store: Store) {
+pub(crate) fn install(
+    notes: Option<NoteCommands>,
+    shelves: Option<ShelfCommands>,
+    todos: TodoCommands,
+    store: Store,
+) {
     crate::bar_win::add_move_hook(on_tab_move);
     crate::float_frame::set_log(store.clone());
     LIVE.with(|cell| {
         *cell.borrow_mut() = Some(Live {
             notes,
             shelves,
+            todos,
             store,
             stacks: HashMap::new(),
             member: HashMap::new(),
@@ -546,6 +554,26 @@ impl Live {
                 }
             }
         }
+        match self.todos.read_float_window() {
+            Ok(FloatWindowFile::Record(record)) => {
+                if let Some(slot) = record.stack {
+                    pages.push(StartupPage {
+                        page: StackPage::Todo,
+                        slot,
+                        geometry: record.geometry,
+                        dock: record.dock,
+                    });
+                }
+            }
+            Ok(FloatWindowFile::UnsupportedSchema) => {
+                self.store
+                    .log_warn("todo-float.json 的 schemaVersion 不受支持，叠页还原跳过待办悬浮窗");
+            }
+            Err(err) => {
+                self.store
+                    .log_warn(&format!("待办悬浮窗位置没有读出来，叠页还原跳过它：{err}"));
+            }
+        }
         Some(pages)
     }
 
@@ -595,6 +623,15 @@ impl Live {
                 }
             }
         }
+        if let Ok(FloatWindowFile::Record(record)) = self.todos.read_float_window()
+            && let Some(slot) = record.stack
+            && slot.id == id
+        {
+            members.push(StackMember {
+                page: StackPage::Todo,
+                slot,
+            });
+        }
         members
     }
 
@@ -610,6 +647,7 @@ impl Live {
                 .as_ref()
                 .and_then(|shelves| shelves.get(id).ok())
                 .and_then(|group| group.float_stack),
+            StackPage::Todo => self.todo_record().and_then(|record| record.stack),
         }
     }
 
@@ -628,6 +666,25 @@ impl Live {
                     geometry: group.float?,
                     dock: group.float_dock,
                 })
+            }
+            StackPage::Todo => {
+                let record = self.todo_record()?;
+                Some(SavedFloat {
+                    geometry: record.geometry?,
+                    dock: record.dock,
+                })
+            }
+        }
+    }
+
+    fn todo_record(&self) -> Option<lanwork_core::todos::FloatWindowRecord> {
+        match self.todos.read_float_window() {
+            Ok(FloatWindowFile::Record(record)) => Some(record),
+            Ok(FloatWindowFile::UnsupportedSchema) => None,
+            Err(err) => {
+                self.store
+                    .log_warn(&format!("待办悬浮窗位置没有读出来：{err}"));
+                None
             }
         }
     }
@@ -689,6 +746,12 @@ impl Live {
                     .map_err(|err| err.to_string())
                     .err()
             }),
+            StackPage::Todo => self
+                .todos
+                .set_float_geometry(saved.geometry, saved.dock)
+                .map(|_| ())
+                .map_err(|err| err.to_string())
+                .err(),
         };
         if let Some(message) = result {
             self.store
@@ -712,6 +775,12 @@ impl Live {
                     .map_err(|err| err.to_string())
                     .err()
             }),
+            StackPage::Todo => self
+                .todos
+                .set_float_stack(slot)
+                .map(|_| ())
+                .map_err(|err| err.to_string())
+                .err(),
         };
         if let Some(message) = result {
             self.store
@@ -731,6 +800,7 @@ impl Live {
                 .as_ref()
                 .and_then(|shelves| shelves.get(id).ok())
                 .is_some(),
+            StackPage::Todo => true,
         }
     }
 
@@ -862,6 +932,18 @@ impl Live {
                     true
                 }
             }
+            StackPage::Todo => {
+                if !todo_float::contains()
+                    && let Err(message) = todo_float::open()
+                {
+                    self.store
+                        .log_warn(&format!("叠页里的待办没有打开：{message}"));
+                    false
+                } else {
+                    todo_float::present(saved, pages, index);
+                    true
+                }
+            }
         };
         if opened {
             self.track(page);
@@ -873,6 +955,7 @@ impl Live {
         match page {
             StackPage::Note(id) => note_float::park(id),
             StackPage::Shelf(id) => shelf_float::park(id),
+            StackPage::Todo => todo_float::park(),
         }
         self.shown.remove(page);
     }
@@ -881,6 +964,7 @@ impl Live {
         match page {
             StackPage::Note(id) => note_float::set_chrome(id, pages, index),
             StackPage::Shelf(id) => shelf_float::set_chrome(id, pages, index),
+            StackPage::Todo => todo_float::set_chrome(pages, index),
         }
     }
 
@@ -888,6 +972,7 @@ impl Live {
         match page {
             StackPage::Note(id) => note_float::view(id),
             StackPage::Shelf(id) => shelf_float::view(id),
+            StackPage::Todo => todo_float::view(),
         }
     }
 

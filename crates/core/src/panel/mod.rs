@@ -48,9 +48,9 @@ pub use shelf_page::{
     linked_todos, pick_selection, reordered_group_ids, todo_choices, visible_paths,
 };
 pub use todo_page::{
-    InputError, ListEntry, RECURRENCE_CHOICES, Row, TodoView, default_view, format_date,
-    list_entries, locate, parse_due, parse_remind, recurrence_from_choice, recurrence_index,
-    reordered_ids, rows, trash_count, trash_days_left, view_exists,
+    FloatRow, InputError, ListEntry, RECURRENCE_CHOICES, Row, TodoView, default_view, float_rows,
+    format_date, list_entries, locate, parse_due, parse_remind, recurrence_from_choice,
+    recurrence_index, reordered_ids, rows, trash_count, trash_days_left, view_exists,
 };
 
 use crate::shell::WorkArea;

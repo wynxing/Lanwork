@@ -16,6 +16,7 @@
 
 mod command;
 mod error;
+mod float_file;
 mod model;
 mod purge_record;
 mod repair;
@@ -24,6 +25,7 @@ mod service;
 
 pub use command::TodoCommands;
 pub use error::{PendingTopic, TodoError};
+pub use float_file::{FLOAT_FILE, FloatWindowFile, FloatWindowRecord};
 pub use model::{
     ClockTime, GeneratedNext, ListKind, NewTodo, Recurrence, RecurrenceRule, SourceKind, TodoItem,
     TodoList, TodoSource, is_http_source_url,

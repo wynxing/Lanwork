@@ -209,6 +209,42 @@ impl TodoCommands {
         self.service.complete_item(item_id)
     }
 
+    /// 读 `todo-float.json`。没有这份文件时是空记录。坏 JSON 被隔离，清单不受影响。
+    ///
+    /// 不认识的 `schemaVersion` 返回 [`FloatWindowFile::UnsupportedSchema`]，不改文件。
+    pub fn read_float_window(&self) -> Result<super::float_file::FloatWindowFile, TodoError> {
+        super::float_file::read(&self.service.store(), &self.service.float_cache)
+    }
+
+    /// 记下悬浮窗的展开位置和贴边。不调用 [`Self::complete_item`]，也不改待办。
+    ///
+    /// 值和已记下的一样时不写盘。文件的 `schemaVersion` 不受支持时返回 [`TodoError::FloatSchema`]，不覆盖。
+    pub fn set_float_geometry(
+        &self,
+        geometry: crate::notes::FloatGeometry,
+        dock: Option<crate::notes::FloatDock>,
+    ) -> Result<(), TodoError> {
+        super::float_file::set_geometry(
+            &self.service.store(),
+            &self.service.float_cache,
+            geometry,
+            dock,
+        )
+    }
+
+    /// 记下悬浮窗属于哪一叠。不改位置，也不改待办。值没变不写盘。
+    pub fn set_float_stack(
+        &self,
+        slot: Option<crate::notes::FloatStackSlot>,
+    ) -> Result<(), TodoError> {
+        super::float_file::set_stack(&self.service.store(), &self.service.float_cache, slot)
+    }
+
+    #[cfg(test)]
+    pub fn float_file_writes(&self) -> u64 {
+        super::float_file::write_count(&self.service.float_cache)
+    }
+
     /// 已完成的条目标回未完成，不改它的顺序。
     ///
     /// 重复待办在完成时记下的下一次，只有仍是当时生成的那一条才从清单移除。

@@ -519,3 +519,50 @@ fn shelf_links_go_through_export_and_import_including_the_old_single_field() {
     assert_eq!(shelves.get("old").unwrap().todo_ids, ["t-old"]);
     assert_eq!(shelves.get(&many.id).unwrap().todo_ids, ["t-1", "t-2"]);
 }
+
+#[test]
+fn todo_float_file_is_copied_by_export_and_absent_from_old_packages() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    write_rel(
+        &fx.store,
+        "todo-float.json",
+        r#"{"schemaVersion":1,"floatWindow":{"x":4,"y":5,"width":6,"height":7},"marker":"todo-float-marker"}"#,
+    );
+    write_rel(
+        &fx.store,
+        "todos/list.json",
+        r#"{"schemaVersion":1,"id":"list"}"#,
+    );
+    let package = fx._temp.path().join("with-float.zip");
+    let overview = commands.export(&package, 70).unwrap();
+    assert_eq!(overview.todos, 1);
+    let packed = String::from_utf8_lossy(&std::fs::read(&package).unwrap()).into_owned();
+    assert!(packed.contains("todo-float.json"));
+    assert!(packed.contains("todo-float-marker"));
+
+    write_rel(
+        &fx.store,
+        "todo-float.json",
+        r#"{"schemaVersion":1,"floatWindow":{"x":1,"y":1,"width":1,"height":1}}"#,
+    );
+    commands.import(&package, 80).unwrap();
+    assert!(read_rel(&fx.store, "todo-float.json").contains("todo-float-marker"));
+    assert!(read_rel(&fx.store, "todos/list.json").contains("list"));
+
+    std::fs::remove_file(fx.store.data_dir().join("todo-float.json")).unwrap();
+    let without = fx._temp.path().join("without-float.zip");
+    commands.export(&without, 90).unwrap();
+    commands.inspect(&without).unwrap();
+    write_rel(
+        &fx.store,
+        "todo-float.json",
+        r#"{"schemaVersion":1,"floatWindow":{"x":8,"y":8,"width":8,"height":8}}"#,
+    );
+    commands.import(&without, 100).unwrap();
+    assert!(
+        !fx.store.data_dir().join("todo-float.json").exists(),
+        "旧包没有这份文件时导入不失败，本地这份按白名单删掉"
+    );
+    assert!(fx.store.data_dir().join("todos/list.json").exists());
+}

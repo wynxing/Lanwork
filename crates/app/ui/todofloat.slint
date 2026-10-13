@@ -1,0 +1,220 @@
+// 待办悬浮窗。全程序只有一个：上沿一条可拖动的细条，右侧是关闭，下面是待办列表。
+// 可以勾选完成和取消完成。不能新建，也不能改标题。窗口始终在最上层。
+// 贴边收起时只留下一个小把手，窗口其余部分透明。风格与便签悬浮窗一致。
+
+import { ListView, Palette } from "std-widgets.slint";
+import { Check, EdgeHandle, Ink } from "widgets.slint";
+
+export struct TodoFloatRow {
+    title: string,
+    completed: bool,
+    overdue: bool,
+}
+
+export component TodoFloat inherits Window {
+    title: "Lanwork";
+    icon: @image-url("../assets/lanwork-256.png");
+    no-frame: true;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+    preferred-width: 320px;
+    preferred-height: 360px;
+    min-width: thin ? 1px : min(200px, limit-width);
+    min-height: thin ? 1px : min(120px, limit-height);
+    in property <length> limit-width: 100000px;
+    in property <length> limit-height: 100000px;
+    max-width: thin ? 100000px : limit-width;
+    max-height: thin ? 100000px : limit-height;
+    resize-border-width: thin ? 0px : 6px;
+    always-on-top: true;
+
+    in property <bool> dark;
+    in property <bool> acrylic;
+    in property <color> solid-color: #f3f3f3;
+    in property <string> error;
+    in property <bool> thin;
+    in property <bool> collapsed;
+    // ""、"left"、"right"、"top"。
+    in property <string> dock-edge;
+    in property <int> stack-pages: 1;
+    in property <int> stack-index: 0;
+    in property <[TodoFloatRow]> rows;
+
+    callback close-clicked();
+    callback drag-window();
+    callback strip-clicked();
+    // -1 向左，1 向右。勾选框是点击区域，不拿键盘焦点。
+    callback flip-page(int);
+    callback toggle-row(int);
+
+    property <Ink> c: {
+        ink: dark ? #ffffff : #1b1b1b,
+        secondary: dark ? #c5c5c5 : #5d5d5d,
+        tertiary: dark ? #9a9a9a : #767676,
+        divider: dark ? #ffffff17 : #00000014,
+        hover: dark ? #ffffff0d : #00000008,
+        selection: dark ? #ffffff14 : #0000000d,
+        field: dark ? #ffffff0a : #ffffff80,
+        accent: dark ? #60cdff : #005fb8,
+        critical: dark ? #ff99a4 : #c42b1c,
+    };
+    property <length> error-h: !collapsed && error != "" ? 24px : 0px;
+
+    // 布局检查用。列表从拖动条和错误行下面开始，每一行 36px。
+    out property <length> content-y: collapsed ? 0px : 28px + error-h;
+    out property <length> row-h: 36px;
+    out property <bool> shows-empty: !collapsed && rows.length == 0;
+    out property <length> close-x: close-box.absolute-position.x;
+    out property <length> close-y: close-box.absolute-position.y;
+    out property <length> strip-x: edge-strip.absolute-position.x;
+    out property <length> strip-y: edge-strip.absolute-position.y;
+    out property <length> strip-width: edge-strip.width;
+    out property <length> strip-height: edge-strip.height;
+    out property <length> grip-width: edge-strip.grip-width;
+    out property <length> grip-height: edge-strip.grip-height;
+
+    background: collapsed ? transparent : (acrylic ? transparent : solid-color);
+
+    init => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+        float-scope.focus();
+    }
+    changed dark => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    public function focus-float() {
+        float-scope.focus();
+    }
+
+    float-scope := FocusScope {
+        key-pressed(event) => {
+            if root.stack-pages > 1 && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                root.flip-page(event.text == Key.LeftArrow ? -1 : 1);
+                return accept;
+            }
+            reject
+        }
+
+        if !collapsed: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 28px;
+
+            TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        float-scope.focus();
+                        root.drag-window();
+                    }
+                }
+            }
+        }
+
+        close-box := Rectangle {
+            x: parent.width - 28px;
+            y: 0px;
+            width: 28px;
+            height: 28px;
+            visible: !collapsed;
+            background: close-touch.has-hover ? c.hover : transparent;
+
+            Path {
+                x: 9px;
+                y: 9px;
+                width: 10px;
+                height: 10px;
+                viewbox-width: 10;
+                viewbox-height: 10;
+                fill: transparent;
+                stroke: c.secondary;
+                stroke-width: 1.2px;
+                commands: "M1 1l8 8 M9 1l-8 8";
+            }
+
+            close-touch := TouchArea {
+                clicked => {
+                    root.close-clicked();
+                }
+            }
+        }
+
+        if collapsed: EdgeHandle {
+            x: 0px;
+            y: 0px;
+            dark: root.dark;
+            along-vertical: dock-edge != "top";
+            press-drags: true;
+            pages: root.stack-pages;
+            page-index: root.stack-index;
+            pressed => {
+                root.drag-window();
+            }
+        }
+
+        edge-strip := EdgeHandle {
+            x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
+            y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
+            visible: !collapsed && dock-edge != "";
+            dark: root.dark;
+            along-vertical: dock-edge != "top";
+            clicked => {
+                root.strip-clicked();
+            }
+        }
+
+        if !collapsed && error != "": Text {
+            x: 12px;
+            y: 28px;
+            width: parent.width - 24px;
+            height: 24px;
+            text: error;
+            color: c.critical;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if !collapsed && rows.length == 0: Text {
+            x: 16px;
+            y: root.content-y + 12px;
+            text: "没有待办";
+            color: c.secondary;
+            font-size: 14px;
+        }
+
+        if !collapsed: list := ListView {
+            x: 0px;
+            y: root.content-y;
+            width: parent.width;
+            height: parent.height - root.content-y;
+
+            for row[index] in rows: Rectangle {
+                height: root.row-h;
+
+                Check {
+                    x: 4px;
+                    y: (parent.height - self.height) / 2;
+                    c: root.c;
+                    checked: row.completed;
+                    toggled => {
+                        root.toggle-row(index);
+                    }
+                }
+
+                Text {
+                    x: 36px;
+                    y: 0px;
+                    width: parent.width - 44px;
+                    height: parent.height;
+                    text: row.title;
+                    color: row.overdue ? root.c.critical : row.completed ? root.c.tertiary : root.c.ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}

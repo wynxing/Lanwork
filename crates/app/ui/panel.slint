@@ -93,6 +93,7 @@ export component Panel inherits Window {
     callback choose-recurrence(int);
     callback commit-until(string);
     callback open-shelf();
+    callback float-todos();
 
     // 收纳页的放下区域，窗口客户区里的逻辑像素。OLE 放下目标用它判断指针在不在收纳页上。
     out property <length> shelf-zone-x: 0px;
@@ -415,13 +416,13 @@ export component Panel inherits Window {
 
                     VerticalLayout {
                         HorizontalLayout {
-                            visible: !trash-selected;
                             padding: 12px;
                             padding-bottom: 8px;
                             spacing: 8px;
-                            height: trash-selected ? 0px : 50px;
+                            height: 50px;
 
                             new-item := Field {
+                                visible: !trash-selected;
                                 name: "新建待办";
                                 c: root.c;
                                 committed(text) => {
@@ -432,12 +433,20 @@ export component Panel inherits Window {
                                 }
                             }
 
-                            if can-delete-list: Btn {
+                            if !trash-selected && can-delete-list: Btn {
                                 text: "删除清单";
                                 c: root.c;
                                 danger: true;
                                 clicked => {
                                     root.delete-list();
+                                }
+                            }
+
+                            Btn {
+                                text: "悬浮";
+                                c: root.c;
+                                clicked => {
+                                    root.float-todos();
                                 }
                             }
                         }

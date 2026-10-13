@@ -37,6 +37,7 @@ use crate::registry::{apply_startup, read_system_theme};
 use crate::searchbar;
 use crate::settings_page::SettingsServices;
 use crate::shelf_float;
+use crate::todo_float;
 use crate::{Panel, SearchBar, Tray};
 
 pub(crate) fn run() -> i32 {
@@ -172,7 +173,8 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
             store.clone(),
         );
     }
-    float_group::install(notes.clone(), shelves.clone(), store.clone());
+    todo_float::install(todos.clone(), store.clone());
+    float_group::install(notes.clone(), shelves.clone(), todos.clone(), store.clone());
     panel::install(
         panel_ui.clone_strong(),
         todos.clone(),
@@ -348,6 +350,7 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
                 refresh_badge(&tray, &todos, &store);
                 panel::on_todos_changed();
                 shelf_float::on_todos_changed();
+                todo_float::on_todos_changed();
             });
         }
     });
@@ -445,6 +448,7 @@ fn refresh_theme(config: &ConfigCommands, store: &Store) {
     panel::apply_theme(dark);
     note_float::apply_theme(dark);
     shelf_float::apply_theme(dark);
+    todo_float::apply_theme(dark);
 }
 
 pub(crate) fn local_today() -> Option<CivilDate> {
@@ -487,6 +491,7 @@ fn attempt_quit() {
     match quit_decision(unsaved) {
         QuitDecision::Exit => {
             shelf_float::save_for_quit();
+            todo_float::save_for_quit();
             if crate::update::spawn_pending_install().is_err() {
                 QUIT.clear();
                 crate::update::install_spawn_failed();

@@ -35,6 +35,19 @@ pub struct ListEntry {
     pub inbox: bool,
 }
 
+/// 待办悬浮窗的一行。只有勾选、标题，以及是否整行标红。
+///
+/// 已完成的列出来。回收站不列、清单怎么分段、行序、标题以外的标记，产品规格仍待定。
+/// 这里的做法：回收站不出现；清单按服务给出的顺序；同一清单里未完成在前、已完成在后，
+/// 各自保持 `order`。勾选完成之后再读，这一行会跟到已完成那一段。这些不是产品规则。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloatRow {
+    pub id: String,
+    pub title: String,
+    pub completed: bool,
+    pub overdue: bool,
+}
+
 /// 右侧一行。文字字段已经是要显示的样子，空字符串表示没有这个标记。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -185,6 +198,35 @@ pub fn rows(
                 .map(|(list, item)| row_of(list, item, today, now_ms, true))
                 .collect()
         }
+    }
+}
+
+/// 悬浮窗里的行：全部清单，含已完成，不含回收站。
+///
+/// `today` 为空时不标逾期。逾期判定与托盘数量相同，见 [`is_overdue`](crate::todos::is_overdue)。
+#[must_use]
+pub fn float_rows(lists: &[TodoList], today: Option<CivilDate>) -> Vec<FloatRow> {
+    let mut rows = Vec::new();
+    for list in lists {
+        for completed in [false, true] {
+            for item in list
+                .items
+                .iter()
+                .filter(|item| !item.in_trash() && item.completed == completed)
+            {
+                rows.push(float_row(item, today));
+            }
+        }
+    }
+    rows
+}
+
+fn float_row(item: &TodoItem, today: Option<CivilDate>) -> FloatRow {
+    FloatRow {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        completed: item.completed,
+        overdue: today.is_some_and(|today| is_overdue(item, today)),
     }
 }
 
@@ -392,6 +434,48 @@ mod tests {
 
     fn ids(rows: &[Row]) -> Vec<&str> {
         rows.iter().map(|row| row.id.as_str()).collect()
+    }
+
+    #[test]
+    fn float_rows_list_completed_items_hide_trash_and_paint_overdue_only() {
+        let mut done = item("done", 1);
+        done.completed = true;
+        done.due = Some(date(2026, 10, 1));
+        let mut late = item("late", 2);
+        late.due = Some(date(2026, 10, 9));
+        let mut today_item = item("today", 0);
+        today_item.due = Some(date(2026, 10, 10));
+        let mut gone = item("gone", 3);
+        gone.deleted_at = Some(5);
+        gone.due = Some(date(2026, 1, 1));
+        let lists = vec![
+            list("inbox", ListKind::Inbox, vec![done, today_item, gone]),
+            list("work", ListKind::Normal, vec![late.clone()]),
+        ];
+        let shown = float_rows(&lists, Some(date(2026, 10, 10)));
+        let ids: Vec<_> = shown.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, ["today", "done", "late"]);
+        assert!(shown[1].completed);
+        assert!(!shown[1].overdue, "已完成不标红");
+        assert!(!shown[0].overdue, "到期日是今天不算逾期");
+        assert!(shown[2].overdue);
+        assert!(
+            !float_rows(&lists, None).iter().any(|row| row.overdue),
+            "读不到今天的日期时不标红"
+        );
+        let reopened = vec![
+            list(
+                "inbox",
+                ListKind::Inbox,
+                vec![item("today", 0), item("done", 1)],
+            ),
+            list("work", ListKind::Normal, vec![late]),
+        ];
+        let back: Vec<_> = float_rows(&reopened, Some(date(2026, 10, 10)))
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(back, ["today", "done", "late"]);
     }
 
     #[test]
