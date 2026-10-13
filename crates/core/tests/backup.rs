@@ -6,9 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
 use lanwork_core::backup::{BackupCommands, LaunchBackup};
-use lanwork_core::notes::{FloatGeometry, NoteCommands, NoteError, NoteInput};
+use lanwork_core::notes::{FloatGeometry, FloatStackSlot, NoteCommands, NoteError, NoteInput};
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::{BootHooks, EntityKind, Store, StorePaths};
+use lanwork_core::todos::{FloatWindowFile, TodoCommands};
 
 struct TempDir {
     path: PathBuf,
@@ -565,4 +566,63 @@ fn todo_float_file_is_copied_by_export_and_absent_from_old_packages() {
         "旧包没有这份文件时导入不失败，本地这份按白名单删掉"
     );
     assert!(fx.store.data_dir().join("todos/list.json").exists());
+}
+
+#[test]
+fn import_drops_the_open_todo_float_cache_so_a_later_write_does_not_restore_the_stack() {
+    let fx = fixture();
+    let todos = TodoCommands::open(fx.store.clone());
+    todos.boot().unwrap();
+    let commands = BackupCommands::open(fx.store.clone());
+    let package = fx._temp.path().join("old-without-float.zip");
+    commands.export(&package, 110).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&std::fs::read(&package).unwrap()).contains("todo-float.json")
+    );
+
+    let before = FloatGeometry {
+        x: 11,
+        y: 22,
+        width: 320,
+        height: 360,
+    };
+    todos.set_float_geometry(before, None).unwrap();
+    todos
+        .set_float_stack(Some(FloatStackSlot {
+            id: "pre-import-stack".into(),
+            index: 1,
+            current: true,
+        }))
+        .unwrap();
+    assert!(read_rel(&fx.store, "todo-float.json").contains("pre-import-stack"));
+
+    commands.import(&package, 120).unwrap();
+    let path = fx.store.data_dir().join("todo-float.json");
+    assert!(!path.exists(), "旧包没有这份文件时，本地文件被删掉");
+
+    let FloatWindowFile::Record(record) = todos.read_float_window().unwrap() else {
+        panic!("导入后应读到空记录");
+    };
+    assert_eq!(record, Default::default());
+    assert!(!path.exists(), "读取不把已删除的文件写回去");
+
+    let after = FloatGeometry {
+        x: 40,
+        y: 50,
+        width: 200,
+        height: 180,
+    };
+    todos.set_float_geometry(after, None).unwrap();
+    let written = read_rel(&fx.store, "todo-float.json");
+    assert!(written.contains("\"x\":40"), "{written}");
+    assert!(
+        !written.contains("pre-import-stack"),
+        "记下新位置时不能把导入前的叠页写回去：{written}"
+    );
+    let FloatWindowFile::Record(record) = todos.read_float_window().unwrap() else {
+        panic!("写入后应读到记录");
+    };
+    assert_eq!(record.geometry, Some(after));
+    assert_eq!(record.stack, None);
+    assert_eq!(record.dock, None);
 }

@@ -57,6 +57,14 @@ impl Cache {
     }
 }
 
+/// 导入替换数据目录之后丢掉这份缓存。下一次读写再从磁盘读。
+pub(crate) fn forget(cache: &Mutex<Cache>) {
+    let mut cache = lock_mutex(cache);
+    cache.known = false;
+    cache.refused = false;
+    cache.record = FloatWindowRecord::default();
+}
+
 #[derive(Serialize)]
 struct OnDisk {
     #[serde(rename = "schemaVersion")]

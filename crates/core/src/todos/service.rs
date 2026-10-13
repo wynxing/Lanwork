@@ -105,6 +105,8 @@ impl NoticeBus {
 
 impl crate::storage::MemoryReload for Service {
     fn reload_memory(&self) -> Result<(), String> {
+        // 清单还没载入时也丢掉悬浮窗缓存。导入可能已经删掉 `todo-float.json`。
+        super::float_file::forget(&self.float_cache);
         let loaded = lock_mutex(&self.state).loaded;
         if !loaded {
             return Ok(());
