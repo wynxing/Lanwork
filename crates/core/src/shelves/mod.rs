@@ -9,7 +9,7 @@ mod model;
 mod path;
 mod service;
 
-pub use crate::notes::{FloatDock, FloatGeometry};
+pub use crate::notes::{FloatDock, FloatGeometry, FloatStackSlot};
 pub use command::ShelfCommands;
 pub use error::ShelfError;
 pub use model::{AddRefsOutcome, DEFAULT_GROUP_NAME, EXISTS_TIMEOUT, IncomingRef, Shelf, ShelfRef};

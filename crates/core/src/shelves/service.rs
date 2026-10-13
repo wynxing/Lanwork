@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::notes::{FloatDock, FloatGeometry};
+use crate::notes::{FloatDock, FloatGeometry, FloatStackSlot};
 use crate::storage::{CollectionKind, DocumentId, Store, lock_mutex};
 use crate::todos::{TodoCommands, TodoNotice};
 
@@ -129,6 +129,7 @@ impl ShelfService {
             refs: Vec::new(),
             float: None,
             float_dock: None,
+            float_stack: None,
         };
         self.persist_one(&shelf)?;
         Ok(shelf)
@@ -217,6 +218,7 @@ impl ShelfService {
                     refs: Vec::new(),
                     float: None,
                     float_dock: None,
+                    float_stack: None,
                 }
             }
             None => return Err(ShelfError::TargetGroupRequired),
@@ -310,6 +312,20 @@ impl ShelfService {
         }
         shelf.float = Some(geometry);
         shelf.float_dock = dock;
+        self.persist_one(&shelf)?;
+        Ok(shelf)
+    }
+
+    /// 记下这个分组属于哪一叠。不改名称、顺序、关联和引用。值没有变化时不写盘。
+    pub fn set_stack(&self, id: &str, slot: Option<FloatStackSlot>) -> Result<Shelf, ShelfError> {
+        self.check_group_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        self.ensure_usable()?;
+        let mut shelf = self.group(id)?;
+        if shelf.float_stack == slot {
+            return Ok(shelf);
+        }
+        shelf.float_stack = slot;
         self.persist_one(&shelf)?;
         Ok(shelf)
     }

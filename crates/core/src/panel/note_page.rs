@@ -196,6 +196,7 @@ mod tests {
             revision: 1,
             float: None,
             float_dock: None,
+            float_stack: None,
         }
     }
 

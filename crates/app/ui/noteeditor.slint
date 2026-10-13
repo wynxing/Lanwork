@@ -16,6 +16,7 @@ export component NoteEditor inherits Rectangle {
     in property <int> focus-ticket;
     in-out property <string> body <=> input.text;
     out property <string> preedit: input.preedit-text;
+    out property <bool> text-focused: input.has-focus;
 
     callback body-edited(string);
     callback retry();

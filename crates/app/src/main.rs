@@ -20,6 +20,8 @@ mod bar_win;
 #[cfg(windows)]
 mod float_dock;
 #[cfg(windows)]
+mod float_group;
+#[cfg(windows)]
 mod host;
 #[cfg(windows)]
 mod hotcorner;

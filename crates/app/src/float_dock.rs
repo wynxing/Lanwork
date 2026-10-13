@@ -188,6 +188,21 @@ impl Session {
         self.anim.is_some()
     }
 
+    /// 丢掉这一次拖动，几何保持按下之前的样子。
+    pub(crate) fn abandon_drag(&mut self) {
+        self.dragging = false;
+        self.drag_from = None;
+        self.arm_hold();
+    }
+
+    /// 换成另一份展开矩形和贴边。叠页切换、并入时用。
+    pub(crate) fn replace(&mut self, expanded: PxBox, dock: Option<FloatDock>) {
+        self.anim = None;
+        self.dragging = false;
+        self.drag_from = None;
+        self.state = DockState { expanded, dock };
+    }
+
     fn arm_hold(&mut self) {
         self.hold_blur = true;
         self.hold_generation = self.hold_generation.wrapping_add(1);

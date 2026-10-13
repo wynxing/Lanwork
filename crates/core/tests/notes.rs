@@ -1101,3 +1101,70 @@ fn an_old_note_file_with_float_pinned_still_opens_and_the_field_is_not_written_b
     let commands = NoteCommands::open(fix.store.clone()).unwrap();
     assert!(commands.get("bad").unwrap().float_dock.is_none());
 }
+
+#[test]
+fn float_stack_is_optional_and_old_files_without_it_still_open() {
+    let fix = fixture();
+    let commands = NoteCommands::open(fix.store.clone()).unwrap();
+    let note = commands.create(&input("甲", "正文")).unwrap();
+    assert!(note.float_stack.is_none());
+    let slot = lanwork_core::notes::FloatStackSlot {
+        id: "stack-1".to_owned(),
+        index: 1,
+        current: true,
+    };
+    let saved = commands.set_stack(&note.id, Some(slot.clone())).unwrap();
+    assert_eq!(saved.float_stack, Some(slot.clone()));
+    assert_eq!(
+        saved.revision, note.revision,
+        "记叠页不让编辑区的版本号过期"
+    );
+    assert_eq!(saved.updated_at, note.updated_at);
+    let file = json_file(&fix.store, &note.id);
+    assert_eq!(file["floatStack"]["id"], "stack-1");
+    assert_eq!(file["floatStack"]["index"], 1);
+    assert_eq!(file["floatStack"]["current"], true);
+
+    let edited = commands
+        .save(&note.id, note.revision, &input("甲", "改过"))
+        .unwrap();
+    assert_eq!(
+        edited.float_stack.as_ref().map(|slot| slot.id.as_str()),
+        Some("stack-1")
+    );
+
+    let reopened = NoteCommands::open(fix.store.clone()).unwrap();
+    assert_eq!(reopened.get(&note.id).unwrap().float_stack, Some(slot));
+    let cleared = reopened.set_stack(&note.id, None).unwrap();
+    assert!(cleared.float_stack.is_none());
+    assert!(json_file(&fix.store, &note.id).get("floatStack").is_none());
+
+    let path = fix
+        .store
+        .document_path(&DocumentId::Note("old-stack".into()))
+        .unwrap();
+    std::fs::write(
+        &path,
+        r#"{"schemaVersion":1,"id":"old-stack","title":"旧","body":"b","revision":2,"floatPinned":true,"floatStack":{"id":"","index":3}}"#,
+    )
+    .unwrap();
+    let commands = NoteCommands::open(fix.store.clone()).unwrap();
+    let old = commands.get("old-stack").unwrap();
+    assert!(
+        old.float_stack.is_none(),
+        "空的叠 id 和旧钉住字段都不挡住打开"
+    );
+    assert_eq!(old.revision, 2);
+
+    let garbage = fix
+        .store
+        .document_path(&DocumentId::Note("bad-stack".into()))
+        .unwrap();
+    std::fs::write(
+        &garbage,
+        r#"{"schemaVersion":1,"id":"bad-stack","title":"坏","body":"b","revision":1,"floatStack":"nope"}"#,
+    )
+    .unwrap();
+    let commands = NoteCommands::open(fix.store.clone()).unwrap();
+    assert!(commands.get("bad-stack").unwrap().float_stack.is_none());
+}

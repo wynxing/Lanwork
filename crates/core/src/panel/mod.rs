@@ -4,6 +4,7 @@
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
 mod float_snap;
+mod float_stack;
 mod note_edit;
 mod note_page;
 mod settings_page;
@@ -17,6 +18,13 @@ pub use float_snap::{
     STRIP_HIT_THICKNESS_LOGICAL, ScreenBounds, Transition, dock_applies, dpi_at, edge_label,
     lerp_box, moved_enough, outer_edges, snap_on_release, snap_slop, strip_hit_length,
     strip_hit_thickness, transition, visible_box,
+};
+pub use float_stack::{
+    DOCK_MERGE_GAP_LOGICAL, DetachOutcome, DragOrigin, DropEffect, DropInput, Flip, HANDLE_DOT_CAP,
+    OtherFloat, PageStack, StackMember, StackPage, TAB_LOGICAL_HEIGHT, TAB_LOGICAL_WIDTH,
+    assemble_stacks, collapsed_handles_close, detach_page, dock_merge_gap,
+    drop_effect as stack_drop_effect, flip_index, handle_dot_count, merge_stacks,
+    overlaps_more_than_half, page_label, place_tab, slots_for,
 };
 pub use note_edit::{AUTOSAVE_IDLE_MS, EditSession, SaveOutcome, SaveProblem};
 pub use note_page::{

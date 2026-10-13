@@ -815,3 +815,34 @@ fn float_dock_is_per_group_and_an_old_pin_field_still_opens() {
             .contains("floatPinned")
     );
 }
+
+#[test]
+fn float_stack_round_trips_on_a_group_and_a_missing_field_stays_unset() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let group = cmds.create_group("甲").unwrap();
+    assert!(group.float_stack.is_none());
+    let slot = lanwork_core::notes::FloatStackSlot {
+        id: "mix".to_owned(),
+        index: 0,
+        current: false,
+    };
+    let saved = cmds.set_stack(&group.id, Some(slot.clone())).unwrap();
+    assert_eq!(saved.float_stack, Some(slot.clone()));
+    assert_eq!(saved.name, "甲");
+    assert!(saved.refs.is_empty());
+    let reloaded = ShelfCommands::open(fix.store.clone()).unwrap();
+    assert_eq!(reloaded.get(&group.id).unwrap().float_stack, Some(slot));
+
+    let path = fix
+        .store
+        .document_path(&DocumentId::Shelf("plain".into()))
+        .unwrap();
+    std::fs::write(
+        &path,
+        r#"{"schemaVersion":1,"id":"plain","name":"旧","order":1,"refs":[]}"#,
+    )
+    .unwrap();
+    let cmds = ShelfCommands::open(fix.store.clone()).unwrap();
+    assert!(cmds.get("plain").unwrap().float_stack.is_none());
+}

@@ -30,6 +30,9 @@ export component NoteFloat inherits Window {
     in property <bool> collapsed;
     // ""、"left"、"right"、"top"。
     in property <string> dock-edge;
+    // 一叠的页数和当前下标。1 页时和原来的悬浮窗一样。
+    in property <int> stack-pages: 1;
+    in property <int> stack-index: 0;
     in-out property <string> body <=> editor.body;
     out property <string> preedit: editor.preedit;
 
@@ -37,6 +40,8 @@ export component NoteFloat inherits Window {
     callback close-clicked();
     callback drag-window();
     callback strip-clicked();
+    // -1 向左，1 向右。正文有焦点时不调用。
+    callback flip-page(int);
     callback retry();
     callback discard();
     callback keep-mine();
@@ -77,6 +82,24 @@ export component NoteFloat inherits Window {
         editor.focus-body();
     }
 
+    public function focus-stack-keys() {
+        page-keys.focus();
+    }
+
+    page-keys := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 0px;
+        height: 0px;
+        key-pressed(event) => {
+            if root.stack-pages > 1 && !editor.text-focused && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                root.flip-page(event.text == Key.LeftArrow ? -1 : 1);
+                return accept;
+            }
+            reject
+        }
+    }
+
     if !collapsed: Rectangle {
         x: 0px;
         y: 0px;
@@ -86,6 +109,7 @@ export component NoteFloat inherits Window {
         TouchArea {
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.focus-stack-keys();
                     root.drag-window();
                 }
             }
@@ -129,6 +153,8 @@ export component NoteFloat inherits Window {
         dark: root.dark;
         along-vertical: dock-edge != "top";
         press-drags: true;
+        pages: root.stack-pages;
+        page-index: root.stack-index;
         pressed => {
             root.drag-window();
         }

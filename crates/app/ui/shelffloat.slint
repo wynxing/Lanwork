@@ -27,10 +27,13 @@ export component ShelfFloat inherits Window {
     in property <bool> collapsed;
     // ""、"left"、"right"、"top"。
     in property <string> dock-edge;
+    in property <int> stack-pages: 1;
+    in property <int> stack-index: 0;
 
     callback close-clicked();
     callback drag-window();
     callback strip-clicked();
+    callback flip-page(int);
 
     property <Ink> c: {
         ink: dark ? #ffffff : #1b1b1b,
@@ -77,8 +80,16 @@ export component ShelfFloat inherits Window {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
     }
 
+    public function focus-float() {
+        float-scope.focus();
+    }
+
     float-scope := FocusScope {
         key-pressed(event) => {
+            if root.stack-pages > 1 && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                root.flip-page(event.text == Key.LeftArrow ? -1 : 1);
+                return accept;
+            }
             if ShelvesPageData.selected-ref >= 0 && event.text == Key.Return {
                 if event.modifiers.control {
                     ShelvesPageData.open-ref-folder();
@@ -99,6 +110,7 @@ export component ShelfFloat inherits Window {
             TouchArea {
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        float-scope.focus();
                         root.drag-window();
                     }
                 }
@@ -141,6 +153,8 @@ export component ShelfFloat inherits Window {
             dark: root.dark;
             along-vertical: dock-edge != "top";
             press-drags: true;
+            pages: root.stack-pages;
+            page-index: root.stack-index;
             pressed => {
                 root.drag-window();
             }
