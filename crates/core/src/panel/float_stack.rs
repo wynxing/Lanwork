@@ -7,7 +7,7 @@
 //! 页点的直径、间距和点击换页之外的细节，规格也没有写成唯一做法。
 //! 下面的选择是当前做法，不是产品规则，待定。
 
-use crate::notes::{DockEdge, FloatStackSlot};
+use crate::notes::{DockEdge, FloatDock, FloatGeometry, FloatStackSlot};
 use crate::shell::to_physical;
 
 use super::float_snap::{PxBox, ScreenBounds};
@@ -108,6 +108,61 @@ pub struct DetachOutcome {
 pub struct StackMember {
     pub page: StackPage,
     pub slot: FloatStackSlot,
+}
+
+/// 启动时读到的一页。`geometry` 缺了仍留在叠里，位置用同一叠里另一页的。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartupPage {
+    pub page: StackPage,
+    pub slot: FloatStackSlot,
+    pub geometry: Option<FloatGeometry>,
+    pub dock: Option<FloatDock>,
+}
+
+/// 启动时要打开的一叠。只显示 `stack.current` 那一页，其余页藏着，不另开窗口。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StackRestore {
+    pub stack: PageStack,
+    pub geometry: FloatGeometry,
+    pub dock: Option<FloatDock>,
+}
+
+impl StackRestore {
+    /// 看得见的那一页。
+    #[must_use]
+    pub fn visible(&self) -> &StackPage {
+        &self.stack.pages[self.stack.current]
+    }
+
+    /// 仍在这一叠里、但不另开窗口的页。
+    #[must_use]
+    pub fn parked(&self) -> Vec<StackPage> {
+        self.stack
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != self.stack.current)
+            .map(|(_, page)| page.clone())
+            .collect()
+    }
+
+    /// 把手上或窗口下方要画的点数。一页是 0。
+    #[must_use]
+    pub fn dot_count(&self) -> usize {
+        handle_dot_count(self.stack.pages.len())
+    }
+
+    /// 收起时点画在把手上。
+    #[must_use]
+    pub fn dots_on_handle(&self) -> bool {
+        self.dock.is_some_and(|dock| dock.collapsed) && self.dot_count() > 0
+    }
+
+    /// 展开时点画在窗口下方，不画在把手上。
+    #[must_use]
+    pub fn dots_below_window(&self) -> bool {
+        !self.dock.is_some_and(|dock| dock.collapsed) && self.dot_count() > 0
+    }
 }
 
 #[must_use]
@@ -394,6 +449,99 @@ pub fn assemble_stacks(members: &[StackMember]) -> Vec<PageStack> {
     }
     stacks.sort_by(|left, right| left.id.cmp(&right.id));
     stacks
+}
+
+/// 启动时把悬浮页按 `floatStack.id` 合成叠。
+///
+/// 页按 `index` 排，相同则按页的种类和 id。序号有空档也全部留下。同一页出现多次只留排序后的第一次。
+/// 正好一个 `current` 时显示那一页。缺了或有多个时，显示记下的 `index` 为 0 的那一页；没有就显示排序后的第一页。
+/// 凑不齐两页、或整叠都没有位置时，不打开。位置优先用当前页的，当前页没有就用排序后第一份有位置的。
+#[must_use]
+pub fn plan_startup(pages: &[StartupPage]) -> Vec<StackRestore> {
+    let mut groups: Vec<Vec<&StartupPage>> = Vec::new();
+    for page in pages {
+        if page.slot.id.trim().is_empty() {
+            continue;
+        }
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group[0].slot.id == page.slot.id)
+        {
+            group.push(page);
+        } else {
+            groups.push(vec![page]);
+        }
+    }
+    let mut restores = Vec::new();
+    for mut group in groups {
+        group.sort_by(|left, right| {
+            left.slot
+                .index
+                .cmp(&right.slot.index)
+                .then_with(|| page_key(&left.page).cmp(&page_key(&right.page)))
+        });
+        let mut kept = Vec::new();
+        for page in group {
+            if kept
+                .iter()
+                .any(|kept: &&StartupPage| kept.page == page.page)
+            {
+                continue;
+            }
+            kept.push(page);
+        }
+        if kept.len() < 2 {
+            continue;
+        }
+        let current = startup_current(&kept);
+        let Some((geometry, dock)) = startup_placement(&kept, current) else {
+            continue;
+        };
+        let id = kept[0].slot.id.clone();
+        restores.push(StackRestore {
+            stack: PageStack {
+                id,
+                pages: kept.into_iter().map(|page| page.page.clone()).collect(),
+                current,
+            },
+            geometry,
+            dock,
+        });
+    }
+    restores.sort_by(|left, right| left.stack.id.cmp(&right.stack.id));
+    restores
+}
+
+/// 正好一个 `current` 用那一页。缺了或重复时回到 `index` 为 0 的页，没有就用排序后的第一页。
+fn startup_current(pages: &[&StartupPage]) -> usize {
+    let marked: Vec<usize> = pages
+        .iter()
+        .enumerate()
+        .filter(|(_, page)| page.slot.current)
+        .map(|(index, _)| index)
+        .collect();
+    if marked.len() == 1 {
+        return marked[0];
+    }
+    pages
+        .iter()
+        .position(|page| page.slot.index == 0)
+        .unwrap_or(0)
+}
+
+fn startup_placement(
+    pages: &[&StartupPage],
+    current: usize,
+) -> Option<(FloatGeometry, Option<FloatDock>)> {
+    let chosen = pages.get(current).filter(|page| page.geometry.is_some());
+    let page = chosen.or_else(|| pages.iter().find(|page| page.geometry.is_some()))?;
+    Some((page.geometry?, page.dock))
+}
+
+/// 启动还原写进 `logs/app.log` 的那一行。
+#[must_use]
+pub fn restore_log_line(id: &str, pages: usize, current: usize) -> String {
+    format!("叠页已还原 id={id} pages={pages} current={current}")
 }
 
 /// 把一叠写成每页的 `floatStack`。下标就是页序，当前页的 `current` 为真。
@@ -979,5 +1127,249 @@ mod tests {
         assert_eq!(handle_dot_count(1), 0);
         assert_eq!(handle_dot_count(3), 3);
         assert_eq!(handle_dot_count(40), HANDLE_DOT_CAP);
+    }
+
+    fn startup_page(page: StackPage, index: u32, current: bool, collapsed: bool) -> StartupPage {
+        StartupPage {
+            page,
+            slot: slot("s1a1324ccd0d1", index, current),
+            geometry: Some(FloatGeometry {
+                x: 1100,
+                y: 40,
+                width: 320,
+                height: 360,
+            }),
+            dock: Some(FloatDock {
+                edge: DockEdge::Top,
+                offset: 1227,
+                collapsed,
+            }),
+        }
+    }
+
+    fn write_doc(store: &crate::storage::Store, note: bool, id: &str, body: &str) {
+        use crate::storage::DocumentId;
+        let doc = if note {
+            DocumentId::Note(id.to_owned())
+        } else {
+            DocumentId::Shelf(id.to_owned())
+        };
+        let path = store.document_path(&doc).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// #97 之前写在磁盘上的那一叠：两格收纳、一篇便签，贴在上边并且收起。
+    fn pre97_collapsed_stack(store: &crate::storage::Store) -> Vec<StartupPage> {
+        use crate::notes::NoteCommands;
+        use crate::shelves::ShelfCommands;
+
+        let window = r#""floatWindow":{"x":1100,"y":40,"width":320,"height":360}"#;
+        let dock = r#""floatDock":{"edge":"top","offset":1227,"collapsed":true}"#;
+        let stack = |index: u32, current: bool| {
+            format!(r#""floatStack":{{"id":"s1a1324ccd0d1","index":{index},"current":{current}}}"#)
+        };
+        write_doc(
+            store,
+            false,
+            "s1a1324c226e1",
+            &format!(
+                r#"{{"schemaVersion":1,"id":"s1a1324c226e1","name":"甲","order":0,"refs":[],{window},{dock},{}}}"#,
+                stack(0, false)
+            ),
+        );
+        write_doc(
+            store,
+            false,
+            "s1a12ce651ca1",
+            &format!(
+                r#"{{"schemaVersion":1,"id":"s1a12ce651ca1","name":"乙","order":1,"refs":[],{window},{dock},{}}}"#,
+                stack(1, true)
+            ),
+        );
+        write_doc(
+            store,
+            true,
+            "n1a12cdd97661",
+            &format!(
+                r#"{{"schemaVersion":1,"id":"n1a12cdd97661","title":"记","body":"正文","revision":1,{window},{dock},{}}}"#,
+                stack(2, false)
+            ),
+        );
+        write_doc(
+            store,
+            true,
+            "solo",
+            &format!(
+                r#"{{"schemaVersion":1,"id":"solo","title":"单独","body":"不在叠里","revision":1,{window},{dock}}}"#
+            ),
+        );
+        let notes = NoteCommands::open(store.clone()).unwrap();
+        let shelves = ShelfCommands::open(store.clone()).unwrap();
+        let mut pages = Vec::new();
+        for note in notes.list() {
+            if let Some(slot) = note.float_stack {
+                pages.push(StartupPage {
+                    page: StackPage::Note(note.id),
+                    slot,
+                    geometry: note.float,
+                    dock: note.float_dock,
+                });
+            }
+        }
+        for group in shelves.list().unwrap() {
+            if let Some(slot) = group.float_stack {
+                pages.push(StartupPage {
+                    page: StackPage::Shelf(group.id),
+                    slot,
+                    geometry: group.float,
+                    dock: group.float_dock,
+                });
+            }
+        }
+        pages
+    }
+
+    #[test]
+    fn a_collapsed_top_docked_mixed_stack_restores_as_one_window() {
+        use crate::storage::test_temp::TempDir;
+        use crate::storage::{Store, StorePaths};
+
+        let temp = TempDir::new();
+        let root = temp.path();
+        let store = Store::open(StorePaths {
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            user_profile: root.join("profile"),
+            local_app_data: root.join("local"),
+        })
+        .unwrap();
+        let pages = pre97_collapsed_stack(&store);
+        let planned = plan_startup(&pages);
+        assert_eq!(planned.len(), 1, "一叠只还原成一个窗口");
+        let restored = &planned[0];
+        assert_eq!(
+            restored.stack.pages,
+            vec![
+                shelf("s1a1324c226e1"),
+                shelf("s1a12ce651ca1"),
+                note("n1a12cdd97661"),
+            ]
+        );
+        assert_eq!(restored.visible(), &shelf("s1a12ce651ca1"));
+        assert_eq!(
+            restored.parked(),
+            vec![shelf("s1a1324c226e1"), note("n1a12cdd97661")],
+            "其余页藏着，不另开窗口，也不丢掉"
+        );
+        assert_eq!(restored.dock.map(|dock| dock.edge), Some(DockEdge::Top));
+        assert_eq!(restored.dock.map(|dock| dock.offset), Some(1227));
+        assert!(restored.dots_on_handle(), "收起的把手上画页点");
+        assert!(!restored.dots_below_window());
+        assert_eq!(restored.dot_count(), 3);
+
+        let expanded = pages
+            .iter()
+            .map(|page| {
+                let mut page = page.clone();
+                if let Some(dock) = page.dock.as_mut() {
+                    dock.collapsed = false;
+                }
+                page
+            })
+            .collect::<Vec<_>>();
+        let open = plan_startup(&expanded);
+        assert!(open[0].dots_below_window(), "展开时页点在窗口下方");
+        assert!(!open[0].dots_on_handle());
+        let frame = rect(
+            open[0].geometry.x,
+            open[0].geometry.y,
+            open[0].geometry.width,
+            open[0].geometry.height,
+        );
+        let (width, height) = dot_row_size(open[0].stack.pages.len(), 96);
+        let below = place_dots(frame, width, height, Some(0), Some(10_000));
+        assert_eq!(below.y, frame.bottom(), "页点行贴在内容框下面");
+
+        let line = restore_log_line(
+            &restored.stack.id,
+            restored.stack.pages.len(),
+            restored.stack.current,
+        );
+        store.log_info(&line);
+        let path = store.log_path();
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("app.log")
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains(&line), "app.log 仍写着还原记录：{text}");
+    }
+
+    #[test]
+    fn startup_falls_back_when_current_is_missing_or_repeated_and_keeps_index_gaps() {
+        let missing = plan_startup(&[
+            startup_page(shelf("a"), 5, false, true),
+            startup_page(note("b"), 2, false, true),
+            startup_page(shelf("c"), 0, false, true),
+        ]);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(
+            missing[0].stack.pages,
+            vec![shelf("c"), note("b"), shelf("a")],
+            "index 有空隙也按序留下"
+        );
+        assert_eq!(missing[0].stack.current, 0, "没有 current 时回到 index 0");
+
+        let repeated = plan_startup(&[
+            startup_page(note("n"), 4, true, true),
+            startup_page(shelf("s0"), 0, false, true),
+            startup_page(shelf("s1"), 1, true, true),
+        ]);
+        assert_eq!(
+            repeated[0].stack.pages,
+            vec![shelf("s0"), shelf("s1"), note("n")]
+        );
+        assert_eq!(
+            repeated[0].visible(),
+            &shelf("s0"),
+            "重复的 current 回到 index 0"
+        );
+        assert_eq!(repeated[0].parked().len(), 2);
+
+        let gapped = plan_startup(&[
+            StartupPage {
+                page: note("late"),
+                slot: slot("gap", 8, false),
+                geometry: None,
+                dock: None,
+            },
+            StartupPage {
+                page: shelf("early"),
+                slot: slot("gap", 3, false),
+                geometry: Some(FloatGeometry {
+                    x: 1,
+                    y: 2,
+                    width: 200,
+                    height: 100,
+                }),
+                dock: Some(FloatDock {
+                    edge: DockEdge::Top,
+                    offset: 10,
+                    collapsed: true,
+                }),
+            },
+        ]);
+        assert_eq!(gapped[0].stack.pages, vec![shelf("early"), note("late")]);
+        assert_eq!(
+            gapped[0].stack.current, 0,
+            "没有 index 0 时用排序后的第一页"
+        );
+        assert_eq!(gapped[0].visible(), &shelf("early"));
+        assert_eq!(
+            gapped[0].parked(),
+            vec![note("late")],
+            "没有位置的页也不丢掉"
+        );
+        assert_eq!(gapped[0].geometry.x, 1);
     }
 }

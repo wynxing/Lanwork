@@ -21,9 +21,10 @@ pub use float_snap::{
 pub use float_stack::{
     DOCK_MERGE_GAP_LOGICAL, DOT_ROW_LOGICAL_HEIGHT, DOT_SLOT_LOGICAL, DetachOutcome, DragOrigin,
     DropEffect, DropInput, FilteredPages, Flip, HANDLE_DOT_CAP, OtherFloat, PageStack, StackMember,
-    StackPage, assemble_stacks, collapsed_handles_close, detach_page, dock_merge_gap, dot_row_size,
-    drop_effect as stack_drop_effect, filter_open_pages, flip_index, handle_dot_count,
-    merge_stacks, overlaps_more_than_half, pages_to_park, place_dots, slots_for,
+    StackPage, StackRestore, StartupPage, assemble_stacks, collapsed_handles_close, detach_page,
+    dock_merge_gap, dot_row_size, drop_effect as stack_drop_effect, filter_open_pages, flip_index,
+    handle_dot_count, merge_stacks, overlaps_more_than_half, pages_to_park, place_dots,
+    plan_startup, restore_log_line, slots_for,
 };
 pub use note_edit::{AUTOSAVE_IDLE_MS, EditSession, SaveOutcome, SaveProblem};
 pub use note_page::{

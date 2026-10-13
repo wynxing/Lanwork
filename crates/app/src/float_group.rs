@@ -2,6 +2,7 @@
 //!
 //! 一叠同一时刻只显示一页。其余页的窗口藏着，不释放。页点是挂在边框外、居中的一排小点。
 //! 关掉窗口不拆叠，成员还在文件里；再悬浮时用记下的当前页和贴边。
+//! 启动时按文件里的 `floatStack` 合成一叠，只打开当前页。
 //! 下面没写进产品规格的做法都待定。
 
 use std::cell::{Cell, RefCell};
@@ -11,9 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use lanwork_core::notes::{FloatGeometry, FloatStackSlot, NoteCommands};
 use lanwork_core::panel::{
     DockInput, DockState, DragOrigin, DropEffect, DropInput, Flip, OtherFloat, PageStack, PxBox,
-    StackMember, StackPage, assemble_stacks, collapsed_handles_close, detach_page, dock_merge_gap,
-    dot_row_size, dpi_at, filter_open_pages, flip_index, handle_dot_count, merge_stacks,
-    moved_enough, pages_to_park, place_dots, snap_on_release, stack_drop_effect, transition,
+    StackMember, StackPage, StartupPage, assemble_stacks, collapsed_handles_close, detach_page,
+    dock_merge_gap, dot_row_size, dpi_at, filter_open_pages, flip_index, handle_dot_count,
+    merge_stacks, moved_enough, pages_to_park, place_dots, plan_startup, restore_log_line,
+    snap_on_release, stack_drop_effect, transition,
 };
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
@@ -74,6 +76,8 @@ pub(crate) fn install(notes: Option<NoteCommands>, shelves: Option<ShelfCommands
             merge_depth: 0,
         });
     });
+    // 等事件循环起来再开窗口，避免 show 发生在循环之前。
+    later(|| with_live(Live::restore_saved));
 }
 
 pub(crate) fn set_dark(dark: bool) {
@@ -237,6 +241,10 @@ impl Live {
     fn on_opened(&mut self, page: StackPage) {
         self.ensure_loaded(&page);
         if self.member.contains_key(&page) {
+            // 启动还原和翻页会再进来。藏着的页没有窗口，不要把当前页换成它。
+            if self.read_view(&page).is_none() {
+                return;
+            }
             let Some(mut stack) = self.take_stack(&page) else {
                 return;
             };
@@ -468,6 +476,77 @@ impl Live {
             (Some(a), Some(b)) => a == b,
             _ => false,
         }
+    }
+
+    /// 启动时把记过叠页的悬浮窗合成一叠，只打开当前页。单独一页的不打开。
+    fn restore_saved(&mut self) {
+        if self.notes.is_none() {
+            self.store.log_warn("便签服务没有打开，叠页还原看不到便签");
+        }
+        if self.shelves.is_none() {
+            self.store.log_warn("收纳服务没有打开，叠页还原看不到收纳");
+        }
+        let Some(pages) = self.startup_pages() else {
+            return;
+        };
+        for item in plan_startup(&pages) {
+            self.clear_trashed_slots(&item.stack.id);
+            let saved = SavedFloat {
+                geometry: item.geometry,
+                dock: item.dock,
+            };
+            self.store_stack(&item.stack);
+            if self.reveal(&item.stack, saved) {
+                self.persist(&item.stack, saved);
+                self.store.log_info(&restore_log_line(
+                    &item.stack.id,
+                    item.stack.pages.len(),
+                    item.stack.current,
+                ));
+            } else {
+                self.store
+                    .log_warn(&format!("叠页没有还原：{}", item.stack.id));
+            }
+        }
+        self.sync_tabs();
+    }
+
+    fn startup_pages(&self) -> Option<Vec<StartupPage>> {
+        let mut pages = Vec::new();
+        if let Some(notes) = &self.notes {
+            for note in notes.list() {
+                if let Some(slot) = note.float_stack {
+                    pages.push(StartupPage {
+                        page: StackPage::Note(note.id),
+                        slot,
+                        geometry: note.float,
+                        dock: note.float_dock,
+                    });
+                }
+            }
+        }
+        if let Some(shelves) = &self.shelves {
+            match shelves.list() {
+                Ok(groups) => {
+                    for group in groups {
+                        if let Some(slot) = group.float_stack {
+                            pages.push(StartupPage {
+                                page: StackPage::Shelf(group.id),
+                                slot,
+                                geometry: group.float,
+                                dock: group.float_dock,
+                            });
+                        }
+                    }
+                }
+                Err(err) => {
+                    self.store
+                        .log_warn(&format!("叠页没有还原，收纳列表读不出来：{err}"));
+                    return None;
+                }
+            }
+        }
+        Some(pages)
     }
 
     fn ensure_loaded(&mut self, page: &StackPage) {
