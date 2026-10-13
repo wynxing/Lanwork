@@ -395,8 +395,20 @@ fn set_grip_region(hwnd: HWND, grip: GripRect) -> bool {
     let thick = i32::try_from(grip.width.min(grip.height))
         .unwrap_or(1)
         .max(1);
+    // `CreateRoundRectRgn` 的右、下是开区间，调用时再各少一像素。
+    // 直接传入把手的右、下时，40×3 读回来是 (1,0,38,2)，底边和右端被裁掉。
+    // 右、下各加 1，区域才盖住看得见的把手。圆角仍会吃掉方框的角。
     // SAFETY: 圆角椭圆的直径等于把手厚度，两端是半圆。区域在设成功之后由系统接管。
-    let region = unsafe { CreateRoundRectRgn(grip.x, grip.y, right, bottom, thick, thick) };
+    let region = unsafe {
+        CreateRoundRectRgn(
+            grip.x,
+            grip.y,
+            right.saturating_add(1),
+            bottom.saturating_add(1),
+            thick,
+            thick,
+        )
+    };
     if region.is_invalid() {
         return false;
     }
@@ -422,7 +434,7 @@ fn has_region(hwnd: HWND) -> bool {
 }
 
 fn region_matches(hwnd: HWND, grip: GripRect) -> bool {
-    region_box(hwnd).is_some_and(|bounds| rect_near(bounds, grip))
+    region_box(hwnd).is_some_and(|bounds| region_covers_grip(bounds, grip))
 }
 
 fn region_box(hwnd: HWND) -> Option<RECT> {
@@ -432,14 +444,19 @@ fn region_box(hwnd: HWND) -> Option<RECT> {
     region_present(kind).then_some(bounds)
 }
 
-fn rect_near(bounds: RECT, grip: GripRect) -> bool {
+fn region_covers_grip(bounds: RECT, grip: GripRect) -> bool {
     let right = grip.x.saturating_add_unsigned(grip.width);
     let bottom = grip.y.saturating_add_unsigned(grip.height);
-    // `CreateRoundRectRgn` 的外接矩形可能和传入的矩形差 1 像素。
-    (bounds.left - grip.x).abs() <= 1
-        && (bounds.top - grip.y).abs() <= 1
-        && (bounds.right - right).abs() <= 1
-        && (bounds.bottom - bottom).abs() <= 1
+    // 圆角只该吃掉方框的角，每一边最多缩进 1 像素。缩得更多就把把手裁掉。
+    // GDI 有时会比传入的矩形多 1 像素，窗口外的部分不会画出来。
+    bounds.left <= grip.x.saturating_add(1)
+        && bounds.top <= grip.y.saturating_add(1)
+        && bounds.right >= right.saturating_sub(1)
+        && bounds.bottom >= bottom.saturating_sub(1)
+        && bounds.left >= grip.x.saturating_sub(1)
+        && bounds.top >= grip.y.saturating_sub(1)
+        && bounds.right <= right.saturating_add(1)
+        && bounds.bottom <= bottom.saturating_add(1)
 }
 
 fn region_present(kind: GDI_REGION_TYPE) -> bool {
@@ -904,7 +921,7 @@ mod tests {
         // SAFETY: bounds 指向局部变量。外接矩形是窗口坐标。
         let kind = unsafe { GetWindowRgnBox(hwnd, &mut bounds) };
         assert!(
-            region_present(kind) && rect_near(bounds, grip),
+            region_present(kind) && region_covers_grip(bounds, grip),
             "窗口区域应盖住把手。kind={kind:?} bounds=({},{},{},{}) grip={grip:?} 客户区 {}x{} 窗口原点偏移 {},{}",
             bounds.left,
             bounds.top,
@@ -927,14 +944,34 @@ mod tests {
         assert!(!region.is_invalid(), "能建一块用来抄窗口区域的区域");
         // SAFETY: region 是刚创建的，调用后由这里释放。
         let copied = unsafe { GetWindowRgn(hwnd, region) };
-        if region_present(copied) {
-            let center = POINT {
-                x: grip.x + i32::try_from(grip.width / 2).unwrap_or(0),
-                y: grip.y + i32::try_from(grip.height / 2).unwrap_or(0),
-            };
+        assert!(
+            region_present(copied),
+            "应能抄出窗口区域 kind={copied:?} bounds=({},{},{},{})",
+            bounds.left,
+            bounds.top,
+            bounds.right,
+            bounds.bottom
+        );
+        let right = grip.x.saturating_add_unsigned(grip.width);
+        let bottom = grip.y.saturating_add_unsigned(grip.height);
+        let mid_x = grip.x + i32::try_from(grip.width / 2).unwrap_or(0);
+        let mid_y = grip.y + i32::try_from(grip.height / 2).unwrap_or(0);
+        // 直边中点和两端往里 1 像素都在看得见的把手上。圆角只去掉方框的角。
+        let samples = [
+            (mid_x, mid_y, "中心"),
+            (grip.x.saturating_add(1), mid_y, "左端内侧"),
+            (right.saturating_sub(2), mid_y, "右端内侧"),
+            (mid_x, grip.y, "上沿"),
+            (mid_x, bottom.saturating_sub(1), "下沿"),
+        ];
+        for (x, y, label) in samples {
             assert!(
-                unsafe { PtInRegion(region, center.x, center.y) }.as_bool(),
-                "把手中心应在区域内"
+                unsafe { PtInRegion(region, x, y) }.as_bool(),
+                "把手{label} ({x},{y}) 应在区域内，bounds=({},{},{},{})",
+                bounds.left,
+                bounds.top,
+                bounds.right,
+                bounds.bottom
             );
         }
         let _ = unsafe { DeleteObject(region.into()) };
