@@ -1,6 +1,6 @@
 # fileidx
 
-Everything SDK 和 Windows Search 文件名查询的技术验证程序。不进 `lanwork` 的依赖，也不进发布包。
+Everything SDK 和 Windows Search 文件名查询的技术验证程序。不进 `lanwork` 的依赖，也不进发布包。2026-10-09 的结论在 `docs/roadmap.md`「技术验证」。新的输出写到 `measurements-out/`，不要写进 `docs/`。
 
 DLL 在 `third_party/everything/`。用 `LoadLibraryW` 加载，先探测 SDK3（1.5），再探测 SDK（1.4）。SDK3 先连未命名实例，管道不存在再连 `1.5a`。1.4 的 DLL 只找窗口类 `EVERYTHING_TASKBAR_NOTIFICATION`。
 
@@ -21,7 +21,7 @@ cargo run -p fileidx -- compare --text "标记" --expect 标记.txt --reject 正
 cargo run -p fileidx -- scopes
 cargo run -p fileidx -- manager
 cargo run -p fileidx -- load
-cargo run -p fileidx -- bench --text "名称" --samples 100 --warmup 5 --out docs/measurements/fileidx
+cargo run -p fileidx -- bench --text "名称" --samples 100 --warmup 5 --out measurements-out/fileidx
 ```
 
 `bench` 先采样 1 秒系统 CPU。CPU 不低于 70%，或者同时有 `rustc.exe`、`link.exe`、`cl.exe` 时退出码 3，不写样本。确认可以照常记时再加 `--allow-skew`。70% 和编译进程这两条是 spike 自己的筛选，不是架构「性能测量」协议里的门槛。
@@ -57,4 +57,4 @@ Start-Service WSearch
 Get-Service WSearch | Format-List Name,Status,StartType
 ```
 
-把 JSON 里的 `hresult` 和 `message` 记进测量记录。停止之前先记下原来的 `StartType`，不要改它。
+把 JSON 里的 `hresult` 和 `message` 记进 `docs/roadmap.md`「技术验证」。停止之前先记下原来的 `StartType`，不要改它。

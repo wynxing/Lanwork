@@ -11,16 +11,14 @@
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除只删除回收站里的条目。删除前把 id 写入 `todo-purge-pending.json`，清单写入成功后发出 `TodoNotice::Purged`。进入回收站满 30 天（30×86400000 毫秒）时，启动加载和 `purge_expired` 清除。原清单已删除时恢复到系统收件箱，没有收件箱则创建一次；这个收件箱就是默认清单。每月重复的日是 31、目标月没有 31 日时落到该月最后一天。锚点日写在周期的 `monthDay`。旧记录没有该字段时，用当前到期日的日子。下一次仍按这个日子，所以 1 月 31 日完成后是 2 月的最后一天，再完成回到 3 月 31 日。29 日或 30 日在目标月不存在时仍不猜测。在重复截止日当天完成不再生成下一次。已完成的条目可以取消完成，`order` 不变。重复待办完成时把下一次记在 `generatedNext`；取消完成时只在它仍是当时生成的那一条时从清单移除。下一次已被改过或已完成时不删除，该处理仍待定。没有这条记录的旧数据不猜测要删哪一条。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。网页引用未接入，排在 v0.2.0 之后，见「收纳」的「网页引用」。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。热角的角判定、350ms 停留、离开后重新武装、全屏抑制和按住左键时不计停留在 `shell::hotcorner`。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。备份与导入 `backup`（`lanwork_core::backup`）已接入，见「数据」。应用内更新的版本比较、`latest.json` 和界面状态在 `update`（`lanwork_core::update`），见「更新」。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板。搜索条已有界面并调用查询调度，见「程序外壳」的「搜索条」。面板有标签框架、待办页、便签页、收纳页和设置页（开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」），便签悬浮窗也在这里，见「程序外壳」的「面板」「便签页与悬浮窗」和「设置页」。热角的 50ms 轮询在 `crates/app/src/hotcorner.rs`，见「热角」。应用内更新的下载和安装在 `crates/app/src/update.rs`，见「更新」。没有 Windows 验收。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
-| `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
-| `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。产品渲染器见「运行时」。 |
-| `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。产品用 50ms 轮询，见「运行时」。记录见 `docs/measurements/2026-10-08-hotcorner.md`。 |
-| `spikes/toast` | 通知技术验证的最小程序。只验证注册、显示、点击参数和模拟面板定位，不进发布包，也不被 `lanwork` 依赖。运行命令写在 `spikes/README.md`。验证记录没有全部通过之前，待办界面不调用它。 |
-| `spikes/dnd` | 外部拖放验证程序，包名 `dnd`。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
-| `docs/measurements/2026-10-08-hotcorner.md` | 热角 spike 的实机记录。不是「性能测量」协议的验收。 |
+| `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
+| `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。产品渲染器见「运行时」。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
+| `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。产品用 50ms 轮询，见「运行时」。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
+| `spikes/toast` | 通知技术验证的最小程序。只验证注册、显示、点击参数和模拟面板定位，不进发布包，也不被 `lanwork` 依赖。运行命令写在 `spikes/README.md`。验证记录没有全部通过之前，待办界面不调用它。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
+| `spikes/dnd` | 外部拖放验证程序，包名 `dnd`。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
-| `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合「性能测量」协议的实测记录。`docs/measurements/fileidx.md` 只说明 fileidx 那次场景。 |
-| `docs/measurements/2026-10-08-empty-window.md` | 空 Slint 窗口采样。脚本通过：300 行，首尾 298.989 秒。偏离协议，不算「已达到」。 |
+| `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合「性能测量」协议的实测记录。各项结论见 [roadmap.md](roadmap.md)「技术验证」。 |
 | `third_party/` | 第三方许可说明。已放入 Unicode 18.0.0 Unihan 读音摘录和 Unicode License v3，见 `third_party/unihan/`。已放入 Everything SDK 与 SDK3 的 x64 DLL 及许可，见 `third_party/everything/`。已放入 Slint 1.18.1 的 Royalty-free 2.0 许可文本和归属徽标，见 `third_party/slint/`。文本和徽标都取自 tag `v1.18.1`，不跟踪 master。 |
 | `tools/shortcut` | 包名 `lanwork-shortcut`。安装时写入开始菜单快捷方式的 AUMID 和激活 CLSID，并按清单把发布文件拷进暂存目录。不进 `lanwork` 的依赖，不留在安装目录里。 |
 | `packaging/` | Inno Setup 脚本、打包脚本和 Release 说明模板。不进编译依赖。 |
@@ -31,27 +29,13 @@
 | --- | --- |
 | 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、设置页（开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」）、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板搜索框还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
-| 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
+| 渲染器 | 默认已写入「运行时」，外壳按此选择。见 [roadmap.md](roadmap.md)「技术验证」，这一项仍未通过 |
 | 外部 AI（本机 MCP）、扩展页与插件 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [extensions.md](extensions.md)。现在没有代码。技术验证表里没有对应项；没有通过记录之前，不写依赖它们的界面 |
 | 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。现在没有代码。拖放和打开见「收纳」的「网页引用」。依赖技术验证「网址拖放」；没有通过记录之前，不写这部分界面 |
 
 ## 技术验证
 
-下面各项先在独立的最小程序里验证，结果记进 [roadmap.md](roadmap.md)。某项没有通过记录之前，不写依赖它的界面代码。某项失败时，先改本文的方案，必要时再改产品规格，不在功能代码里绕过。
-
-每份记录写明日期、commit、Slint 精确版本、渲染器、机器、Windows build、GPU 与驱动、构建配置，每个通过条件分别标「通过」「失败」或「未测」。只有全部条件都通过才算该项通过。技术验证里的测量只说明该场景，不算「性能测量」一节的验收。
-
-| 项 | 通过标准 | 依赖它的界面 |
-| --- | --- | --- |
-| 中文输入法 | 微软拼音在 Slint 文本框里能组合、上屏，候选窗贴在光标处；组合期间 Enter 不触发提交 | 全部 |
-| 背景 | 选定渲染器下，透明窗口加 DWM Acrylic 正确显示；透明失败时能检测到并退回纯色 | 搜索条、面板 |
-| 渲染器 | FemtoVG、Skia、软件渲染各做一个空面板和一个 200 行列表，按「性能测量」记录 Private Bytes、工作集和中文字形效果，选定一个写进本文 | 全部 |
-| 外部拖放 | 从资源管理器拖入多个文件能拿到路径；从窗口拖出到资源管理器时，只出现复制和创建快捷方式两种效果。先测固定版本 Slint 自带的拖放，不满足再测原生 OLE | 收纳 |
-| 网址拖放 | 在独立的最小程序里，从地址栏锁图标和页面链接的拖放中取出网址。格式包括 `CF_HTML`、`text/uri-list` 和纯文本网址。不关闭、不移动浏览器标签。收纳悬浮窗不在本项通过标准里。图标是否获取不在本项通过标准里，仍按产品规格待定。重复按产品规格「同一网址只保留一条」，不在本项里另测 | 收纳的网页引用 |
-| Everything | 通过随包的 SDK DLL，Everything 1.4 和 1.5 都能返回结果，并能区分「未运行」和「未就绪」 | 搜索 |
-| Windows Search | Everything 不可用时，Rust 进程只按文件名查询 Windows Search 索引，正文命中不返回；记录结果 P95 和查询带来的 Private Bytes 增量 | 搜索 |
-| 通知 | 到期通知能显示。安装版点击后打开面板并定位该条。便携版只显示提醒，点击不定位。安装版和便携版分开记录 | 待办 |
-| 热角 | 收起状态下光标在屏幕上移动 5 分钟、静止 5 分钟，记录 Lanwork 的 CPU 占用和每秒唤醒次数（口径见「性能测量」） | 面板 |
+通过标准、记录要求和各项结论见 [roadmap.md](roadmap.md)「技术验证」。某项没有通过记录之前，不写依赖它的界面代码。某项失败时，先改本文的方案，必要时再改产品规格，不在功能代码里绕过。技术验证里的测量只说明该场景，不算「性能测量」一节的验收。
 
 ## 运行时
 
@@ -67,7 +51,7 @@
 - Slint 1.18.1 编进本仓库的 winit 后端没有实现 `start_drag`（`i-slint-backend-winit` 1.18.1 的 `WinitWindowAdapter` 只实现了 `start_window_move`；`WindowAdapterInternal::start_drag` 的默认实现返回 false）。因此 `DragArea` 的拖动留在窗口内。`spikes/dnd` 用 `dispatch_event` 观察到：同一窗口里文件路径以复制放下，目标要求移动时放下被拒绝。winit 0.30.13 创建窗口时调用 `OleInitialize` 并 `RegisterDragDrop` 注册自己的 `FileDropHandler`；探针在我们注册之前得到 already-registered。资源管理器方向的手测见 [roadmap.md](roadmap.md)。`--slint` 拖放没有路径，外部拖放按「收纳」的原生 OLE 实现。
 - 托盘用 Slint 1.18.1 的 `SystemTrayIcon`。它有菜单，图标是一张图，逾期数字画在这张图的右下角。因此没有改用 Win32 `Shell_NotifyIcon`。
 - 热角检测用 50ms 轮询读取光标位置，不用低级鼠标钩子。机制、全屏抑制、按住左键时不触发和待定项见「热角」。产品不依赖 `spikes/hotcorner`。
-- `spikes/hotcorner` 的实测记在 `docs/measurements/2026-10-08-hotcorner.md`。那是 spike，不是 `lanwork.exe` 的验收。
+- `spikes/hotcorner` 的实测结论见 [roadmap.md](roadmap.md)「技术验证」。那是 spike，不是 `lanwork.exe` 的验收。
 
 Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写进界面回调里。
 
@@ -147,7 +131,7 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 
 ### 热角
 
-可见行为见产品规格「面板」。判定在 `lanwork_core::shell::hotcorner`，不调用 Win32。轮询在 `crates/app/src/hotcorner.rs`。不依赖 `spikes/hotcorner` 这个 crate；那份程序和 `docs/measurements/2026-10-08-hotcorner.md` 只是技术验证记录。没有对 `lanwork.exe` 的 Windows 验收，也不把 spike 的采样当成性能测量已经达到。
+可见行为见产品规格「面板」。判定在 `lanwork_core::shell::hotcorner`，不调用 Win32。轮询在 `crates/app/src/hotcorner.rs`。不依赖 `spikes/hotcorner` 这个 crate；那份程序的结论见 [roadmap.md](roadmap.md)「技术验证」。没有对 `lanwork.exe` 的 Windows 验收，也不把 spike 的采样当成性能测量已经达到。
 
 - **轮询。** 线程名 `lanwork-hotcorner`。`hotCorner` 不是 `off` 时，用条件变量超时等待 50ms，醒来读 `GetCursorPos`，并用 `EnumDisplayMonitors` 读每块显示器的 `rcMonitor`。不调用 `timeBeginPeriod`，不安装低级鼠标钩子。光标不在所选角里时不读前台窗口，也不读鼠标按键。在角里时用 `GetAsyncKeyState(VK_LBUTTON)` 读左键，不用本线程的 `GetKeyState`：轮询线程不处理鼠标消息，`GetKeyState` 对不上当前是不是按着。关闭时同一线程停在条件变量上，不再调用 `GetCursorPos`。搜索条热键仍由平台线程 `RegisterHotKey`，关闭热角不卸热键。
 - **角。** 每一块显示器的 `rcMonitor` 都参加。区域边长是 `CORNER_EDGE_PX`，当前 32 个物理像素，不按 DPI 放大。规格没有写边长，待定。矩形的右、下是开区间，与 Win32 一致。点同时落在多块重叠矩形的角里时，命中的每一块都算；其中一块被全屏抑制则这一拍不打开。重叠怎么取，规格没有写，待定。点不在任何 `rcMonitor` 内时不在角内。
@@ -553,7 +537,7 @@ Pull request 的 CI 用同一套打包脚本试装：静默安装到带空格和
 
 ## 性能测量
 
-下面的数字是测量协议和目标，还没有一次符合协议的记录。空 Slint 窗口的采样记在 [roadmap.md](roadmap.md)，那次没有加载固定数据，不填进下表。在有一次符合协议的记录之前，文档和界面都不写「已达到」。禁止为了凑数字裁剪工作集。Everything 客户端、Everything 服务、Windows Search 索引服务和安装程序单独记录，不计入 Lanwork 进程。随包的 Everything SDK DLL 加载在 Lanwork 进程内，计入。
+下面的数字是测量协议和目标，还没有一次符合协议的记录。空 Slint 窗口的采样记在 [roadmap.md](roadmap.md)「技术验证」，那次没有加载固定数据，不填进下表。在有一次符合协议的记录之前，文档和界面都不写「已达到」。禁止为了凑数字裁剪工作集。Everything 客户端、Everything 服务、Windows Search 索引服务和安装程序单独记录，不计入 Lanwork 进程。随包的 Everything SDK DLL 加载在 Lanwork 进程内，计入。
 
 场景：固定数据为 5,000 个应用、10,000 条待办、1,000 篇约 2 KiB 的便签、20 个收纳分组共 1,000 条引用。预热搜索条和面板搜索，打开收纳标签，在搜索条里各提交一次待办和便签收集，并打开再关闭便签悬浮窗。然后收起全部窗口，连续采样 5 分钟。
 

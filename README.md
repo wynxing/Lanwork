@@ -219,7 +219,7 @@ CI 在 `windows-latest` 上运行，还会检查 `lanwork-core` 的依赖树里�
 | `spikes/` | 技术验证程序：输入法、渲染与背景、拖放、通知、热角、Everything 和 Windows Search |
 | `tools/` | 测量工具：固定数据夹具 `lanwork-fixture`、进程采样 `lanwork-sample`，以及图标渲染脚本 |
 | `third_party/` | 第三方许可与随附文件：Unihan 读音摘录、Everything SDK |
-| `docs/` | 产品规格、架构、实现状态、测量与验证记录 |
+| `docs/` | 产品规格、架构、实现状态。技术验证结论在 `docs/roadmap.md`，测量模板在 `docs/measurements/TEMPLATE.md` |
 
 ### 数据目录
 
@@ -257,11 +257,11 @@ cargo run -p toast --release -- help
 | 文档 | 内容 |
 | --- | --- |
 | [产品规格](docs/product.md) | 每个界面的入口、内容、动作、禁止项和验收。可见行为以它为准 |
-| [架构](docs/architecture.md) | 技术验证、Slint、Rust、数据与性能测量。它描述目标，不是现有代码的地图 |
+| [架构](docs/architecture.md) | Slint、Rust、数据与性能测量。技术验证结论见实现状态。它描述目标，不是现有代码的地图 |
 | [实现状态](docs/roadmap.md) | 哪些界面已有代码、哪些没有，以及技术验证记录 |
 | [外部 AI](docs/external-ai.md) | 本机 MCP。排在 v0.2.0 之后 |
 | [扩展页与插件](docs/extensions.md) | 声明式插件与官方番茄钟。排在 v0.2.0 之后 |
-| [测量与验证记录](docs/measurements/) | 各项验证的原始记录 |
+| [测量模板](docs/measurements/TEMPLATE.md) | 空白模板，不是实测。技术验证结论在实现状态 |
 
 <a id="credits"></a>
 
