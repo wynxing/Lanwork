@@ -748,6 +748,7 @@ mod tests {
             },
             icon_path: None,
             icon_index: 0,
+            source_path: None,
             alternate_names: Vec::new(),
         }
     }

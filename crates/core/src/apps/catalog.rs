@@ -215,6 +215,10 @@ impl PortableDto {
         if super::model::launch_key(&target).is_empty() {
             return None;
         }
+        let source_path = match &target {
+            LaunchTarget::Path { path, .. } => Some(path.clone()),
+            LaunchTarget::Aumid { .. } | LaunchTarget::Url { .. } => None,
+        };
         Some(AppEntry {
             name: name.to_owned(),
             source: AppSource::Portable,
@@ -226,6 +230,7 @@ impl PortableDto {
                 .filter(|path| !path.is_empty())
                 .map(PathBuf::from),
             icon_index: self.icon_index,
+            source_path,
             alternate_names: self.alternate_names.clone(),
         })
     }
@@ -408,6 +413,7 @@ pub(crate) fn alias_entries(catalog: &UserCatalog) -> Vec<AppEntry> {
                 target: alias.target.clone(),
                 icon_path: None,
                 icon_index: 0,
+                source_path: None,
                 alternate_names: Vec::new(),
             })
         })
@@ -431,6 +437,7 @@ mod tests {
                 },
                 icon_path: Some(PathBuf::from(r"D:\Tools\tool.exe")),
                 icon_index: 1,
+                source_path: Some(PathBuf::from(r"D:\Tools\tool.exe")),
                 alternate_names: vec!["tool.exe".into()],
             }],
             aliases: vec![AppAlias {
@@ -537,6 +544,7 @@ mod tests {
             },
             icon_path: None,
             icon_index: 0,
+            source_path: None,
             alternate_names: Vec::new(),
         });
         let entries = portable_entries_logged(&in_memory, Some(&log));

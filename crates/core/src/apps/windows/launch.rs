@@ -24,6 +24,24 @@ const SW_HIDE: i32 = 0;
 #[derive(Debug)]
 pub struct LaunchError {
     pub message: String,
+    /// 用户关掉了 UAC 或「以其他用户身份运行」的系统对话框。
+    pub cancelled: bool,
+}
+
+impl LaunchError {
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            cancelled: false,
+        }
+    }
+
+    fn cancelled() -> Self {
+        Self {
+            message: String::new(),
+            cancelled: true,
+        }
+    }
 }
 
 impl std::fmt::Display for LaunchError {
@@ -42,43 +60,46 @@ pub fn launch(target: &LaunchTarget) -> Result<(), LaunchError> {
 /// 有本地 exe 时用动词 `runas`。商店应用和协议链接返回错误，不调用 Shell。
 pub fn launch_elevated(target: &LaunchTarget) -> Result<(), LaunchError> {
     if !crate::apps::supports_run_as_admin(target) {
-        return Err(LaunchError {
-            message: "这个应用不能以管理员身份运行".to_owned(),
-        });
+        return Err(LaunchError::failed("这个应用不能以管理员身份运行"));
     }
     launch_inner(target, SW_SHOWNORMAL, false, Verb::RunAs)?;
+    Ok(())
+}
+
+/// 动词 `runasuser`。系统弹出「以其他用户身份运行」的凭据对话框。
+/// 商店应用和协议链接返回错误，不调用 Shell。
+pub fn launch_as_user(target: &LaunchTarget) -> Result<(), LaunchError> {
+    if !crate::apps::supports_run_as_admin(target) {
+        return Err(LaunchError::failed("这个应用不能以其他用户身份运行"));
+    }
+    launch_inner(target, SW_SHOWNORMAL, false, Verb::RunAsUser)?;
     Ok(())
 }
 
 enum Verb {
     Open,
     RunAs,
+    RunAsUser,
 }
 
 /// 测试用。隐藏窗口并等待进程退出。不要拿它启动图形界面程序。
 #[cfg(test)]
 pub(crate) fn launch_and_wait(target: &LaunchTarget, timeout_ms: u32) -> Result<u32, LaunchError> {
     let handle = launch_inner(target, SW_HIDE, true, Verb::Open)?;
-    let handle = handle.ok_or_else(|| LaunchError {
-        message: "启动没有返回进程".to_owned(),
-    })?;
+    let handle = handle.ok_or_else(|| LaunchError::failed("启动没有返回进程"))?;
     let wait = unsafe { WaitForSingleObject(handle, timeout_ms) };
     if wait != WAIT_OBJECT_0 {
         unsafe {
             let _ = CloseHandle(handle);
         }
-        return Err(LaunchError {
-            message: format!("等待进程超时: {wait:?}"),
-        });
+        return Err(LaunchError::failed(format!("等待进程超时: {wait:?}")));
     }
     let mut code = 0u32;
     let exit = unsafe { GetExitCodeProcess(handle, &mut code) };
     unsafe {
         let _ = CloseHandle(handle);
     }
-    exit.map_err(|err| LaunchError {
-        message: format!("读不到退出码: {err}"),
-    })?;
+    exit.map_err(|err| LaunchError::failed(format!("读不到退出码: {err}")))?;
     Ok(code)
 }
 
@@ -88,7 +109,7 @@ fn launch_inner(
     wait: bool,
     verb: Verb,
 ) -> Result<Option<windows::Win32::Foundation::HANDLE>, LaunchError> {
-    comutil::ensure_com().map_err(|message| LaunchError { message })?;
+    comutil::ensure_com().map_err(LaunchError::failed)?;
     let (file, args, directory) = command_line(target);
     let file_wide = comutil::wide_null(&file);
     let args_wide = comutil::wide_null(&args);
@@ -103,6 +124,7 @@ fn launch_inner(
     info.lpVerb = match verb {
         Verb::Open => w!("open"),
         Verb::RunAs => w!("runas"),
+        Verb::RunAsUser => w!("runasuser"),
     };
     info.lpFile = pcwstr(&file_wide);
     info.lpParameters = if args.is_empty() {
@@ -116,13 +138,19 @@ fn launch_inner(
     };
     info.nShow = show;
     // SAFETY: SEE_MASK_NOASYNC 让调用在 Shell 用完字符串之前返回。hwnd 为空，不绑定 Lanwork 的窗口。
-    unsafe { ShellExecuteExW(&mut info) }.map_err(|err| LaunchError {
-        message: format!("启动失败: {err}"),
-    })?;
+    unsafe { ShellExecuteExW(&mut info) }.map_err(shell_error)?;
     if wait {
         Ok(Some(info.hProcess))
     } else {
         Ok(None)
+    }
+}
+
+fn shell_error(err: windows::core::Error) -> LaunchError {
+    if crate::apps::is_consent_cancel(err.code().0) {
+        LaunchError::cancelled()
+    } else {
+        LaunchError::failed(format!("启动失败: {err}"))
     }
 }
 

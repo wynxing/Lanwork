@@ -69,6 +69,11 @@ pub(crate) fn with_shelves(action: impl FnOnce(&mut ShelvesPage, &Panel) + 'stat
     with_panel(move |panel| action(&mut panel.shelves, &panel.ui));
 }
 
+/// 搜索条改了隐藏名单之后，设置页如果在，就重画那一节。
+pub(crate) fn refresh_hidden_apps() {
+    with_settings(|page, ui| page.refresh_hidden(ui));
+}
+
 /// 设置页的动作。和面板共用同一个借用，所以也走 [`with_panel`]。
 pub(crate) fn with_settings(action: impl FnOnce(&mut SettingsPage, &Panel) + 'static) {
     with_panel(move |panel| action(&mut panel.settings, &panel.ui));

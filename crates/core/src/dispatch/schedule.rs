@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::apps::{AppHit, AppIndex, LaunchTarget, launch_key};
+use crate::apps::{
+    AppHit, AppIndex, HiddenApp, LaunchTarget, UserCatalog, launch_key, save_user_catalog,
+};
 use crate::files::{
     FILE_INDEX_UNAVAILABLE, FileCommands, FileHit, FileKind, FileQueryResult, FileSource,
 };
@@ -45,11 +47,43 @@ impl Monotonic for SystemClock {
 /// 应用来源。正式构建传 [`AppIndex`]。
 pub trait AppLookup: Send {
     fn query(&mut self, text: &str) -> Vec<AppHit>;
+
+    fn hide(&mut self, _key: &str) -> Result<(), String> {
+        Err("应用索引不支持隐藏".to_owned())
+    }
+
+    fn restore(&mut self, _key: &str) -> bool {
+        false
+    }
+
+    fn hidden_apps(&mut self) -> Vec<HiddenApp> {
+        Vec::new()
+    }
+
+    fn user_catalog(&mut self) -> UserCatalog {
+        UserCatalog::default()
+    }
 }
 
 impl AppLookup for AppIndex {
     fn query(&mut self, text: &str) -> Vec<AppHit> {
         AppIndex::query(self, text)
+    }
+
+    fn hide(&mut self, key: &str) -> Result<(), String> {
+        AppIndex::hide(self, key).map_err(|err| err.to_string())
+    }
+
+    fn restore(&mut self, key: &str) -> bool {
+        AppIndex::restore(self, key)
+    }
+
+    fn hidden_apps(&mut self) -> Vec<HiddenApp> {
+        AppIndex::hidden_apps(self)
+    }
+
+    fn user_catalog(&mut self) -> UserCatalog {
+        AppIndex::user_catalog(self)
     }
 }
 
@@ -157,6 +191,10 @@ pub struct PollReport {
     pub view: QueryView,
 }
 
+fn save_catalog(store: &crate::storage::Store, apps: &mut dyn AppLookup) -> Result<(), String> {
+    save_user_catalog(&store.user_apps_path(), &apps.user_catalog())
+}
+
 impl Dispatch {
     /// 用系统时钟和壳层图标缓存打开。
     #[must_use]
@@ -219,6 +257,37 @@ impl Dispatch {
             Err(StorageError::NotReady) => Err(DispatchError::NotReady),
             Err(err) => Err(DispatchError::Index(err.to_string())),
         }
+    }
+
+    /// 按启动目标隐藏，并写入 `user-apps.json`。写盘失败时把内存改回去。
+    pub fn hide_app(&self, key: &str) -> Result<(), String> {
+        let mut apps = storage::lock_mutex(&self.apps);
+        apps.hide(key)?;
+        if let Err(err) = save_catalog(&self.store, &mut **apps) {
+            let _ = apps.restore(key);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// 从隐藏名单去掉这个键，并写入 `user-apps.json`。本来就没有时不写盘。
+    /// 写盘失败时把这一项加回内存。
+    pub fn restore_hidden_app(&self, key: &str) -> Result<(), String> {
+        let mut apps = storage::lock_mutex(&self.apps);
+        if !apps.restore(key) {
+            return Ok(());
+        }
+        if let Err(err) = save_catalog(&self.store, &mut **apps) {
+            let _ = apps.hide(key);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// 设置页要列出的隐藏项。
+    #[must_use]
+    pub fn hidden_apps(&self) -> Vec<HiddenApp> {
+        storage::lock_mutex(&self.apps).hidden_apps()
     }
 
     /// 已提交的文本变化。

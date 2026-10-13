@@ -9,7 +9,7 @@ use slint::platform::software_renderer::RepaintBufferType;
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use crate::{Panel, SettingsPageData};
+use crate::{Panel, SettingsHiddenApp, SettingsPageData};
 
 struct Headless(Rc<MinimalSoftwareWindow>);
 
@@ -98,4 +98,23 @@ fn each_control_asks_for_its_own_change_and_does_not_flip_by_itself() {
 
     click(&ui, CONTROL_X + 90.0, row_center(2.0));
     assert_eq!(recordings.get(), 1);
+}
+
+#[test]
+fn restore_asks_for_the_hidden_app_under_the_pointer() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    data.set_hidden_apps(ModelRc::new(VecModel::from(vec![SettingsHiddenApp {
+        name: "记事本".into(),
+    }])));
+    slint::platform::update_timers_and_animations();
+    let restored = Rc::new(RefCell::new(Vec::new()));
+    {
+        let restored = Rc::clone(&restored);
+        data.on_restore_hidden(move |index| restored.borrow_mut().push(index));
+    }
+    // 三行设置、节标题，然后第一条隐藏项右侧的「恢复」。
+    let y = TITLE + 1.0 + PAD_TOP + ROW * 3.0 + 40.0 + 22.0;
+    click(&ui, WIDTH as f32 - 24.0 - 16.0, y);
+    assert_eq!(*restored.borrow(), [0]);
 }

@@ -1,4 +1,4 @@
-//! 卸载过滤、游戏链接、启动目录和两个应用动作的判断。
+//! 卸载过滤、游戏链接、启动目录，以及应用菜单里两个文件夹动作的判断。
 //!
 //! 这些是实现选择，不是产品规则。可见行为以产品规格为准。
 //! 过滤和游戏链接的调用方在 Windows 枚举里。非 Windows 构建只跑这里的单元测试。
@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::model::{LaunchTarget, normalize_path_key};
+use super::model::{AppEntry, LaunchTarget, normalize_path_key};
 
 /// Flow Launcher `HideUninstallersFilter` 的固定文件名。
 const UNINSTALLER_FILE_NAMES: [&str; 4] = [
@@ -180,6 +180,35 @@ pub fn containing_folder(target: &LaunchTarget) -> Option<PathBuf> {
     let LaunchTarget::Path { path, .. } = target else {
         return None;
     };
+    parent_dir(path)
+}
+
+/// 索引文件所在的目录。没有记下快捷方式路径时，路径目标退回 exe 自己的目录。
+#[must_use]
+pub fn file_folder(entry: &AppEntry) -> Option<PathBuf> {
+    let path = entry
+        .source_path
+        .as_deref()
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| match &entry.target {
+            LaunchTarget::Path { path, .. } if !path.as_os_str().is_empty() => Some(path.as_path()),
+            _ => None,
+        })?;
+    parent_dir(path)
+}
+
+/// 快捷方式目标所在的目录。不是快捷方式时，或目标不是本地路径时，没有这一项。
+#[must_use]
+pub fn shortcut_target_folder(entry: &AppEntry) -> Option<PathBuf> {
+    let source = entry.source_path.as_ref()?;
+    let ext = source.extension()?.to_str()?;
+    if !ext.eq_ignore_ascii_case("lnk") {
+        return None;
+    }
+    containing_folder(&entry.target)
+}
+
+fn parent_dir(path: &Path) -> Option<PathBuf> {
     let parent = path.parent()?;
     if parent.as_os_str().is_empty() {
         None
@@ -239,6 +268,7 @@ fn utf16_units(bytes: &[u8], little: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::AppSource;
     use super::*;
 
     fn path_target(path: &str) -> LaunchTarget {
@@ -386,5 +416,62 @@ mod tests {
         assert!(!supports_run_as_admin(&url));
         assert!(!supports_open_containing_folder(&url));
         assert!(containing_folder(&url).is_none());
+    }
+
+    fn sample_entry(target: LaunchTarget, source_path: Option<&str>) -> AppEntry {
+        AppEntry {
+            name: "示例".into(),
+            source: AppSource::StartMenu,
+            target,
+            icon_path: None,
+            icon_index: 0,
+            source_path: source_path.map(PathBuf::from),
+            alternate_names: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn file_folder_is_the_indexed_file_and_target_folder_needs_a_shortcut() {
+        let exe = path_target("C:/App/tool.exe");
+        let direct = sample_entry(exe.clone(), Some("C:/App/tool.exe"));
+        assert_eq!(file_folder(&direct).as_deref(), Some(Path::new("C:/App")));
+        assert!(shortcut_target_folder(&direct).is_none());
+
+        let shortcut = sample_entry(
+            exe,
+            Some("C:/ProgramData/Microsoft/Windows/Start Menu/Programs/工具.lnk"),
+        );
+        assert_eq!(
+            file_folder(&shortcut).as_deref(),
+            Some(Path::new(
+                "C:/ProgramData/Microsoft/Windows/Start Menu/Programs"
+            ))
+        );
+        assert_eq!(
+            shortcut_target_folder(&shortcut).as_deref(),
+            Some(Path::new("C:/App"))
+        );
+
+        let link = sample_entry(
+            LaunchTarget::Url {
+                url: "steam://rungameid/570".into(),
+            },
+            Some("C:/Users/me/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Game.url"),
+        );
+        assert!(file_folder(&link).is_some());
+        assert!(shortcut_target_folder(&link).is_none());
+
+        let store = sample_entry(
+            LaunchTarget::Aumid {
+                aumid: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".into(),
+            },
+            None,
+        );
+        assert!(file_folder(&store).is_none());
+        assert!(shortcut_target_folder(&store).is_none());
+
+        let cached = sample_entry(path_target("D:/Bin/app.exe"), None);
+        assert_eq!(file_folder(&cached).as_deref(), Some(Path::new("D:/Bin")));
+        assert!(shortcut_target_folder(&cached).is_none());
     }
 }

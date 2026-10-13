@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use lanwork_core::apps::{LaunchError, LaunchTarget, launch, launch_elevated};
+use lanwork_core::apps::{LaunchError, LaunchTarget, launch, launch_as_user, launch_elevated};
 use lanwork_core::config::{ConfigCommands, SearchBarOrigin};
 use lanwork_core::dispatch::{
     Dispatch, FILE_QUERY_DELAY_MS, FileProgress, IconKey, LATENCY_SOURCE_LOCAL, Monotonic,
@@ -21,17 +21,18 @@ use lanwork_core::dispatch::{
 use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
-    BAR_WIDTH, Backdrop, EnterChord, EscapeAction, MonitorArea, ROW_HEIGHT, RowAction, WorkArea,
-    escape_action, group_label, location_always_shown, match_span, max_results_height, monitor_at,
-    move_selection, path_target, place_bar, pointed_row, reselect, row_action, row_offsets,
-    shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
+    AltRoute, AppMenuAction, BAR_WIDTH, Backdrop, EnterChord, EscapeAction, MonitorArea,
+    ROW_HEIGHT, RowAction, WorkArea, alt_route, app_menu, app_menu_command, escape_action,
+    group_label, location_always_shown, match_span, max_results_height, monitor_at, move_selection,
+    path_target, place_bar, pointed_row, reselect, row_action, row_offsets, shortcut_rows,
+    shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, Model as _, ModelRc, VecModel};
 
 use crate::bar_win;
-use crate::{BarRow, SearchBar};
+use crate::{BarMenuItem, BarRow, SearchBar};
 
 /// 测量用。设了这个变量时，热召回和结果延迟的原始记录追加到该文件。界面不暴露它。
 pub(crate) const LATENCY_OUT_ENV: &str = "LANWORK_LATENCY_OUT";
@@ -96,6 +97,9 @@ pub(crate) fn install(
     ui.on_hover(|index| with_bar(move |bar| bar.hover(index)));
     ui.on_activate(|index| with_bar(move |bar| bar.activate(index)));
     ui.on_shortcut(|digit| with_bar(move |bar| bar.shortcut(digit)));
+    ui.on_open_menu(|index, x, y| with_bar(move |bar| bar.open_menu(index, x, y)));
+    ui.on_menu_activate(|index| with_bar(move |bar| bar.menu_activate(index)));
+    ui.on_menu_shortcut(|digit| with_bar(move |bar| bar.menu_shortcut(digit)));
     ui.on_scrolled(|top| with_bar(move |bar| bar.scrolled(top)));
     ui.on_drag_window(|| with_bar(Bar::drag));
     bar_win::add_move_hook(move_loop);
@@ -155,11 +159,23 @@ pub(crate) fn install(
         dark: false,
         hwnd_ready: false,
         launching: false,
+        menu_row: None,
         dragging: false,
         drag_origin: None,
         first_sequence: None,
     };
     BAR.with(|cell| *cell.borrow_mut() = Some(bar));
+}
+
+/// 隐藏名单变了之后，开着的搜索条按当前输入再查一次。
+pub(crate) fn requery() {
+    with_bar(|bar| {
+        if !bar.visible {
+            return;
+        }
+        let text = bar.ui.get_text().to_string();
+        bar.submit(&text);
+    });
 }
 
 /// 热键。已显示时收起。
@@ -210,6 +226,8 @@ struct Bar {
     dark: bool,
     hwnd_ready: bool,
     launching: bool,
+    /// 右键菜单对应的结果行。菜单关着时为 `None`。
+    menu_row: Option<usize>,
     /// 拖动过程中，包括循环结束后留给迟到失焦的那两轮。
     dragging: bool,
     /// 这次按下时的左上角。松开后没变就不写配置。
@@ -338,6 +356,7 @@ impl Bar {
     }
 
     fn hide(&mut self) {
+        self.close_menu();
         self.visible = false;
         self.marks.borrow_mut().hot_start = None;
         let _ = self.ui.hide();
@@ -460,6 +479,10 @@ impl Bar {
     }
 
     fn escape(&mut self) {
+        if self.ui.get_menu_open() {
+            self.close_menu();
+            return;
+        }
         let text = self.ui.get_text().to_string();
         match escape_action(&text) {
             EscapeAction::Hide => self.hide(),
@@ -509,6 +532,10 @@ impl Bar {
             && view.phase == ViewPhase::Results
             && view.text == self.view_text;
         let previous = self.results.get(self.selected).map(|row| row.usage.clone());
+        let menu_usage = self
+            .menu_row
+            .and_then(|index| self.results.get(index))
+            .map(|row| row.usage.clone());
         self.selected = reselect(previous.as_ref(), same_text, &view.rows);
         self.results = view.rows;
         self.phase = view.phase;
@@ -528,6 +555,15 @@ impl Bar {
             self.ui.invoke_scroll_to_top();
             self.scroll_top = 0.0;
             self.push_shortcuts();
+        }
+        if self.ui.get_menu_open() {
+            match menu_usage
+                .as_ref()
+                .and_then(|usage| self.results.iter().position(|row| &row.usage == usage))
+            {
+                Some(index) => self.menu_row = Some(index),
+                None => self.close_menu(),
+            }
         }
         self.ui.invoke_ensure_visible();
         self.marks.borrow_mut().result = self
@@ -603,16 +639,121 @@ impl Bar {
         self.push_shortcuts();
     }
 
-    /// Alt+数字。和 Enter 一样，组合输入期间、快速收集前缀下不打开。
+    /// Alt+数字。菜单开着时改选菜单。和 Enter 一样，组合输入期间、快速收集前缀下不打开结果。
     fn shortcut(&mut self, digit: i32) {
         let Ok(digit) = u32::try_from(digit) else {
             return;
         };
+        if let AltRoute::Menu(action) = alt_route(self.ui.get_menu_open(), digit) {
+            if let Some(action) = action {
+                self.run_menu(action);
+            }
+            return;
+        }
         if let Some(index) = shortcut_target(self.shortcut_range(), digit) {
             self.selected = index;
             self.ui
                 .set_selected(i32::try_from(self.selected).unwrap_or(0));
             self.enter(EnterChord::Plain);
+        }
+    }
+
+    fn menu_shortcut(&mut self, digit: i32) {
+        let Ok(digit) = u32::try_from(digit) else {
+            return;
+        };
+        if let AltRoute::Menu(Some(action)) = alt_route(true, digit) {
+            self.run_menu(action);
+        }
+    }
+
+    fn open_menu(&mut self, index: i32, x: f32, y: f32) {
+        let Some(index) = pointed_row(index, self.results.len()) else {
+            return;
+        };
+        let Some(row) = self.results.get(index) else {
+            return;
+        };
+        let lanwork_core::dispatch::RowDetail::App(hit) = &row.detail else {
+            return;
+        };
+        let items: Vec<BarMenuItem> = app_menu(&hit.entry)
+            .into_iter()
+            .map(|item| BarMenuItem {
+                label: item.label.into(),
+                hint: item.hint.into(),
+                enabled: item.enabled,
+            })
+            .collect();
+        self.selected = index;
+        self.ui
+            .set_selected(i32::try_from(self.selected).unwrap_or(0));
+        self.menu_row = Some(index);
+        self.ui.set_menu_items(ModelRc::new(VecModel::from(items)));
+        self.ui.set_menu_anchor_x(x);
+        self.ui.set_menu_anchor_y(y);
+        self.ui.set_menu_open(true);
+    }
+
+    fn menu_activate(&mut self, index: i32) {
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        let Some(action) = [
+            AppMenuAction::RunAsUser,
+            AppMenuAction::RunAsAdmin,
+            AppMenuAction::OpenFileFolder,
+            AppMenuAction::OpenTargetFolder,
+            AppMenuAction::Hide,
+        ]
+        .get(index)
+        .copied() else {
+            return;
+        };
+        self.run_menu(action);
+    }
+
+    fn run_menu(&mut self, action: AppMenuAction) {
+        if self.launching {
+            return;
+        }
+        let Some(index) = self.menu_row else {
+            return;
+        };
+        let Some(row) = self.results.get(index) else {
+            self.close_menu();
+            return;
+        };
+        let lanwork_core::dispatch::RowDetail::App(hit) = &row.detail else {
+            self.close_menu();
+            return;
+        };
+        let Some(command) = app_menu_command(&hit.entry, action) else {
+            return;
+        };
+        let usage = row.usage.clone();
+        self.close_menu();
+        self.perform(command, usage);
+    }
+
+    fn close_menu(&mut self) {
+        self.menu_row = None;
+        self.ui.set_menu_open(false);
+    }
+
+    fn hide_app(&mut self, key: &str) {
+        match self.dispatch.hide_app(key) {
+            Ok(()) => {
+                self.error = None;
+                let text = self.ui.get_text().to_string();
+                self.submit(&text);
+                crate::panel::refresh_hidden_apps();
+            }
+            Err(message) => {
+                self.store.log_warn(&format!("隐藏应用没有写入：{message}"));
+                self.error = Some(message);
+                self.push_status();
+            }
         }
     }
 
@@ -653,7 +794,7 @@ impl Bar {
     }
 
     fn enter(&mut self, chord: EnterChord) {
-        if !self.ui.get_preedit().is_empty() || self.launching {
+        if self.ui.get_menu_open() || !self.ui.get_preedit().is_empty() || self.launching {
             return;
         }
         let text = self.ui.get_text();
@@ -670,9 +811,15 @@ impl Bar {
             return;
         };
         let usage = row.usage.clone();
+        self.perform(action, usage);
+    }
+
+    fn perform(&mut self, action: RowAction, usage: UsageKey) {
         match action {
+            RowAction::HideApp { key } => self.hide_app(&key),
             RowAction::Shell(_)
             | RowAction::Elevated(_)
+            | RowAction::RunAsUser(_)
             | RowAction::OpenFolder(_)
             | RowAction::WebSearch { .. } => {
                 self.launch(action, usage);
@@ -717,11 +864,12 @@ impl Bar {
                     self.hide();
                 }
             }
+            Err(err) if err.cancelled => {}
             Err(err) => {
-                self.store
-                    .log_warn(&format!("搜索结果打开失败：{}", err.message));
+                let message = err.message;
+                self.store.log_warn(&format!("搜索结果打开失败：{message}"));
                 if self.visible {
-                    self.error = Some(err.message);
+                    self.error = Some(message);
                     self.push_status();
                 }
             }
@@ -769,11 +917,13 @@ fn run_shell(action: &RowAction) -> Result<(), LaunchError> {
     match action {
         RowAction::Shell(target) => launch(target),
         RowAction::Elevated(target) => launch_elevated(target),
+        RowAction::RunAsUser(target) => launch_as_user(target),
         RowAction::OpenFolder(folder) => launch(&path_target(&folder.to_string_lossy())),
         RowAction::WebSearch { url } => launch(&LaunchTarget::Url { url: url.clone() }),
-        RowAction::PanelTodo { .. } | RowAction::PanelNote { .. } | RowAction::FloatNote { .. } => {
-            Ok(())
-        }
+        RowAction::HideApp { .. }
+        | RowAction::PanelTodo { .. }
+        | RowAction::PanelNote { .. }
+        | RowAction::FloatNote { .. } => Ok(()),
     }
 }
 

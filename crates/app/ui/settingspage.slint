@@ -2,7 +2,11 @@
 // 数据和回调放在 SettingsPageData 里，面板窗口只负责把这个页面摆在标签内容区。
 // 控件只显示配置里的值；请求被拒绝或写盘失败时，Rust 重新推送原值，界面随之回到原状。
 
-import { Ink, Segments, ToggleSwitch } from "widgets.slint";
+import { Btn, Ink, Segments, ToggleSwitch } from "widgets.slint";
+
+export struct SettingsHiddenApp {
+    name: string,
+}
 
 export global SettingsPageData {
     in property <bool> launch-at-startup;
@@ -14,6 +18,9 @@ export global SettingsPageData {
     callback set-launch-at-startup(bool);
     callback choose-corner(int);
     callback toggle-recording();
+
+    in property <[SettingsHiddenApp]> hidden-apps;
+    callback restore-hidden(int);
 }
 
 component Row inherits Rectangle {
@@ -131,6 +138,62 @@ export component SettingsPage inherits Rectangle {
                 c: root.c;
                 clicked => {
                     SettingsPageData.toggle-recording();
+                }
+            }
+        }
+
+        Text {
+            height: 40px;
+            text: "隐藏的应用";
+            color: c.ink;
+            font-size: 14px;
+            vertical-alignment: center;
+        }
+
+        if SettingsPageData.hidden-apps.length == 0: Text {
+            height: 36px;
+            text: "没有隐藏的应用";
+            color: c.secondary;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        if SettingsPageData.hidden-apps.length > 0: hidden-list := Flickable {
+            vertical-stretch: 1;
+            min-height: 44px;
+            content-width: self.width;
+            content-height: max(self.height, SettingsPageData.hidden-apps.length * 44px);
+
+            for app[index] in SettingsPageData.hidden-apps: Rectangle {
+                y: index * 44px;
+                width: hidden-list.width;
+                height: 44px;
+
+                Text {
+                    width: parent.width - 80px;
+                    height: parent.height;
+                    text: app.name;
+                    color: c.ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Btn {
+                    x: parent.width - self.width;
+                    y: (parent.height - self.height) / 2;
+                    text: "恢复";
+                    c: root.c;
+                    clicked => {
+                        SettingsPageData.restore-hidden(index);
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: parent.width;
+                    background: c.divider;
                 }
             }
         }

@@ -19,6 +19,12 @@ export struct BarRow {
     group-start: bool,
 }
 
+export struct BarMenuItem {
+    label: string,
+    hint: string,
+    enabled: bool,
+}
+
 component Glyph inherits Rectangle {
     in property <int> glyph;
     in property <color> ink;
@@ -75,8 +81,18 @@ export component SearchBar inherits Window {
     callback hover(int);
     // 单击某行，等同在该行上按 Enter。
     callback activate(int);
-    // Alt+数字，参数 1 至 9。
+    // Alt+数字，参数 1 至 9。菜单开着时不调用，改走 menu-shortcut。
     callback shortcut(int);
+    // 在应用结果上松开右键。坐标是窗口里的逻辑像素。
+    callback open-menu(int, length, length);
+    // 菜单项下标，0 起。
+    callback menu-activate(int);
+    // 菜单开着时的 Alt+数字，参数 1 至 9。
+    callback menu-shortcut(int);
+    in property <[BarMenuItem]> menu-items;
+    in-out property <bool> menu-open: false;
+    in-out property <length> menu-anchor-x: 0px;
+    in-out property <length> menu-anchor-y: 0px;
     // 列表向上滚过的距离变了。
     callback scrolled(length);
     // 从输入框左侧的拖动条按下。不覆盖输入框和结果行。
@@ -92,6 +108,17 @@ export component SearchBar inherits Window {
     property <bool> has-status: status != "";
     property <length> list-height: min(list-content-height, max-list-height);
     property <length> results-height: (has-list || has-status) ? 1px + (has-list ? list-height : 0px) + (has-status ? 36px : 0px) : 0px;
+    property <length> natural-height: input-height + results-height;
+    property <length> menu-width: 272px;
+    property <length> menu-item-h: 36px;
+    property <length> menu-pad: 4px;
+    property <length> menu-block: menu-pad * 2 + menu-items.length * menu-item-h;
+    property <bool> menu-shown: menu-open && menu-items.length > 0;
+    property <length> menu-draw-x: min(max(8px, menu-anchor-x), max(8px, self.width - menu-width - 8px));
+    property <length> menu-draw-y: menu-anchor-y + menu-block + 8px > natural-height && menu-anchor-y > menu-block
+        ? max(8px, menu-anchor-y - menu-block)
+        : max(8px, menu-anchor-y);
+    out property <int> menu-hover: -1;
 
     property <color> ink: dark ? #ffffff : #1b1b1b;
     property <color> ink-secondary: dark ? #c5c5c5 : #5d5d5d;
@@ -102,8 +129,12 @@ export component SearchBar inherits Window {
     property <color> critical: dark ? #ff99a4 : #c42b1c;
 
     width: 680px;
-    height: input-height + results-height;
+    height: menu-shown ? max(natural-height, menu-draw-y + menu-block + 8px) : natural-height;
     background: acrylic ? transparent : solid-color;
+
+    changed menu-open => {
+        menu-hover = -1;
+    }
 
     public function focus-input() {
         input.focus();
@@ -190,6 +221,10 @@ export component SearchBar inherits Window {
                     return reject;
                 }
                 if event.text == Key.Escape {
+                    if root.menu-open {
+                        root.menu-open = false;
+                        return accept;
+                    }
                     root.escape();
                     return accept;
                 }
@@ -204,7 +239,11 @@ export component SearchBar inherits Window {
                 if event.modifiers.alt && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.meta
                     && event.text.character-count == 1 && event.text.is-float()
                     && event.text.to-float() >= 1 && event.text.to-float() <= 9 {
-                    root.shortcut(round(event.text.to-float()));
+                    if root.menu-open {
+                        root.menu-shortcut(round(event.text.to-float()));
+                    } else {
+                        root.shortcut(round(event.text.to-float()));
+                    }
                     return accept;
                 }
                 if event.text == Key.Return {
@@ -363,14 +402,18 @@ export component SearchBar inherits Window {
                 vertical-alignment: center;
             }
 
-            TouchArea {
+            row-touch := TouchArea {
                 pointer-event(event) => {
-                    if event.kind == PointerEventKind.move && !is-selected {
+                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                        root.open-menu(index, row-touch.mouse-x, input-height + 1px + row.y + list.content-y + row-touch.mouse-y);
+                    } else if event.kind == PointerEventKind.move && !is-selected && !root.menu-open {
                         root.hover(index);
                     }
                 }
                 clicked => {
-                    root.activate(index);
+                    if !root.menu-open {
+                        root.activate(index);
+                    }
                 }
             }
         }
@@ -386,5 +429,82 @@ export component SearchBar inherits Window {
         font-size: 13px;
         vertical-alignment: center;
         overflow: elide;
+    }
+
+    if menu-shown: TouchArea {
+        width: parent.width;
+        height: parent.height;
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.move {
+                root.menu-hover = -1;
+            }
+            if event.kind == PointerEventKind.down {
+                root.menu-open = false;
+            }
+        }
+    }
+
+    if menu-shown: Rectangle {
+        x: menu-draw-x;
+        y: menu-draw-y;
+        width: menu-width;
+        height: menu-block;
+        border-radius: 8px;
+        background: solid-color;
+        border-width: 1px;
+        border-color: divider;
+
+        // 接住菜单空白和不可用项上的点击，避免落到后面的遮罩上把菜单关掉。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        for item[index] in menu-items: Rectangle {
+            x: menu-pad;
+            y: menu-pad + index * menu-item-h;
+            width: parent.width - menu-pad * 2;
+            height: menu-item-h;
+            border-radius: 6px;
+            background: item.enabled && menu-hover == index ? selection-fill : transparent;
+
+            Text {
+                x: 12px;
+                width: parent.width - 12px - 64px;
+                height: parent.height;
+                text: item.label;
+                color: item.enabled ? ink : ink-tertiary;
+                font-size: 14px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Text {
+                x: parent.width - 12px - 48px;
+                width: 48px;
+                height: parent.height;
+                text: item.hint;
+                color: ink-tertiary;
+                font-size: 12px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                enabled: item.enabled;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.move {
+                        root.menu-hover = index;
+                    }
+                }
+                clicked => {
+                    root.menu-activate(index);
+                    root.menu-open = false;
+                }
+            }
+        }
     }
 }
