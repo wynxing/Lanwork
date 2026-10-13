@@ -160,8 +160,41 @@ pub fn outer_edges(screens: &[ScreenBounds]) -> Vec<OuterEdge> {
 /// 同时贴住多段时，先取间隙更小的；一样时先左、再右、再上。这个次序待定。
 #[must_use]
 pub fn snap_on_release(window: PxBox, screens: &[ScreenBounds]) -> Option<OuterEdge> {
+    snap_among(window, screens, |_| true)
+}
+
+/// 夹回之后的贴边。只接受 `sides` 里的外沿。
+///
+/// 窗口在被夹的方向上铺满工作区时，对侧也会进阈值。这里不走「先左」：
+/// 没越出的那一侧不在 `sides` 里，就不会贴上。底边不是 [`DockEdge`]，所以底边越出不会变成贴上边。
+#[must_use]
+pub(crate) fn snap_after_clamp(
+    rect: PxBox,
+    screens: &[ScreenBounds],
+    sides: &[DockEdge],
+) -> Option<DockState> {
+    let edge = snap_among(rect, screens, |side| sides.contains(&side))?;
+    Some(snap_to(
+        &DockState {
+            expanded: rect,
+            dock: None,
+        },
+        edge,
+        rect,
+        false,
+    ))
+}
+
+fn snap_among(
+    window: PxBox,
+    screens: &[ScreenBounds],
+    allow: impl Fn(DockEdge) -> bool,
+) -> Option<OuterEdge> {
     let mut best: Option<(i32, u8, i32, i32, OuterEdge)> = None;
     for edge in outer_edges(screens) {
+        if !allow(edge.edge) {
+            continue;
+        }
         let Some(gap) = gap_to(window, &edge) else {
             continue;
         };

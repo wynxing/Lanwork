@@ -4,9 +4,10 @@
 //! 规则仍在便签服务里。列表顺序（置顶在前，其后按更新时间从新到旧）由服务给出，这里不重排回收站以外的顺序。
 
 use super::float_snap::{
-    DockInput, DockState, PxBox, ScreenBounds, Transition, dock_applies, transition, visible_box,
+    DockInput, DockState, PxBox, ScreenBounds, Transition, dock_applies, snap_after_clamp,
+    transition, visible_box,
 };
-use crate::notes::{FloatGeometry, Note};
+use crate::notes::{DockEdge, FloatGeometry, Note};
 use crate::shell::{WorkArea, to_logical, to_physical};
 
 use super::todo_page::trash_days_left;
@@ -190,10 +191,10 @@ pub fn contain_float(
 /// 拖动松手。改大小和点击仍只走 [`settle_float`]，不因为收进工作区而贴边。
 ///
 /// 窗口移动了时，先用松开的矩形判断贴边。已经在阈值内就贴在显示器外沿，不收进工作区。
-/// 没贴上时，把展开矩形收进工作区，再用收进去的矩形做同一次判断。
-/// 收进去之后贴住外侧的左、右或上边，就收成把手。滑动从松开的矩形开始。
-/// 夹回是几何计算，不是另一次系统拖动；所以必须在这里再走一遍 [`transition`]，
-/// 不能只改坐标。
+/// 没贴上时，把展开矩形收进工作区，再只对松开时越出工作区的那一侧做一次判断。
+/// 这一侧是可贴的外沿才收成把手。底边越出不会因为夹回后上边进了阈值而贴上边。
+/// 在越出的方向上铺满工作区时，贴越出的那一侧，不改贴对侧。滑动从松开的矩形开始。
+/// 夹回是几何计算，不是另一次系统拖动；所以第二次判断在这里完成，不能只改坐标。
 #[must_use]
 pub fn release_float(
     state: &DockState,
@@ -241,22 +242,20 @@ pub fn release_float(
         }
     }
     if moved && state_now.dock.is_none() {
-        let clamped = state_now.expanded;
-        let again = transition(
-            &DockState {
-                expanded: clamped,
-                dock: None,
-            },
-            screens,
-            DockInput::DragFinished {
-                rect: clamped,
-                moved: true,
-                from_collapsed: false,
-                size_changed: false,
-            },
+        let before_clamp = first.state.expanded;
+        let monitor = chosen_monitor(
+            before_clamp.x,
+            before_clamp.y,
+            before_clamp.width.max(1),
+            before_clamp.height.max(1),
+            monitors,
+            fallback,
         );
-        if dock_applies(&again.state, screens) {
-            state_now = again.state;
+        let sides = crossed_outer_sides(before_clamp, monitor.area);
+        if let Some(snapped) = snap_after_clamp(state_now.expanded, screens, &sides)
+            && dock_applies(&snapped, screens)
+        {
+            state_now = snapped;
             to = visible_box(&state_now, screens);
             from = released;
             animate = from != to;
@@ -392,6 +391,21 @@ fn overlap(x: i32, y: i32, width: u32, height: u32, area: WorkArea) -> i64 {
     } else {
         shared_w * shared_h
     }
+}
+
+/// 松开时越出这块工作区的可贴外沿。底边越出不产生候选。
+fn crossed_outer_sides(rect: PxBox, area: WorkArea) -> Vec<DockEdge> {
+    let mut sides = Vec::new();
+    if rect.x < area.left {
+        sides.push(DockEdge::Left);
+    }
+    if rect.right() > area.right {
+        sides.push(DockEdge::Right);
+    }
+    if rect.y < area.top {
+        sides.push(DockEdge::Top);
+    }
+    sides
 }
 
 fn clamp_start(start: i32, length: u32, low: i32, high: i32) -> i32 {
@@ -964,6 +978,75 @@ mod tests {
         assert_eq!(outcome.state.expanded, px(400, 680, 320, 360));
         assert!(!outcome.animate, "只夹回时不滑向把手");
         assert_eq!(outcome.to, outcome.state.expanded);
+    }
+
+    #[test]
+    fn a_full_height_window_pulled_up_from_the_bottom_does_not_snap_to_the_top() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let released = px(400, 40, 320, 1040);
+        assert!(
+            snap_on_release(released, &screens).is_none(),
+            "上边离外沿 40 物理像素，第一次判断不贴"
+        );
+        let outcome = drag_release(
+            px(400, 0, 320, 1040),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        assert!(
+            outcome.state.dock.is_none(),
+            "越出的是底边，夹回后上边进了阈值也不贴"
+        );
+        assert_eq!(outcome.state.expanded, px(400, 0, 320, 1040));
+    }
+
+    #[test]
+    fn a_full_width_window_pulled_back_from_the_right_snaps_right_not_left() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let released = px(100, 100, 1920, 360);
+        assert!(snap_on_release(released, &screens).is_none());
+        let outcome = drag_release(
+            px(0, 100, 1920, 360),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        let dock = outcome.state.dock.expect("越出的是右边，铺满后仍贴右边");
+        assert_eq!(dock.edge, DockEdge::Right);
+        assert!(dock.collapsed);
+        assert_eq!(outcome.state.expanded, px(0, 100, 1920, 360));
+        assert_eq!(outcome.to, px(1917, 260, 3, 40));
+    }
+
+    #[test]
+    fn dragging_past_the_left_at_144_dpi_clamps_then_collapses() {
+        let bounds = area(0, 0, 2560, 1440);
+        let primary = monitor_split(bounds, area(0, 0, 2560, 1400), 144);
+        let screens = [screen(0, 0, 2560, 1440, 144)];
+        let released = px(-40, 200, 400, 400);
+        assert!(
+            snap_on_release(released, &screens).is_none(),
+            "144 DPI 的阈值是 18 物理像素，越出 40 不在第一次判断里"
+        );
+        let outcome = drag_release(
+            px(200, 200, 400, 400),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        let dock = outcome.state.dock.expect("夹回后再贴左边");
+        assert_eq!(dock.edge, DockEdge::Left);
+        assert!(dock.collapsed);
+        assert_eq!(outcome.state.expanded.x, 0);
+        assert_eq!(outcome.state.expanded.y, 200);
+        assert_eq!(outcome.from, released);
+        assert_eq!(outcome.to, px(0, 370, 5, 60), "144 DPI 下把手厚 5、长 60");
     }
 
     #[test]
