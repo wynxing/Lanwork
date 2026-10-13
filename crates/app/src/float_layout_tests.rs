@@ -12,6 +12,11 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
+use lanwork_core::panel::{
+    HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL, STRIP_HIT_LENGTH_LOGICAL,
+    STRIP_HIT_THICKNESS_LOGICAL,
+};
+
 use crate::{NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData};
 
 struct Headless(Rc<MinimalSoftwareWindow>);
@@ -101,31 +106,6 @@ fn the_float_window_blocks_never_overlap() {
 
 const CLOSE_SIZE: f32 = 28.0;
 
-/// 把窗口画进缓冲区，取出一块像素。
-fn render_region(
-    window: &Rc<MinimalSoftwareWindow>,
-    size: (u32, u32),
-    region: (u32, u32, u32, u32),
-) -> Vec<u8> {
-    use slint::platform::software_renderer::Rgb565Pixel;
-
-    let (width, height) = size;
-    let mut buffer = vec![Rgb565Pixel(0); (width * height) as usize];
-    window.request_redraw();
-    let drawn = window.draw_if_needed(|renderer| {
-        renderer.render(&mut buffer, width as usize);
-    });
-    assert!(drawn, "窗口画出来了");
-    let (x0, y0, w, h) = region;
-    let mut out = Vec::new();
-    for y in y0..y0 + h {
-        for x in x0..x0 + w {
-            out.extend_from_slice(&buffer[(y * width + x) as usize].0.to_le_bytes());
-        }
-    }
-    out
-}
-
 fn click(ui: &impl ComponentHandle, x: f32, y: f32) {
     let position = slint::LogicalPosition::new(x, y);
     ui.window()
@@ -186,16 +166,27 @@ fn clicking_the_left_edge_strip_asks_to_collapse_and_does_not_close() {
     note.set_dock_edge("left".into());
     note.show().expect("show");
     slint::platform::update_timers_and_animations();
-    assert_eq!(note.get_strip_x(), 0.0);
-    assert!(note.get_strip_width() > 0.0 && note.get_strip_width() < CLOSE_SIZE);
-    click(&note, note.get_strip_width() / 2.0, 40.0);
-    assert_eq!(strips.get(), 1, "便签悬浮窗：点贴边细条");
+    assert_handle_box(&note, "left", "便签悬浮窗");
+    click(
+        &note,
+        note.get_strip_x() + note.get_strip_width() / 2.0,
+        note.get_strip_y() + note.get_strip_height() / 2.0,
+    );
+    assert_eq!(strips.get(), 1, "便签悬浮窗：点贴边把手");
     click(
         &note,
         note.get_close_x() + CLOSE_SIZE / 2.0,
         CLOSE_SIZE / 2.0,
     );
-    assert_eq!((strips.get(), closes.get()), (1, 1), "点关闭不会点到细条");
+    assert_eq!((strips.get(), closes.get()), (1, 1), "点关闭不会点到把手");
+
+    note.set_dock_edge("top".into());
+    slint::platform::update_timers_and_animations();
+    assert_handle_box(&note, "top", "便签悬浮窗");
+    assert!(
+        note.get_strip_x() + note.get_strip_width() <= note.get_close_x(),
+        "上沿把手不盖住关闭"
+    );
 
     let shelf = ShelfFloat::new().expect("shelf float");
     let strips = Rc::new(Cell::new(0));
@@ -206,44 +197,232 @@ fn clicking_the_left_edge_strip_asks_to_collapse_and_does_not_close() {
     shelf.set_dock_edge("left".into());
     shelf.show().expect("show");
     slint::platform::update_timers_and_animations();
-    click(&shelf, shelf.get_strip_width() / 2.0, 40.0);
-    assert_eq!(strips.get(), 1, "收纳悬浮窗：点贴边细条");
+    assert_handle_box(&shelf, "left", "收纳悬浮窗");
+    click(
+        &shelf,
+        shelf.get_strip_x() + shelf.get_strip_width() / 2.0,
+        shelf.get_strip_y() + shelf.get_strip_height() / 2.0,
+    );
+    assert_eq!(strips.get(), 1, "收纳悬浮窗：点贴边把手");
+}
+
+fn logical(px: u32) -> f32 {
+    let px = u16::try_from(px).expect("logical px fits");
+    f32::from(px)
+}
+
+fn assert_handle_box(ui: &impl HandleBox, edge: &str, label: &str) {
+    let vertical = edge != "top";
+    let (hit_w, hit_h) = if vertical {
+        (
+            logical(STRIP_HIT_THICKNESS_LOGICAL),
+            logical(STRIP_HIT_LENGTH_LOGICAL),
+        )
+    } else {
+        (
+            logical(STRIP_HIT_LENGTH_LOGICAL),
+            logical(STRIP_HIT_THICKNESS_LOGICAL),
+        )
+    };
+    let (grip_w, grip_h) = if vertical {
+        (
+            logical(HANDLE_THICKNESS_LOGICAL),
+            logical(HANDLE_LENGTH_LOGICAL),
+        )
+    } else {
+        (
+            logical(HANDLE_LENGTH_LOGICAL),
+            logical(HANDLE_THICKNESS_LOGICAL),
+        )
+    };
+    assert_eq!(ui.strip_width(), hit_w, "{label}：点击区宽");
+    assert_eq!(ui.strip_height(), hit_h, "{label}：点击区高");
+    assert_eq!(ui.grip_width(), grip_w, "{label}：把手宽");
+    assert_eq!(ui.grip_height(), grip_h, "{label}：把手高");
+    let window_w = 320.0;
+    #[allow(clippy::cast_precision_loss)]
+    let window_h = WINDOW_HEIGHT as f32;
+    let expected_x = if edge == "right" {
+        window_w - hit_w
+    } else if edge == "top" {
+        (window_w - hit_w) / 2.0
+    } else {
+        0.0
+    };
+    let expected_y = if edge == "top" {
+        0.0
+    } else {
+        (window_h - hit_h) / 2.0
+    };
+    assert_eq!(ui.strip_x(), expected_x, "{label}：把手沿边居中");
+    assert_eq!(ui.strip_y(), expected_y, "{label}：把手沿边居中");
+}
+
+trait HandleBox {
+    fn strip_x(&self) -> f32;
+    fn strip_y(&self) -> f32;
+    fn strip_width(&self) -> f32;
+    fn strip_height(&self) -> f32;
+    fn grip_width(&self) -> f32;
+    fn grip_height(&self) -> f32;
+}
+
+impl HandleBox for NoteFloat {
+    fn strip_x(&self) -> f32 {
+        self.get_strip_x()
+    }
+    fn strip_y(&self) -> f32 {
+        self.get_strip_y()
+    }
+    fn strip_width(&self) -> f32 {
+        self.get_strip_width()
+    }
+    fn strip_height(&self) -> f32 {
+        self.get_strip_height()
+    }
+    fn grip_width(&self) -> f32 {
+        self.get_grip_width()
+    }
+    fn grip_height(&self) -> f32 {
+        self.get_grip_height()
+    }
+}
+
+impl HandleBox for ShelfFloat {
+    fn strip_x(&self) -> f32 {
+        self.get_strip_x()
+    }
+    fn strip_y(&self) -> f32 {
+        self.get_strip_y()
+    }
+    fn strip_width(&self) -> f32 {
+        self.get_strip_width()
+    }
+    fn strip_height(&self) -> f32 {
+        self.get_strip_height()
+    }
+    fn grip_width(&self) -> f32 {
+        self.get_grip_width()
+    }
+    fn grip_height(&self) -> f32 {
+        self.get_grip_height()
+    }
 }
 
 #[test]
-fn a_collapsed_float_paints_the_accent_strip_instead_of_the_body() {
+fn a_collapsed_float_paints_only_a_short_gray_handle() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
     let size = (320, WINDOW_HEIGHT);
     window.set_size(slint::PhysicalSize::new(size.0, size.1));
 
     let note = NoteFloat::new().expect("note float");
+    note.set_dock_edge("top".into());
     note.show().expect("show");
     slint::platform::update_timers_and_animations();
-    let open = render_region(&window, size, (8, 40, 12, 12));
     note.set_thin(true);
     note.set_collapsed(true);
+    note.set_acrylic(false);
     slint::platform::update_timers_and_animations();
-    let collapsed = render_region(&window, size, (8, 40, 12, 12));
-    assert_ne!(open, collapsed, "便签悬浮窗：收起后不再是正文");
-    assert!(
-        collapsed.iter().any(|byte| *byte != 0),
-        "便签悬浮窗：细条不是一块空白"
-    );
+    assert_short_gray_handle(&window, &note, NoteFloat::set_dark, size, "便签悬浮窗");
 
     let shelf = ShelfFloat::new().expect("shelf float");
+    shelf.set_dock_edge("top".into());
     shelf.show().expect("show");
     slint::platform::update_timers_and_animations();
-    let open = render_region(&window, size, (8, 40, 12, 12));
     shelf.set_thin(true);
     shelf.set_collapsed(true);
+    shelf.set_acrylic(false);
     slint::platform::update_timers_and_animations();
-    let collapsed = render_region(&window, size, (8, 40, 12, 12));
-    assert_ne!(open, collapsed, "收纳悬浮窗：收起后不再是条目列表");
+    assert_short_gray_handle(&window, &shelf, ShelfFloat::set_dark, size, "收纳悬浮窗");
+}
+
+fn render_pixels(window: &Rc<MinimalSoftwareWindow>, size: (u32, u32)) -> Vec<u16> {
+    use slint::platform::software_renderer::Rgb565Pixel;
+
+    let (width, height) = size;
+    let mut buffer = vec![Rgb565Pixel(0); (width * height) as usize];
+    window.request_redraw();
+    let drawn = window.draw_if_needed(|renderer| {
+        renderer.render(&mut buffer, width as usize);
+    });
+    assert!(drawn, "窗口画出来了");
+    buffer.into_iter().map(|pixel| pixel.0).collect()
+}
+
+fn luminance(pixel: u16) -> u32 {
+    let red = u32::from((pixel >> 11) & 0x1f);
+    let green = u32::from((pixel >> 5) & 0x3f);
+    let blue = u32::from(pixel & 0x1f);
+    red * 2 + green + blue * 2
+}
+
+fn is_gray(pixel: u16) -> bool {
+    let red = i32::from((pixel >> 11) & 0x1f);
+    let blue = i32::from(pixel & 0x1f);
+    (red - blue).abs() <= 3
+}
+
+fn assert_short_gray_handle<C: ComponentHandle>(
+    window: &Rc<MinimalSoftwareWindow>,
+    ui: &C,
+    set_dark: impl Fn(&C, bool),
+    size: (u32, u32),
+    label: &str,
+) {
+    let pixels = render_pixels(window, size);
+    let (width, height) = size;
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut count = 0u32;
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = pixels[(y * width + x) as usize];
+            if pixel == 0 {
+                continue;
+            }
+            count += 1;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+            assert!(is_gray(pixel), "{label}：把手是灰的，不是强调色");
+        }
+    }
+    assert!(count > 0, "{label}：把手有像素");
+    let span_x = max_x - min_x + 1;
+    let span_y = max_y - min_y + 1;
     assert!(
-        collapsed.iter().any(|byte| *byte != 0),
-        "收纳悬浮窗：细条不是一块空白"
+        span_x <= HANDLE_LENGTH_LOGICAL + 4 && span_y <= HANDLE_THICKNESS_LOGICAL + 4,
+        "{label}：看得见的只有大约 40×3 的把手，实际 {span_x}×{span_y}"
     );
+    assert!(
+        span_x + 8 < width && span_y + 8 < height,
+        "{label}：没有铺满窗口的色条"
+    );
+    let center_x = (min_x + max_x) / 2;
+    let center_y = (min_y + max_y) / 2;
+    let rest = luminance(pixels[(center_y * width + center_x) as usize]);
+
+    set_dark(ui, true);
+    slint::platform::update_timers_and_animations();
+    let dark = render_pixels(window, size);
+    let dark_pixel = dark[(center_y * width + center_x) as usize];
+    assert!(is_gray(dark_pixel), "{label}：暗色主题仍是灰");
+    assert!(luminance(dark_pixel) > rest, "{label}：暗色主题的灰更浅");
+    set_dark(ui, false);
+    slint::platform::update_timers_and_animations();
+
+    #[allow(clippy::cast_precision_loss)]
+    let center = slint::LogicalPosition::new(center_x as f32, center_y as f32);
+    ui.window()
+        .dispatch_event(WindowEvent::PointerMoved { position: center });
+    slint::platform::update_timers_and_animations();
+    let hovered = render_pixels(window, size);
+    let hot = luminance(hovered[(center_y * width + center_x) as usize]);
+    assert!(hot > rest, "{label}：鼠标靠近时把手更亮");
 }
 
 #[test]

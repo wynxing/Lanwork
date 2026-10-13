@@ -427,11 +427,12 @@ impl FloatWindow {
         self.hwnd().map(bar_win::hwnd_key)
     }
 
-    fn sync_chrome(&self) {
+    fn sync_chrome(&mut self) {
         let chrome = self.session.chrome();
         self.ui.set_thin(chrome.thin);
         self.ui.set_collapsed(chrome.collapsed);
         self.ui.set_dock_edge(chrome.edge.into());
+        self.refresh_backdrop(self.ui.get_dark());
     }
 
     fn place(&mut self, rect: PxBox) {
@@ -564,11 +565,17 @@ impl FloatWindow {
     }
 
     fn refresh_backdrop(&mut self, dark: bool) {
+        let collapsed = self.ui.get_collapsed();
         let actual = match self.hwnd() {
+            Some(hwnd) if collapsed => {
+                bar_win::apply_collapsed_frame(hwnd, dark);
+                Backdrop::Solid
+            }
             Some(hwnd) => bar_win::apply_dwm(hwnd, bar_win::current_backdrop(), dark),
             None => Backdrop::Solid,
         };
-        self.ui.set_acrylic(actual == Backdrop::Acrylic);
+        self.ui
+            .set_acrylic(!collapsed && actual == Backdrop::Acrylic);
         self.ui.set_solid_color(rgb(solid_rgb(dark)));
     }
 

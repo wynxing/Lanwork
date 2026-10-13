@@ -1,8 +1,8 @@
 // 便签悬浮窗。只有正文：上沿一条可拖动的细条，右侧是关闭，下面是正文。没有说明文字。
-// 窗口始终在最上层。贴边收起时整窗变成细条。风格与面板一致。
+// 窗口始终在最上层。贴边收起时只留下一个小把手，窗口其余部分透明。风格与面板一致。
 
 import { Palette } from "std-widgets.slint";
-import { Ink } from "widgets.slint";
+import { EdgeHandle, Ink } from "widgets.slint";
 import { NoteEditor } from "noteeditor.slint";
 
 export component NoteFloat inherits Window {
@@ -25,7 +25,7 @@ export component NoteFloat inherits Window {
     in property <int> problem;
     in property <string> problem-text;
     in property <bool> closing;
-    // 收起或正在滑向细条时，最小尺寸放开，避免细条被 200px 挡住。
+    // 收起或正在滑向把手时，最小尺寸放开，避免被 200px 挡住。
     in property <bool> thin;
     in property <bool> collapsed;
     // ""、"left"、"right"、"top"。
@@ -54,16 +54,17 @@ export component NoteFloat inherits Window {
         critical: dark ? #ff99a4 : #c42b1c,
     };
 
-    // 布局检查用：关闭按钮在窗口里的位置。细条厚度和贴边色块也导出，测试用来点。
+    // 布局检查用：关闭按钮和贴边把手在窗口里的位置。测试用来点。
     out property <length> close-x: close-box.absolute-position.x;
     out property <length> close-y: close-box.absolute-position.y;
     out property <length> strip-x: edge-strip.absolute-position.x;
     out property <length> strip-y: edge-strip.absolute-position.y;
     out property <length> strip-width: edge-strip.width;
     out property <length> strip-height: edge-strip.height;
-    property <length> band: 8px;
+    out property <length> grip-width: edge-strip.grip-width;
+    out property <length> grip-height: edge-strip.grip-height;
 
-    background: acrylic ? transparent : solid-color;
+    background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
     init => {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
@@ -119,47 +120,29 @@ export component NoteFloat inherits Window {
         }
     }
 
-    if collapsed: Rectangle {
+    // 收起时整窗就是点击区，看得见的只有正中的把手。
+    if collapsed: EdgeHandle {
         x: 0px;
         y: 0px;
         width: parent.width;
         height: parent.height;
-        background: c.accent;
-
-        // 细条中间一条浅色，让几像素的色块在全屏画面上也认得出。
-        Rectangle {
-            x: parent.width > parent.height ? (parent.width - 10px) / 2 : (parent.width - 2px) / 2;
-            y: parent.width > parent.height ? (parent.height - 2px) / 2 : (parent.height - 10px) / 2;
-            width: parent.width > parent.height ? 10px : 2px;
-            height: parent.width > parent.height ? 2px : 10px;
-            background: #ffffff;
-        }
-
-        TouchArea {
-            accessible-role: button;
-            accessible-label: "细条";
-            pointer-event(event) => {
-                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                    root.drag-window();
-                }
-            }
+        dark: root.dark;
+        along-vertical: dock-edge != "top";
+        press-drags: true;
+        pressed => {
+            root.drag-window();
         }
     }
 
-    // 展开并且贴边时，靠边的这一条再点一次就收回。不盖住关闭按钮。
-    edge-strip := Rectangle {
-        x: dock-edge == "right" ? parent.width - band : 0px;
-        y: dock-edge == "top" ? 0px : dock-edge == "right" ? 28px : 0px;
-        width: dock-edge == "top" ? parent.width - 28px : band;
-        height: dock-edge == "top" ? band : dock-edge == "right" ? parent.height - 28px : parent.height;
+    // 展开并且贴边时，靠边正中的同一块把手再点一次就收回。不盖住关闭按钮。
+    edge-strip := EdgeHandle {
+        x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
+        y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
         visible: !collapsed && dock-edge != "";
-        background: c.accent;
-        TouchArea {
-            accessible-role: button;
-            accessible-label: "细条";
-            clicked => {
-                root.strip-clicked();
-            }
+        dark: root.dark;
+        along-vertical: dock-edge != "top";
+        clicked => {
+            root.strip-clicked();
         }
     }
 

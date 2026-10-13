@@ -286,3 +286,55 @@ export component ToggleSwitch inherits Rectangle {
         }
     }
 }
+
+// 贴边把手。看得见的是一条圆头、半透明的灰，厚 3 逻辑像素、长 40 逻辑像素。
+// 组件自己的大小是点击区：厚 9、长 48，把手在正中。四周多出来的像素是透明的，
+// 鼠标进这圈也算靠近，把手会更亮、更不透明。数字与 `float_snap` 的 HANDLE_*、STRIP_HIT_* 一致。
+export component EdgeHandle inherits Rectangle {
+    in property <bool> dark;
+    // 左、右贴边时把手是竖的；上贴边时是横的。
+    in property <bool> along-vertical;
+    // 收起时按下就拖；展开时单击收回。
+    in property <bool> press-drags;
+    callback pressed();
+    callback clicked();
+
+    property <length> hit-thick: 9px;
+    property <length> hit-long: 48px;
+    property <length> grip-thick: 3px;
+    property <length> grip-long: 40px;
+    // 亮色用深灰，暗色用浅灰。靠近时更亮，透明度也提高。
+    property <color> rest: dark ? #cfcfcfb8 : #5e5e5eb8;
+    property <color> lit: dark ? #f4f4f4f2 : #b0b0b0f2;
+
+    width: along-vertical ? hit-thick : hit-long;
+    height: along-vertical ? hit-long : hit-thick;
+    background: transparent;
+
+    out property <length> grip-width: grip.width;
+    out property <length> grip-height: grip.height;
+
+    grip := Rectangle {
+        width: root.along-vertical ? root.grip-thick : root.grip-long;
+        height: root.along-vertical ? root.grip-long : root.grip-thick;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: root.grip-thick / 2;
+        background: area.has-hover ? root.lit : root.rest;
+    }
+
+    area := TouchArea {
+        accessible-role: button;
+        accessible-label: "把手";
+        clicked => {
+            if !root.press-drags {
+                root.clicked();
+            }
+        }
+        pointer-event(event) => {
+            if root.press-drags && event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.pressed();
+            }
+        }
+    }
+}

@@ -12,10 +12,11 @@ mod shelf_page;
 mod todo_page;
 
 pub use float_snap::{
-    ANIM_STEPS, DRAG_MOVE_LOGICAL, DockInput, DockState, OuterEdge, PxBox, SNAP_SLOP_LOGICAL,
-    STRIP_LOGICAL_PX, ScreenBounds, Transition, dock_applies, dpi_at, edge_label, lerp_box,
-    moved_enough, outer_edges, snap_on_release, snap_slop, strip_thickness, transition,
-    visible_box,
+    ANIM_STEPS, DRAG_MOVE_LOGICAL, DockInput, DockState, HANDLE_LENGTH_LOGICAL,
+    HANDLE_THICKNESS_LOGICAL, OuterEdge, PxBox, SNAP_SLOP_LOGICAL, STRIP_HIT_LENGTH_LOGICAL,
+    STRIP_HIT_THICKNESS_LOGICAL, ScreenBounds, Transition, dock_applies, dpi_at, edge_label,
+    lerp_box, moved_enough, outer_edges, snap_on_release, snap_slop, strip_hit_length,
+    strip_hit_thickness, transition, visible_box,
 };
 pub use note_edit::{AUTOSAVE_IDLE_MS, EditSession, SaveOutcome, SaveProblem};
 pub use note_page::{

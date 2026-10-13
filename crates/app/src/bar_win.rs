@@ -9,9 +9,11 @@ use lanwork_core::shell::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DWM_SYSTEMBACKDROP_TYPE, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
-    DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-    DWMWINDOWATTRIBUTE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+    DWM_SYSTEMBACKDROP_TYPE, DWMNCRP_DISABLED, DWMNCRP_USEWINDOWSTYLE, DWMSBT_NONE,
+    DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE,
+    DWMWA_NCRENDERING_POLICY, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWINDOWATTRIBUTE,
+    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
@@ -623,15 +625,12 @@ pub(crate) fn apply_dwm(hwnd: HWND, wanted: Backdrop, dark: bool) -> Backdrop {
     let _ = set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner);
     let dark_value: u32 = u32::from(dark);
     let _ = set_attribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_value);
+    let border = DWMWA_COLOR_DEFAULT;
+    let _ = set_attribute(hwnd, DWMWA_BORDER_COLOR, &border);
+    let policy = DWMNCRP_USEWINDOWSTYLE;
+    let _ = set_attribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy);
     // 纯色时也扩展边框：DWM 照样画阴影和圆角描边，客户区由 Slint 画满纯色。
-    let margins = MARGINS {
-        cxLeftWidth: -1,
-        cxRightWidth: -1,
-        cyTopHeight: -1,
-        cyBottomHeight: -1,
-    };
-    // SAFETY: hwnd 是本进程的窗口，margins 是局部变量。
-    let extended = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }.is_ok();
+    let extended = extend_frame(hwnd);
     if wanted == Backdrop::Acrylic && extended {
         let backdrop: DWM_SYSTEMBACKDROP_TYPE = DWMSBT_TRANSIENTWINDOW;
         if set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop) {
@@ -643,6 +642,34 @@ pub(crate) fn apply_dwm(hwnd: HWND, wanted: Backdrop, dark: bool) -> Backdrop {
         let _ = set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &none);
     }
     Backdrop::Solid
+}
+
+/// 收起后的窗口只画把手。关掉圆角、边框、非客户区阴影和亚克力，透明像素才能透出后面的画面。
+pub(crate) fn apply_collapsed_frame(hwnd: HWND, dark: bool) {
+    let corner = DWMWCP_DONOTROUND;
+    let _ = set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner);
+    let dark_value: u32 = u32::from(dark);
+    let _ = set_attribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_value);
+    let border = DWMWA_COLOR_NONE;
+    let _ = set_attribute(hwnd, DWMWA_BORDER_COLOR, &border);
+    let policy = DWMNCRP_DISABLED;
+    let _ = set_attribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy);
+    let _ = extend_frame(hwnd);
+    if windows_build().is_some_and(|build| build >= lanwork_core::shell::MIN_BACKDROP_BUILD) {
+        let none: DWM_SYSTEMBACKDROP_TYPE = DWMSBT_NONE;
+        let _ = set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &none);
+    }
+}
+
+fn extend_frame(hwnd: HWND) -> bool {
+    let margins = MARGINS {
+        cxLeftWidth: -1,
+        cxRightWidth: -1,
+        cyTopHeight: -1,
+        cyBottomHeight: -1,
+    };
+    // SAFETY: hwnd 是本进程的窗口，margins 是局部变量。
+    unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }.is_ok()
 }
 
 fn set_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: &T) -> bool {
