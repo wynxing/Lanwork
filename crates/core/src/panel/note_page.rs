@@ -3,8 +3,9 @@
 //! 输入是 [`NoteCommands`](crate::notes::NoteCommands) 的快照。这里不读写盘，不读时钟。
 //! 规则仍在便签服务里。列表顺序（置顶在前，其后按更新时间从新到旧）由服务给出，这里不重排回收站以外的顺序。
 
+use super::float_snap::{DockState, PxBox, ScreenBounds, dock_applies};
 use crate::notes::{FloatGeometry, Note};
-use crate::shell::WorkArea;
+use crate::shell::{WorkArea, to_logical, to_physical};
 
 use super::todo_page::trash_days_left;
 
@@ -119,6 +120,14 @@ pub fn float_default_origin(
     )
 }
 
+/// 一块显示器。`bounds` 是 `rcMonitor`（含任务栏），`area` 是 `rcWork`。物理像素，以及这块屏的有效 DPI。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorWork {
+    pub bounds: WorkArea,
+    pub area: WorkArea,
+    pub dpi: u32,
+}
+
 /// 记住的悬浮窗放回屏幕上的结果，物理像素。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FloatPlacement {
@@ -128,11 +137,10 @@ pub struct FloatPlacement {
     pub adjusted: bool,
 }
 
-/// 把记住的位置和大小放回工作区。
+/// 把记住的位置和大小放回工作区。`min` 已经是物理像素。
 ///
-/// 产品规格没有写屏幕变化后位置不在任何工作区内怎么办，这是保守的实现选择：
-/// 取与窗口重叠面积最大的工作区；都不重叠时用 `fallback`（光标所在显示器）。
-/// 然后让窗口整个落在那个工作区内：大小先收到不超过工作区、不小于 `min`，再把位置拉回。
+/// 悬浮窗实际走 [`contain_float`]：最小尺寸按那块屏的 DPI 从逻辑像素换算，工作区更小时可以小于最小尺寸。
+/// 这里的 `min` 由调用方算好。工作区比 `min` 还小时也不小于 `min`，窗口可能仍伸出工作区。
 #[must_use]
 pub fn restore_float(
     saved: FloatGeometry,
@@ -142,15 +150,96 @@ pub fn restore_float(
 ) -> FloatPlacement {
     let width = saved.width.max(min.0);
     let height = saved.height.max(min.1);
-    let area = areas
-        .iter()
-        .copied()
-        .map(|area| (overlap(saved.x, saved.y, width, height, area), area))
-        .filter(|(shared, _)| *shared > 0)
-        .max_by_key(|(shared, _)| *shared)
-        .map_or(fallback, |(_, area)| area);
+    let area = chosen_area(saved.x, saved.y, width, height, areas, fallback);
     let width = width.min(u32::try_from(area.width()).unwrap_or(0).max(min.0));
     let height = height.min(u32::try_from(area.height()).unwrap_or(0).max(min.1));
+    place_in(saved, area, width, height)
+}
+
+/// 不贴边的悬浮窗整扇留在工作区里。产品规格「便签」的「工作区」。
+///
+/// 先按与 `rcMonitor` 的重叠面积选屏，不按工作区。只落在任务栏那一条里也算这一块。
+/// 都不重叠时用 `fallback`（光标所在显示器）。然后收进选中这块的 `rcWork`，缩放用这块的 DPI。
+/// 最小尺寸是 `min_logical`，按这块屏的有效 DPI 换成物理像素。
+/// 大小先收到不超过这块工作区；工作区比最小尺寸还小时缩到工作区那么大。再把位置拉回。
+/// 已经记下的宽高仍是物理像素，这里不按 DPI 重算它们，只在小于最小尺寸时放大。
+#[must_use]
+pub fn contain_float(
+    saved: FloatGeometry,
+    monitors: &[MonitorWork],
+    fallback: MonitorWork,
+    min_logical: (u32, u32),
+) -> FloatPlacement {
+    let monitor = chosen_monitor(
+        saved.x,
+        saved.y,
+        saved.width.max(1),
+        saved.height.max(1),
+        monitors,
+        fallback,
+    );
+    let min_width = physical_len(min_logical.0, monitor.dpi);
+    let min_height = physical_len(min_logical.1, monitor.dpi);
+    let width = fit_span(saved.width.max(min_width), monitor.area.width());
+    let height = fit_span(saved.height.max(min_height), monitor.area.height());
+    place_in(saved, monitor.area, width, height)
+}
+
+/// 没有贴边，或记下的贴边对不上这些屏幕时，把展开矩形收进工作区。贴边对得上时原样返回。
+#[must_use]
+pub fn settle_float(
+    state: DockState,
+    screens: &[ScreenBounds],
+    monitors: &[MonitorWork],
+    fallback: MonitorWork,
+) -> DockState {
+    if state.dock.is_some() && dock_applies(&state, screens) {
+        return state;
+    }
+    let placed = contain_float(
+        FloatGeometry {
+            x: state.expanded.x,
+            y: state.expanded.y,
+            width: state.expanded.width,
+            height: state.expanded.height,
+        },
+        monitors,
+        fallback,
+        (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+    );
+    DockState {
+        expanded: PxBox {
+            x: placed.origin.0,
+            y: placed.origin.1,
+            width: placed.size.0,
+            height: placed.size.1,
+        },
+        dock: None,
+    }
+}
+
+/// 不贴边的窗口最多能用到的逻辑宽高，就是它所在工作区的逻辑尺寸。
+#[must_use]
+pub fn logical_work_limits(
+    rect: PxBox,
+    monitors: &[MonitorWork],
+    fallback: MonitorWork,
+) -> (u32, u32) {
+    let monitor = chosen_monitor(
+        rect.x,
+        rect.y,
+        rect.width.max(1),
+        rect.height.max(1),
+        monitors,
+        fallback,
+    );
+    (
+        to_logical(monitor.area.width(), monitor.dpi).max(1),
+        to_logical(monitor.area.height(), monitor.dpi).max(1),
+    )
+}
+
+fn place_in(saved: FloatGeometry, area: WorkArea, width: u32, height: u32) -> FloatPlacement {
     let x = clamp_start(saved.x, width, area.left, area.right);
     let y = clamp_start(saved.y, height, area.top, area.bottom);
     FloatPlacement {
@@ -158,6 +247,51 @@ pub fn restore_float(
         size: (width, height),
         adjusted: (x, y) != (saved.x, saved.y) || (width, height) != (saved.width, saved.height),
     }
+}
+
+fn chosen_area(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    areas: &[WorkArea],
+    fallback: WorkArea,
+) -> WorkArea {
+    areas
+        .iter()
+        .copied()
+        .map(|area| (overlap(x, y, width, height, area), area))
+        .filter(|(shared, _)| *shared > 0)
+        .max_by_key(|(shared, _)| *shared)
+        .map_or(fallback, |(_, area)| area)
+}
+
+fn chosen_monitor(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    monitors: &[MonitorWork],
+    fallback: MonitorWork,
+) -> MonitorWork {
+    monitors
+        .iter()
+        .copied()
+        .map(|monitor| (overlap(x, y, width, height, monitor.bounds), monitor))
+        .filter(|(shared, _)| *shared > 0)
+        .max_by_key(|(shared, _)| *shared)
+        .map_or(fallback, |(_, monitor)| monitor)
+}
+
+/// 工作区放得下时用 `want`。放不下时缩到工作区。工作区宽度或高度是 0 时保留 `want`。
+fn fit_span(want: u32, span: i32) -> u32 {
+    let span = u32::try_from(span.max(0)).unwrap_or(0);
+    let want = want.max(1);
+    if span == 0 { want } else { want.min(span) }
+}
+
+fn physical_len(logical: u32, dpi: u32) -> u32 {
+    u32::try_from(to_physical(logical, dpi).max(1)).unwrap_or(1)
 }
 
 fn overlap(x: i32, y: i32, width: u32, height: u32, area: WorkArea) -> i64 {
@@ -180,8 +314,9 @@ fn clamp_start(start: i32, length: u32, low: i32, high: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::float_snap::{DockInput, ScreenBounds, transition};
     use super::*;
-    use crate::notes::TimestampMillis;
+    use crate::notes::{DockEdge, TimestampMillis};
 
     fn note(id: &str, title: &str, tags: &[&str], pinned: bool, deleted: Option<i64>) -> Note {
         Note {
@@ -364,5 +499,300 @@ mod tests {
         let fallback = area(0, 0, 1024, 768);
         let placed = restore_float(geometry(5000, 5000, 400, 300), &[], fallback, MIN);
         assert_eq!(placed.origin, (624, 468));
+    }
+
+    fn monitor(left: i32, top: i32, right: i32, bottom: i32, dpi: u32) -> MonitorWork {
+        let bounds = area(left, top, right, bottom);
+        MonitorWork {
+            bounds,
+            area: bounds,
+            dpi,
+        }
+    }
+
+    fn monitor_split(bounds: WorkArea, work: WorkArea, dpi: u32) -> MonitorWork {
+        MonitorWork {
+            bounds,
+            area: work,
+            dpi,
+        }
+    }
+
+    fn screen(left: i32, top: i32, right: i32, bottom: i32, dpi: u32) -> ScreenBounds {
+        ScreenBounds {
+            left,
+            top,
+            right,
+            bottom,
+            dpi,
+        }
+    }
+
+    fn inside(placed: &FloatPlacement, work: WorkArea) {
+        let right = placed.origin.0 + i32::try_from(placed.size.0).unwrap();
+        let bottom = placed.origin.1 + i32::try_from(placed.size.1).unwrap();
+        assert!(placed.origin.0 >= work.left, "left {}", placed.origin.0);
+        assert!(placed.origin.1 >= work.top, "top {}", placed.origin.1);
+        assert!(right <= work.right, "right {right}");
+        assert!(bottom <= work.bottom, "bottom {bottom}");
+    }
+
+    #[test]
+    fn a_float_past_the_right_edge_is_pulled_into_that_monitors_work_area() {
+        let primary = monitor(0, 0, 1920, 1040, 96);
+        let placed = contain_float(
+            geometry(1700, 80, 320, 360),
+            &[primary],
+            primary,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.origin, (1600, 80));
+        assert_eq!(placed.size, (320, 360));
+        inside(&placed, primary.area);
+    }
+
+    #[test]
+    fn the_bottom_edge_does_not_snap_so_a_low_window_is_still_pulled_up() {
+        let primary = monitor(0, 0, 1920, 1040, 96);
+        let placed = contain_float(
+            geometry(400, 900, 320, 360),
+            &[primary],
+            primary,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.origin, (400, 680));
+        assert_eq!(placed.size, (320, 360));
+        inside(&placed, primary.area);
+    }
+
+    #[test]
+    fn growing_past_the_work_area_shrinks_and_stays_inside() {
+        let primary = monitor(0, 40, 1860, 1080, 96);
+        let placed = contain_float(
+            geometry(1500, 100, 600, 400),
+            &[primary],
+            primary,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.size, (600, 400));
+        assert_eq!(placed.origin, (1260, 100));
+        inside(&placed, primary.area);
+    }
+
+    #[test]
+    fn a_second_monitor_uses_its_own_dpi_for_the_minimum_size() {
+        let primary = monitor(0, 0, 1920, 1040, 96);
+        let right = monitor(1920, 0, 3840, 1000, 144);
+        let placed = contain_float(
+            geometry(3600, 40, 100, 100),
+            &[primary, right],
+            primary,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.size, (300, 180), "144 DPI 下最小 200×120 逻辑像素");
+        assert_eq!(placed.origin.0, 3840 - 300);
+        assert_eq!(placed.origin.1, 40);
+        inside(&placed, right.area);
+    }
+
+    #[test]
+    fn a_window_mostly_on_the_higher_dpi_monitor_is_not_sized_with_the_other_dpi() {
+        let left = monitor(-1920, 0, 0, 1080, 96);
+        let right = monitor(0, 0, 1920, 1080, 144);
+        let placed = contain_float(
+            geometry(-50, 100, 400, 300),
+            &[left, right],
+            left,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.size, (400, 300));
+        assert_eq!(placed.origin, (0, 100));
+        inside(&placed, right.area);
+    }
+
+    #[test]
+    fn a_work_area_smaller_than_the_minimum_still_holds_the_whole_window() {
+        let tiny = monitor(10, 20, 110, 90, 96);
+        let placed = contain_float(
+            geometry(0, 0, 400, 300),
+            &[tiny],
+            tiny,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.size, (100, 70));
+        assert_eq!(placed.origin, (10, 20));
+        inside(&placed, tiny.area);
+    }
+
+    #[test]
+    fn a_removed_monitor_uses_the_fallback_and_its_dpi() {
+        let fallback = monitor(0, 0, 1280, 800, 144);
+        let placed = contain_float(
+            geometry(9000, 9000, 50, 50),
+            &[],
+            fallback,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.size, (300, 180));
+        inside(&placed, fallback.area);
+    }
+
+    #[test]
+    fn a_cascaded_default_that_would_hang_off_is_pulled_back() {
+        let work = area(0, 0, 500, 400);
+        let origin = float_default_origin(work, 400, 300, 96, 7);
+        let primary = MonitorWork {
+            bounds: work,
+            area: work,
+            dpi: 96,
+        };
+        let placed = contain_float(
+            geometry(origin.0, origin.1, 400, 300),
+            &[primary],
+            primary,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_ne!(origin, placed.origin);
+        inside(&placed, work);
+    }
+
+    #[test]
+    fn snapping_to_an_outer_edge_is_kept_and_a_near_miss_is_clamped() {
+        let screens = [screen(0, 0, 1920, 1080, 96)];
+        let primary = monitor(0, 48, 1920, 1040, 96);
+        let snapped_rect = PxBox {
+            x: 400,
+            y: 0,
+            width: 320,
+            height: 360,
+        };
+        let snapped = transition(
+            &DockState {
+                expanded: snapped_rect,
+                dock: None,
+            },
+            &screens,
+            DockInput::DragFinished {
+                rect: snapped_rect,
+                moved: true,
+                from_collapsed: false,
+                size_changed: false,
+            },
+        );
+        let kept = settle_float(snapped.state, &screens, &[primary], primary);
+        assert_eq!(kept.dock.map(|dock| dock.edge), Some(DockEdge::Top));
+        assert_eq!(kept.expanded.y, 0, "贴上边时留在显示器外沿，不拉进工作区");
+
+        let missed = PxBox {
+            x: 1613,
+            y: 100,
+            width: 320,
+            height: 360,
+        };
+        let dropped = transition(
+            &DockState {
+                expanded: missed,
+                dock: None,
+            },
+            &screens,
+            DockInput::DragFinished {
+                rect: missed,
+                moved: true,
+                from_collapsed: false,
+                size_changed: false,
+            },
+        );
+        assert!(
+            dropped.state.dock.is_none(),
+            "离右边 13 物理像素，超过 12 的贴边阈值"
+        );
+        let kept = settle_float(dropped.state, &screens, &[primary], primary);
+        assert!(kept.dock.is_none());
+        assert_eq!(kept.expanded.x, 1920 - 320);
+        assert_eq!(kept.expanded.y, 100);
+        let placed = FloatPlacement {
+            origin: (kept.expanded.x, kept.expanded.y),
+            size: (kept.expanded.width, kept.expanded.height),
+            adjusted: true,
+        };
+        inside(&placed, primary.area);
+    }
+
+    #[test]
+    fn a_resize_that_grows_past_the_right_side_is_pulled_back_when_it_does_not_snap() {
+        let screens = [screen(0, 0, 1920, 1080, 96)];
+        let primary = monitor(0, 0, 1920, 1040, 96);
+        let grown = PxBox {
+            x: 1700,
+            y: 80,
+            width: 400,
+            height: 360,
+        };
+        let resized = transition(
+            &DockState {
+                expanded: PxBox {
+                    x: 1700,
+                    y: 80,
+                    width: 200,
+                    height: 360,
+                },
+                dock: None,
+            },
+            &screens,
+            DockInput::DragFinished {
+                rect: grown,
+                moved: false,
+                from_collapsed: false,
+                size_changed: true,
+            },
+        );
+        assert!(resized.state.dock.is_none());
+        let kept = settle_float(resized.state, &screens, &[primary], primary);
+        assert_eq!(kept.expanded.width, 400);
+        assert_eq!(kept.expanded.x, 1520);
+        assert_eq!(kept.expanded.y, 80);
+        let placed = FloatPlacement {
+            origin: (kept.expanded.x, kept.expanded.y),
+            size: (kept.expanded.width, kept.expanded.height),
+            adjusted: true,
+        };
+        inside(&placed, primary.area);
+    }
+
+    #[test]
+    fn a_window_over_the_taskbar_stays_on_that_monitor_when_work_areas_disagree() {
+        // A 的工作区少了底边 40px。窗口跨过两块屏，和工作区比，B 重叠更大；和整块屏比，A 更大。
+        let left = monitor_split(area(0, 0, 1920, 1080), area(0, 0, 1920, 1040), 96);
+        let right = monitor(1920, 0, 3840, 1080, 96);
+        let placed = contain_float(
+            geometry(1750, 900, 320, 360),
+            &[left, right],
+            right,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.size, (320, 360));
+        assert_eq!(placed.origin, (1600, 680));
+        inside(&placed, left.area);
+        assert!(placed.origin.0 + 320 <= 1920, "不应被拉到右边那块屏");
+    }
+
+    #[test]
+    fn a_rect_that_only_covers_the_taskbar_stays_on_that_monitor() {
+        let left = monitor_split(area(0, 0, 1920, 1080), area(0, 0, 1920, 1040), 144);
+        let cursor = monitor(1920, 0, 3840, 1080, 96);
+        let placed = contain_float(
+            geometry(100, 1050, 50, 20),
+            &[left, cursor],
+            cursor,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(
+            placed.size,
+            (300, 180),
+            "用这块屏的 144 DPI，不用光标所在屏的 96"
+        );
+        assert_eq!(placed.origin, (100, 1040 - 180));
+        inside(&placed, left.area);
+        assert!(placed.origin.0 < 1920);
     }
 }

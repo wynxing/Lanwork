@@ -8,7 +8,7 @@
 //! 下面的选择是当前做法，不是产品规则，待定。
 
 use crate::notes::{DockEdge, FloatDock, FloatGeometry, FloatStackSlot};
-use crate::shell::to_physical;
+use crate::shell::{WorkArea, to_physical};
 
 use super::float_snap::{PxBox, ScreenBounds};
 
@@ -608,6 +608,42 @@ pub fn place_dots(
     }
 }
 
+/// 页点行收进工作区。垂直方向先按 [`place_dots`] 决定挂在下面还是上面，再把整行挪进工作区。
+/// `work` 为空时只按 [`place_dots`] 挂在下面。
+#[must_use]
+pub fn fit_dot_row(frame: PxBox, row_width: u32, row_height: u32, work: Option<WorkArea>) -> PxBox {
+    let placed = place_dots(
+        frame,
+        row_width,
+        row_height,
+        work.map(|area| area.top),
+        work.map(|area| area.bottom),
+    );
+    let Some(area) = work else {
+        return placed;
+    };
+    let width = fit_len(placed.width, area.width());
+    let height = fit_len(placed.height, area.height());
+    PxBox {
+        x: clamp_axis(placed.x, width, area.left, area.right),
+        y: clamp_axis(placed.y, height, area.top, area.bottom),
+        width,
+        height,
+    }
+}
+
+fn fit_len(want: u32, span: i32) -> u32 {
+    let span = u32::try_from(span.max(0)).unwrap_or(0);
+    let want = want.max(1);
+    if span == 0 { want } else { want.min(span) }
+}
+
+fn clamp_axis(start: i32, length: u32, low: i32, high: i32) -> i32 {
+    let last = i64::from(high) - i64::from(length);
+    let clamped = i64::from(start).min(last).max(i64::from(low));
+    i32::try_from(clamped).unwrap_or(low)
+}
+
 fn best_overlap(released: &PxBox, others: &[OtherFloat]) -> Option<StackPage> {
     let mut best: Option<(u128, usize, StackPage)> = None;
     for (index, other) in others.iter().enumerate() {
@@ -1127,6 +1163,29 @@ mod tests {
         assert_eq!(handle_dot_count(1), 0);
         assert_eq!(handle_dot_count(3), 3);
         assert_eq!(handle_dot_count(40), HANDLE_DOT_CAP);
+    }
+
+    #[test]
+    fn a_dot_row_wider_than_the_frame_stays_inside_the_work_area() {
+        let frame = rect(1800, 900, 100, 160);
+        let work = crate::shell::WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        let placed = fit_dot_row(frame, 192, 16, Some(work));
+        assert!(placed.x >= work.left);
+        assert!(placed.x + i32::try_from(placed.width).unwrap() <= work.right);
+        assert!(placed.y >= work.top);
+        assert!(placed.y + i32::try_from(placed.height).unwrap() <= work.bottom);
+        assert_eq!(placed.width, 192);
+        assert_eq!(placed.x, 1920 - 192);
+        assert_eq!(
+            placed.y + i32::try_from(placed.height).unwrap(),
+            frame.y,
+            "底边放不下时改挂到框的上方"
+        );
     }
 
     fn startup_page(page: StackPage, index: u32, current: bool, collapsed: bool) -> StartupPage {

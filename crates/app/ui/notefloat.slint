@@ -13,8 +13,12 @@ export component NoteFloat inherits Window {
     default-font-size: 14px;
     preferred-width: 320px;
     preferred-height: 360px;
-    min-width: thin ? 1px : 200px;
-    min-height: thin ? 1px : 120px;
+    min-width: thin ? 1px : min(200px, limit-width);
+    min-height: thin ? 1px : min(120px, limit-height);
+    in property <length> limit-width: 100000px;
+    in property <length> limit-height: 100000px;
+    max-width: thin ? 100000px : limit-width;
+    max-height: thin ? 100000px : limit-height;
     resize-border-width: thin ? 0px : 6px;
     always-on-top: true;
 

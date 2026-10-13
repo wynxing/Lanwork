@@ -2,7 +2,8 @@
 //!
 //! 同一篇已经有悬浮窗时只聚焦它，不把已经收起的细条展开。窗口始终在最上层。
 //! 每篇记住自己的展开位置、大小和贴边：写进便签文件的 `floatWindow` 和 `floatDock`。
-//! 贴边对得上当前屏幕时按细条或展开的位置打开；对不上时这一次丢掉贴边，拉回工作区。
+//! 贴边对得上当前屏幕时按细条或展开的位置打开；对不上时丢掉贴边。
+//! 不贴边时，拖动、改大小、按记住的位置打开，以及内容把窗口撑大，整扇都留在所在显示器的工作区里。
 //! 写不成时，本进程里还记着这个值。保存流程在 `note_editor`，贴边几何在 `lanwork_core::panel`。
 //! 版式在 `ui/notefloat.slint`。
 
@@ -12,8 +13,7 @@ use std::time::Duration;
 
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::{
-    DropEffect, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH, FLOAT_WIDTH, Flip, PxBox,
-    StackPage, float_default_origin,
+    DropEffect, FLOAT_HEIGHT, FLOAT_WIDTH, Flip, PxBox, StackPage, float_default_origin,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
@@ -353,10 +353,6 @@ impl Floats {
             .get(note_id)
             .map(|saved| (Some(saved.geometry), saved.dock))
             .unwrap_or((note.float, note.float_dock));
-        let min = (
-            u32::try_from(to_physical(FLOAT_MIN_WIDTH, dpi)).unwrap_or(FLOAT_MIN_WIDTH),
-            u32::try_from(to_physical(FLOAT_MIN_HEIGHT, dpi)).unwrap_or(FLOAT_MIN_HEIGHT),
-        );
         let default_size = (
             u32::try_from(to_physical(FLOAT_WIDTH, dpi)).unwrap_or(FLOAT_WIDTH),
             u32::try_from(to_physical(FLOAT_HEIGHT, dpi)).unwrap_or(FLOAT_HEIGHT),
@@ -377,14 +373,12 @@ impl Floats {
                 width: default_size.0,
                 height: default_size.1,
             },
-            &bar_win::work_areas(),
-            work,
-            min,
         );
         let chrome = session.chrome();
         ui.set_thin(chrome.thin);
         ui.set_collapsed(chrome.collapsed);
         ui.set_dock_edge(chrome.edge.into());
+        apply_limits(&ui, &session);
         let visible = session.visible();
         ui.window()
             .set_size(slint::PhysicalSize::new(visible.width, visible.height));
@@ -477,6 +471,10 @@ fn wire(ui: &NoteFloat, note_id: &str) {
             if matches!(event, winit::event::WindowEvent::Focused(false)) {
                 with_window(&id, |window, _| window.on_blur());
             }
+            if let winit::event::WindowEvent::Resized(size) = event {
+                let (width, height) = (size.width, size.height);
+                with_window(&id, move |window, _| window.on_resized(width, height));
+            }
             if crate::float_frame::wants_refresh(event) {
                 with_window(&id, |window, _| {
                     if !window.parked {
@@ -532,8 +530,7 @@ impl FloatWindow {
                 return;
             }
             let visible = self.session.visible();
-            float_dock::place(self.ui.window(), Some(hwnd), visible);
-            self.origin = Some((visible.x, visible.y));
+            self.place(visible);
         }
         if self.parked {
             let _ = self.ui.hide();
@@ -561,12 +558,34 @@ impl FloatWindow {
         self.ui.set_thin(chrome.thin);
         self.ui.set_collapsed(chrome.collapsed);
         self.ui.set_dock_edge(chrome.edge.into());
+        apply_limits(&self.ui, &self.session);
         self.refresh_backdrop(self.ui.get_dark());
     }
 
     fn place(&mut self, rect: PxBox) {
+        apply_limits(&self.ui, &self.session);
+        self.session.set_absorb_lock(true);
         float_dock::place(self.ui.window(), self.hwnd(), rect);
+        self.session.set_absorb_lock(false);
         self.origin = Some((rect.x, rect.y));
+    }
+
+    /// 内容或系统把窗口撑到工作区外面时拉回来。拖动和自己摆放时不收。
+    fn on_resized(&mut self, width: u32, height: u32) {
+        if self.closed || self.parked || !self.hwnd_ready {
+            return;
+        }
+        let origin = self.hwnd().and_then(bar_win::window_origin).or(self.origin);
+        let Some(origin) = origin else {
+            return;
+        };
+        let Some(visible) = self.session.absorb_size(origin, width, height) else {
+            return;
+        };
+        self.place(visible);
+        self.pending = Some(self.session.saved());
+        self.report = true;
+        self.report_move();
     }
 
     fn follow(&mut self, motion: Motion) {
@@ -905,6 +924,12 @@ impl FloatWindow {
             crate::float_group::page_closed(StackPage::Note(closed));
         });
     }
+}
+
+fn apply_limits(ui: &NoteFloat, session: &float_dock::Session) {
+    let (width, height) = session.limit_lengths();
+    ui.set_limit_width(width);
+    ui.set_limit_height(height);
 }
 
 fn expanded_of(saved: SavedFloat) -> PxBox {
