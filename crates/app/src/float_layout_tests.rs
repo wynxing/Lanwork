@@ -12,10 +12,7 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use lanwork_core::panel::{
-    HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL, STRIP_HIT_LENGTH_LOGICAL,
-    STRIP_HIT_THICKNESS_LOGICAL,
-};
+use lanwork_core::panel::{HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL};
 
 use crate::{NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData};
 
@@ -213,17 +210,6 @@ fn logical(px: u32) -> f32 {
 
 fn assert_handle_box(ui: &impl HandleBox, edge: &str, label: &str) {
     let vertical = edge != "top";
-    let (hit_w, hit_h) = if vertical {
-        (
-            logical(STRIP_HIT_THICKNESS_LOGICAL),
-            logical(STRIP_HIT_LENGTH_LOGICAL),
-        )
-    } else {
-        (
-            logical(STRIP_HIT_LENGTH_LOGICAL),
-            logical(STRIP_HIT_THICKNESS_LOGICAL),
-        )
-    };
     let (grip_w, grip_h) = if vertical {
         (
             logical(HANDLE_THICKNESS_LOGICAL),
@@ -235,24 +221,24 @@ fn assert_handle_box(ui: &impl HandleBox, edge: &str, label: &str) {
             logical(HANDLE_THICKNESS_LOGICAL),
         )
     };
-    assert_eq!(ui.strip_width(), hit_w, "{label}：点击区宽");
-    assert_eq!(ui.strip_height(), hit_h, "{label}：点击区高");
+    assert_eq!(ui.strip_width(), grip_w, "{label}：把手宽");
+    assert_eq!(ui.strip_height(), grip_h, "{label}：把手高");
     assert_eq!(ui.grip_width(), grip_w, "{label}：把手宽");
     assert_eq!(ui.grip_height(), grip_h, "{label}：把手高");
     let window_w = 320.0;
     #[allow(clippy::cast_precision_loss)]
     let window_h = WINDOW_HEIGHT as f32;
     let expected_x = if edge == "right" {
-        window_w - hit_w
+        window_w - grip_w
     } else if edge == "top" {
-        (window_w - hit_w) / 2.0
+        (window_w - grip_w) / 2.0
     } else {
         0.0
     };
     let expected_y = if edge == "top" {
         0.0
     } else {
-        (window_h - hit_h) / 2.0
+        (window_h - grip_h) / 2.0
     };
     assert_eq!(ui.strip_x(), expected_x, "{label}：把手沿边居中");
     assert_eq!(ui.strip_y(), expected_y, "{label}：把手沿边居中");

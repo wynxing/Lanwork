@@ -29,8 +29,6 @@ export component ShelfFloat inherits Window {
     in property <string> dock-edge;
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
-    // 收起时，光标在点击区余量里。把手会更亮。
-    in property <bool> pad-hover;
 
     callback close-clicked();
     callback drag-window();
@@ -150,14 +148,11 @@ export component ShelfFloat inherits Window {
         if root.collapsed: EdgeHandle {
             x: 0px;
             y: 0px;
-            width: parent.width;
-            height: parent.height;
             dark: root.dark;
             along-vertical: dock-edge != "top";
             press-drags: true;
             pages: root.stack-pages;
             page-index: root.stack-index;
-            pad-hover: root.pad-hover;
             pressed => {
                 root.drag-window();
             }

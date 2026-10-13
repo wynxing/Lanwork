@@ -33,8 +33,6 @@ export component NoteFloat inherits Window {
     // 一叠的页数和当前下标。1 页时和原来的悬浮窗一样。
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
-    // 收起时，光标在点击区余量里。把手会更亮。
-    in property <bool> pad-hover;
     in-out property <string> body <=> editor.body;
     out property <string> preedit: editor.preedit;
 
@@ -146,18 +144,15 @@ export component NoteFloat inherits Window {
         }
     }
 
-    // 收起时整窗就是点击区，看得见的只有正中的把手。
+    // 收起时整窗就是把手。窗口由外壳收成 3×40，这里不再另铺一圈。
     if collapsed: EdgeHandle {
         x: 0px;
         y: 0px;
-        width: parent.width;
-        height: parent.height;
         dark: root.dark;
         along-vertical: dock-edge != "top";
         press-drags: true;
         pages: root.stack-pages;
         page-index: root.stack-index;
-        pad-hover: root.pad-hover;
         pressed => {
             root.drag-window();
         }

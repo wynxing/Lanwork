@@ -14,10 +14,9 @@ mod todo_page;
 
 pub use float_snap::{
     ANIM_STEPS, DRAG_MOVE_LOGICAL, DockInput, DockState, HANDLE_LENGTH_LOGICAL,
-    HANDLE_THICKNESS_LOGICAL, OuterEdge, PxBox, SNAP_SLOP_LOGICAL, STRIP_HIT_LENGTH_LOGICAL,
-    STRIP_HIT_THICKNESS_LOGICAL, ScreenBounds, Transition, dock_applies, dpi_at, edge_label,
-    lerp_box, moved_enough, outer_edges, snap_on_release, snap_slop, strip_hit_length,
-    strip_hit_thickness, transition, visible_box,
+    HANDLE_THICKNESS_LOGICAL, OuterEdge, PxBox, SNAP_SLOP_LOGICAL, ScreenBounds, Transition,
+    dock_applies, dpi_at, edge_label, lerp_box, moved_enough, outer_edges, snap_on_release,
+    snap_slop, transition, visible_box,
 };
 pub use float_stack::{
     DOCK_MERGE_GAP_LOGICAL, DOT_ROW_LOGICAL_HEIGHT, DOT_SLOT_LOGICAL, DetachOutcome, DragOrigin,

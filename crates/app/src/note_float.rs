@@ -72,7 +72,6 @@ thread_local! {
 /// 启动时调用一次。没有便签服务时不调用，悬浮窗打不开。
 pub(crate) fn install(notes: NoteCommands, store: Store) {
     bar_win::add_move_hook(on_move);
-    crate::float_frame::add_pad_hook(on_pad_hover);
     FLOATS.with(|cell| {
         *cell.borrow_mut() = Some(Floats {
             notes,
@@ -561,9 +560,6 @@ impl FloatWindow {
         let chrome = self.session.chrome();
         self.ui.set_thin(chrome.thin);
         self.ui.set_collapsed(chrome.collapsed);
-        if !chrome.collapsed {
-            self.ui.set_pad_hover(false);
-        }
         self.ui.set_dock_edge(chrome.edge.into());
         self.refresh_backdrop(self.ui.get_dark());
     }
@@ -918,23 +914,6 @@ fn expanded_of(saved: SavedFloat) -> PxBox {
         width: saved.geometry.width,
         height: saved.geometry.height,
     }
-}
-
-fn on_pad_hover(key: isize, hovered: bool) {
-    FLOATS.with(|cell| {
-        let Ok(mut floats) = cell.try_borrow_mut() else {
-            return;
-        };
-        let Some(floats) = floats.as_mut() else {
-            return;
-        };
-        for window in floats.windows.values() {
-            if window.hwnd_key() == Some(key) {
-                window.ui.set_pad_hover(hovered);
-                return;
-            }
-        }
-    });
 }
 
 fn on_move(key: isize, entering: bool, x: i32, y: i32, width: u32, height: u32) {

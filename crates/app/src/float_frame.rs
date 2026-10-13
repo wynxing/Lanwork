@@ -2,14 +2,13 @@
 //!
 //! winit 只在创建窗口时调用一次空区域的 `DwmEnableBlurBehindWindow`。一键回到桌面
 //! （外壳抬起 `WorkerW`，不一定给这个窗口发最小化）之后，这次透明会被清掉，渲染器
-//! 再把客户区清成不透明的颜色。重设 DWM 属性盖不住这块颜色，点击区（约 48×9 逻辑像素）
-//! 就变成淡蓝色矩形。收起时另外用 `SetWindowRgn` 把窗口收成把手的圆角矩形，区域外的
-//! 像素不属于窗口，透明被清掉也铺不出那块矩形。点击区比把手大出来的一圈用鼠标钩子转给窗口。
+//! 再把客户区清成不透明的颜色。重设 DWM 属性盖不住这块颜色。收起后的窗口就是把手
+//! （3×40 逻辑像素，按 DPI 放大），再用 `SetWindowRgn` 收成圆角，方块的角不属于窗口。
+//! 悬停靠窗口自己的 `WM_MOUSEMOVE` / `WM_MOUSELEAVE`，不装全局鼠标钩子。
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, Ordering};
 
 use lanwork_core::storage::Store;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -18,79 +17,68 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_NCRENDERING_POLICY, DWMWA_SYSTEMBACKDROP_TYPE,
     DWMWA_WINDOW_CORNER_PREFERENCE, DwmGetWindowAttribute,
 };
-#[cfg(test)]
-use windows::Win32::Graphics::Gdi::GetRgnBox;
 use windows::Win32::Graphics::Gdi::{
-    CreateRectRgn, CreateRoundRectRgn, DeleteObject, GDI_REGION_TYPE, GetWindowRgn, NULLREGION,
-    RDW_FRAME, RDW_INVALIDATE, RGN_ERROR, RedrawWindow, ScreenToClient, SetWindowRgn,
+    ClientToScreen, CreateRoundRectRgn, DeleteObject, GDI_REGION_TYPE, GetWindowRgnBox, NULLREGION,
+    RDW_FRAME, RDW_INVALIDATE, RGN_ERROR, RedrawWindow, SetWindowRgn,
 };
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+#[cfg(test)]
+use windows::Win32::Graphics::Gdi::{CreateRectRgn, GetWindowRgn, PtInRegion};
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GW_HWNDNEXT, GWL_EXSTYLE, GetClientRect, GetTopWindow, GetWindow,
-    GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HHOOK, IsIconic, IsWindowVisible,
-    PostMessageW, STYLESTRUCT, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos,
-    SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, WH_MOUSE_LL, WINDOWPLACEMENT, WINDOWPOS,
-    WM_ACTIVATE, WM_ACTIVATEAPP, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_EXITSIZEMOVE,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_SETTINGCHANGE, WM_SHOWWINDOW,
-    WM_SIZE, WM_STYLECHANGING, WM_SYSCOMMAND, WM_THEMECHANGED, WM_WINDOWPOSCHANGED,
-    WM_WINDOWPOSCHANGING, WS_EX_TOOLWINDOW, WindowFromPoint,
+    GWL_EXSTYLE, GetClientRect, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, IsIconic,
+    IsWindowVisible, PostMessageW, STYLESTRUCT, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+    SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW,
+    SetWindowPlacement, SetWindowPos, ShowWindow, WINDOWPLACEMENT, WINDOWPOS, WM_ACTIVATE,
+    WM_ACTIVATEAPP, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_EXITSIZEMOVE, WM_MOUSEMOVE,
+    WM_NCDESTROY, WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE, WM_STYLECHANGING, WM_SYSCOMMAND,
+    WM_THEMECHANGED, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WS_EX_TOOLWINDOW,
 };
 
 use slint::winit_030::winit;
 
 use crate::bar_win::{self, hwnd_key};
-use crate::frame_policy::{self, FrameAction, FrameNotice, GripRect, is_iconic_origin};
+use crate::frame_policy::{self, FrameAction, FrameNotice, is_iconic_origin};
 
 const FRAME_SUBCLASS_ID: usize = 3;
 const WM_REAPPLY_FRAME: u32 = WM_APP + 1;
-/// 点击区余量里的光标进或出。`wParam` 非 0 表示正在里面。
-const WM_PAD_HOVER: u32 = WM_APP + 2;
 const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
 const SC_MINIMIZE: usize = 0xF020;
 /// `SIZE_MINIMIZED`。
 const SIZE_MINIMIZED: usize = 1;
 const WA_INACTIVE: usize = 0;
 
+/// 客户区在窗口坐标系里的矩形。`SetWindowRgn` 的原点是窗口左上角，不是客户区左上角。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GripRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Copy)]
 struct FrameState {
     collapsed: bool,
     dark: bool,
     /// 已经投了一条补设消息，处理完之前不再投。
     follow_up: bool,
+    /// 已经为这一次进入调用过 `TrackMouseEvent`，离开消息到达前不再调。
+    tracking_leave: bool,
     /// 上次成功设上的把手区域。展开时是 `None`。
     grip: Option<GripRect>,
 }
-
-type PadHook = fn(isize, bool);
 
 thread_local! {
     static FRAMES: RefCell<HashMap<isize, FrameState>> = RefCell::new(HashMap::new());
     static APPLY_DEPTH: Cell<u32> = const { Cell::new(0) };
     static LOG: RefCell<Option<Store>> = const { RefCell::new(None) };
-    static PAD_HOOKS: RefCell<Vec<PadHook>> = const { RefCell::new(Vec::new()) };
 }
-
-/// 低级鼠标钩子。没有收起窗口时是 0。
-static MOUSE_HOOK: AtomicIsize = AtomicIsize::new(0);
-/// 当前把点击区余量算成悬停的窗口。没有时是 0。
-static PAD_WINDOW: AtomicIsize = AtomicIsize::new(0);
 
 /// 把收起窗口在 Win+D 上收到的消息写进 `logs/app.log`。探测测试不调用。
 pub(crate) fn set_log(store: Store) {
     LOG.with(|cell| *cell.borrow_mut() = Some(store));
-    // 日志装上之后才允许钩子。若这时已经有收起的窗口，补装一次。
-    sync_mouse_hook();
-}
-
-/// 点击区余量里的悬停。便签和收纳各登记一次，按窗口句柄自己认。
-pub(crate) fn add_pad_hook(hook: PadHook) {
-    PAD_HOOKS.with(|hooks| {
-        let mut hooks = hooks.borrow_mut();
-        if !hooks.contains(&hook) {
-            hooks.push(hook);
-        }
-    });
 }
 
 /// 还原、重新显示、主题或 DPI 变化时，Slint 这条事件也要重设样式。
@@ -121,26 +109,24 @@ pub(crate) fn after_topmost(key: isize) {
 
 /// 关闭前卸掉登记。子类留到 `WM_NCDESTROY` 再摘，避免和正在处理的消息打架。
 pub(crate) fn forget(hwnd: HWND) {
-    clear_pad_if(hwnd);
     FRAMES.with(|frames| {
         frames.borrow_mut().remove(&hwnd_key(hwnd));
     });
-    sync_mouse_hook();
 }
 
 fn remember(hwnd: HWND, collapsed: bool, dark: bool) {
     FRAMES.with(|frames| {
         let mut frames = frames.borrow_mut();
-        let previous = frames.get(&hwnd_key(hwnd));
-        let follow_up = previous.is_some_and(|frame| frame.follow_up);
-        let grip = previous.and_then(|frame| frame.grip);
+        let previous = frames.get(&hwnd_key(hwnd)).copied();
         frames.insert(
             hwnd_key(hwnd),
             FrameState {
                 collapsed,
                 dark,
-                follow_up,
-                grip,
+                follow_up: previous.is_some_and(|frame| frame.follow_up),
+                tracking_leave: previous
+                    .is_some_and(|frame| frame.tracking_leave && frame.collapsed && collapsed),
+                grip: previous.and_then(|frame| frame.grip),
             },
         );
     });
@@ -213,12 +199,9 @@ fn apply_current_inner(hwnd: HWND) -> lanwork_core::shell::Backdrop {
     } else {
         bar_win::apply_dwm(hwnd, bar_win::current_backdrop(), dark)
     };
-    // 区域放在 DWM 和扩展样式之后。那些调用会改框架，但裁剪不依赖透明有没有设上。
+    // 区域放在 DWM 和扩展样式之后。扩展客户区会让客户区原点相对窗口原点挪开，
+    // 裁剪要用挪开之后的窗口坐标。裁剪不依赖透明有没有设上。
     sync_shape(hwnd, collapsed);
-    if !collapsed {
-        clear_pad_if(hwnd);
-    }
-    sync_mouse_hook();
     // SAFETY: hwnd 是本进程的悬浮窗。只让整窗失效，不在这里同步绘制，避免再进窗口过程。
     unsafe {
         let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_FRAME);
@@ -333,9 +316,9 @@ fn sync_shape(hwnd: HWND, collapsed: bool) {
                 .get(&hwnd_key(hwnd))
                 .and_then(|frame| frame.grip)
         });
-        // 同一块把手还在时不重复设，避免每次置顶都写一条日志。
-        // 区域被系统清掉时再设一次，并记下来，方便对照 Win+D。
-        if remembered == Some(grip) && has_region(hwnd) {
+        // 同一块把手还在、外接矩形也对得上时不重复设，避免每次置顶都写一条日志。
+        // 只问「有没有区域」不够：DWM 重置会留下另一块区域，读回来却不是把手。
+        if remembered == Some(grip) && region_matches(hwnd, grip) {
             return;
         }
         let repairing = remembered == Some(grip);
@@ -374,6 +357,14 @@ fn grip_remembered(hwnd: HWND) -> bool {
 }
 
 fn grip_for(hwnd: HWND) -> Option<GripRect> {
+    let mut window = RECT::default();
+    // SAFETY: hwnd 是本进程的窗口，输出指向局部变量。
+    unsafe { GetWindowRect(hwnd, &mut window) }.ok()?;
+    let mut origin = POINT { x: 0, y: 0 };
+    // SAFETY: 把客户区原点换成屏幕坐标。失败时设不出和读回一致的窗口区域。
+    if !unsafe { ClientToScreen(hwnd, &mut origin) }.as_bool() {
+        return None;
+    }
     let mut client = RECT::default();
     // SAFETY: hwnd 是本进程的窗口，输出指向局部变量。
     unsafe { GetClientRect(hwnd, &mut client) }.ok()?;
@@ -382,9 +373,12 @@ fn grip_for(hwnd: HWND) -> Option<GripRect> {
     if width == 0 || height == 0 {
         return None;
     }
-    // SAFETY: hwnd 是本进程的窗口。读不到 DPI 时按 96，和几何模块的缺省一致。
-    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
-    Some(frame_policy::collapsed_grip(width, height, dpi))
+    Some(GripRect {
+        x: origin.x.saturating_sub(window.left),
+        y: origin.y.saturating_sub(window.top),
+        width,
+        height,
+    })
 }
 
 fn remember_grip(hwnd: HWND, grip: Option<GripRect>) {
@@ -407,8 +401,10 @@ fn set_grip_region(hwnd: HWND, grip: GripRect) -> bool {
         return false;
     }
     // SAFETY: hwnd 是本进程的窗口。成功时系统取得 region 的所有权，失败时由这里释放。
-    // 非 0 才算设上。失败时区域仍归调用方。
-    let set = unsafe { SetWindowRgn(hwnd, Some(region), true) };
+    // 非 0 才算设上。`HRGN` 是复制句柄，离开作用域不会释放。
+    // 不在这里重绘：`SetWindowRgn` 的重绘会同步发出 `WM_WINDOWPOSCHANGING`，
+    // 调用方已经在设完样式之后统一 `RedrawWindow`。
+    let set = unsafe { SetWindowRgn(hwnd, Some(region), false) };
     if set == 0 {
         let _ = unsafe { DeleteObject(region.into()) };
         return false;
@@ -422,33 +418,25 @@ fn clear_region(hwnd: HWND) {
 }
 
 fn has_region(hwnd: HWND) -> bool {
-    let probe = unsafe { CreateRectRgn(0, 0, 0, 0) };
-    if probe.is_invalid() {
-        return false;
-    }
-    // SAFETY: probe 是刚创建的区域，调用后由这里释放。
-    let kind = unsafe { GetWindowRgn(hwnd, probe) };
-    let _ = unsafe { DeleteObject(probe.into()) };
-    region_present(kind)
+    region_box(hwnd).is_some()
 }
 
-#[cfg(test)]
-fn region_is_grip(hwnd: HWND, grip: GripRect) -> bool {
-    let probe = unsafe { CreateRectRgn(0, 0, 0, 0) };
-    if probe.is_invalid() {
-        return false;
-    }
-    // SAFETY: probe 指向本函数创建的区域。
-    let kind = unsafe { GetWindowRgn(hwnd, probe) };
+fn region_matches(hwnd: HWND, grip: GripRect) -> bool {
+    region_box(hwnd).is_some_and(|bounds| rect_near(bounds, grip))
+}
+
+fn region_box(hwnd: HWND) -> Option<RECT> {
     let mut bounds = RECT::default();
-    let boxed = unsafe { GetRgnBox(probe, &mut bounds) };
-    let _ = unsafe { DeleteObject(probe.into()) };
-    // 圆角区域一般是 COMPLEXREGION。外接矩形应等于把手；类型只要不是空或失败即可。
+    // SAFETY: bounds 指向局部变量。外接矩形用窗口坐标，不经过一块空的目标区域。
+    let kind = unsafe { GetWindowRgnBox(hwnd, &mut bounds) };
+    region_present(kind).then_some(bounds)
+}
+
+fn rect_near(bounds: RECT, grip: GripRect) -> bool {
     let right = grip.x.saturating_add_unsigned(grip.width);
     let bottom = grip.y.saturating_add_unsigned(grip.height);
-    region_present(kind)
-        && region_present(boxed)
-        && (bounds.left - grip.x).abs() <= 1
+    // `CreateRoundRectRgn` 的外接矩形可能和传入的矩形差 1 像素。
+    (bounds.left - grip.x).abs() <= 1
         && (bounds.top - grip.y).abs() <= 1
         && (bounds.right - right).abs() <= 1
         && (bounds.bottom - bottom).abs() <= 1
@@ -458,218 +446,41 @@ fn region_present(kind: GDI_REGION_TYPE) -> bool {
     kind != RGN_ERROR && kind != NULLREGION
 }
 
-fn sync_mouse_hook() {
-    // 探测测试不挂全局钩子。正式进程在 `set_log` 之后才会收起窗口。
-    let logging = LOG.with(|cell| cell.borrow().is_some());
-    let need =
-        logging && FRAMES.with(|frames| frames.borrow().values().any(|frame| frame.collapsed));
-    if need {
-        install_mouse_hook();
-    } else {
-        clear_pad_window();
-        uninstall_mouse_hook();
+fn note_pointer(hwnd: HWND, message: u32) {
+    if message == WM_MOUSEMOVE {
+        let armed = FRAMES.with(|frames| {
+            frames
+                .borrow()
+                .get(&hwnd_key(hwnd))
+                .is_some_and(|frame| frame.tracking_leave)
+        });
+        if !armed {
+            arm_mouse_leave(hwnd);
+        }
+    } else if message == WM_MOUSELEAVE {
+        FRAMES.with(|frames| {
+            if let Some(frame) = frames.borrow_mut().get_mut(&hwnd_key(hwnd)) {
+                frame.tracking_leave = false;
+            }
+        });
     }
 }
 
-fn install_mouse_hook() {
-    if MOUSE_HOOK.load(Ordering::Acquire) != 0 {
-        return;
-    }
-    // SAFETY: 钩子过程不带捕获，卸掉之前一直有效。模块句柄是本进程。
-    let module = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.ok();
-    let installed = unsafe {
-        SetWindowsHookExW(
-            WH_MOUSE_LL,
-            Some(mouse_hook),
-            module.map(|module| module.into()),
-            0,
-        )
+fn arm_mouse_leave(hwnd: HWND) {
+    let mut event = TRACKMOUSEEVENT {
+        cbSize: u32::try_from(std::mem::size_of::<TRACKMOUSEEVENT>()).unwrap_or(0),
+        dwFlags: TME_LEAVE,
+        hwndTrack: hwnd,
+        dwHoverTime: 0,
     };
-    match installed {
-        Ok(hook) => {
-            MOUSE_HOOK.store(hook.0 as isize, Ordering::Release);
-        }
-        Err(err) => log_line(&format!("收起点击区的鼠标钩子没有装上：{err}")),
-    }
-}
-
-fn uninstall_mouse_hook() {
-    let raw = MOUSE_HOOK.swap(0, Ordering::AcqRel);
-    if raw == 0 {
-        return;
-    }
-    // SAFETY: raw 是本模块装上的钩子，只卸一次。
-    let _ = unsafe { UnhookWindowsHookEx(HHOOK(raw as *mut c_void)) };
-}
-
-fn clear_pad_if(hwnd: HWND) {
-    let key = hwnd_key(hwnd);
-    if PAD_WINDOW.load(Ordering::Acquire) == key {
-        PAD_WINDOW.store(0, Ordering::Release);
-        post_pad(hwnd, false);
-    }
-}
-
-fn clear_pad_window() {
-    let raw = PAD_WINDOW.swap(0, Ordering::AcqRel);
-    if raw != 0 {
-        post_pad(HWND(raw as *mut c_void), false);
-    }
-}
-
-fn post_pad(hwnd: HWND, inside: bool) {
-    let _ = unsafe {
-        PostMessageW(
-            Some(hwnd),
-            WM_PAD_HOVER,
-            WPARAM(usize::from(inside)),
-            LPARAM(0),
-        )
-    };
-}
-
-fn any_collapsed() -> bool {
-    FRAMES.with(|frames| {
-        frames
-            .try_borrow()
-            .ok()
-            .is_some_and(|frames| frames.values().any(|frame| frame.collapsed))
-    })
-}
-
-unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code < 0 {
-        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
-    }
-    let message = wparam.0 as u32;
-    let tracked = message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP;
-    if tracked && lparam.0 != 0 && any_collapsed() {
-        // SAFETY: WH_MOUSE_LL 的 lParam 指向 MSLLHOOKSTRUCT，在钩子返回前有效。
-        let info = unsafe {
-            &*(lparam.0 as *const windows::Win32::UI::WindowsAndMessaging::MSLLHOOKSTRUCT)
-        };
-        if let Some(hwnd) = padding_target(info.pt) {
-            forward_pointer(hwnd, message, info.pt);
-            set_pad_target(hwnd, true);
-            return LRESULT(1);
-        }
-        set_pad_target(HWND::default(), false);
-    }
-    unsafe { CallNextHookEx(None, code, wparam, lparam) }
-}
-
-fn set_pad_target(hwnd: HWND, inside: bool) {
-    let key = if inside { hwnd_key(hwnd) } else { 0 };
-    let previous = PAD_WINDOW.swap(key, Ordering::AcqRel);
-    if previous == key {
-        return;
-    }
-    if previous != 0 {
-        post_pad(HWND(previous as *mut c_void), false);
-    }
-    if key != 0 {
-        post_pad(hwnd, true);
-    }
-}
-
-fn padding_target(screen: POINT) -> Option<HWND> {
-    let hwnd = FRAMES.with(|frames| {
-        let Ok(frames) = frames.try_borrow() else {
-            return None;
-        };
-        let mut found: Option<HWND> = None;
-        for (key, frame) in frames.iter() {
-            if !frame.collapsed || bar_win::size_move_blocks_blur(*key) {
-                continue;
+    // SAFETY: event 指向局部变量。成功之后系统会在光标离开窗口时投递 `WM_MOUSELEAVE`。
+    if unsafe { TrackMouseEvent(&mut event) }.is_ok() {
+        FRAMES.with(|frames| {
+            if let Some(frame) = frames.borrow_mut().get_mut(&hwnd_key(hwnd)) {
+                frame.tracking_leave = true;
             }
-            let hwnd = HWND(*key as *mut c_void);
-            if !is_visible(hwnd) || is_minimized(hwnd) {
-                continue;
-            }
-            let mut rect = RECT::default();
-            if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
-                continue;
-            }
-            if screen.x < rect.left
-                || screen.y < rect.top
-                || screen.x >= rect.right
-                || screen.y >= rect.bottom
-            {
-                continue;
-            }
-            let mut local = screen;
-            if !unsafe { ScreenToClient(hwnd, &mut local) }.as_bool() {
-                continue;
-            }
-            let mut client = RECT::default();
-            if unsafe { GetClientRect(hwnd, &mut client) }.is_err() {
-                continue;
-            }
-            let width = u32::try_from(client.right.max(0)).unwrap_or(0);
-            let height = u32::try_from(client.bottom.max(0)).unwrap_or(0);
-            let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
-            if !frame_policy::point_in_padding(width, height, dpi, local.x, local.y) {
-                continue;
-            }
-            found = match found {
-                Some(previous) if is_above(previous, hwnd) => Some(previous),
-                _ => Some(hwnd),
-            };
-        }
-        found
-    })?;
-    let under = unsafe { WindowFromPoint(screen) };
-    if under == hwnd {
-        return None;
+        });
     }
-    is_above(hwnd, under).then_some(hwnd)
-}
-
-fn pack_point(x: i32, y: i32) -> i32 {
-    // 低 16 位是客户区坐标，和 `lParam` 的惯例一样，负数要保留原码。
-    let x = x.cast_unsigned() & 0xffff;
-    let y = y.cast_unsigned() & 0xffff;
-    i32::from_ne_bytes((y << 16 | x).to_ne_bytes())
-}
-
-fn is_above(upper: HWND, lower: HWND) -> bool {
-    if upper == lower || upper.0.is_null() {
-        return false;
-    }
-    if lower.0.is_null() {
-        return true;
-    }
-    // SAFETY: 只读顶层窗口的层次，不保留句柄。
-    let mut cursor = match unsafe { GetTopWindow(None) } {
-        Ok(hwnd) => hwnd,
-        Err(_) => return false,
-    };
-    for _ in 0..512 {
-        if cursor.0.is_null() {
-            return false;
-        }
-        if cursor == upper {
-            return true;
-        }
-        if cursor == lower {
-            return false;
-        }
-        cursor = match unsafe { GetWindow(cursor, GW_HWNDNEXT) } {
-            Ok(next) => next,
-            Err(_) => return false,
-        };
-    }
-    false
-}
-
-fn forward_pointer(hwnd: HWND, message: u32, screen: POINT) {
-    let mut local = screen;
-    if !unsafe { ScreenToClient(hwnd, &mut local) }.as_bool() {
-        return;
-    }
-    let packed = pack_point(local.x, local.y);
-    let button = if message == WM_LBUTTONUP { 0 } else { 1 };
-    let _ = unsafe { PostMessageW(Some(hwnd), message, WPARAM(button), LPARAM(packed as isize)) };
 }
 
 fn log_line(message: &str) {
@@ -766,16 +577,6 @@ unsafe extern "system" fn frame_subclass(
         note_shell_message(hwnd, message, wparam, lparam);
     }
 
-    if message == WM_PAD_HOVER {
-        let inside = wparam.0 != 0;
-        let key = hwnd_key(hwnd);
-        let hooks = PAD_HOOKS.with(|hooks| hooks.borrow().clone());
-        for hook in hooks {
-            hook(key, inside);
-        }
-        return LRESULT(0);
-    }
-
     if message == WM_STYLECHANGING && wparam.0 as i32 == GWL_EXSTYLE.0 && lparam.0 != 0 && collapsed
     {
         // SAFETY: WM_STYLECHANGING 的 lParam 指向系统传来的 STYLESTRUCT，处理期间可写。
@@ -811,6 +612,10 @@ unsafe extern "system" fn frame_subclass(
     if message == WM_REAPPLY_FRAME {
         finish_follow_up(hwnd);
         return LRESULT(0);
+    }
+
+    if collapsed && (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE) {
+        note_pointer(hwnd, message);
     }
 
     let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
@@ -889,11 +694,15 @@ fn read_u32(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lanwork_core::panel::{HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL};
     use windows::Win32::Graphics::Dwm::{
         DWMNCRP_DISABLED, DWMSBT_NONE, DWMWA_COLOR_NONE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
         DwmIsCompositionEnabled,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
         HMENU, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SW_MINIMIZE, TranslateMessage,
@@ -941,7 +750,14 @@ mod tests {
         // SAFETY: class 指向局部变量，类名在函数返回前一直有效；注册成功后类留到进程结束。
         // 类已经注册过时会失败，创建窗口会给出真正的错误。
         let _ = unsafe { RegisterClassW(&class) };
+        // 进程还没锁过感知时，让 CreateWindow 和 SetWindowRgn 用同一套物理像素。
+        // 已经锁过就沿用现状；断言比较的是同一窗口读回来的客户区，不依赖这次是否成功。
+        let _ =
+            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        let width = i32::try_from(HANDLE_LENGTH_LOGICAL).unwrap_or(40);
+        let height = i32::try_from(HANDLE_THICKNESS_LOGICAL).unwrap_or(3);
         // SAFETY: 类名指向仍有效的局部缓冲。窗口是无主弹出窗口，测试结束时 Drop 销毁。
+        // 尺寸就是横着的把手。收起后的窗口不再比把手大一圈。
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
@@ -950,8 +766,8 @@ mod tests {
                 WS_POPUP | WS_VISIBLE,
                 40,
                 40,
-                48,
-                9,
+                width,
+                height,
                 None,
                 None::<HMENU>,
                 Some(instance.into()),
@@ -1067,31 +883,58 @@ mod tests {
     fn assert_grip_region(hwnd: HWND) {
         let mut client = RECT::default();
         unsafe { GetClientRect(hwnd, &mut client) }.expect("客户区");
-        let width = u32::try_from(client.right).unwrap_or(0);
-        let height = u32::try_from(client.bottom).unwrap_or(0);
-        let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
-        let grip = frame_policy::collapsed_grip(width, height, dpi);
-        assert!(
-            region_is_grip(hwnd, grip),
-            "窗口区域应是把手 {grip:?}，客户区 {width}x{height} dpi={dpi}"
+        let mut window = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut window) }.expect("窗口矩形");
+        let grip = grip_for(hwnd).expect("把手在窗口坐标里的矩形");
+        assert_eq!(
+            (client.right, client.bottom),
+            (
+                i32::try_from(HANDLE_LENGTH_LOGICAL).unwrap_or(40),
+                i32::try_from(HANDLE_THICKNESS_LOGICAL).unwrap_or(3),
+            ),
+            "探测窗口应是把手大小，客户区 {}x{}，窗口 ({},{},{},{})",
+            client.right,
+            client.bottom,
+            window.left,
+            window.top,
+            window.right,
+            window.bottom
         );
-        let region = unsafe { CreateRectRgn(0, 0, 0, 0) };
-        assert!(!region.is_invalid());
-        let kind = unsafe { GetWindowRgn(hwnd, region) };
-        assert_ne!(kind, RGN_ERROR, "读得到窗口区域");
-        let center = POINT {
-            x: grip.x + i32::try_from(grip.width / 2).unwrap_or(0),
-            y: grip.y + i32::try_from(grip.height / 2).unwrap_or(0),
+        let mut bounds = RECT::default();
+        // SAFETY: bounds 指向局部变量。外接矩形是窗口坐标。
+        let kind = unsafe { GetWindowRgnBox(hwnd, &mut bounds) };
+        assert!(
+            region_present(kind) && rect_near(bounds, grip),
+            "窗口区域应盖住把手。kind={kind:?} bounds=({},{},{},{}) grip={grip:?} 客户区 {}x{} 窗口原点偏移 {},{}",
+            bounds.left,
+            bounds.top,
+            bounds.right,
+            bounds.bottom,
+            client.right,
+            client.bottom,
+            grip.x,
+            grip.y
+        );
+        // 复制区域时目标不能是空区域：`GetWindowRgn` 填进 `CreateRectRgn(0,0,0,0)` 会返回 `RGN_ERROR`。
+        let region = unsafe {
+            CreateRectRgn(
+                0,
+                0,
+                client.right.saturating_add(grip.x).max(1),
+                client.bottom.saturating_add(grip.y).max(1),
+            )
         };
-        assert!(
-            unsafe { windows::Win32::Graphics::Gdi::PtInRegion(region, center.x, center.y) }
-                .as_bool(),
-            "把手中心应在区域内"
-        );
-        if grip.x > 0 || grip.y > 0 {
+        assert!(!region.is_invalid(), "能建一块用来抄窗口区域的区域");
+        // SAFETY: region 是刚创建的，调用后由这里释放。
+        let copied = unsafe { GetWindowRgn(hwnd, region) };
+        if region_present(copied) {
+            let center = POINT {
+                x: grip.x + i32::try_from(grip.width / 2).unwrap_or(0),
+                y: grip.y + i32::try_from(grip.height / 2).unwrap_or(0),
+            };
             assert!(
-                !unsafe { windows::Win32::Graphics::Gdi::PtInRegion(region, 0, 0) }.as_bool(),
-                "点击区角落不应在区域内，否则透明失效时会铺成色块"
+                unsafe { PtInRegion(region, center.x, center.y) }.as_bool(),
+                "把手中心应在区域内"
             );
         }
         let _ = unsafe { DeleteObject(region.into()) };
