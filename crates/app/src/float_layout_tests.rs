@@ -12,9 +12,13 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use lanwork_core::panel::{HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL};
+use lanwork_core::panel::{
+    DOT_DIAMETER_LOGICAL, DOT_GAP_LOGICAL, HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL,
+};
 
-use crate::{NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData, TodoFloat};
+use crate::{
+    NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData, StackTab, TodoFloat,
+};
 
 struct Headless(Rc<MinimalSoftwareWindow>);
 
@@ -511,4 +515,190 @@ fn todo_float_empty_list_sits_under_the_drag_strip() {
     assert!(ui.get_shows_empty(), "没有行时显示空状态");
     assert_eq!(ui.get_content_y(), TITLE_STRIP, "列表从拖动条下面开始");
     assert_eq!(ui.get_row_h(), 36.0);
+}
+
+fn circle_origin(index: u32) -> u32 {
+    index * (DOT_DIAMETER_LOGICAL + DOT_GAP_LOGICAL)
+}
+
+fn row_span(pages: u32) -> u32 {
+    let pages = pages.max(1);
+    DOT_DIAMETER_LOGICAL * pages + DOT_GAP_LOGICAL * pages.saturating_sub(1)
+}
+
+fn is_accent(pixel: u16) -> bool {
+    let red = i32::from((pixel >> 11) & 0x1f);
+    let blue = i32::from(pixel & 0x1f);
+    blue >= 16 && blue >= red + 8
+}
+
+fn pixels_in(pixels: &[u16], width: u32, x0: u32, x1: u32) -> impl Iterator<Item = u16> + '_ {
+    let height = u32::try_from(pixels.len()).unwrap_or(0) / width.max(1);
+    (0..height).flat_map(move |y| {
+        (x0..x1).filter_map(move |x| {
+            let index = usize::try_from(y.saturating_mul(width).saturating_add(x)).ok()?;
+            pixels.get(index).copied()
+        })
+    })
+}
+
+fn accent_count(pixels: &[u16], width: u32, x0: u32, x1: u32) -> u32 {
+    pixels_in(pixels, width, x0, x1)
+        .filter(|pixel| is_accent(*pixel))
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+fn digit_count(pixels: &[u16], width: u32, origin_x: u32) -> u32 {
+    let mut count = 0u32;
+    for y in 6u32..14 {
+        for x in (origin_x + 6)..(origin_x + 14) {
+            let index = usize::try_from(y.saturating_mul(width).saturating_add(x)).unwrap_or(0);
+            if pixels
+                .get(index)
+                .is_some_and(|pixel| *pixel != 0 && !is_accent(*pixel))
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn ink_count(pixels: &[u16], width: u32, x0: u32, x1: u32) -> u32 {
+    pixels_in(pixels, width, x0, x1)
+        .filter(|pixel| *pixel != 0)
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+fn leftmost_ink(pixels: &[u16], width: u32, x0: u32, x1: u32) -> Option<u32> {
+    let height = u32::try_from(pixels.len()).unwrap_or(0) / width.max(1);
+    let mut found = None;
+    for y in 0..height {
+        for x in x0..x1 {
+            let index = usize::try_from(y.saturating_mul(width).saturating_add(x)).ok()?;
+            if pixels.get(index).is_some_and(|pixel| *pixel != 0) {
+                found = Some(found.map_or(x, |current: u32| current.min(x)));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn page_circles_are_numbered_left_aligned_and_the_current_one_is_filled() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
+    let wide = 200u32;
+    window.set_size(slint::PhysicalSize::new(wide, DOT_DIAMETER_LOGICAL));
+
+    let ui = StackTab::new().expect("stack tab");
+    ui.window()
+        .set_size(slint::PhysicalSize::new(wide, DOT_DIAMETER_LOGICAL));
+    ui.set_dark(false);
+    ui.set_pages(3);
+    ui.set_current(0);
+    ui.show().expect("show");
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.window().scale_factor(), 1.0);
+
+    let hit = Rc::new(Cell::new(-1));
+    let slot = Rc::clone(&hit);
+    ui.on_drag_dot(move |index| slot.set(index));
+
+    let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
+    let first = circle_origin(0);
+    let second = circle_origin(1);
+    let end = row_span(3);
+    assert_eq!(end, 68, "三页一行是 20×3 + 4×2");
+    assert!(
+        ink_count(&pixels, wide, 0, 4) > 0,
+        "第一个圆圈贴着这一行的左边缘"
+    );
+    assert_eq!(
+        ink_count(&pixels, wide, end, wide),
+        0,
+        "圆圈靠左排，右侧留空，不在窗口里居中"
+    );
+    assert_eq!(
+        ink_count(&pixels, wide, DOT_DIAMETER_LOGICAL, second),
+        0,
+        "圆圈之间有一段空白间隔"
+    );
+    assert!(
+        accent_count(&pixels, wide, first, DOT_DIAMETER_LOGICAL) > 30,
+        "当前页是填实的主题色"
+    );
+    assert!(
+        digit_count(&pixels, wide, first) > 0,
+        "当前页圆圈里有反色页码"
+    );
+    assert!(digit_count(&pixels, wide, second) > 0, "其余页圆圈里有页码");
+    assert_eq!(
+        accent_count(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL),
+        0,
+        "其余页不用主题色填充"
+    );
+    let quiet = leftmost_ink(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL);
+    assert!(
+        quiet.is_some_and(|x| x < second + 3),
+        "其余页的细描边贴着圆圈外沿，实际左缘 {quiet:?}"
+    );
+
+    let center_y = logical(DOT_DIAMETER_LOGICAL) / 2.0;
+    for index in 0..3 {
+        let x = logical(circle_origin(index) + DOT_DIAMETER_LOGICAL / 2);
+        click(&ui, x, center_y);
+        assert_eq!(
+            hit.get(),
+            i32::try_from(index).unwrap(),
+            "点第 {index} 个圆圈"
+        );
+    }
+    click(
+        &ui,
+        logical(DOT_DIAMETER_LOGICAL + DOT_GAP_LOGICAL / 2),
+        center_y,
+    );
+    assert_eq!(hit.get(), 2, "点在圆圈之间的间隔上不换页");
+
+    ui.set_current(1);
+    slint::platform::update_timers_and_animations();
+    let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
+    assert!(accent_count(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL) > 30);
+    assert_eq!(accent_count(&pixels, wide, first, DOT_DIAMETER_LOGICAL), 0);
+
+    ui.set_dark(true);
+    slint::platform::update_timers_and_animations();
+    let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
+    assert!(
+        accent_count(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL) > 30,
+        "暗色主题的当前页仍是主题色"
+    );
+    assert_eq!(
+        accent_count(&pixels, wide, first, DOT_DIAMETER_LOGICAL),
+        0,
+        "暗色主题的其余页仍是细描边"
+    );
+
+    let many = 12u32;
+    let span = row_span(many);
+    window.set_size(slint::PhysicalSize::new(span, DOT_DIAMETER_LOGICAL));
+    ui.window()
+        .set_size(slint::PhysicalSize::new(span, DOT_DIAMETER_LOGICAL));
+    ui.set_pages(i32::try_from(many).unwrap());
+    ui.set_current(i32::try_from(many - 1).unwrap());
+    slint::platform::update_timers_and_animations();
+    let pixels = render_pixels(&window, (span, DOT_DIAMETER_LOGICAL));
+    let last = circle_origin(many - 1);
+    assert!(
+        accent_count(&pixels, span, last, last + DOT_DIAMETER_LOGICAL) > 30,
+        "两位数页码的当前页仍填满圆圈"
+    );
+    assert!(digit_count(&pixels, span, last) > 0, "两位数页码画在圆圈里");
+    click(&ui, logical(last + DOT_DIAMETER_LOGICAL / 2), center_y);
+    assert_eq!(hit.get(), i32::try_from(many - 1).unwrap(), "点第 12 页");
 }
