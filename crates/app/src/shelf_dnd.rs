@@ -4,7 +4,7 @@
 //! 放下目标注册在面板和收纳悬浮窗的窗口句柄上。只在接受区域内、数据里有文件或可识别的网址时才接受。
 //! 允许的效果只有复制和快捷方式，不返回移动。路径只读，不打开、不复制、不移动、不删除用户文件。
 //! `DragEnter` 只 `QueryGetData`。`Drop` 才 `GetData`，先试网址格式，再读路径。
-//! 带 `FileGroupDescriptorW` 但解析不出网址时拒绝，不把虚拟 `.url` 存成路径。不读 `FileContents`。
+//! 描述符里有以 `.url` 结尾的文件名、但解析不出网址时拒绝，不把虚拟 `.url` 存成路径。不读 `FileContents`。
 
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -18,6 +18,7 @@ use lanwork_core::panel::{
 };
 use lanwork_core::shelves::{
     PickedWebRef, WebDropInput, decode_utf16_text, file_names_w, pick_web_drop,
+    title_from_url_filename,
 };
 use windows::Win32::Foundation::{
     DRAGDROP_E_ALREADYREGISTERED, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS,
@@ -193,15 +194,17 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
             write_effect(effect, EFFECT_NONE);
             return Ok(());
         };
-        if let Some(picked) = read_web_drop(data) {
+        let read = read_web_drop(data);
+        if let Some(picked) = read.picked {
             (self.sink)(IncomingDrop::Web {
                 url: picked.url,
                 title: picked.title,
             });
             return Ok(());
         }
-        // 浏览器拖放带虚拟 .url 时有 FileGroupDescriptorW。解析不出网址就拒绝，不把这份虚拟文件存成路径。
-        if has_file_group_descriptor(data) {
+        // 浏览器拖放的虚拟 .url 写在 FileGroupDescriptorW 里。解析不出网址就拒绝，不把这份虚拟文件存成路径。
+        // 资源管理器拖普通文件时也会带这个格式，文件名不是 .url，仍按路径引用处理。
+        if read.virtual_url {
             write_effect(effect, EFFECT_NONE);
             return Ok(());
         }
@@ -254,10 +257,6 @@ fn offers_web(data: &IDataObject) -> bool {
         || query_clipboard(data, ids.descriptor)
 }
 
-fn has_file_group_descriptor(data: &IDataObject) -> bool {
-    query_clipboard(data, web_format_ids().descriptor)
-}
-
 const WEB_READ_LIMIT: usize = 1024 * 1024;
 
 struct WebFormatIds {
@@ -284,8 +283,14 @@ fn register_clipboard_format(name: &str) -> u16 {
     u16::try_from(id).unwrap_or(0)
 }
 
-/// 只读已经接受的网址格式。不查询、不读取 `FileContents` 和 `CF_HDROP`。
-fn read_web_drop(data: &IDataObject) -> Option<PickedWebRef> {
+struct WebRead {
+    picked: Option<PickedWebRef>,
+    /// 描述符里有以 `.url` 结尾的文件名。这是浏览器拖放的虚拟文件，不是资源管理器里的普通文件。
+    virtual_url: bool,
+}
+
+/// 只读已经接受的网址格式和 `FileGroupDescriptorW`。不查询、不读取 `FileContents` 和 `CF_HDROP`。
+fn read_web_drop(data: &IDataObject) -> WebRead {
     let ids = web_format_ids();
     let html = read_clipboard_bytes(data, ids.html);
     let url_w = read_clipboard_bytes(data, ids.url_w).map(|bytes| decode_utf16_text(&bytes));
@@ -295,13 +300,19 @@ fn read_web_drop(data: &IDataObject) -> Option<PickedWebRef> {
     let names = read_clipboard_bytes(data, ids.descriptor)
         .and_then(|bytes| file_names_w(&bytes).ok())
         .unwrap_or_default();
-    pick_web_drop(&WebDropInput {
-        html: html.as_deref(),
-        url_w: url_w.as_deref(),
-        moz_url: moz.as_deref(),
-        unicode_text: unicode.as_deref(),
-        descriptor_names: &names,
-    })
+    let virtual_url = names
+        .iter()
+        .any(|name| title_from_url_filename(name).is_some());
+    WebRead {
+        picked: pick_web_drop(&WebDropInput {
+            html: html.as_deref(),
+            url_w: url_w.as_deref(),
+            moz_url: moz.as_deref(),
+            unicode_text: unicode.as_deref(),
+            descriptor_names: &names,
+        }),
+        virtual_url,
+    }
 }
 
 fn read_clipboard_bytes(data: &IDataObject, id: u16) -> Option<Vec<u8>> {
