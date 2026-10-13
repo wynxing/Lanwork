@@ -2,7 +2,8 @@
 //!
 //! 角不是关闭时，单独线程每 50ms 读一次光标。关闭时停在条件变量上，不再读光标。
 //! 不安装鼠标钩子，不调用 `timeBeginPeriod`。搜索条热键不在这里注册。
-//! 状态只在变化时记一条日志。打开面板走 `panel::show`，前台是否成功由面板记。
+//! 光标在所选角里时读左键；按住时不打开。状态只在变化时记一条日志。
+//! 打开面板走 `panel::show`，前台是否成功由面板记。
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -19,6 +20,7 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowRect,
@@ -262,6 +264,7 @@ fn note_logs(
     }
     if phase != seen.phase {
         let line = match phase {
+            WatchPhase::ButtonDown => Some("热角：按住左键，不计停留"),
             WatchPhase::Dwelling => Some("热角：进入，开始停留"),
             WatchPhase::Disarmed => Some(if open && still {
                 "热角：停留到点，请求打开面板"
@@ -284,6 +287,9 @@ fn note_logs(
     } else if corner != seen.corner && phase == WatchPhase::Dwelling {
         // 换角时清掉旧停留；新角里这一拍又开始计时。上面的相位没变，这里补一条。
         lines.push("热角：进入，开始停留".to_owned());
+    } else if corner != seen.corner && phase == WatchPhase::ButtonDown {
+        // 换角时相位仍是按住左键。上面的相位没变，这里补一条。
+        lines.push("热角：按住左键，不计停留".to_owned());
     }
     seen.corner = corner;
     seen.phase = phase;
@@ -313,6 +319,7 @@ fn observe(corner: HotCorner, watch: &mut CornerWatch) -> bool {
             monitors: &monitors,
             foreground: None,
             exclusive_d3d: false,
+            left_button_down: false,
         };
         return watch.poll(corner, Some(&observation), now);
     }
@@ -327,8 +334,23 @@ fn observe(corner: HotCorner, watch: &mut CornerWatch) -> bool {
         monitors: &monitors,
         foreground,
         exclusive_d3d,
+        left_button_down: left_button_down(),
     };
     watch.poll(corner, Some(&observation), now)
+}
+
+/// 左键是否按着。只在光标已经落在所选角里时调用。
+///
+/// 用 `GetAsyncKeyState`，不用 `GetKeyState`：这条线程不处理鼠标消息。
+fn left_button_down() -> bool {
+    // SAFETY: 只读异步键状态，不保留指针。高位为 1 表示当前按着。
+    let state = unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON.0)) };
+    async_key_down(state)
+}
+
+/// `GetAsyncKeyState` 的高位表示当前按着。低位只表示自从上次查询以来按下过。
+fn async_key_down(state: i16) -> bool {
+    state.cast_unsigned() & 0x8000 != 0
 }
 
 fn request_open(store: &Option<Store>) {
@@ -617,6 +639,77 @@ mod tests {
     }
 
     #[test]
+    fn only_the_high_bit_means_the_button_is_down() {
+        assert!(async_key_down(i16::MIN));
+        assert!(async_key_down(-1));
+        assert!(!async_key_down(1));
+        assert!(!async_key_down(0));
+        assert!(!async_key_down(i16::MAX));
+    }
+
+    #[test]
+    fn button_down_logs_once_until_the_dwell_starts() {
+        let mut seen = fresh();
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::Idle,
+                false,
+                true
+            ),
+            vec!["热角：右上".to_owned()]
+        );
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::ButtonDown,
+                false,
+                true
+            ),
+            vec!["热角：按住左键，不计停留".to_owned()]
+        );
+        assert!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopRight,
+                WatchPhase::ButtonDown,
+                false,
+                true
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopLeft,
+                WatchPhase::ButtonDown,
+                false,
+                true
+            ),
+            vec![
+                "热角：左上".to_owned(),
+                "热角：按住左键，不计停留".to_owned(),
+            ]
+        );
+        assert_eq!(
+            note_logs(
+                &mut seen,
+                HotCorner::TopLeft,
+                WatchPhase::Dwelling,
+                false,
+                true
+            ),
+            vec!["热角：进入，开始停留".to_owned()]
+        );
+        assert_eq!(
+            note_logs(&mut seen, HotCorner::Off, WatchPhase::Idle, false, true),
+            vec!["热角：关闭".to_owned()]
+        );
+    }
+
+    #[test]
     fn a_real_dwell_logs_each_transition_once() {
         use lanwork_core::shell::hotcorner::{Observation, PxRect};
 
@@ -638,6 +731,7 @@ mod tests {
                     monitors: &monitors,
                     foreground: None,
                     exclusive_d3d: false,
+                    left_button_down: false,
                 }),
                 now,
             );
@@ -655,6 +749,55 @@ mod tests {
         assert_eq!(
             step((100, 100), at(800)),
             vec!["热角：离开，重新武装".to_owned()]
+        );
+    }
+
+    #[test]
+    fn holding_the_button_logs_then_starts_the_dwell_on_release() {
+        use lanwork_core::shell::hotcorner::{Observation, PxRect};
+
+        let mut watch = CornerWatch::new(HotCorner::TopRight);
+        let mut seen = fresh();
+        let t0 = Instant::now();
+        let monitors = [PxRect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        }];
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut step = |cursor: (i32, i32), down: bool, now| {
+            let open = watch.poll(
+                HotCorner::TopRight,
+                Some(&Observation {
+                    cursor,
+                    monitors: &monitors,
+                    foreground: None,
+                    exclusive_d3d: false,
+                    left_button_down: down,
+                }),
+                now,
+            );
+            note_logs(&mut seen, watch.corner(), watch.phase(), open, true)
+        };
+
+        assert_eq!(
+            step((1919, 0), true, t0),
+            vec![
+                "热角：右上".to_owned(),
+                "热角：按住左键，不计停留".to_owned(),
+            ]
+        );
+        assert!(step((1919, 0), true, at(350)).is_empty());
+        assert!(step((1919, 0), true, at(2_000)).is_empty());
+        assert_eq!(
+            step((1919, 0), false, at(2_000)),
+            vec!["热角：进入，开始停留".to_owned()]
+        );
+        assert!(step((1919, 0), false, at(2_000 + 349)).is_empty());
+        assert_eq!(
+            step((1919, 0), false, at(2_000 + 350)),
+            vec!["热角：停留到点，请求打开面板".to_owned()]
         );
     }
 }
