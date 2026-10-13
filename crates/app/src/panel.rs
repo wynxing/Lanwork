@@ -270,6 +270,7 @@ fn wire(ui: &Panel) {
     ui.on_toggle_current(|| with_panel(Controller::toggle_current));
     ui.on_open_source(|| with_panel(Controller::open_source));
     ui.on_open_shelf(|| with_panel(Controller::open_shelf));
+    ui.on_float_todos(|| with_panel(Controller::float_todos));
     ui.on_move_item(|up| with_panel(move |panel| panel.move_selected(up)));
     ui.on_delete_item(|| with_panel(Controller::delete_selected));
     ui.on_restore_item(|| with_panel(Controller::restore_selected));
@@ -862,6 +863,11 @@ impl Controller {
             self.error = Some(format!("打开失败：{err}"));
             self.push_error();
         }
+    }
+
+    /// 待办页的「悬浮」：打开全程序唯一的待办悬浮窗。已经打开时只把焦点给它。
+    fn float_todos(&mut self) {
+        self.finish(crate::todo_float::open(), false);
     }
 
     /// 「打开关联收纳」：切到收纳并选中关联这条待办的分组，关联多个时选第一个。

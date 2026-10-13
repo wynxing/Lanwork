@@ -14,7 +14,7 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 
 use lanwork_core::panel::{HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL};
 
-use crate::{NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData};
+use crate::{NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData, TodoFloat};
 
 struct Headless(Rc<MinimalSoftwareWindow>);
 
@@ -295,6 +295,27 @@ impl HandleBox for ShelfFloat {
     }
 }
 
+impl HandleBox for TodoFloat {
+    fn strip_x(&self) -> f32 {
+        self.get_strip_x()
+    }
+    fn strip_y(&self) -> f32 {
+        self.get_strip_y()
+    }
+    fn strip_width(&self) -> f32 {
+        self.get_strip_width()
+    }
+    fn strip_height(&self) -> f32 {
+        self.get_strip_height()
+    }
+    fn grip_width(&self) -> f32 {
+        self.get_grip_width()
+    }
+    fn grip_height(&self) -> f32 {
+        self.get_grip_height()
+    }
+}
+
 #[test]
 fn a_collapsed_float_paints_only_a_short_gray_handle() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
@@ -358,6 +379,18 @@ fn a_collapsed_float_paints_only_a_short_gray_handle() {
         "叠页的点仍在大约 40×3 的把手里，实际 {span_x}×{span_y}"
     );
     assert!(bright > 0, "叠页把手上有更亮的点");
+
+    let todo = TodoFloat::new().expect("todo float");
+    todo.set_limit_width(1920.0);
+    todo.set_limit_height(1040.0);
+    todo.set_dock_edge("top".into());
+    todo.show().expect("show");
+    slint::platform::update_timers_and_animations();
+    todo.set_thin(true);
+    todo.set_collapsed(true);
+    todo.set_acrylic(false);
+    slint::platform::update_timers_and_animations();
+    assert_short_gray_handle(&window, &todo, TodoFloat::set_dark, size, "待办悬浮窗");
 }
 
 fn render_pixels(window: &Rc<MinimalSoftwareWindow>, size: (u32, u32)) -> Vec<u16> {
@@ -453,6 +486,7 @@ fn both_float_windows_are_always_on_top_and_have_no_pin_button() {
     for (name, source) in [
         ("notefloat.slint", include_str!("../ui/notefloat.slint")),
         ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
+        ("todofloat.slint", include_str!("../ui/todofloat.slint")),
     ] {
         assert!(
             source.contains("always-on-top: true;"),
@@ -463,4 +497,18 @@ fn both_float_windows_are_always_on_top_and_have_no_pin_button() {
     }
     let widgets = include_str!("../ui/widgets.slint");
     assert!(!widgets.contains("PinBtn"), "共用控件里还有钉住按钮");
+}
+
+#[test]
+fn todo_float_empty_list_sits_under_the_drag_strip() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
+    window.set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
+    let ui = TodoFloat::new().expect("todo float");
+    ui.set_acrylic(false);
+    ui.show().expect("show");
+    slint::platform::update_timers_and_animations();
+    assert!(ui.get_shows_empty(), "没有行时显示空状态");
+    assert_eq!(ui.get_content_y(), TITLE_STRIP, "列表从拖动条下面开始");
+    assert_eq!(ui.get_row_h(), 36.0);
 }

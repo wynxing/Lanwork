@@ -36,6 +36,8 @@ enum Kind {
     Todo,
     Note,
     Shelf,
+    /// 待办悬浮窗的位置。`manifest` 的 `counts` 不为它加一项，缺这项的旧包仍能导入。
+    TodoFloat,
     /// 旧包里的 `github/watchlist.json`。导入时忽略，不写入。
     LegacyWatchlist,
     /// 旧包里的 `github/cache/<id>.json`。导入时忽略，不写入。
@@ -50,6 +52,11 @@ pub(crate) fn collect(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
         &store.data_dir().join("config.json"),
     )?;
     push_optional(&mut files, "user-apps.json", &store.user_apps_path())?;
+    push_optional(
+        &mut files,
+        "todo-float.json",
+        &store.data_dir().join("todo-float.json"),
+    )?;
     push_dir(&mut files, store, "todos")?;
     push_dir(&mut files, store, "notes")?;
     push_dir(&mut files, store, "shelves")?;
@@ -113,6 +120,9 @@ pub(crate) fn list_data_files(store: &Store) -> Result<Vec<(String, PathBuf)>, B
     if storage::fs_exists(&store.user_apps_path()) {
         names.push("user-apps.json".to_owned());
     }
+    if storage::fs_exists(&store.data_dir().join("todo-float.json")) {
+        names.push("todo-float.json".to_owned());
+    }
     push_dir_names(&mut names, store, "todos")?;
     push_dir_names(&mut names, store, "notes")?;
     push_dir_names(&mut names, store, "shelves")?;
@@ -131,6 +141,7 @@ pub(crate) fn disk_path(store: &Store, name: &str) -> Result<PathBuf, BackupErro
         }
         Kind::Config => store.document_path(&DocumentId::Config)?,
         Kind::UserApps => store.user_apps_path(),
+        Kind::TodoFloat => store.data_dir().join("todo-float.json"),
         Kind::Todo => store.document_path(&DocumentId::Todo(id_of(name)?))?,
         Kind::Note => store.document_path(&DocumentId::Note(id_of(name)?))?,
         Kind::Shelf => store.document_path(&DocumentId::Shelf(id_of(name)?))?,
@@ -182,6 +193,7 @@ fn recount_refs(
             Kind::Manifest => return Err(BackupError::entry(&file.name, "压缩包含有重复路径")),
             Kind::Config => overview.config = true,
             Kind::UserApps => overview.user_apps = true,
+            Kind::TodoFloat => {}
             Kind::LegacyWatchlist => overview.watchlist = true,
             Kind::Todo => overview.todos += 1,
             Kind::Note => overview.notes += 1,
@@ -319,6 +331,7 @@ fn classify(name: &str) -> Result<Kind, BackupError> {
         MANIFEST => Kind::Manifest,
         "config.json" => Kind::Config,
         "user-apps.json" => Kind::UserApps,
+        "todo-float.json" => Kind::TodoFloat,
         "github/watchlist.json" => Kind::LegacyWatchlist,
         _ => kind_from_collection(name)?,
     };

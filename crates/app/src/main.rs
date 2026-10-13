@@ -59,6 +59,8 @@ mod shelf_refs;
 #[cfg(windows)]
 mod shelves_page;
 #[cfg(windows)]
+mod todo_float;
+#[cfg(windows)]
 mod update;
 #[cfg(windows)]
 mod update_http;
@@ -112,6 +114,7 @@ mod tests {
             ("notefloat.slint", include_str!("../ui/notefloat.slint")),
             ("shelvespage.slint", include_str!("../ui/shelvespage.slint")),
             ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
+            ("todofloat.slint", include_str!("../ui/todofloat.slint")),
         ];
         for (name, source) in sources {
             for forbidden in ["今日", "focus-page", "FocusPage"] {
@@ -128,6 +131,7 @@ mod tests {
             ("panel.slint", include_str!("../ui/panel.slint")),
             ("notefloat.slint", include_str!("../ui/notefloat.slint")),
             ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
+            ("todofloat.slint", include_str!("../ui/todofloat.slint")),
         ] {
             assert!(source.contains(icon), "{name} 没有窗口图标");
         }
@@ -137,6 +141,26 @@ mod tests {
         let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
         let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
         assert_eq!((width, height), (256, 256));
+    }
+
+    #[test]
+    fn todo_float_can_check_rows_and_cannot_edit_them() {
+        let source = include_str!("../ui/todofloat.slint");
+        assert!(source.contains("没有待办"));
+        assert!(source.contains("toggle-row"));
+        assert!(source.contains("row.overdue ? root.c.critical"));
+        assert!(!source.contains("TextInput"), "待办悬浮窗不能改标题");
+        assert!(!source.contains("add-item"), "待办悬浮窗不能新建");
+        assert!(!source.contains("name: \"新建"));
+        assert!(source.contains("limit-width"));
+        assert!(source.contains("min(200px, limit-width)"));
+        let panel = include_str!("../ui/panel.slint");
+        assert!(panel.contains("callback float-todos();"));
+        assert!(panel.contains("text: \"悬浮\";"));
+        assert!(
+            panel.contains("root.float-todos();"),
+            "待办页的悬浮按钮要打开窗口"
+        );
     }
 
     #[test]

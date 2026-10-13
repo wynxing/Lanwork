@@ -25,11 +25,14 @@ pub const DOT_ROW_LOGICAL_HEIGHT: u32 = 16;
 /// 把手上最多画这么多个点。再多的页数仍只画这些点。待定。
 pub const HANDLE_DOT_CAP: usize = 16;
 
-/// 一叠里的一页。便签和收纳可以混在同一叠。
+/// 一叠里的一页。便签、收纳和待办悬浮窗可以混在同一叠。
+///
+/// 待办悬浮窗没有清单 id，全程序至多这一页。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum StackPage {
     Note(String),
     Shelf(String),
+    Todo,
 }
 
 /// 一叠。`pages` 至少两页时才算叠；只剩一页时由调用方把它拆成普通悬浮窗。
@@ -668,6 +671,8 @@ fn page_key(page: &StackPage) -> (&str, &str) {
     match page {
         StackPage::Note(id) => ("note", id.as_str()),
         StackPage::Shelf(id) => ("shelf", id.as_str()),
+        // `index` 相同时谁在前仍待定。这里按种类名排序，待办排在便签和收纳之后。
+        StackPage::Todo => ("todo", ""),
     }
 }
 
@@ -726,6 +731,32 @@ mod tests {
 
     fn other(page: StackPage, rect: PxBox) -> OtherFloat {
         OtherFloat { page, rect }
+    }
+
+    #[test]
+    fn a_todo_page_joins_a_note_stack_once_and_restores_with_it() {
+        let merged = merge_stacks(
+            stack("keep", vec![note("n")], 0),
+            stack("drag", vec![StackPage::Todo], 0),
+        );
+        assert_eq!(merged.pages, vec![note("n"), StackPage::Todo]);
+        assert_eq!(merged.current, 1);
+        let again = merge_stacks(merged, stack("again", vec![StackPage::Todo], 0));
+        assert_eq!(
+            again
+                .pages
+                .iter()
+                .filter(|page| **page == StackPage::Todo)
+                .count(),
+            1
+        );
+        let planned = plan_startup(&[
+            startup_page(note("n"), 0, false, false),
+            startup_page(StackPage::Todo, 1, true, false),
+        ]);
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].visible(), &StackPage::Todo);
+        assert_eq!(planned[0].parked(), vec![note("n")]);
     }
 
     #[allow(clippy::too_many_arguments)]

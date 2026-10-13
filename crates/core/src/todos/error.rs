@@ -56,6 +56,8 @@ pub enum TodoError {
     },
     /// `todo-purge-pending.json` 无法合并。不覆盖文件，也不删除待办。
     PurgeRecord,
+    /// `todo-float.json` 的 `schemaVersion` 不受支持。文件留着，不写回去。
+    FloatSchema,
     PendingSpec(PendingTopic),
 }
 
@@ -98,6 +100,7 @@ impl fmt::Display for TodoError {
             Self::IdMismatch { id } => write!(f, "清单标识与文件名不一致：{id}"),
             Self::DuplicateId { id } => write!(f, "标识重复：{id}"),
             Self::PurgeRecord => write!(f, "待办清除记录无法读取"),
+            Self::FloatSchema => write!(f, "todo-float.json 的 schemaVersion 不受支持"),
             Self::PendingSpec(PendingTopic::MonthlyMissingDay) => {
                 write!(f, "每月这一天在目标月不存在，尚未规定落到哪一天")
             }

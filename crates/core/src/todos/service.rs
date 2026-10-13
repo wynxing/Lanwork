@@ -105,6 +105,8 @@ impl NoticeBus {
 
 impl crate::storage::MemoryReload for Service {
     fn reload_memory(&self) -> Result<(), String> {
+        // 清单还没载入时也丢掉悬浮窗缓存。导入可能已经删掉 `todo-float.json`。
+        super::float_file::forget(&self.float_cache);
         let loaded = lock_mutex(&self.state).loaded;
         if !loaded {
             return Ok(());
@@ -120,6 +122,8 @@ pub(crate) struct Service {
     pending: Mutex<()>,
     state: Mutex<State>,
     notices: NoticeBus,
+    /// `todo-float.json` 的读取缓存。不和清单的操作锁套在一起。
+    pub(crate) float_cache: Mutex<super::float_file::Cache>,
     #[cfg(test)]
     fault: Mutex<WriteFault>,
 }
@@ -137,6 +141,7 @@ impl Service {
             notices: NoticeBus {
                 senders: Mutex::new(Vec::new()),
             },
+            float_cache: Mutex::new(super::float_file::Cache::new()),
             #[cfg(test)]
             fault: Mutex::new(WriteFault::none()),
         });
@@ -1549,6 +1554,9 @@ mod tests {
             .create_item(&second_list, draft("新当前"))
             .unwrap();
         ready.service.set_current(&first).unwrap();
+        // 两条当前标记的 `current_since` 落在同一毫秒时，修复留下清单 id 较小的那条。
+        // 这里要让第二次更晚，修复才会留下新的当前标记。
+        std::thread::sleep(std::time::Duration::from_millis(2));
         let rx = ready.store.subscribe();
         ready.service.set_write_fault(Some(1), true, None);
         let err = ready.service.set_current(&second).unwrap_err();
