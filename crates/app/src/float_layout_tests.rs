@@ -12,9 +12,13 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use lanwork_core::panel::{HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL};
+use lanwork_core::panel::{
+    DOT_DIAMETER_LOGICAL, DOT_GAP_LOGICAL, HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL,
+};
 
-use crate::{NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData, TodoFloat};
+use crate::{
+    NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData, StackTab, TodoFloat,
+};
 
 struct Headless(Rc<MinimalSoftwareWindow>);
 
@@ -511,4 +515,218 @@ fn todo_float_empty_list_sits_under_the_drag_strip() {
     assert!(ui.get_shows_empty(), "没有行时显示空状态");
     assert_eq!(ui.get_content_y(), TITLE_STRIP, "列表从拖动条下面开始");
     assert_eq!(ui.get_row_h(), 36.0);
+}
+
+fn circle_origin(index: u32) -> u32 {
+    index * (DOT_DIAMETER_LOGICAL + DOT_GAP_LOGICAL)
+}
+
+fn row_span(pages: u32) -> u32 {
+    let pages = pages.max(1);
+    DOT_DIAMETER_LOGICAL * pages + DOT_GAP_LOGICAL * pages.saturating_sub(1)
+}
+
+struct Rgb {
+    r: i32,
+    g: i32,
+    b: i32,
+}
+
+fn rgb(pixel: u16) -> Rgb {
+    Rgb {
+        r: i32::from((pixel >> 11) & 0x1f),
+        g: i32::from((pixel >> 5) & 0x3f),
+        b: i32::from(pixel & 0x1f),
+    }
+}
+
+fn describe(pixel: u16) -> String {
+    let color = rgb(pixel);
+    format!("r{} g{} b{}", color.r, color.g, color.b)
+}
+
+fn is_red(pixel: u16) -> bool {
+    let color = rgb(pixel);
+    color.r >= 8 && color.r > color.b + 4 && color.r * 2 > color.g
+}
+
+fn is_yellow(pixel: u16) -> bool {
+    let color = rgb(pixel);
+    color.r >= 8 && color.g >= 12 && color.b + 6 < color.r && color.g > color.b * 2
+}
+
+fn is_green(pixel: u16) -> bool {
+    let color = rgb(pixel);
+    color.g >= 12 && color.g > color.r * 2 && color.g > color.b * 2
+}
+
+fn is_light_ring(pixel: u16) -> bool {
+    let color = rgb(pixel);
+    color.r >= 24 && color.g >= 40 && color.b >= 16
+}
+
+fn pixels_in(pixels: &[u16], width: u32, x0: u32, x1: u32) -> impl Iterator<Item = u16> + '_ {
+    let height = u32::try_from(pixels.len()).unwrap_or(0) / width.max(1);
+    (0..height).flat_map(move |y| {
+        (x0..x1).filter_map(move |x| {
+            let index = usize::try_from(y.saturating_mul(width).saturating_add(x)).ok()?;
+            pixels.get(index).copied()
+        })
+    })
+}
+
+fn ink_count(pixels: &[u16], width: u32, x0: u32, x1: u32) -> u32 {
+    pixels_in(pixels, width, x0, x1)
+        .filter(|pixel| *pixel != 0)
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+fn dot_center(pixels: &[u16], width: u32, origin: u32) -> u16 {
+    let mid = DOT_DIAMETER_LOGICAL / 2;
+    let index = usize::try_from(
+        mid.saturating_mul(width)
+            .saturating_add(origin)
+            .saturating_add(mid),
+    )
+    .unwrap_or(0);
+    pixels.get(index).copied().unwrap_or(0)
+}
+
+#[test]
+fn page_dots_are_soft_colors_left_aligned_and_the_current_one_is_solid() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
+    let wide = 220u32;
+    window.set_size(slint::PhysicalSize::new(wide, DOT_DIAMETER_LOGICAL));
+
+    let ui = StackTab::new().expect("stack tab");
+    ui.window()
+        .set_size(slint::PhysicalSize::new(wide, DOT_DIAMETER_LOGICAL));
+    ui.set_dark(false);
+    ui.set_pages(5);
+    ui.set_current(0);
+    ui.show().expect("show");
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.window().scale_factor(), 1.0);
+
+    let hit = Rc::new(Cell::new(-1));
+    let slot = Rc::clone(&hit);
+    ui.on_drag_dot(move |index| slot.set(index));
+
+    let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
+    let first = circle_origin(0);
+    let second = circle_origin(1);
+    let third = circle_origin(2);
+    let end = row_span(5);
+    assert_eq!(DOT_DIAMETER_LOGICAL, 16);
+    assert_eq!(end, 16 * 5 + 4 * 4, "五页一行是 16×5 + 4×4");
+    assert!(
+        ink_count(&pixels, wide, 0, 4) > 0,
+        "第一个圆点贴着这一行的左边缘"
+    );
+    assert_eq!(
+        ink_count(&pixels, wide, end, wide),
+        0,
+        "圆点靠左排，右侧留空"
+    );
+    assert_eq!(
+        ink_count(&pixels, wide, DOT_DIAMETER_LOGICAL, second),
+        0,
+        "圆点之间有一段空白间隔"
+    );
+
+    let red = dot_center(&pixels, wide, first);
+    let yellow = dot_center(&pixels, wide, second);
+    let green = dot_center(&pixels, wide, third);
+    assert!(is_red(red), "第 1 页是红，实际 {}", describe(red));
+    assert!(is_yellow(yellow), "第 2 页是黄，实际 {}", describe(yellow));
+    assert!(is_green(green), "第 3 页是绿，实际 {}", describe(green));
+    assert!(
+        luminance(red) > luminance(yellow) && luminance(red) > luminance(green),
+        "当前页比其余页更实"
+    );
+    assert!(
+        pixels_in(&pixels, wide, first, first + DOT_DIAMETER_LOGICAL).any(is_light_ring),
+        "当前页边上有浅色细光圈"
+    );
+    assert!(
+        !pixels_in(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL).any(is_light_ring),
+        "其余页没有光圈"
+    );
+
+    let center_y = logical(DOT_DIAMETER_LOGICAL) / 2.0;
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(logical(second + DOT_DIAMETER_LOGICAL / 2), center_y),
+    });
+    slint::platform::update_timers_and_animations();
+    let hovered = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
+    let yellow_hot = dot_center(&hovered, wide, second);
+    assert!(
+        luminance(yellow_hot) > luminance(yellow),
+        "悬停后其余页更亮：{} -> {}",
+        describe(yellow),
+        describe(yellow_hot)
+    );
+    assert!(
+        luminance(yellow_hot) < luminance(red),
+        "悬停后的其余页仍比当前页更透"
+    );
+
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(-20.0, -20.0),
+    });
+    slint::platform::update_timers_and_animations();
+
+    for index in 0..5 {
+        let x = logical(circle_origin(index) + DOT_DIAMETER_LOGICAL / 2);
+        click(&ui, x, center_y);
+        assert_eq!(
+            hit.get(),
+            i32::try_from(index).unwrap(),
+            "点第 {} 个圆点",
+            index + 1
+        );
+    }
+    click(
+        &ui,
+        logical(DOT_DIAMETER_LOGICAL + DOT_GAP_LOGICAL / 2),
+        center_y,
+    );
+    assert_eq!(hit.get(), 4, "点在圆点之间的间隔上不换页");
+
+    ui.set_current(1);
+    slint::platform::update_timers_and_animations();
+    let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
+    let red = dot_center(&pixels, wide, first);
+    let yellow = dot_center(&pixels, wide, second);
+    assert!(is_yellow(yellow), "当前页换成黄，实际 {}", describe(yellow));
+    assert!(luminance(yellow) > luminance(red), "黄比退下去的红更实");
+
+    ui.set_dark(true);
+    slint::platform::update_timers_and_animations();
+    let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
+    assert!(
+        is_yellow(dot_center(&pixels, wide, second)),
+        "暗色主题仍用同一套圆点颜色"
+    );
+
+    let many = 9u32;
+    let span = row_span(many);
+    window.set_size(slint::PhysicalSize::new(span, DOT_DIAMETER_LOGICAL));
+    ui.window()
+        .set_size(slint::PhysicalSize::new(span, DOT_DIAMETER_LOGICAL));
+    ui.set_pages(i32::try_from(many).unwrap());
+    ui.set_current(0);
+    slint::platform::update_timers_and_animations();
+    let pixels = render_pixels(&window, (span, DOT_DIAMETER_LOGICAL));
+    let again = dot_center(&pixels, span, circle_origin(8));
+    assert!(is_red(again), "第 9 页回到红，实际 {}", describe(again));
+    click(
+        &ui,
+        logical(circle_origin(8) + DOT_DIAMETER_LOGICAL / 2),
+        center_y,
+    );
+    assert_eq!(hit.get(), 8, "点第 9 页");
 }

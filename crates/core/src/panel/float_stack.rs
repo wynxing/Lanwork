@@ -4,8 +4,9 @@
 //! 把某一个页点拖出去就拆出那一页；点一个页点换到那一页；整叠一起贴边；
 //! 两条已经收起的把手在同一条屏幕边上靠近时合成一叠；成员、当前页和贴边要能记下。
 //! 一半按哪一边的面积算、合成后用谁的位置、页序、当前页、到头是否循环、多近算靠近，规格没有写。
-//! 页点的直径、间距和点击换页之外的细节，规格也没有写成唯一做法。
-//! 下面的选择是当前做法，不是产品规则，待定。
+//! 彩色圆点的直径、间距、行高、靠左、颜色和透明度已经写进产品规格。
+//! 圆点最多画几个、下方放不下时改挂到上方，规格没有写成唯一做法。
+//! 下面这些仍是当前做法，不是产品规则，待定。
 
 use crate::notes::{DockEdge, FloatDock, FloatGeometry, FloatStackSlot};
 use crate::shell::{WorkArea, to_physical};
@@ -17,10 +18,12 @@ use super::float_snap::{PxBox, ScreenBounds};
 /// 两条收起的把手沿边离这么多逻辑像素以内就合成一叠。不是产品规格。
 pub const DOCK_MERGE_GAP_LOGICAL: u32 = 48;
 
-/// 页点一行里，每个点占的槽宽。点画在槽的正中。待定。
-pub const DOT_SLOT_LOGICAL: u32 = 12;
-/// 页点那一行窗口的逻辑高度。挂在内容框外面。待定。
-pub const DOT_ROW_LOGICAL_HEIGHT: u32 = 16;
+/// 彩色圆点的直径，逻辑像素。产品规格。96 DPI 下是 16 物理像素。
+pub const DOT_DIAMETER_LOGICAL: u32 = 16;
+/// 相邻彩色圆点的间隔，逻辑像素。产品规格。96 DPI 下是 4 物理像素。
+pub const DOT_GAP_LOGICAL: u32 = 4;
+/// 彩色圆点那一行窗口的逻辑高度。与直径相同，圆点上沿贴着内容框下沿。
+pub const DOT_ROW_LOGICAL_HEIGHT: u32 = DOT_DIAMETER_LOGICAL;
 
 /// 把手上最多画这么多个点。再多的页数仍只画这些点。待定。
 pub const HANDLE_DOT_CAP: usize = 16;
@@ -567,18 +570,25 @@ pub fn slots_for(stack: &PageStack) -> Vec<(StackPage, FloatStackSlot)> {
         .collect()
 }
 
-/// 页点那一行的物理宽高。一页不占地方，调用方在少于两页时不要显示。
-/// 超过 [`HANDLE_DOT_CAP`] 时宽度只按那么多个槽算。待定。
+/// 彩色圆点那一行的物理宽高。一页不占地方，调用方在少于两页时不要显示。
+/// 宽度是直径乘个数，再加间隔乘（个数 − 1）。第一个圆点的左沿就是这一行的左沿。
+/// 超过 [`HANDLE_DOT_CAP`] 时只按那么多个圆点算。
 #[must_use]
 pub fn dot_row_size(pages: usize, dpi: u32) -> (u32, u32) {
     let count = handle_dot_count(pages).max(1);
-    let slot = u32::try_from(to_physical(DOT_SLOT_LOGICAL, dpi).max(1)).unwrap_or(1);
+    let diameter = u32::try_from(to_physical(DOT_DIAMETER_LOGICAL, dpi).max(1)).unwrap_or(1);
+    let gap = u32::try_from(to_physical(DOT_GAP_LOGICAL, dpi).max(0)).unwrap_or(0);
     let height = u32::try_from(to_physical(DOT_ROW_LOGICAL_HEIGHT, dpi).max(1)).unwrap_or(1);
-    let slots = u32::try_from(count).unwrap_or(1);
-    (slot.saturating_mul(slots).max(1), height)
+    let circles = u32::try_from(count).unwrap_or(1);
+    let width = diameter
+        .saturating_mul(circles)
+        .saturating_add(gap.saturating_mul(circles.saturating_sub(1)))
+        .max(1);
+    (width, height)
 }
 
-/// 页点行挂在窗口外面，水平居中。优先贴着底边往下；底边放不下而顶上放得下时改挂在上边外面。
+/// 页点行挂在窗口外面，左边缘与内容框左边缘对齐。
+/// 优先贴着底边往下；底边放不下而顶上放得下时改挂在上边外面，左边缘仍对齐。
 /// 改挂到上边是当前做法，待定。
 #[must_use]
 pub fn place_dots(
@@ -590,9 +600,7 @@ pub fn place_dots(
 ) -> PxBox {
     let width = row_width.max(1);
     let height = row_height.max(1);
-    let frame_width = i32::try_from(frame.width).unwrap_or(0);
-    let row = i32::try_from(width).unwrap_or(0);
-    let x = frame.x.saturating_add(frame_width.saturating_sub(row) / 2);
+    let x = frame.x;
     let below = frame.bottom();
     let y = match (screen_top, screen_bottom) {
         (Some(top), Some(bottom))
@@ -1170,26 +1178,40 @@ mod tests {
     }
 
     #[test]
-    fn the_dot_row_is_centered_under_the_frame_and_the_handle_dots_follow_the_page_count() {
+    fn the_dot_row_sits_flush_with_the_left_edge_and_the_handle_dots_follow_the_page_count() {
         let frame = rect(10, 20, 200, 100);
         let (width, height) = dot_row_size(3, 96);
-        assert_eq!(width, 3 * DOT_SLOT_LOGICAL);
-        assert_eq!(height, DOT_ROW_LOGICAL_HEIGHT);
-        let below = place_dots(frame, width, height, Some(0), Some(1080));
-        assert_eq!(below.y, frame.bottom());
         assert_eq!(
-            below.x,
-            frame.x + (i32::try_from(frame.width).unwrap() - i32::try_from(width).unwrap()) / 2
+            width,
+            3 * DOT_DIAMETER_LOGICAL + 2 * DOT_GAP_LOGICAL,
+            "三个直径加两段间隔"
         );
-        assert!(below.y >= frame.bottom());
+        assert_eq!(height, DOT_ROW_LOGICAL_HEIGHT);
+        assert_eq!(DOT_DIAMETER_LOGICAL, 16, "直径落在 14–18 逻辑像素里");
+        assert_eq!(height, DOT_DIAMETER_LOGICAL);
+        let below = place_dots(frame, width, height, Some(0), Some(1080));
+        assert_eq!(below.x, frame.x, "与窗口左边缘对齐");
+        assert_eq!(below.y, frame.bottom(), "紧贴窗口下沿");
         let screen_bottom = frame.bottom() + 4;
         let above = place_dots(frame, width, height, Some(0), Some(screen_bottom));
         assert_eq!(above.y + i32::try_from(above.height).unwrap(), frame.y);
-        assert_eq!(above.x, below.x);
-        assert_eq!(dot_row_size(1, 96).0, DOT_SLOT_LOGICAL);
+        assert_eq!(above.x, frame.x, "改挂到上方时仍靠左");
+        let work = crate::shell::WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let fitted = fit_dot_row(frame, width, height, Some(work));
+        assert_eq!(fitted.x, frame.x);
+        assert_eq!(fitted.y, frame.bottom());
+        assert_eq!(dot_row_size(1, 96).0, DOT_DIAMETER_LOGICAL);
         assert_eq!(dot_row_size(40, 144).0, {
-            let slot = u32::try_from(crate::shell::to_physical(DOT_SLOT_LOGICAL, 144)).unwrap();
-            slot * u32::try_from(HANDLE_DOT_CAP).unwrap()
+            let diameter =
+                u32::try_from(crate::shell::to_physical(DOT_DIAMETER_LOGICAL, 144)).unwrap();
+            let gap = u32::try_from(crate::shell::to_physical(DOT_GAP_LOGICAL, 144)).unwrap();
+            let count = u32::try_from(HANDLE_DOT_CAP).unwrap();
+            diameter * count + gap * (count - 1)
         });
         assert_eq!(handle_dot_count(1), 0);
         assert_eq!(handle_dot_count(3), 3);

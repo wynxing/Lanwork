@@ -1,5 +1,6 @@
-// 叠页的页点。单独一个小窗，挂在悬浮窗原来的边框外面、水平居中，不占内容区。
-// 拖某一个点把那一页拆出去。点一下换到那一页。尺寸是当前做法，待定。
+// 叠页的彩色圆点。单独一个小窗，挂在悬浮窗原来的边框外面、与窗口左边缘对齐，不占内容区。
+// 拖某一个圆点把那一页拆出去。点一下换到那一页。
+// 直径、间隔和行高与 `DOT_DIAMETER_LOGICAL`、`DOT_GAP_LOGICAL`、`DOT_ROW_LOGICAL_HEIGHT` 一致。
 
 import { Palette } from "std-widgets.slint";
 
@@ -7,19 +8,25 @@ export component StackTab inherits Window {
     title: "Lanwork";
     no-frame: true;
     always-on-top: true;
-    default-font-family: "Microsoft YaHei UI";
-    // 和 `DOT_SLOT_LOGICAL`、`DOT_ROW_LOGICAL_HEIGHT` 一致。
-    preferred-width: max(root.pages, 1) * 12px;
-    preferred-height: 16px;
 
     in property <bool> dark;
     in property <int> pages: 1;
     in property <int> current: 0;
 
-    // 按下某个点。拖动和单击的区分在外壳：没挪开就换到这一页。
+    // 按下某个圆点。拖动和单击的区分在外壳：没挪开就换到这一页。
     callback drag-dot(int);
 
     background: transparent;
+
+    // 16 逻辑像素，落在 14–18 里。间隔 4。行高等于直径，圆点上沿贴着窗口下沿。
+    property <length> diameter: 16px;
+    property <length> gap: 4px;
+    // 其余页更透。悬停只提到 0.72，不到当前页那么实。
+    property <float> rest-opacity: 0.42;
+    property <float> hover-opacity: 0.72;
+
+    preferred-width: max(root.pages, 1) * diameter + max(root.pages - 1, 0) * gap;
+    preferred-height: diameter;
 
     init => {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
@@ -28,36 +35,49 @@ export component StackTab inherits Window {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
     }
 
-    // 和收起把手上的点一样：小圆点，当前页更亮。这里直接画在桌面上，所以跟主题走，
-    // 亮色用深灰，暗色用浅灰，不另铺一块底。
-    property <length> dot: 4px;
-    property <length> slot: 12px;
     property <[int]> marks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
     for mark in marks: Rectangle {
         visible: mark < root.pages;
-        x: mark * slot;
+        x: mark * (root.diameter + root.gap);
         y: 0px;
-        width: slot;
-        height: parent.height;
+        width: root.diameter;
+        height: root.diameter;
         background: transparent;
 
-        Rectangle {
-            width: dot;
-            height: dot;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            border-radius: dot;
-            background: mark == root.current ? (dark ? #f4f4f4f2 : #5e5e5ef2) : (dark ? #cfcfcf99 : #5e5e5e99);
-        }
+        // 红黄绿之后续蓝、紫、橙、粉、青，满八种再循环。
+        // `/` 在 Slint 里是浮点除法，(mark / 8) * 8 会回到 mark 本身，所以用 mod。
+        property <int> hue: round(mod(mark, 8));
+        property <bool> here: mark == root.current;
+        property <color> tone:
+            hue == 0 ? #ff5f57 :
+            hue == 1 ? #febc2e :
+            hue == 2 ? #28c840 :
+            hue == 3 ? #5ac8fa :
+            hue == 4 ? #bf5af2 :
+            hue == 5 ? #ff9f0a :
+            hue == 6 ? #ff6b9d :
+            #2eb8c8;
 
-        TouchArea {
+        touch := TouchArea {
+            width: 100%;
+            height: 100%;
             accessible-role: button;
-            accessible-label: "页点";
+            accessible-label: "第" + (mark + 1) + "页";
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                     root.drag-dot(mark);
                 }
+            }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: root.diameter / 2;
+                background: tone;
+                border-width: here ? 1.5px : 0px;
+                border-color: touch.has-hover ? #ffffff : #ffffffb3;
+                opacity: here ? 1.0 : (touch.has-hover ? root.hover-opacity : root.rest-opacity);
             }
         }
     }
