@@ -20,7 +20,19 @@ pub use cache::{CACHE_FILE_NAME, CACHE_SCHEMA_VERSION, CacheStatus};
 pub use catalog::{AppAlias, HiddenApp, UserCatalog, load_user_catalog, save_user_catalog};
 pub use index::{AppHit, AppIndex, IndexError, RefreshReport};
 pub use model::{AppEntry, AppSource, LaunchTarget, SourceError, launch_key};
-pub use rules::{containing_folder, supports_open_containing_folder, supports_run_as_admin};
+pub use rules::{
+    containing_folder, file_folder, shortcut_target_folder, supports_open_containing_folder,
+    supports_run_as_admin,
+};
+
+/// `HRESULT_FROM_WIN32(ERROR_CANCELLED)`。用户关掉 UAC 或「以其他用户身份运行」对话框时，Shell 返回这个值。
+pub const CONSENT_CANCEL_HRESULT: i32 = 0x8007_04C7_u32.cast_signed();
+
+/// 用户取消了提权或换用户的系统对话框。这不是启动失败。
+#[must_use]
+pub fn is_consent_cancel(hresult: i32) -> bool {
+    hresult == CONSENT_CANCEL_HRESULT
+}
 
 #[cfg(test)]
 #[cfg_attr(not(windows), allow(unused_imports))]
@@ -44,12 +56,14 @@ pub(crate) use windows::launch::launch_and_wait;
 #[derive(Debug)]
 pub struct LaunchError {
     pub message: String,
+    pub cancelled: bool,
 }
 
 #[cfg(not(windows))]
 pub fn launch(_target: &LaunchTarget) -> Result<(), LaunchError> {
     Err(LaunchError {
         message: "应用启动只在 Windows 上可用".to_owned(),
+        cancelled: false,
     })
 }
 
@@ -57,8 +71,29 @@ pub fn launch(_target: &LaunchTarget) -> Result<(), LaunchError> {
 pub fn launch_elevated(_target: &LaunchTarget) -> Result<(), LaunchError> {
     Err(LaunchError {
         message: "应用启动只在 Windows 上可用".to_owned(),
+        cancelled: false,
+    })
+}
+
+#[cfg(not(windows))]
+pub fn launch_as_user(_target: &LaunchTarget) -> Result<(), LaunchError> {
+    Err(LaunchError {
+        message: "应用启动只在 Windows 上可用".to_owned(),
+        cancelled: false,
     })
 }
 
 #[cfg(windows)]
-pub use windows::launch::{LaunchError, launch_elevated};
+pub use windows::launch::{LaunchError, launch_as_user, launch_elevated};
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::is_consent_cancel;
+
+    #[test]
+    fn dismissing_consent_is_not_a_launch_failure() {
+        assert!(is_consent_cancel(super::CONSENT_CANCEL_HRESULT));
+        assert!(!is_consent_cancel(0));
+        assert!(!is_consent_cancel(1223));
+    }
+}

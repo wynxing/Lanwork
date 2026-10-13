@@ -1,4 +1,4 @@
-//! 面板的设置页：开机启动、热角、搜索条热键，以及关于与更新。
+//! 面板的设置页：开机启动、热角、搜索条热键、关于与更新，以及隐藏的应用。
 //!
 //! 决定在 `lanwork_core::panel` 和 `lanwork_core::shell`：先写 `config.json`，成功后才写注册表、
 //! 换热角；热键先注册新的、再写盘、再卸旧的。这里只把结果推给界面，并在失败时用配置里的原值重推，
@@ -7,9 +7,12 @@
 //! 「录入中」只有一个出口 [`SettingsPage::end_recording`]：录到组合、Esc、再点一次、失焦、收起、
 //! 切标签、关闭和进程退出都走它，它把卸掉的热键注册回去。
 
+use std::cell::RefCell;
+use std::sync::Arc;
 use std::time::Duration;
 
 use lanwork_core::config::ConfigCommands;
+use lanwork_core::dispatch::Dispatch;
 use lanwork_core::panel::{
     change_hot_corner, change_launch_at_startup, hot_corner_at, hot_corner_titles, settings_rows,
     startup_error_text,
@@ -22,7 +25,7 @@ use crate::keycap;
 use crate::panel::with_settings;
 use crate::platform::HotkeyControl;
 use crate::registry::apply_startup;
-use crate::{Panel, SettingsPageData};
+use crate::{Panel, SettingsHiddenApp, SettingsPageData};
 
 const CAPTURE_UNAVAILABLE: &str = "热键录入不可用";
 
@@ -32,6 +35,8 @@ pub(crate) struct SettingsServices {
     pub(crate) hotkeys: HotkeyControl,
     /// 启动时按配置没注册上的热键。
     pub(crate) unregistered: Vec<HotkeyRole>,
+    /// 应用索引没打开时没有隐藏名单。
+    pub(crate) apps: Option<Arc<Dispatch>>,
 }
 
 pub(crate) struct SettingsPage {
@@ -41,6 +46,8 @@ pub(crate) struct SettingsPage {
     /// 录入状态和没注册上的热键提示，决定在 core 里。收起面板不清提示，注册上之后才清。
     recording: HotkeyRecording,
     capture_ready: bool,
+    apps: Option<Arc<Dispatch>>,
+    hidden_keys: RefCell<Vec<String>>,
 }
 
 impl SettingsPage {
@@ -55,10 +62,14 @@ impl SettingsPage {
         data.on_toggle_recording(|| with_settings(SettingsPage::toggle_recording));
         data.on_update_clicked(crate::update::on_clicked);
         crate::update::push_into(ui);
+        data.on_restore_hidden(|index| {
+            with_settings(move |page, ui| page.restore_hidden(ui, index));
+        });
         let SettingsServices {
             config,
             hotkeys,
             unregistered,
+            apps,
         } = services;
         let page = Self {
             commands: config,
@@ -66,6 +77,8 @@ impl SettingsPage {
             store,
             recording: HotkeyRecording::new(unregistered),
             capture_ready: false,
+            apps,
+            hidden_keys: RefCell::new(Vec::new()),
         };
         page.push(ui);
         page
@@ -121,6 +134,49 @@ impl SettingsPage {
         data.set_corner(i32::try_from(rows.hot_corner).unwrap_or(0));
         data.set_hotkey(rows.search_hotkey.into());
         data.set_recording(self.recording.is_active());
+        self.push_hidden(ui);
+    }
+
+    fn push_hidden(&self, ui: &Panel) {
+        let listed = self
+            .apps
+            .as_ref()
+            .map(|apps| apps.hidden_apps())
+            .unwrap_or_default();
+        let names: Vec<SettingsHiddenApp> = listed
+            .iter()
+            .map(|app| SettingsHiddenApp {
+                name: app.name.as_str().into(),
+            })
+            .collect();
+        *self.hidden_keys.borrow_mut() = listed.into_iter().map(|app| app.launch_key).collect();
+        ui.global::<SettingsPageData>()
+            .set_hidden_apps(ModelRc::new(VecModel::from(names)));
+    }
+
+    fn restore_hidden(&mut self, ui: &Panel, index: i32) {
+        self.cancel_recording(ui);
+        let Some(apps) = self.apps.clone() else {
+            self.push(ui);
+            return;
+        };
+        let Some(key) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.hidden_keys.borrow().get(index).cloned())
+        else {
+            self.push(ui);
+            return;
+        };
+        let result = apps.restore_hidden_app(&key);
+        if result.is_ok() {
+            crate::searchbar::requery();
+        }
+        self.finish(ui, result);
+    }
+
+    /// 搜索条隐藏了一项之后刷新这份列表。
+    pub(crate) fn refresh_hidden(&self, ui: &Panel) {
+        self.push_hidden(ui);
     }
 
     fn fail(&self, ui: &Panel, message: &str) {

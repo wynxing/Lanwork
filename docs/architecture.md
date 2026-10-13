@@ -9,7 +9,7 @@
 | 路径 | 现状 |
 | --- | --- |
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除只删除回收站里的条目。删除前把 id 写入 `todo-purge-pending.json`，清单写入成功后发出 `TodoNotice::Purged`。进入回收站满 30 天（30×86400000 毫秒）时，启动加载和 `purge_expired` 清除。原清单已删除时恢复到系统收件箱，没有收件箱则创建一次；这个收件箱就是默认清单。每月重复的日是 31、目标月没有 31 日时落到该月最后一天。锚点日写在周期的 `monthDay`。旧记录没有该字段时，用当前到期日的日子。下一次仍按这个日子，所以 1 月 31 日完成后是 2 月的最后一天，再完成回到 3 月 31 日。29 日或 30 日在目标月不存在时仍不猜测。在重复截止日当天完成不再生成下一次。已完成的条目可以取消完成，`order` 不变。重复待办完成时把下一次记在 `generatedNext`；取消完成时只在它仍是当时生成的那一条时从清单移除。下一次已被改过或已完成时不删除，该处理仍待定。没有这条记录的旧数据不猜测要删哪一条。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。热角的角判定、350ms 停留、离开后重新武装、全屏抑制和按住左键时不计停留在 `shell::hotcorner`。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。备份与导入 `backup`（`lanwork_core::backup`）已接入，见「数据」。应用内更新的版本比较、`latest.json` 和界面状态在 `update`（`lanwork_core::update`），见「更新」。 |
-| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板。搜索条已有界面并调用查询调度，见「程序外壳」的「搜索条」。面板有标签框架、待办页、便签页、收纳页和设置页（开机启动、热角、搜索条热键，以及检查更新），便签悬浮窗也在这里，见「程序外壳」的「面板」「便签页与悬浮窗」和「设置页」。热角的 50ms 轮询在 `crates/app/src/hotcorner.rs`，见「热角」。应用内更新的下载和安装在 `crates/app/src/update.rs`，见「更新」。没有 Windows 验收。 |
+| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板。搜索条已有界面并调用查询调度，见「程序外壳」的「搜索条」。面板有标签框架、待办页、便签页、收纳页和设置页（开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」），便签悬浮窗也在这里，见「程序外壳」的「面板」「便签页与悬浮窗」和「设置页」。热角的 50ms 轮询在 `crates/app/src/hotcorner.rs`，见「热角」。应用内更新的下载和安装在 `crates/app/src/update.rs`，见「更新」。没有 Windows 验收。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。记录在 `docs/measurements/fileidx.md`。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。产品渲染器见「运行时」。 |
@@ -29,7 +29,7 @@
 
 | 内容 | 将落在 |
 | --- | --- |
-| 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、设置页（开机启动、热角、搜索条热键，以及检查更新）、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板搜索框还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
+| 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、设置页（开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」）、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板搜索框还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
 | 外部 AI（本机 MCP）、扩展页与插件 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [extensions.md](extensions.md)。现在没有代码。技术验证表里没有对应项；没有通过记录之前，不写依赖它们的界面 |
@@ -116,8 +116,8 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 
 技术验证的「背景」和「渲染器」两项仍没有通过记录。面板的界面代码依赖这两项，写在通过之前；两项的记录不因此改变。窗口外观沿用搜索条的做法：`no-frame`，`bar_win` 里的子类去掉标题栏按钮，DWM 圆角与暗色，亚克力或纯色回退，主题变化时重新判断，任务栏不显示。
 
-- **已有。** 标题栏（产品名、四个标签、关闭）、待办页、便签页、收纳页、设置页（见「设置页」：开机启动、热角、搜索条热键，以及检查更新）。待办行和字段区有收纳标记和「打开关联收纳」。托盘「打开面板」「设置」、面板热键、搜索条的待办结果和热角会打开面板。关闭按钮、失焦和 Esc 收起，不退出进程；收起后再打开，标签和所选清单保持。热角见下一节，没有 Windows 验收。
-- **还没有。** 面板搜索框、处理模式，以及设置页里除开机启动、热角、搜索条热键和检查更新以外的项。到期通知点击定位属于 #25；入口 `panel::open_target(PanelTarget::Todo { .. })` 已留好，搜索条已经在用。
+- **已有。** 标题栏（产品名、四个标签、关闭）、待办页、便签页、收纳页、设置页（见「设置页」：开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」）。待办行和字段区有收纳标记和「打开关联收纳」。托盘「打开面板」「设置」、面板热键、搜索条的待办结果和热角会打开面板。关闭按钮、失焦和 Esc 收起，不退出进程；收起后再打开，标签和所选清单保持。热角见下一节，没有 Windows 验收。
+- **还没有。** 面板搜索框、处理模式，以及设置页里除开机启动、热角、搜索条热键、检查更新和「隐藏的应用」以外的项。到期通知点击定位属于 #25；入口 `panel::open_target(PanelTarget::Todo { .. })` 已留好，搜索条已经在用。
 - **定位。** `open_target` 先切到待办标签，读最新数据，找到条目后切到它所在的清单、选中并滚动到可见。找不到时停在待办标签并显示「找不到待办」。条目在回收站时切到回收站视图并选中。后者产品规格没有写。
 - **当前标记。** 任何状态下都能清除：未完成和已完成的条目在字段区有「设为当前」「清除当前」，回收站里带当前标记的条目在字段区有「清除当前」，行上始终显示「当前」。完成和软删除不自动清除当前标记，规格没有写，服务也不清；清除只通过 `clear_current`。
 - **待办页。** 左侧是清单（收件箱按服务给出的顺序，不另外提前）和「回收站」，右侧是新建框、行列表和选中条目的字段区。启动时和每次打开面板都调用 `ensure_inbox`，所以收件箱存在且不重复创建。行上的标记是当前、到期日（逾期时加「逾期」）、周期、来源。来源标记的文字是已保存的 `repo` 和 `number` 拼成的 `仓库#编号`。产品规格没有写标记怎么写，这是当前实现，不是新规则。已完成且不在回收站的行，在勾选旁边显示「取消完成」。点击它或再次点击勾选，都调用取消完成。回收站行显示还剩几天被清除，天数向上取整；30 天的清除由服务在启动时和 `purge_expired` 里做，面板不另建定时器。命令成功后重读服务并推给界面；失败时保留当前状态，在窗口底部显示错误，输入框里的文字不重置。
@@ -128,11 +128,12 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 
 ### 设置页
 
-可见行为见产品规格「设置」。这一版做开机启动、热角、搜索条热键，以及检查更新。其余设置项没有代码，也没有占位。代码在 `crates/app/src/settings_page.rs`（调用与错误显示）、`crates/app/src/keycap.rs`（录入时的按键拦截）和 `crates/app/ui/settingspage.slint`（版式）。不调用窗口 API 的决定在 `lanwork_core::panel::settings_page`（热角选项与顺序、各行显示的值、开机启动与热角的写盘顺序）和 `lanwork_core::shell`（`capture`：按键换成热键并过滤录入期间的键盘消息；`bind`：`suspend_hotkeys`、`restore_hotkeys`、`save_search_hotkey`；`recording`：录入状态和没注册上的提示）。检查更新的决定在 `lanwork_core::update`，见「更新」。
+可见行为见产品规格「设置」。这一版做开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」。其余设置项没有代码，也没有占位。代码在 `crates/app/src/settings_page.rs`（调用与错误显示）、`crates/app/src/keycap.rs`（录入时的按键拦截）和 `crates/app/ui/settingspage.slint`（版式）。不调用窗口 API 的决定在 `lanwork_core::panel::settings_page`（热角选项与顺序、各行显示的值、开机启动与热角的写盘顺序）和 `lanwork_core::shell`（`capture`：按键换成热键并过滤录入期间的键盘消息；`bind`：`suspend_hotkeys`、`restore_hotkeys`、`save_search_hotkey`；`recording`：录入状态和没注册上的提示）。检查更新的决定在 `lanwork_core::update`，见「更新」。
 
 技术验证里「背景」「渲染器」仍没有通过记录，设置页和面板的其他页一样依赖它们，写在通过之前，记录不因此改变。设置页没有文本输入框，不依赖「中文输入法」。
 
-- **三行。** 从上到下是「开机启动」（开关）、「热角」（右上、左上、左下、右下、关闭五选一，右上是默认）、「搜索条热键」（显示当前组合的框）。文字只有名称、选项名、组合键和错误，没有说明。
+- **三行。** 从上到下是「开机启动」（开关）、「热角」（右上、左上、左下、右下、关闭五选一，右上是默认）、「搜索条热键」（显示当前组合的框）。文字只有名称、选项名、组合键和错误，没有说明。这三行的位置不因下面的更新块和隐藏列表改变。
+- **隐藏的应用。** 关于与更新下面是这一节。名单来自 `Dispatch::hidden_apps`。没有时显示「没有隐藏的应用」。每条右侧是「恢复」，调用 `restore_hidden_app` 写入 `user-apps.json`。写盘失败时把内存改回去，列表不变，错误显示在面板底部。恢复成功后搜索条按当前输入再查一次。
 - **控件只显示配置里的值。** 开关不自己翻转，点击只发出相反值的请求；热角点哪项只发出那一项的请求。写盘失败或被拒绝时，Rust 用 `config.json` 当前的值重新推给界面，控件回到原状，错误显示在面板底部的错误条，位置与其他标签一致。切到设置标签、面板重新显示时也按配置重读。
 - **开机启动。** `ConfigCommands::set_launch_at_startup` 写 `launchAtStartup`，写成功之后调用 `registry::apply_startup` 写或删 `HKCU\...\Run` 的 `Lanwork`，规则见「开机启动」。写盘失败时不碰注册表，开关回到原值并显示错误。写盘成功而注册表失败时，配置保持新值（与启动时的行为一致，下次启动会再同步一次），开关显示新值，错误条显示「开机启动项未更新：<原因>」并写日志。值没变时仍调用一次注册表同步。
 - **热角。** `ConfigCommands::set_hot_corner` 写 `hotCorner`，写成功之后立即调用 `hotcorner::apply`。写盘失败时不调用，热角和显示都保持原值。内容没变时不写盘，也不发布变更。
@@ -297,9 +298,9 @@ Lanwork/
 
 应用来源：当前用户和公共开始菜单、注册表 App Paths、PATH、商店应用、用户添加的便携应用和别名。按启动目标去重。快捷方式保留参数和工作目录。启动时先加载缓存，再在后台更新。目录变化合并后再重建；注册表、商店应用和手动刷新按来源更新。
 
-应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用、别名、隐藏和手动刷新的可见入口已写入产品规格。设置页、右键菜单和快捷键尚未实现。`AppIndex::refresh` 仍只是进程内重建。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。`shell:AppsFolder` 也列出开始菜单快捷方式带来的桌面应用，它们的解析名是 `Chrome` 这类自定 AUMID 或 `{已知文件夹 GUID}\…\chrome.exe`，不是快捷方式的目标路径，按启动目标去重合不上，同一个应用会出现两条。商店来源因此只收打包应用的 AUMID，形如 `<包名>_<13 位发布者 ID>!<应用 ID>`（`rules::is_package_aumid`）；其余项由开始菜单来源收录，被开始菜单过滤掉的（卸载程序、目标不存在、启动文件夹）也不会从这里回来。商店应用的图标键是 `shell:AppsFolder\<AUMID>`，取图仍走 `SHCreateItemFromParsingName` 和 `IShellItemImageFactory`，得到包里的图标。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
+应用索引在 `crates/core` 的 `apps`（`lanwork_core::apps`）。枚举用快捷方式、注册表、`shell:AppsFolder`、`ReadDirectoryChangesW` 和 `ShellExecuteExW`，不创建窗口，所以不放进 `crates/app`。便携应用、别名、隐藏和手动刷新的可见入口已写入产品规格。搜索条的应用右键菜单和 Ctrl+Enter 提权已接上。便携应用、别名和手动刷新的界面尚未实现。`AppIndex::refresh` 仍只是进程内重建。目标文件不存在的快捷方式不收录，即使它带 `System.AppUserModel.ID`；同一商店应用仍由 `shell:AppsFolder` 按 AUMID 收录。`shell:AppsFolder` 也列出开始菜单快捷方式带来的桌面应用，它们的解析名是 `Chrome` 这类自定 AUMID 或 `{已知文件夹 GUID}\…\chrome.exe`，不是快捷方式的目标路径，按启动目标去重合不上，同一个应用会出现两条。商店来源因此只收打包应用的 AUMID，形如 `<包名>_<13 位发布者 ID>!<应用 ID>`（`rules::is_package_aumid`）；其余项由开始菜单来源收录，被开始菜单过滤掉的（卸载程序、目标不存在、启动文件夹）也不会从这里回来。商店应用的图标键是 `shell:AppsFolder\<AUMID>`，取图仍走 `SHCreateItemFromParsingName` 和 `IShellItemImageFactory`，得到包里的图标。商店枚举中途失败时该来源整次失败，保留上一次快照。`ShellExecuteExW` 带 `SEE_MASK_NOASYNC`，因为这里没有消息泵，宽字符串在调用返回后释放。
 
-下面是当前实现选择，不是产品规则。PATH 上的 UNC 目录跳过，避免一个断开的网络路径挡住其余来源。开始菜单目录变化的安静时间是 400ms，另有 2 秒上限，到点就重建开始菜单来源。`apps.json` 的 `schemaVersion` 不是 1 时，和无法解析一样隔离成 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，日志不含文件内容。这和数据目录里不认识的 `schemaVersion` 不隔离不同，因为这份缓存可以重建。读取缓存时的 IO 错误只记日志，不改名。`apps.json` 仍是 schemaVersion 1，新增可选字段 `alternateNames`，来源值 `portable` 与 `alias`，以及目标种类 `url`。旧缓存没有这些字段时按空值读取。
+下面是当前实现选择，不是产品规则。PATH 上的 UNC 目录跳过，避免一个断开的网络路径挡住其余来源。开始菜单目录变化的安静时间是 400ms，另有 2 秒上限，到点就重建开始菜单来源。`apps.json` 的 `schemaVersion` 不是 1 时，和无法解析一样隔离成 `apps.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，日志不含文件内容。这和数据目录里不认识的 `schemaVersion` 不隔离不同，因为这份缓存可以重建。读取缓存时的 IO 错误只记日志，不改名。`apps.json` 仍是 schemaVersion 1，新增可选字段 `alternateNames`、`sourcePath`，来源值 `portable` 与 `alias`，以及目标种类 `url`。`sourcePath` 是索引到的文件：快捷方式的 `.lnk`、游戏链接的 `.url`，或直接收录的 exe。旧缓存没有这些字段时按空值读取；没有 `sourcePath` 时，「打开文件所在文件夹」对路径目标退回 exe 自己的目录，「打开目标文件夹」要等下次重建记下快捷方式路径。
 
 开始菜单的 `.lnk` 和收录的 `.url`，显示名用 `SHCreateItemFromParsingName` 得到 `IShellItem`，再 `GetDisplayName(SIGDN_NORMALDISPLAY)`。失败或结果为空白时，用文件名去掉扩展名。快捷方式文件名（含扩展名）和目标 exe 的文件名（含扩展名）作为可搜索备用名，放进匹配引擎的别名字段，不作为结果上的名称。与显示名相同的不重复存。`.url` 没有目标 exe，只加它自己的文件名。
 
@@ -311,9 +312,9 @@ Lanwork/
 
 `AppSource::ALL` 在四种系统来源之后加上 `Portable` 和 `Alias`。系统来源仍由枚举填入。便携应用和别名来自数据目录的 `user-apps.json`，不由 Windows 枚举产生。便携应用是一条路径目标，来源记为 `Portable`。`kind` 不是路径的便携条目跳过并记日志，不进入索引。别名是一个名称加一个启动目标，来源记为 `Alias`。便携应用与系统来源是同一启动目标时只显示一条，名称用用户填的名称。去重时便携应用不另成一条：系统条目在前时，显示名改成用户填的名称，原来的名称进入备用名；便携应用在前时，后到的系统来源不改显示名。两条系统来源仍保留先出现的名称。别名只并入备用名。别名的目标不在索引里时是否单独显示，待定；最小实现不单独成条。
 
-`user-apps.json` 见「数据」。JSON 的 `schemaVersion` 为 1，字段是 `portable`、`aliases`、`hidden`。缺少 `schemaVersion` 时按 1 读取。文件不存在视为空目录。无法解析，或 `schemaVersion` 更高时返回错误，不改名、不隔离。当前 `load_user_catalog` 和 `save_user_catalog` 仍由调用方传入路径。`AppIndex::open_from_process` 不猜测路径，内存中的目录开始是空的。`set_user_catalog` 替换这份内存并只重建便携应用和别名两个来源。在此之前若后台重建已经用空目录跑完，缓存里残留的便携应用和别名会被清掉。调用方要在打开索引之后把目录设进来。`hide` 和 `restore` 只改这份内存。落盘仍由调用方保存。隐藏按启动目标的去重键。`entries` 仍包含已隐藏的应用。搜索必须走 `query`，那里丢掉隐藏键。`hidden_apps` 把目录里的隐藏项交给设置页；索引里还能找到同一键时，用当前显示名。
+`user-apps.json` 见「数据」。JSON 的 `schemaVersion` 为 1，字段是 `portable`、`aliases`、`hidden`。缺少 `schemaVersion` 时按 1 读取。文件不存在视为空目录。无法解析，或 `schemaVersion` 更高时返回错误，不改名、不隔离。当前 `load_user_catalog` 和 `save_user_catalog` 仍由调用方传入路径。`AppIndex::open_from_process` 不猜测路径，内存中的目录开始是空的。`set_user_catalog` 替换这份内存并只重建便携应用和别名两个来源。在此之前若后台重建已经用空目录跑完，缓存里残留的便携应用和别名会被清掉。调用方要在打开索引之后把目录设进来。`AppIndex::hide` 和 `restore` 只改这份内存。`Dispatch::hide_app` 和 `restore_hidden_app` 在改完内存后调用 `save_user_catalog` 写入 `user-apps.json`；写盘失败时把内存改回去。隐藏按启动目标的去重键。`entries` 仍包含已隐藏的应用。搜索必须走 `query`，那里丢掉隐藏键。`hidden_apps` 把目录里的隐藏项交给设置页；索引里还能找到同一键时，用当前显示名。
 
-有路径的应用可以「以管理员身份运行」和「打开所在文件夹」。前者用 `ShellExecuteExW`，动词 `runas`，掩码与普通启动相同，会交给系统的提权提示。后者返回目标 exe 的父目录，不是快捷方式所在的开始菜单目录；打开这个目录的窗口不在本模块。商店应用的目标只有 AUMID，启动串是 `shell:AppsFolder\<AUMID>`。`runas` 不能用来提权打包应用，枚举也拿不到可以交给资源管理器的普通文件路径，包目录通常在受保护的 WindowsApps 下。因此这两个动作只对有本地文件的路径目标提供。商店应用和游戏链接等没有本地文件的结果不显示「以管理员身份运行」和「打开所在文件夹」，对应快捷键无效。快捷键是 Ctrl+Shift+Enter 与 Ctrl+Enter，见产品规格。界面尚未接这两个入口。
+有路径的应用可以「以管理员身份运行」和「以其他用户身份运行」。两者都用 `ShellExecuteExW`，掩码与普通启动相同。动词分别是 `runas` 和 `runasuser`，由系统显示 UAC 提示或凭据对话框。用户取消时 Shell 返回 `HRESULT_FROM_WIN32(ERROR_CANCELLED)`（`0x800704C7`）。这不是失败：不在搜索条显示错误，也不记使用次数。打开目录不在本模块，只返回路径。「打开文件所在文件夹」是索引文件的父目录（`sourcePath`，没有时退回路径目标自己的父目录）。「打开目标文件夹」只在 `sourcePath` 是 `.lnk` 且目标是本地路径时返回目标的父目录。商店应用的目标只有 AUMID，启动串是 `shell:AppsFolder\<AUMID>`。`runas` 不能用来提权打包应用，枚举也拿不到可以交给资源管理器的普通文件路径，包目录通常在受保护的 WindowsApps 下。因此提权和「打开目标文件夹」只对有本地文件的路径目标提供；没有目标时菜单项仍在，但是不可用。快捷键是应用结果上的 Ctrl+Enter 与 Ctrl+Shift+Enter，见产品规格。右键菜单在搜索条里。
 
 待办与便签索引常驻内存，由写盘成功后的变更消息增量更新，查询时不读盘。只收未完成待办的标题，以及不在回收站中的便签的标题、标签和正文。
 

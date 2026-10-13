@@ -13,6 +13,8 @@ slint::include_modules!();
 #[cfg(test)]
 mod float_layout_tests;
 #[cfg(test)]
+mod menu_layout_tests;
+#[cfg(test)]
 mod settings_layout_tests;
 
 #[cfg(windows)]

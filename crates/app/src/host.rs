@@ -149,15 +149,16 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         note_float::install(notes.clone(), store.clone());
     }
     let shelves = open_shelves(store, &todos);
+    let dispatch = notes
+        .clone()
+        .and_then(|notes| open_dispatch(store, &todos, notes));
     let mut icons = None;
-    if let Some(notes) = notes.clone()
-        && let Some(dispatch) = open_dispatch(store, &todos, notes)
-    {
+    if let Some(dispatch) = &dispatch {
         dispatch.set_web_search_engine(config.current().web_search_engine);
         icons = Some(dispatch.icon_cache());
         searchbar::install(
             search.clone_strong(),
-            dispatch,
+            Arc::clone(dispatch),
             store.clone(),
             config.clone(),
         );
@@ -182,6 +183,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
             config: config.clone(),
             hotkeys,
             unregistered,
+            apps: dispatch,
         },
         store.clone(),
     );

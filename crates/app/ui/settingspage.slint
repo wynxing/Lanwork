@@ -1,10 +1,14 @@
-// 面板的设置页：开机启动、热角、搜索条热键，每项一行。下面是关于与更新。
+// 面板的设置页：开机启动、热角、搜索条热键，每项一行。下面是关于与更新，然后是隐藏的应用。
 // 版式由这里决定，数据和动作在 Rust。
 // 数据和回调放在 SettingsPageData 里，面板窗口只负责把这个页面摆在标签内容区。
 // 控件只显示配置里的值；请求被拒绝或写盘失败时，Rust 重新推送原值，界面随之回到原状。
 // 前三行的位置不要改：布局测试按这个坐标点它们。
 
 import { Btn, Ink, Segments, ToggleSwitch } from "widgets.slint";
+
+export struct SettingsHiddenApp {
+    name: string,
+}
 
 export global SettingsPageData {
     in property <bool> launch-at-startup;
@@ -24,6 +28,9 @@ export global SettingsPageData {
     callback choose-corner(int);
     callback toggle-recording();
     callback update-clicked();
+
+    in property <[SettingsHiddenApp]> hidden-apps;
+    callback restore-hidden(int);
 }
 
 component Row inherits Rectangle {
@@ -145,7 +152,7 @@ export component SettingsPage inherits Rectangle {
             }
         }
 
-        // 关于与更新。没有说明段落。发行说明是 Release 正文。
+        // 关于与更新。没有说明段落。发行说明是 Release 正文。高度固定，下面的隐藏列表才不把按钮顶走。
         Rectangle {
             height: 88px + (SettingsPageData.update-notes-visible ? 120px : 0px);
 
@@ -205,6 +212,62 @@ export component SettingsPage inherits Rectangle {
                 c: root.c;
                 clicked => {
                     SettingsPageData.update-clicked();
+                }
+            }
+        }
+
+        Text {
+            height: 40px;
+            text: "隐藏的应用";
+            color: root.c.ink;
+            font-size: 14px;
+            vertical-alignment: center;
+        }
+
+        if SettingsPageData.hidden-apps.length == 0: Text {
+            height: 36px;
+            text: "没有隐藏的应用";
+            color: root.c.secondary;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        if SettingsPageData.hidden-apps.length > 0: hidden-list := Flickable {
+            vertical-stretch: 1;
+            min-height: 44px;
+            content-width: self.width;
+            content-height: max(self.height, SettingsPageData.hidden-apps.length * 44px);
+
+            for app[index] in SettingsPageData.hidden-apps: Rectangle {
+                y: index * 44px;
+                width: hidden-list.width;
+                height: 44px;
+
+                Text {
+                    width: parent.width - 80px;
+                    height: parent.height;
+                    text: app.name;
+                    color: root.c.ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Btn {
+                    x: parent.width - self.width;
+                    y: (parent.height - self.height) / 2;
+                    text: "恢复";
+                    c: root.c;
+                    clicked => {
+                        SettingsPageData.restore-hidden(index);
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: parent.width;
+                    background: root.c.divider;
                 }
             }
         }
