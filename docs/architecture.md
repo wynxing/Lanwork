@@ -32,6 +32,7 @@
 | 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、设置页（只有开机启动、热角、搜索条热键）、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板搜索框还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
+| 外部 AI（本机 MCP）、扩展页与插件 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [extensions.md](extensions.md)。现在没有代码。技术验证表里没有对应项；没有通过记录之前，不写依赖它们的界面 |
 
 ## 技术验证
 
@@ -254,7 +255,7 @@ Lanwork/
 - 写入：进程内一把互斥锁。同目录写 `<name>.tmp`，调用 `FlushFileBuffers` 后，目标已存在时用 `ReplaceFileW`（`REPLACEFILE_WRITE_THROUGH`），否则用 `MoveFileExW`（`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`）。替换失败则删除临时文件、保留原文件，并返回带路径的错误。不自动重试。数据目录位于 OneDrive 同步的「文档」下时，同步进程占用按同一规则报错。
 - 单个 JSON 无法解析时，把该文件改名为 `<id>.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，其他文件仍可读。日志不含文件内容。不认识的 `schemaVersion` 不隔离，由调用方拒绝。
 - 每个 JSON 对象带数字字段 `schemaVersion`。当前版本是 1。新字段可选并有默认值；缺少 `schemaVersion` 的旧文件按 1 读取。示例模型是 `ExampleDocument`，不是待办或便签模型。
-- 写盘成功后发布 `EntityChanged { kind, id, revision }`。`revision` 只在便签保存时携带新的修订号，其他实体为 None。跨文件批次在提交成功后按写入顺序发布；写盘失败或批次未提交不发布。订阅回调在写锁释放之后执行。
+- 写盘成功后发布 `EntityChanged { kind, id, revision }`。`revision` 只在便签保存时携带新的修订号，其他实体为 None。v0.2.0 之后外部 AI 落地时，待办也携带修订号，见 [external-ai.md](external-ai.md)：缺少 `revision` 按 0 读取，不一致则返回「待办保存冲突」；在此之前 `EntityChanged` 保持现在的行为。跨文件批次在提交成功后按写入顺序发布；写盘失败或批次未提交不发布。订阅回调在写锁释放之后执行。
 - 日志在 `logs/app.log`。单文件超过 1 MiB 时轮转，保留 `app.log`、`app.log.1`、`app.log.2`。不写文件内容，因此不写便签正文。落盘前去掉常见 GitHub token 形态，以及名称含 `TOKEN`、`SECRET`、`PASSWORD`、`CREDENTIAL`、或以 `_KEY` 结尾且值长度至少 8 的环境变量的值。错误里仍会写出文件路径。
 - `import.pending` 的内容是备份绝对路径的 UTF-8 文本，不是 JSON。它不进入导出包。
 - 收件箱是 `kind=inbox` 的待办清单，首次需要时创建一次。
@@ -263,7 +264,7 @@ Lanwork/
 - 收纳服务在 `lanwork_core::shelves`。分组文件是 `shelves/<id>.json`，字段为名称、排序、关联待办 id 的列表 `todoIds`（按关联的先后，没有关联时不写这个字段），以及引用列表。旧文件的单条 `todoId` 读入时成为列表的第一项，之后写这个分组时只写 `todoIds`，不再写 `todoId`。每条引用保存绝对路径、显示名、是否文件夹和加入时间，不保存文件内容和图标。路径规范化和存在性检查见「收纳」。
 - 便签带递增的 `revision`。保存时带上加载时的 revision，与磁盘不一致则返回冲突错误，调用方保留正文。冲突之后的可见行为以产品规格为准。
 - 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`，以及可选的 `floatWindow`（`x`、`y`、`width`、`height`，物理像素，位置是虚拟屏幕坐标，贴边时仍是展开矩形）、可选的 `floatDock`（`edge`、`offset`、`collapsed`）和可选的 `floatStack`（`id`、`index`、`current`，见「叠页」）。旧文件里的 `floatPinned` 能读，不再写回，与列表里的 `pinned` 无关。旧文件没有 `floatWindow` 或 `floatDock` 照常加载；它们随便签文件进入导出、备份和导入。`set_float` 同时写这两项：不带 `revision`，不改 `revision` 和 `updatedAt`，所以编辑区手里的版本号不会因此过期，列表顺序也不变；回收站里的便签同样可以记。不认识的 `edge` 当成没有贴边。服务不判断记下的值是否还在某个显示器内。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。删除写入 `deletedAt`，文件留在 `notes/`。永久删除只删除已经软删除的文件；删文件成功后、发布变更前从内存去掉。进入回收站满 30 天（30×86400000 毫秒）的便签，`deleted` 不再返回，`restore` 不恢复、也不写盘。打开服务时清除一次；外壳也可以调用 `NoteCommands::purge_expired`。服务不建定时器，调用间隔未在规格里写明。某一篇删不掉时记日志并跳过，打开服务仍成功，其余便签照常可用。服务不做覆盖。冲突后的版本选择、关闭和退出时的未保存正文由界面处理。
-- 导出包包含配置、待办、便签、收纳分组，以及 `user-apps.json`（便携应用、别名和隐藏名单）。不含 `github/watchlist.json`、`github/cache`、日志、备份目录、`import.pending`、token 和环境变量。备份同样不含 watchlist 和缓存。服务在 `lanwork_core::backup`，薄命令是 `BackupCommands`。包是只含存储法（compression method 0）的 ZIP。根上的 `manifest.json` 有 `packageSchemaVersion`（当前为 1）、`exportedAt`（调用方传入的 UTC 毫秒）、`appVersion` 和 `counts`。新包的 `counts` 不再写 `watchlist` 和 `githubCaches`；旧清单里缺这两项时按 0 读。路径拒绝 `..` 和绝对路径。白名单是上面的数据文件；旧包里的 `github/watchlist.json` 和 `github/cache/<id>.json` 仍能通过校验，导入时忽略、不写入。每个 JSON 可解析；缺少 `schemaVersion` 按 1，高于 1 则整包拒绝。自动备份文件名是 `auto-年-月-日-毫秒.zip`，手动是 `manual-毫秒.zip`，导入前的备份是 `import-毫秒.zip`。`backups/auto-day.txt` 记下最近一次自动备份的公历日，不计入 7 份。同一天再次调用自动备份不再写新文件。自动和手动合计超过 7 份时按文件名里的毫秒删除最旧的，不删除 `import-` 和其他文件。手动备份不改 `auto-day.txt`。调用方传入公历日和毫秒，服务不读时钟，也不读环境变量。
+- 导出包包含配置、待办、便签、收纳分组，以及 `user-apps.json`（便携应用、别名和隐藏名单）。v0.2.0 之后另含已安装插件的副本和启用状态，见 [extensions.md](extensions.md)，现在没有。不含 `github/watchlist.json`、`github/cache`、日志、备份目录、`import.pending`、token 和环境变量。备份同样不含 watchlist 和缓存。服务在 `lanwork_core::backup`，薄命令是 `BackupCommands`。包是只含存储法（compression method 0）的 ZIP。根上的 `manifest.json` 有 `packageSchemaVersion`（当前为 1）、`exportedAt`（调用方传入的 UTC 毫秒）、`appVersion` 和 `counts`。新包的 `counts` 不再写 `watchlist` 和 `githubCaches`；旧清单里缺这两项时按 0 读。路径拒绝 `..` 和绝对路径。白名单是上面的数据文件；旧包里的 `github/watchlist.json` 和 `github/cache/<id>.json` 仍能通过校验，导入时忽略、不写入。每个 JSON 可解析；缺少 `schemaVersion` 按 1，高于 1 则整包拒绝。自动备份文件名是 `auto-年-月-日-毫秒.zip`，手动是 `manual-毫秒.zip`，导入前的备份是 `import-毫秒.zip`。`backups/auto-day.txt` 记下最近一次自动备份的公历日，不计入 7 份。同一天再次调用自动备份不再写新文件。自动和手动合计超过 7 份时按文件名里的毫秒删除最旧的，不删除 `import-` 和其他文件。手动备份不改 `auto-day.txt`。调用方传入公历日和毫秒，服务不读时钟，也不读环境变量。
 - 不实现 Focus 的聚合服务，也不实现从 MayDolist schema 的一次性迁移。
 
 ### 跨文件操作
