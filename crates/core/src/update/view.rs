@@ -72,6 +72,8 @@ pub struct UpdateUi {
 pub struct UpdateSession {
     phase: Phase,
     remembered: Option<AvailableUpdate>,
+    /// 上次安装程序没有成功结束。自动检查仍记住新版本，界面继续显示「安装失败」，直到用户再点「检查更新」或开始下载。
+    install_notice: bool,
 }
 
 impl UpdateSession {
@@ -80,7 +82,17 @@ impl UpdateSession {
         Self {
             phase: Phase::Idle,
             remembered: None,
+            install_notice: false,
         }
+    }
+
+    /// 下次启动读到安装失败标记时调用。
+    pub fn note_install_failure(&mut self) {
+        self.install_notice = true;
+        self.phase = Phase::Failed {
+            message: TEXT_INSTALL_FAILED,
+            update: self.remembered.clone(),
+        };
     }
 
     #[must_use]
@@ -94,16 +106,34 @@ impl UpdateSession {
     }
 
     pub fn finish_check(&mut self, outcome: CheckOutcome, manual: bool) {
+        if manual {
+            self.install_notice = false;
+        }
         match outcome {
             CheckOutcome::Current => {
                 self.remembered = None;
+                self.install_notice = false;
                 self.phase = Phase::Current;
             }
             CheckOutcome::Available(update) => {
                 self.remembered = Some(update.clone());
-                self.phase = Phase::Available(update);
+                if self.install_notice {
+                    self.phase = Phase::Failed {
+                        message: TEXT_INSTALL_FAILED,
+                        update: Some(update),
+                    };
+                } else {
+                    self.phase = Phase::Available(update);
+                }
             }
             CheckOutcome::Failed(message) => {
+                if self.install_notice {
+                    self.phase = Phase::Failed {
+                        message: TEXT_INSTALL_FAILED,
+                        update: self.remembered.clone(),
+                    };
+                    return;
+                }
                 if !manual && let Some(update) = self.remembered.clone() {
                     self.phase = Phase::Available(update);
                     return;
@@ -117,6 +147,7 @@ impl UpdateSession {
     }
 
     pub fn begin_download(&mut self, update: AvailableUpdate) {
+        self.install_notice = false;
         self.phase = Phase::Downloading {
             update,
             received: 0,
@@ -461,6 +492,32 @@ mod tests {
         assert_eq!(ui.status, TEXT_UP_TO_DATE);
         assert!(!ui.tray);
         assert_eq!(ui.button, TEXT_BUTTON_CHECK);
+    }
+
+    #[test]
+    fn an_install_failure_stays_after_the_next_automatic_check() {
+        let mut session = UpdateSession::new();
+        session.note_install_failure();
+        let ui = present(Version::new(0, 2, 0), Edition::Installed, session.phase());
+        assert_eq!(ui.status, TEXT_INSTALL_FAILED);
+        assert!(ui.status_error);
+        assert_eq!(ui.action, ButtonAction::Check);
+
+        session.finish_check(CheckOutcome::Available(sample()), false);
+        let ui = present(Version::new(0, 2, 0), Edition::Installed, session.phase());
+        assert_eq!(ui.status, TEXT_INSTALL_FAILED);
+        assert!(ui.tray);
+        assert_eq!(ui.action, ButtonAction::Install);
+
+        session.finish_check(CheckOutcome::Failed(TEXT_CHECK_FAILED), false);
+        let ui = present(Version::new(0, 2, 0), Edition::Installed, session.phase());
+        assert_eq!(ui.status, TEXT_INSTALL_FAILED);
+        assert_eq!(ui.action, ButtonAction::Install);
+
+        session.finish_check(CheckOutcome::Available(sample()), true);
+        let ui = present(Version::new(0, 2, 0), Edition::Installed, session.phase());
+        assert_eq!(ui.status, "0.3.0");
+        assert_eq!(ui.action, ButtonAction::Install);
     }
 
     #[test]

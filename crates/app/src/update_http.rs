@@ -1,12 +1,12 @@
-//! WinHTTP。只访问 `lanwork_core::update` 允许的 https 地址，自己跟重定向。
+//! WinHTTP。第一跳只访问钉死的 https 地址，重定向只跟到允许的 CDN，自己跟重定向。
 //!
 //! 不关闭证书校验，也不打开自动解压。正文边读边交给调用方，超过上限就停。
 
 use std::ptr::{self, NonNull};
 
 use lanwork_core::update::{
-    GetBytes, MAX_REDIRECTS, TransportError, current_version, parse_https_url, resolve_redirect,
-    url_allowed,
+    GetBytes, MAX_REDIRECTS, TransportError, current_version, parse_https_url, redirect_allowed,
+    resolve_redirect, url_allowed,
 };
 use windows::Win32::Networking::WinHttp::{
     WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_DISABLE_REDIRECTS,
@@ -52,7 +52,12 @@ pub(crate) fn pull(
 ) -> Result<(), TransportError> {
     let mut current = url.to_owned();
     for hop in 0..=MAX_REDIRECTS {
-        if !url_allowed(&current) {
+        let allowed = if hop == 0 {
+            url_allowed(&current)
+        } else {
+            redirect_allowed(&current)
+        };
+        if !allowed {
             return Err(TransportError::Network);
         }
         let Some(parsed) = parse_https_url(&current) else {

@@ -103,20 +103,61 @@ pub fn download_path(
     Some(path)
 }
 
+/// 安装失败时写退出码的文件。优先放在缓存目录的上一级（`%LOCALAPPDATA%\Lanwork`），
+/// 不放进数据目录。那里也不行时改放临时目录。两处都落在数据目录里就返回 `None`。
+#[must_use]
+pub fn install_failure_marker(
+    cache_dir: &Path,
+    data_dir: &Path,
+    temp_dir: &Path,
+) -> Option<PathBuf> {
+    let beside_cache = cache_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.join("update-failed.txt"));
+    if let Some(marker) = beside_cache
+        && !marker.starts_with(data_dir)
+    {
+        return Some(marker);
+    }
+    let marker = temp_dir.join("Lanwork-update-failed.txt");
+    if marker.starts_with(data_dir) || marker.starts_with(cache_dir) {
+        return None;
+    }
+    Some(marker)
+}
+
+/// 下次启动读到失败标记时写进日志的那一行。只接受十进制退出码，其余内容不写进日志。
+#[must_use]
+pub fn install_failure_log(marker_text: &str) -> String {
+    let code = marker_text.trim();
+    if !code.is_empty() && code.len() <= 10 && code.bytes().all(|byte| byte.is_ascii_digit()) {
+        format!("安装失败：安装程序退出码 {code}")
+    } else {
+        "安装失败".to_owned()
+    }
+}
+
 /// 本进程退出之后运行的 PowerShell。等进程结束，再静默安装，然后启动原来的程序。
 ///
-/// 路径里有控制字符时返回 `None`，调用方不要启动安装。
+/// 安装程序的退出码不是 0，或者启动失败时，把退出码写到 `marker`。路径里有控制字符时返回 `None`。
 #[must_use]
-pub fn update_helper_script(pid: u32, installer: &Path, app: &Path) -> Option<String> {
+pub fn update_helper_script(
+    pid: u32,
+    installer: &Path,
+    app: &Path,
+    marker: &Path,
+) -> Option<String> {
     let installer = ps_quote(&path_text(installer)?)?;
     let app = ps_quote(&path_text(app)?)?;
+    let marker = ps_quote(&path_text(marker)?)?;
     let args = INSTALL_ARGS
         .iter()
         .map(|arg| format!("'{arg}'"))
         .collect::<Vec<_>>()
         .join(",");
     Some(format!(
-        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; try {{ Start-Process -FilePath {installer} -ArgumentList {args} -Wait | Out-Null }} catch {{ }}; if (Test-Path -LiteralPath {app}) {{ Start-Process -FilePath {app} }}"
+        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; $code = 1; $failed = $false; try {{ $proc = Start-Process -FilePath {installer} -ArgumentList {args} -Wait -PassThru -ErrorAction Stop; if ($null -eq $proc.ExitCode -or $proc.ExitCode -ne 0) {{ $failed = $true; if ($null -ne $proc.ExitCode) {{ $code = $proc.ExitCode }} }} }} catch {{ $failed = $true; $code = 1; Write-Error -ErrorAction Continue $_.Exception.Message }}; if ($failed) {{ Set-Content -LiteralPath {marker} -Value ([string]$code) -Encoding ascii -ErrorAction Continue }}; if (Test-Path -LiteralPath {app}) {{ Start-Process -FilePath {app} }}"
     ))
 }
 
@@ -235,15 +276,22 @@ mod tests {
 
     #[test]
     fn helper_script_quotes_paths_and_does_not_name_user_data() {
+        let marker = Path::new(r"C:\Users\张三\AppData\Local\Lanwork\update-failed.txt");
         let script = update_helper_script(
             42,
             Path::new(r"C:\Temp\O'Brien\Lanwork-Setup-0.3.0.exe"),
             Path::new(r"C:\Users\张三\AppData\Local\Programs\Lanwork\lanwork.exe"),
+            marker,
         )
         .unwrap();
         assert!(script.contains("Wait-Process -Id 42"));
         assert!(script.contains(r"'C:\Temp\O''Brien\Lanwork-Setup-0.3.0.exe'"));
         assert!(script.contains(r"'C:\Users\张三\AppData\Local\Programs\Lanwork\lanwork.exe'"));
+        assert!(script.contains(r"'C:\Users\张三\AppData\Local\Lanwork\update-failed.txt'"));
+        assert!(script.contains("$proc.ExitCode"));
+        assert!(script.contains("Write-Error"));
+        assert!(script.contains("Set-Content"));
+        assert!(!script.contains("catch { }"));
         for arg in INSTALL_ARGS {
             assert!(script.contains(&format!("'{arg}'")), "{arg}");
         }
@@ -252,9 +300,32 @@ mod tests {
         assert!(!script.contains("MayDolist"));
         assert!(!script.contains("LANWORK_DATA_DIR"));
         assert_eq!(
-            update_helper_script(1, Path::new("a\nb.exe"), Path::new("c.exe")),
+            update_helper_script(
+                1,
+                Path::new("a\nb.exe"),
+                Path::new("c.exe"),
+                Path::new("d.txt")
+            ),
             None
         );
+        assert_eq!(install_failure_log("2"), "安装失败：安装程序退出码 2");
+        assert_eq!(install_failure_log(" 0 "), "安装失败：安装程序退出码 0");
+        assert_eq!(install_failure_log("not-a-code"), "安装失败");
+    }
+
+    #[test]
+    fn failure_marker_stays_out_of_the_data_directory() {
+        let cache = PathBuf::from(r"C:\Users\me\AppData\Local\Lanwork").join("cache");
+        let data = PathBuf::from(r"C:\Users\me\Documents\Lanwork");
+        let temp = PathBuf::from(r"C:\Users\me\AppData\Local\Temp");
+        let marker = install_failure_marker(&cache, &data, &temp).unwrap();
+        assert_eq!(
+            marker.file_name().and_then(|name| name.to_str()),
+            Some("update-failed.txt")
+        );
+        assert_eq!(marker.parent(), cache.parent());
+        let local = PathBuf::from(r"C:\Users\me\AppData\Local\Lanwork");
+        assert!(install_failure_marker(&local.join("cache"), &local, &local).is_none());
     }
 
     fn temp_dir() -> PathBuf {

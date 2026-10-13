@@ -13,11 +13,12 @@ mod view;
 pub use fetch::{
     CHECK_INTERVAL, GetBytes, HttpsUrl, LATEST_RELEASE_URL, MAX_INSTALLER_BYTES,
     MAX_METADATA_BYTES, MAX_REDIRECTS, NOTES_CHARS, STARTUP_DELAY, TransportError,
-    installer_file_name, parse_https_url, release_page_allowed, resolve_redirect, url_allowed,
+    installer_file_name, parse_https_url, pinned_installer_url, pinned_latest_json_url,
+    redirect_allowed, release_page_allowed, resolve_redirect, url_allowed,
 };
 pub use install::{
-    ContentHash, Edition, INSTALL_ARGS, download_path, edition_of, review_download, sha256_eq,
-    sha256_hex, update_helper_script,
+    ContentHash, Edition, INSTALL_ARGS, download_path, edition_of, install_failure_log,
+    install_failure_marker, review_download, sha256_eq, sha256_hex, update_helper_script,
 };
 pub use release::{AvailableUpdate, VerifiedInstaller};
 pub use version::{Version, current_version};

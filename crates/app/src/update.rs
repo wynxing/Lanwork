@@ -13,8 +13,8 @@ use lanwork_core::update::{
     ButtonAction, CHECK_INTERVAL, CheckOutcome, ContentHash, Edition, GetBytes,
     MAX_INSTALLER_BYTES, Phase, STARTUP_DELAY, TEXT_CHECK_FAILED, TEXT_DOWNLOAD_FAILED,
     TEXT_INSTALL_FAILED, TEXT_OPEN_FAILED, TransportError, UpdateSession, current_version,
-    download_path, edition_of, present, release_page_allowed, review_download, run_check,
-    update_helper_script, url_allowed,
+    download_path, edition_of, install_failure_log, install_failure_marker, pinned_installer_url,
+    present, release_page_allowed, review_download, run_check, update_helper_script, url_allowed,
 };
 use slint::ComponentHandle;
 use windows::Win32::Foundation::CloseHandle;
@@ -45,6 +45,10 @@ thread_local! {
 
 /// 托盘接好之后调用。先把当前版本推到设置页，再等事件循环起来后检查一次。
 pub(crate) fn start(store: Store) {
+    if let Some(message) = consume_install_failure(&store) {
+        store.log_warn(&message);
+        SESSION.with(|cell| cell.borrow_mut().note_install_failure());
+    }
     STORE.with(|cell| *cell.borrow_mut() = Some(store));
     push_ui();
     slint::Timer::single_shot(STARTUP_DELAY, || begin_check(false));
@@ -72,8 +76,25 @@ pub(crate) fn spawn_pending_install() -> Result<(), ()> {
     let Some(pending) = pending else {
         return Ok(());
     };
-    let Some(script) = update_helper_script(std::process::id(), &pending.installer, &pending.app)
+    let Some(store) = STORE.with(|cell| cell.borrow().clone()) else {
+        let _ = std::fs::remove_file(&pending.installer);
+        return Err(());
+    };
+    let Some(marker) =
+        install_failure_marker(store.cache_dir(), store.data_dir(), &std::env::temp_dir())
     else {
+        let _ = std::fs::remove_file(&pending.installer);
+        return Err(());
+    };
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Some(script) = update_helper_script(
+        std::process::id(),
+        &pending.installer,
+        &pending.app,
+        &marker,
+    ) else {
         let _ = std::fs::remove_file(&pending.installer);
         return Err(());
     };
@@ -89,6 +110,17 @@ pub(crate) fn install_spawn_failed() {
     log_warn("安装失败");
     SESSION.with(|cell| cell.borrow_mut().fail(TEXT_INSTALL_FAILED));
     push_ui();
+}
+
+fn consume_install_failure(store: &Store) -> Option<String> {
+    let marker =
+        install_failure_marker(store.cache_dir(), store.data_dir(), &std::env::temp_dir())?;
+    if !marker.is_file() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&marker).unwrap_or_default();
+    let _ = std::fs::remove_file(&marker);
+    Some(install_failure_log(&text))
 }
 
 fn begin_check(manual: bool) {
@@ -148,7 +180,7 @@ fn begin_install() {
     let Some(installer) = update.installer.clone() else {
         return;
     };
-    if !url_allowed(&installer.url) {
+    if installer.url != pinned_installer_url(update.version) || !url_allowed(&installer.url) {
         fail_download(TEXT_DOWNLOAD_FAILED);
         return;
     }

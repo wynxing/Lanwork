@@ -489,13 +489,13 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 安装版点「更新」才下载。便携版没有「更新」，按钮是「打开发布页」，用 `ShellExecuteW` 打开这个 Release 的 `https://github.com/wynxing/Lanwork/releases/...`。安装目录里有 `unins000.exe` 的是安装版。便携版的 zip 里没有这个文件。读不到可执行文件路径时按便携版，不下载安装包。
 
-安装包文件名必须是 `Lanwork-Setup-<版本>.exe`。地址用 Release 资产的 `browser_download_url`，不写在 `latest.json` 里。`latest.json` 在同一个 Release 上，字段是 `version`、`installer.name`、`installer.sha256`（64 位十六进制）。资产上如果有 `digest`（`sha256:` 加十六进制），必须和 `latest.json` 一致，否则不提供「更新」，状态里带「校验信息不可用」，按钮改成「打开发布页」。没有 `latest.json`、哈希对不上或文件名不对，同样不静默安装。
+安装包文件名必须是 `Lanwork-Setup-<版本>.exe`。安装包第一跳必须是 `https://github.com/wynxing/Lanwork/releases/download/v<版本>/Lanwork-Setup-<版本>.exe`。`latest.json` 第一跳必须是同一标签下的 `https://github.com/wynxing/Lanwork/releases/download/v<版本>/latest.json`。Release 资产里的 `browser_download_url` 只有和这两个地址完全一致时才采用，地址不写在 `latest.json` 里。`latest.json` 在同一个 Release 上，字段是 `version`、`installer.name`、`installer.sha256`（64 位十六进制）。资产上如果有 `digest`（`sha256:` 加十六进制），必须和 `latest.json` 一致，否则不提供「更新」，状态里带「校验信息不可用」，按钮改成「打开发布页」。没有 `latest.json`、哈希对不上、文件名不对或地址不是这两条，同样不静默安装。
 
-下载用 WinHTTP，分块写到临时目录，边写边算 SHA-256。不落到数据目录，也不落到缓存目录。不超过 200 MiB。临时文件在校验失败或下载失败时删掉。哈希一致才退出程序。退出仍走原来的便签保存：还有没写盘的修改时不退出，等用户处理完再继续。然后一个 PowerShell 助手等本进程结束（互斥量松开），运行安装包。参数只有 `/VERYSILENT`、`/SUPPRESSMSGBOXES`、`/NORESTART`、`/CLOSEAPPLICATIONS`。没有 `/DIR`，也没有数据目录。安装程序返回之后，只要原来的 `lanwork.exe` 还在，就再启动它。助手起不来时不退出，设置页显示「安装失败」，临时安装包删掉。
+下载用 WinHTTP，分块写到临时目录，边写边算 SHA-256。不落到数据目录，也不落到缓存目录。不超过 200 MiB。临时文件在校验失败或下载失败时删掉。哈希一致才退出程序。退出仍走原来的便签保存：还有没写盘的修改时不退出，等用户处理完再继续。然后一个 PowerShell 助手等本进程结束（互斥量松开），运行安装包。参数只有 `/VERYSILENT`、`/SUPPRESSMSGBOXES`、`/NORESTART`、`/CLOSEAPPLICATIONS`。没有 `/DIR`，也没有数据目录。安装程序的退出码要检查。不是 0，或者安装程序没有启动时，把退出码写到 `%LOCALAPPDATA%\Lanwork\update-failed.txt`。这个文件不在数据目录里。下次启动读到它就记一条警告，设置页显示「安装失败」，然后删掉文件。自动检查如果仍有新版本，状态保持「安装失败」，「更新」可以再点。用户再点「检查更新」之后按当次结果更新状态。原来的 `lanwork.exe` 还在就再启动它。助手起不来时不退出，设置页显示「安装失败」，临时安装包删掉。
 
 静默安装发现互斥量还在会自己退出，所以必须等进程结束再启动安装包。`/CLOSEAPPLICATIONS` 仍传着。安装脚本 `RestartApplications=no`，避免安装程序再启动一次。
 
-允许的地址只有 https、端口 443：`api.github.com` 的 `/repos/wynxing/Lanwork/`，`github.com` 的 `/wynxing/Lanwork/`，以及 `release-assets.githubusercontent.com` 和 `objects.githubusercontent.com`。重定向自己跟，最多 5 次，每一跳都要在这份名单里。不关闭证书校验。元数据不超过 2 MiB。发行说明超过 8000 个 Unicode 标量值时截断并加省略号。这些上限、启动后等的 1 秒、小点的颜色和大小、说明用固定高度的换行文本而不是滚动，都是实现选择。
+第一跳只允许 https、端口 443，并且没有查询串、片段和 `..`：`https://api.github.com/repos/wynxing/Lanwork/releases/latest`，以及上面两条钉死的下载地址。别的路径不请求。`release-assets.githubusercontent.com` 和 `objects.githubusercontent.com` 只允许出现在重定向之后。重定向自己跟，最多 5 次。重定向里的 `..`、百分号编码的 `..` 和其他主机都拒绝。不关闭证书校验。元数据不超过 2 MiB。发行说明超过 8000 个 Unicode 标量值时截断并加省略号。这些上限、启动后等的 1 秒、小点的颜色和大小、说明用固定高度的换行文本而不是滚动，都是实现选择。
 
 网络失败时不安装。日志里写失败种类（网络、过大、写入临时文件失败、http 状态码），不写地址。
 

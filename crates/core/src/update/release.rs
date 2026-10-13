@@ -2,11 +2,14 @@
 
 use serde::Deserialize;
 
-use super::fetch::{NOTES_CHARS, installer_file_name, release_page_allowed, url_allowed};
+use super::fetch::{
+    NOTES_CHARS, installer_file_name, pinned_installer_url, pinned_latest_json_url,
+    release_page_allowed, url_allowed,
+};
 use super::install::sha256_eq;
 use super::version::Version;
 
-/// 核对过、可以下载的安装包。地址来自 Release 资产，哈希来自 `latest.json`。
+/// 核对过、可以下载的安装包。地址是钉死的第一跳，哈希来自 `latest.json`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedInstaller {
     pub name: String,
@@ -59,9 +62,9 @@ pub fn parse_github_release(bytes: &[u8]) -> Result<ParsedRelease, ()> {
     let mut digest = None;
     for asset in release.assets.unwrap_or_default() {
         if asset.name == "latest.json" && latest_json_url.is_none() {
-            latest_json_url = allowed_url(&asset.browser_download_url);
+            latest_json_url = exact_pinned_url(version, "latest.json", &asset.browser_download_url);
         } else if asset.name == name && installer_url.is_none() {
-            installer_url = allowed_url(&asset.browser_download_url);
+            installer_url = exact_pinned_url(version, &name, &asset.browser_download_url);
             digest = asset.digest.as_deref().and_then(normalize_digest);
         }
     }
@@ -135,8 +138,16 @@ fn installer_from(github: &GithubRelease, latest: Option<LatestFile>) -> Option<
     })
 }
 
-fn allowed_url(url: &str) -> Option<String> {
-    url_allowed(url).then(|| url.to_owned())
+/// Release 里的地址只有和钉死的第一跳完全一致时才采用。别的路径、CDN 和 `..` 都丢掉。
+fn exact_pinned_url(version: Version, name: &str, browser_url: &str) -> Option<String> {
+    let pinned = if name == "latest.json" {
+        pinned_latest_json_url(version)
+    } else if name == installer_file_name(version) {
+        pinned_installer_url(version)
+    } else {
+        return None;
+    };
+    (browser_url == pinned && url_allowed(&pinned)).then_some(pinned)
 }
 
 fn normalize_digest(digest: &str) -> Option<String> {
@@ -265,6 +276,47 @@ mod tests {
     }
 
     #[test]
+    fn substituted_download_urls_are_not_the_pinned_first_hop() {
+        let github = stable("v0.3.0", Some(HASH));
+        assert_eq!(
+            github.installer_url.as_deref(),
+            Some(
+                "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/Lanwork-Setup-0.3.0.exe"
+            )
+        );
+        assert_eq!(
+            github.latest_json_url.as_deref(),
+            Some("https://github.com/wynxing/Lanwork/releases/download/v0.3.0/latest.json")
+        );
+
+        let cdn = release_with_urls(
+            "v0.3.0",
+            "https://release-assets.githubusercontent.com/github-production-release-asset/abcd",
+            "https://objects.githubusercontent.com/latest.json",
+        );
+        assert!(cdn.installer_url.is_none());
+        assert!(cdn.latest_json_url.is_none());
+
+        let dotdot = release_with_urls(
+            "v0.3.0",
+            "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/../Lanwork-Setup-0.3.0.exe",
+            "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/%2e%2e/latest.json",
+        );
+        assert!(dotdot.installer_url.is_none());
+        assert!(dotdot.latest_json_url.is_none());
+
+        let other = release_with_urls(
+            "v0.3.0",
+            "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/other.exe",
+            "https://github.com/wynxing/Lanwork/releases/download/v0.2.0/latest.json",
+        );
+        assert!(other.installer_url.is_none());
+        assert!(other.latest_json_url.is_none());
+        let update = assemble(Version::new(0, 2, 0), other, None).unwrap();
+        assert!(update.installer.is_none());
+    }
+
+    #[test]
     fn latest_json_rejects_a_bad_hash() {
         let json = format!(
             r#"{{"version":"0.3.0","installer":{{"name":"Lanwork-Setup-0.3.0.exe","sha256":"{}"}}}}"#,
@@ -276,6 +328,30 @@ mod tests {
             parse_latest_json(br#"{"version":"0.3.0","installer":{"name":"a","sha256":"zz"}}"#)
                 .is_err()
         );
+    }
+
+    fn release_with_urls(tag: &str, installer_url: &str, latest_url: &str) -> GithubRelease {
+        let body = format!(
+            r#"{{
+                "tag_name":"{tag}",
+                "body":"说明",
+                "html_url":"https://github.com/wynxing/Lanwork/releases/tag/{tag}",
+                "assets":[
+                    {{
+                        "name":"Lanwork-Setup-0.3.0.exe",
+                        "browser_download_url":"{installer_url}"
+                    }},
+                    {{
+                        "name":"latest.json",
+                        "browser_download_url":"{latest_url}"
+                    }}
+                ]
+            }}"#
+        );
+        match parse_github_release(body.as_bytes()).unwrap() {
+            ParsedRelease::Stable(release) => release,
+            ParsedRelease::NotStable => panic!("stable tag"),
+        }
     }
 
     fn stable(tag: &str, digest: Option<&str>) -> GithubRelease {
