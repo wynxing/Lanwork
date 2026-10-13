@@ -5,7 +5,7 @@
 use crate::storage::Store;
 
 use super::error::NoteError;
-use super::model::{FloatDock, FloatGeometry, Note, NoteInput, TimestampMillis};
+use super::model::{FloatDock, FloatGeometry, FloatStackSlot, Note, NoteInput, TimestampMillis};
 use super::service::NoteService;
 
 /// 界面调用的便签命令。克隆与对应的 [`NoteService`] 共享状态。
@@ -51,6 +51,12 @@ impl NoteCommands {
         dock: Option<FloatDock>,
     ) -> Result<Note, NoteError> {
         self.service.set_float(id, geometry, dock)
+    }
+
+    /// 记下这一篇属于哪一叠。不改 `revision`，见 [`NoteService::set_stack`]。
+    pub fn set_stack(&self, id: &str, slot: Option<FloatStackSlot>) -> Result<Note, NoteError> {
+        self.service.check_id(id)?;
+        self.service.set_stack(id, slot)
     }
 
     pub fn set_pinned(&self, id: &str, revision: u64, pinned: bool) -> Result<Note, NoteError> {

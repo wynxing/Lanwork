@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::notes::{FloatDock, FloatGeometry, flexible_dock};
+use crate::notes::{FloatDock, FloatGeometry, FloatStackSlot, flexible_dock, flexible_stack};
 use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 
 use super::error::ShelfError;
@@ -34,6 +34,8 @@ pub struct Shelf {
     pub float: Option<FloatGeometry>,
     /// 贴边。没有记录时不贴边。旧文件里的 `floatPinned` 不进这个字段。
     pub float_dock: Option<FloatDock>,
+    /// 叠页。没有记录时不在任何一叠里。
+    pub float_stack: Option<FloatStackSlot>,
 }
 
 /// 一条路径引用。不包含文件内容。
@@ -113,6 +115,13 @@ pub(crate) struct ShelfFile {
         deserialize_with = "flexible_dock"
     )]
     float_dock: Option<FloatDock>,
+    #[serde(
+        rename = "floatStack",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_stack"
+    )]
+    float_stack: Option<FloatStackSlot>,
     /// 旧的逐窗钉住。读进来就丢掉，不再写回。
     #[serde(rename = "floatPinned", default, skip_serializing)]
     _legacy_float_pinned: bool,
@@ -146,6 +155,7 @@ impl ShelfFile {
             todo_ids: shelf.todo_ids.clone(),
             float: shelf.float,
             float_dock: shelf.float_dock,
+            float_stack: shelf.float_stack.clone(),
             _legacy_float_pinned: false,
             refs: shelf
                 .refs
@@ -206,6 +216,7 @@ impl ShelfFile {
             refs,
             float: self.float,
             float_dock: self.float_dock,
+            float_stack: self.float_stack,
         })
     }
 }

@@ -21,6 +21,8 @@ mod bar_win;
 mod float_dock;
 #[cfg(windows)]
 mod float_frame;
+#[cfg(windows)]
+mod float_group;
 mod frame_policy;
 #[cfg(windows)]
 mod host;

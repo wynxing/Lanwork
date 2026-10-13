@@ -1,0 +1,58 @@
+// 叠页的页码。单独一个小窗，挂在悬浮窗原来的边框外面，不占内容区。
+// 拖这块页签把当前页拆出去。尺寸是当前做法，待定。
+
+import { Palette } from "std-widgets.slint";
+
+export component StackTab inherits Window {
+    title: "Lanwork";
+    no-frame: true;
+    always-on-top: true;
+    default-font-family: "Microsoft YaHei UI";
+    preferred-width: 40px;
+    preferred-height: 16px;
+
+    in property <bool> dark;
+    in property <string> label;
+
+    callback drag-tab();
+
+    background: transparent;
+
+    init => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        border-radius: 4px;
+        background: dark ? #2b2b2be6 : #f3f3f3e6;
+
+        Text {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            text: root.label;
+            font-size: 11px;
+            color: dark ? #f3f3f3 : #1b1b1b;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        TouchArea {
+            accessible-role: button;
+            accessible-label: root.label;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.drag-tab();
+                }
+            }
+        }
+    }
+}

@@ -13,8 +13,8 @@ use crate::storage::{ChangeMeta, CollectionKind, DocumentId, Store, lock_mutex};
 
 use super::error::NoteError;
 use super::model::{
-    FloatDock, FloatGeometry, Note, NoteFile, NoteInput, SkipReason, TimestampMillis,
-    normalize_query_tag, normalize_tags, sort_for_list,
+    FloatDock, FloatGeometry, FloatStackSlot, Note, NoteFile, NoteInput, SkipReason,
+    TimestampMillis, normalize_query_tag, normalize_tags, sort_for_list,
 };
 
 #[derive(Default)]
@@ -99,6 +99,7 @@ impl NoteService {
             revision: 1,
             float: None,
             float_dock: None,
+            float_stack: None,
         };
         self.persist(note)
     }
@@ -149,6 +150,20 @@ impl NoteService {
         }
         next.float = Some(geometry);
         next.float_dock = dock;
+        self.persist(next)
+    }
+
+    /// 记下这一篇属于哪一叠。不改 `revision` 和 `updatedAt`，和 [`Self::set_float`] 一样。
+    ///
+    /// `slot` 为 `None` 表示不在任何一叠里。值没有变化时不写盘。
+    pub fn set_stack(&self, id: &str, slot: Option<FloatStackSlot>) -> Result<Note, NoteError> {
+        self.check_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        let mut next = self.cached(id)?;
+        if next.float_stack == slot {
+            return Ok(next);
+        }
+        next.float_stack = slot;
         self.persist(next)
     }
 

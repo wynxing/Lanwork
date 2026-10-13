@@ -91,6 +91,63 @@ impl Serialize for FloatDock {
     }
 }
 
+/// 一页在某一叠里的位置。存在便签或分组文件的 `floatStack` 里。
+///
+/// 没有这一项的旧文件照常打开，表示不在任何一叠里。`id` 相同的页属于同一叠。
+/// `index` 是页序。`current` 为真的那一页是上次显示的页。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloatStackSlot {
+    pub id: String,
+    pub index: u32,
+    pub current: bool,
+}
+
+impl Serialize for FloatStackSlot {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("FloatStackSlot", 3)?;
+        out.serialize_field("id", &self.id)?;
+        out.serialize_field("index", &self.index)?;
+        out.serialize_field("current", &self.current)?;
+        out.end()
+    }
+}
+
+impl FloatStackSlot {
+    /// 认不出的形状当成没有叠页，不让整份文件打不开。
+    pub(crate) fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let obj = value.as_object()?;
+        let id = obj.get("id").and_then(serde_json::Value::as_str)?.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let index = obj
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let current = obj
+            .get("current")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Some(Self {
+            id: id.to_owned(),
+            index: u32::try_from(index).unwrap_or(u32::MAX),
+            current,
+        })
+    }
+}
+
+pub(crate) fn flexible_stack<'de, D>(deserializer: D) -> Result<Option<FloatStackSlot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(FloatStackSlot::from_json(&value))
+}
+
 impl FloatDock {
     pub(crate) fn from_json(value: &serde_json::Value) -> Option<Self> {
         let obj = value.as_object()?;
@@ -142,6 +199,8 @@ pub struct Note {
     pub float: Option<FloatGeometry>,
     /// 贴边。没有记录时不贴边。旧文件里的 `floatPinned` 不进这个字段。
     pub float_dock: Option<FloatDock>,
+    /// 叠页。没有记录时不在任何一叠里。
+    pub float_stack: Option<FloatStackSlot>,
 }
 
 impl Note {
@@ -294,6 +353,13 @@ pub(crate) struct NoteFile {
         deserialize_with = "flexible_dock"
     )]
     float_dock: Option<FloatDock>,
+    #[serde(
+        rename = "floatStack",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_stack"
+    )]
+    float_stack: Option<FloatStackSlot>,
     /// 旧的逐窗钉住。读进来就丢掉，不再写回。缺了这个字段也照常打开。
     #[serde(rename = "floatPinned", default, skip_serializing)]
     _legacy_float_pinned: bool,
@@ -314,6 +380,7 @@ impl NoteFile {
             revision: note.revision,
             float: note.float,
             float_dock: note.float_dock,
+            float_stack: note.float_stack.clone(),
             _legacy_float_pinned: false,
         }
     }
@@ -337,6 +404,7 @@ impl NoteFile {
             revision: self.revision,
             float: self.float,
             float_dock: self.float_dock,
+            float_stack: self.float_stack,
         })
     }
 }
@@ -360,6 +428,7 @@ mod tests {
             revision: 1,
             float: None,
             float_dock: None,
+            float_stack: None,
         }
     }
 

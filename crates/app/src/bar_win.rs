@@ -31,12 +31,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GWL_STYLE, GetAncestor, GetCursorPos,
-    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible,
-    STYLESTRUCT, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    WINEVENT_OUTOFCONTEXT, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_STYLECHANGING,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+    BringWindowToTop, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, GetAncestor,
+    GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IsIconic,
+    IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, WINEVENT_OUTOFCONTEXT, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
+    WM_MOUSEACTIVATE, WM_NCDESTROY, WM_STYLECHANGING, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_SYSMENU,
 };
 
 use crate::registry::read_transparency_enabled;
@@ -227,6 +228,7 @@ pub(crate) fn move_window(hwnd: HWND, x: i32, y: i32) {
 const CAPTION_BUTTONS: u32 = WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;
 const CAPTION_SUBCLASS_ID: usize = 1;
 const MOVE_SUBCLASS_ID: usize = 2;
+const NOACTIVATE_SUBCLASS_ID: usize = 4;
 
 type MoveHook = fn(isize, bool, i32, i32, u32, u32);
 
@@ -258,6 +260,57 @@ pub(crate) fn hwnd_key(hwnd: HWND) -> isize {
 pub(crate) fn size_move_blocks_blur(key: isize) -> bool {
     SIZING.with(|list| list.borrow().contains(&key))
         || BLUR_HOLD.with(|list| list.borrow().contains(&key))
+}
+
+pub(crate) fn foreground_is(key: isize) -> bool {
+    is_foreground(HWND(key as *mut c_void))
+}
+
+/// 点这个窗口不把它变成前台。页签用它，避免贴边的叠因为失焦收起来。
+pub(crate) fn arm_no_activate(hwnd: HWND) -> bool {
+    // SAFETY: 在创建窗口的线程上调用。回调不带引用数据，窗口销毁时由回调自己移除。
+    let installed =
+        unsafe { SetWindowSubclass(hwnd, Some(reject_activate), NOACTIVATE_SUBCLASS_ID, 0) }
+            .as_bool();
+    // SAFETY: hwnd 是本进程的页签，只补一个扩展样式位。
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let next = style | isize::try_from(WS_EX_NOACTIVATE.0).unwrap_or(0);
+    if next != style {
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+    installed
+}
+
+unsafe extern "system" fn reject_activate(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if message == WM_MOUSEACTIVATE {
+        return LRESULT(isize::try_from(MA_NOACTIVATE).unwrap_or(3));
+    }
+    if message == WM_NCDESTROY {
+        // SAFETY: 窗口正在销毁，移除本模块装上的子类。
+        unsafe {
+            let _ = RemoveWindowSubclass(hwnd, Some(reject_activate), NOACTIVATE_SUBCLASS_ID);
+        }
+    }
+    // SAFETY: 参数原样交给子类链的下一层。
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
 pub(crate) fn clear_blur_hold(key: isize) {

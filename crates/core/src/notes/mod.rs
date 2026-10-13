@@ -13,9 +13,9 @@ mod service;
 
 pub use command::NoteCommands;
 pub use error::NoteError;
-pub(crate) use model::flexible_dock;
 pub use model::{
-    DockEdge, EMPTY_TITLE_DISPLAY, FloatDock, FloatGeometry, Note, NoteInput, TRASH_RETENTION_MS,
-    TimestampMillis, display_title, normalize_tags,
+    DockEdge, EMPTY_TITLE_DISPLAY, FloatDock, FloatGeometry, FloatStackSlot, Note, NoteInput,
+    TRASH_RETENTION_MS, TimestampMillis, display_title, normalize_tags,
 };
+pub(crate) use model::{flexible_dock, flexible_stack};
 pub use service::NoteService;

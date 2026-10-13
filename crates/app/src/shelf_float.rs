@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use lanwork_core::dispatch::IconCache;
 use lanwork_core::panel::{
-    DropZone, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH, FLOAT_WIDTH, LinkedTodo,
-    PanelTarget, PxBox, float_default_origin, linked_todos,
+    DropEffect, DropZone, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH, FLOAT_WIDTH, Flip,
+    LinkedTodo, PanelTarget, PxBox, StackPage, float_default_origin, linked_todos,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::shelves::{IncomingRef, ShelfCommands, ShelfError, ShelfRef};
@@ -54,6 +54,18 @@ struct FloatWindow {
     /// 已经隐藏、等着从表里去掉。展开位置和贴边在 `last`。
     closed: bool,
     last: Option<SavedFloat>,
+    /// 叠页里这一页藏着，窗口还在。
+    parked: bool,
+    /// 按下时看得见的矩形，用来判断松手有没有离开。
+    drag_anchor: Option<PxBox>,
+    /// 按下前的展开位置和贴边。拆页时其余页回到这里。
+    drag_before: Option<SavedFloat>,
+    /// 这次拖动开始时是收起的把手。
+    drag_collapsed: bool,
+    stack_pages: i32,
+    stack_index: i32,
+    /// 位置或贴边变了，等这次借用结束再告诉叠页。
+    report: bool,
 }
 
 struct Floats {
@@ -137,12 +149,95 @@ pub(crate) fn open(group_id: &str) -> Result<(), String> {
 }
 
 pub(crate) fn apply_theme(dark: bool) {
+    crate::float_group::set_dark(dark);
     with_floats(move |floats| {
         floats.dark = dark;
         for window in floats.windows.values_mut() {
             window.ui.set_dark(dark);
-            window.refresh_backdrop(dark);
+            if !window.parked {
+                window.refresh_backdrop(dark);
+            }
         }
+    });
+}
+
+/// 窗口还在表里（含叠页里藏着的页）。已经关闭、等着释放的不算。
+pub(crate) fn contains(group_id: &str) -> bool {
+    FLOATS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .and_then(|floats| floats.windows.get(group_id))
+            .is_some_and(|window| !window.closed)
+    })
+}
+
+/// 当前看得见的展开位置、贴边和窗口矩形。藏着或已经关闭时没有。
+pub(crate) fn view(group_id: &str) -> Option<(SavedFloat, PxBox)> {
+    FLOATS.with(|cell| {
+        let floats = cell.borrow();
+        let window = floats.as_ref()?.windows.get(group_id)?;
+        if window.closed || window.parked {
+            return None;
+        }
+        Some((window.session.saved(), window.session.visible()))
+    })
+}
+
+/// 按叠页记下的位置显示这一页，并标上页数。
+pub(crate) fn present(group_id: &str, saved: SavedFloat, pages: i32, index: i32) {
+    FLOATS.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(window) = slot
+            .as_mut()
+            .and_then(|floats| floats.windows.get_mut(group_id))
+        else {
+            return;
+        };
+        if window.closed {
+            return;
+        }
+        window.present(saved, pages, index);
+    });
+}
+
+/// 叠页切走这一页：藏起窗口，不释放。
+pub(crate) fn park(group_id: &str) {
+    FLOATS.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(window) = slot
+            .as_mut()
+            .and_then(|floats| floats.windows.get_mut(group_id))
+        else {
+            return;
+        };
+        window.park();
+    });
+}
+
+/// 只改页数和当前下标，不动位置。
+pub(crate) fn set_chrome(group_id: &str, pages: i32, index: i32) {
+    FLOATS.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(window) = slot
+            .as_mut()
+            .and_then(|floats| floats.windows.get_mut(group_id))
+        else {
+            return;
+        };
+        window.set_stack_chrome(pages, index);
+    });
+}
+
+fn notify_opened(group_id: &str) {
+    let id = group_id.to_owned();
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        crate::float_group::page_opened(StackPage::Shelf(id));
     });
 }
 
@@ -246,7 +341,9 @@ impl Floats {
     fn open(&mut self, group_id: &str) -> Result<(), String> {
         if let Some(window) = self.windows.get_mut(group_id) {
             if !window.closed {
+                window.parked = false;
                 window.raise();
+                notify_opened(group_id);
                 return Ok(());
             }
             self.reap(group_id);
@@ -339,6 +436,13 @@ impl Floats {
             pending: None,
             closed: false,
             last: None,
+            parked: false,
+            drag_anchor: None,
+            drag_before: None,
+            drag_collapsed: false,
+            stack_pages: 1,
+            stack_index: 0,
+            report: false,
         };
         window
             .ui
@@ -348,6 +452,7 @@ impl Floats {
         window.push();
         window.refresh_links(&self.todos, &self.store);
         self.windows.insert(group_id.to_owned(), window);
+        notify_opened(group_id);
         Ok(())
     }
 }
@@ -373,6 +478,13 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
         let id = id.clone();
         move || with_window(&id, |window, _| window.drag())
     });
+    ui.on_flip_page({
+        let id = id.clone();
+        move |dir| {
+            let flip = if dir < 0 { Flip::Left } else { Flip::Right };
+            crate::float_group::flip(StackPage::Shelf(id.clone()), flip);
+        }
+    });
     ui.window().on_winit_window_event({
         let id = id.clone();
         move |_, event| {
@@ -381,7 +493,9 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
             }
             if crate::float_frame::wants_refresh(event) {
                 with_window(&id, |window, _| {
-                    window.refresh_backdrop(window.ui.get_dark());
+                    if !window.parked {
+                        window.refresh_backdrop(window.ui.get_dark());
+                    }
                 });
             }
             EventResult::Propagate
@@ -484,9 +598,6 @@ impl FloatWindow {
                 ctx.store
                     .log_warn("收纳悬浮窗的前台通知没有装上，全屏时细条可能被盖住");
             }
-            let visible = self.session.visible();
-            float_dock::place(self.ui.window(), Some(hwnd), visible);
-            self.origin = Some((visible.x, visible.y));
             self.drop_state.set_accepting(true);
             self.drop_state.set_zone(DropZone::everywhere());
             let id = self.group_id.clone();
@@ -500,6 +611,18 @@ impl FloatWindow {
                     .store
                     .log_warn(&format!("收纳悬浮窗拖入没有装上，不能拖入文件：{message}")),
             }
+            if self.parked {
+                crate::float_frame::forget(hwnd);
+                let _ = self.ui.hide();
+                return;
+            }
+            let visible = self.session.visible();
+            float_dock::place(self.ui.window(), Some(hwnd), visible);
+            self.origin = Some((visible.x, visible.y));
+        }
+        if self.parked {
+            let _ = self.ui.hide();
+            return;
         }
         self.sync_chrome();
         self.refresh_backdrop(ctx.dark);
@@ -546,6 +669,56 @@ impl FloatWindow {
         if motion.persist {
             self.pending = Some(self.session.saved());
         }
+        self.report_move();
+    }
+
+    fn report_move(&mut self) {
+        if !self.report {
+            return;
+        }
+        self.report = false;
+        let id = self.group_id.clone();
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            crate::float_group::page_moved(StackPage::Shelf(id));
+        });
+    }
+
+    fn present(&mut self, saved: SavedFloat, pages: i32, index: i32) {
+        self.parked = false;
+        self.report = false;
+        self.set_stack_chrome(pages, index);
+        self.timer.stop();
+        self.session.replace(expanded_of(saved), saved.dock);
+        let visible = self.session.visible();
+        self.place(visible);
+        self.sync_chrome();
+        let _ = self.ui.show();
+        if let Some(hwnd) = self.hwnd() {
+            bar_win::bring_to_front(hwnd);
+        }
+        if !self.session.chrome().collapsed {
+            self.ui.invoke_focus_float();
+        }
+    }
+
+    fn park(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.parked = true;
+        self.report = false;
+        // 收起的把手不许被一键回到桌面藏起来。这一页要藏，先卸掉那条登记。
+        if let Some(hwnd) = self.hwnd() {
+            crate::float_frame::forget(hwnd);
+        }
+        let _ = self.ui.hide();
+    }
+
+    fn set_stack_chrome(&mut self, pages: i32, index: i32) {
+        self.stack_pages = pages;
+        self.stack_index = index;
+        self.ui.set_stack_pages(pages);
+        self.ui.set_stack_index(index);
     }
 
     fn start_anim(&mut self) {
@@ -595,38 +768,78 @@ impl FloatWindow {
     }
 
     fn on_strip(&mut self) {
-        if self.closed {
+        if self.closed || self.parked {
             return;
         }
+        self.report = true;
         let motion = self.session.strip_click();
         self.follow(motion);
     }
 
     fn on_blur(&mut self) {
-        if self.closed {
+        if self.closed || self.parked {
             return;
         }
         if self.hwnd_key().is_some_and(bar_win::size_move_blocks_blur) {
             return;
         }
+        let page = StackPage::Shelf(self.group_id.clone());
+        if crate::float_group::companion_blocks_blur(&page) {
+            return;
+        }
         if let Some(motion) = self.session.blur() {
+            self.report = true;
             self.follow(motion);
         }
     }
 
     fn on_size_move(&mut self, entering: bool, rect: PxBox) {
-        if self.closed {
+        if self.closed || self.parked {
             return;
         }
         if entering {
             self.timer.stop();
+            self.drag_collapsed = self.session.chrome().collapsed;
+            self.drag_before = Some(self.session.saved());
+            self.drag_anchor = Some(rect);
             self.session
                 .begin_drag((rect.x, rect.y), (rect.width, rect.height));
             return;
         }
-        let motion = self.session.end_drag(rect);
-        let generation = self.session.hold_generation();
-        self.follow(motion);
+        let anchor = self.drag_anchor.take().unwrap_or(rect);
+        let before = self
+            .drag_before
+            .take()
+            .unwrap_or_else(|| self.session.saved());
+        let from_collapsed = self.drag_collapsed;
+        let page = StackPage::Shelf(self.group_id.clone());
+        let effect = crate::float_group::classify_title(page.clone(), anchor, rect, from_collapsed);
+        match effect {
+            DropEffect::MoveTogether | DropEffect::MergeCurrent { .. } => {
+                self.report = true;
+                let motion = self.session.end_drag(rect);
+                let generation = self.session.hold_generation();
+                self.follow(motion);
+                self.hold_blur_after_drag(generation);
+            }
+            DropEffect::DetachCurrent => {
+                let motion = self.session.end_drag(rect);
+                let generation = self.session.hold_generation();
+                self.follow(motion);
+                let detached = self.session.saved();
+                crate::float_group::queue_detach(page, before, detached);
+                self.hold_blur_after_drag(generation);
+            }
+            DropEffect::MergeUnit { target } => {
+                self.session.abandon_drag();
+                let generation = self.session.hold_generation();
+                crate::float_group::queue_merge_unit(page, target);
+                self.hold_blur_after_drag(generation);
+            }
+        }
+    }
+
+    fn hold_blur_after_drag(&mut self, generation: u8) {
         let Some(key) = self.hwnd_key() else {
             return;
         };
@@ -911,9 +1124,20 @@ impl FloatWindow {
         self.last = Some(self.session.saved());
         self.closed = true;
         let _ = self.ui.hide();
+        let closed = id.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {
             with_floats(move |floats| floats.reap(&id));
+            crate::float_group::page_closed(StackPage::Shelf(closed));
         });
+    }
+}
+
+fn expanded_of(saved: SavedFloat) -> PxBox {
+    PxBox {
+        x: saved.geometry.x,
+        y: saved.geometry.y,
+        width: saved.geometry.width,
+        height: saved.geometry.height,
     }
 }
 

@@ -8,7 +8,7 @@ use crate::todos::TodoCommands;
 use super::error::ShelfError;
 use super::model::{AddRefsOutcome, IncomingRef, Shelf};
 use super::service::ShelfService;
-use crate::notes::{FloatDock, FloatGeometry};
+use crate::notes::{FloatDock, FloatGeometry, FloatStackSlot};
 
 /// 界面调用的收纳命令。克隆与对应的 [`ShelfService`] 共享状态。
 #[derive(Clone, Debug)]
@@ -106,6 +106,12 @@ impl ShelfCommands {
     ) -> Result<Shelf, ShelfError> {
         self.service.check_group_id(id)?;
         self.service.set_float(id, geometry, dock)
+    }
+
+    /// 记下这个分组属于哪一叠。见 [`ShelfService::set_stack`]。
+    pub fn set_stack(&self, id: &str, slot: Option<FloatStackSlot>) -> Result<Shelf, ShelfError> {
+        self.service.check_group_id(id)?;
+        self.service.set_stack(id, slot)
     }
 
     /// 解除这个分组对一条待办的关联，其余关联不动。

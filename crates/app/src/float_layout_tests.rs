@@ -335,6 +335,39 @@ fn a_collapsed_float_paints_only_a_short_gray_handle() {
     shelf.set_acrylic(false);
     slint::platform::update_timers_and_animations();
     assert_short_gray_handle(&window, &shelf, ShelfFloat::set_dark, size, "收纳悬浮窗");
+
+    shelf.set_stack_pages(3);
+    shelf.set_stack_index(1);
+    slint::platform::update_timers_and_animations();
+    let dotted = render_pixels(&window, size);
+    let (width, height) = size;
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut bright = 0u32;
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = dotted[(y * width + x) as usize];
+            if pixel == 0 {
+                continue;
+            }
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+            if luminance(pixel) > 80 {
+                bright += 1;
+            }
+        }
+    }
+    let span_x = max_x - min_x + 1;
+    let span_y = max_y - min_y + 1;
+    assert!(
+        span_x <= HANDLE_LENGTH_LOGICAL + 4 && span_y <= HANDLE_THICKNESS_LOGICAL + 4,
+        "叠页的点仍在大约 40×3 的把手里，实际 {span_x}×{span_y}"
+    );
+    assert!(bright > 0, "叠页把手上有更亮的点");
 }
 
 fn render_pixels(window: &Rc<MinimalSoftwareWindow>, size: (u32, u32)) -> Vec<u16> {

@@ -28,6 +28,7 @@ use lanwork_core::todos::TodoCommands;
 use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
+use crate::float_group;
 use crate::instance::{self, Claim};
 use crate::note_float;
 use crate::panel;
@@ -170,6 +171,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
             store.clone(),
         );
     }
+    float_group::install(notes.clone(), shelves.clone(), store.clone());
     panel::install(
         panel_ui.clone_strong(),
         todos.clone(),

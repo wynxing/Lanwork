@@ -296,6 +296,9 @@ export component EdgeHandle inherits Rectangle {
     in property <bool> along-vertical;
     // 收起时按下就拖；展开时单击收回。
     in property <bool> press-drags;
+    // 一叠里有几页。大于 1 时把手上画小点，一页一个，当前页更亮。
+    in property <int> pages: 1;
+    in property <int> page-index: 0;
     callback pressed();
     callback clicked();
 
@@ -321,6 +324,25 @@ export component EdgeHandle inherits Rectangle {
         y: (parent.height - self.height) / 2;
         border-radius: root.grip-thick / 2;
         background: area.has-hover ? root.lit : root.rest;
+
+        // 点画在把手上，不另占一块。超过 16 页时只画前 16 个，待定。
+        if root.pages > 1: Rectangle {
+            width: 100%;
+            height: 100%;
+            property <[int]> marks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+            for mark in marks: Rectangle {
+                visible: mark < root.pages;
+                property <length> dot: 2px;
+                property <length> slot: root.grip-long / max(root.pages, 1);
+                width: dot;
+                height: dot;
+                border-radius: dot;
+                background: mark == root.page-index ? #ffffff : #ffffff99;
+                x: root.along-vertical ? (parent.width - self.width) / 2 : mark * slot + (slot - self.width) / 2;
+                y: root.along-vertical ? mark * slot + (slot - self.height) / 2 : (parent.height - self.height) / 2;
+            }
+        }
     }
 
     area := TouchArea {

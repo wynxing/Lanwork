@@ -181,6 +181,7 @@ mod tests {
                 .collect(),
             float: None,
             float_dock: None,
+            float_stack: None,
         }
     }
 
