@@ -10,6 +10,7 @@ members = [
     "spikes/toast",
     "spikes/ime",
     "spikes/dnd",
+    "spikes/urldrop",
     "tools/fixture",
     "tools/sample",
     "tools/shortcut",
