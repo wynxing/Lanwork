@@ -10,6 +10,7 @@ build = "build.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10.9"
 
 # 存储层只引用文件 API（FlushFileBuffers、ReplaceFileW、MoveFileExW）。
 # 应用索引另外引用 Shell、COM、注册表和目录变更。

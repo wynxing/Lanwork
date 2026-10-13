@@ -16,6 +16,11 @@ const _: () = assert!(BASE.len() == (TRAY_ICON_PX * TRAY_ICON_PX * 4) as usize);
 const FILL: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 /// 数字和徽章边。取自图标底色，白底上够深，看得清。
 const INK: [u8; 4] = [0x1E, 0x1B, 0x4B, 0xFF];
+/// 有更新时右上角的小点。源图里没有这个颜色，和右下角的逾期徽章不叠在一起。
+const UPDATE_DOT: [u8; 4] = [0xFF, 0x5A, 0x1F, 0xFF];
+const DOT: isize = 6;
+const DOT_X: isize = 25;
+const DOT_Y: isize = 1;
 
 const GLYPH_W: usize = 5;
 const GLYPH_H: usize = 7;
@@ -207,18 +212,40 @@ fn paint_badge(pixels: &mut [u8], overdue: u32) {
 /// RGBA，长度是 [`TRAY_ICON_PX`] 的平方乘 4。`overdue` 为 0 时没有徽章。
 #[must_use]
 pub fn tray_icon_rgba(overdue: u32) -> Vec<u8> {
+    tray_icon_marked(overdue, false)
+}
+
+/// 和 [`tray_icon_rgba`] 相同。`update` 为真时在右上角加一个小点。
+#[must_use]
+pub fn tray_icon_marked(overdue: u32, update: bool) -> Vec<u8> {
     let mut pixels = BASE.to_vec();
-    if overdue == 0 {
-        return pixels;
+    if overdue != 0 {
+        paint_badge(&mut pixels, overdue);
     }
-    paint_badge(&mut pixels, overdue);
+    if update {
+        paint_update_dot(&mut pixels);
+    }
     pixels
+}
+
+fn paint_update_dot(pixels: &mut [u8]) {
+    for y in 0..DOT {
+        for x in 0..DOT {
+            put(pixels, DOT_X + x, DOT_Y + y, UPDATE_DOT);
+        }
+    }
 }
 
 /// 是否画了徽章。数量为 0 时为假。看的是徽章白底。
 #[must_use]
 pub fn has_badge_pixels(rgba: &[u8]) -> bool {
     rgba.as_chunks::<4>().0.contains(&FILL)
+}
+
+/// 是否画了更新小点。
+#[must_use]
+pub fn has_update_dot(rgba: &[u8]) -> bool {
+    rgba.as_chunks::<4>().0.contains(&UPDATE_DOT)
 }
 
 #[cfg(test)]
@@ -257,6 +284,45 @@ mod tests {
             !BASE.as_chunks::<4>().0.contains(&FILL),
             "底图没有徽章白，否则数量为 0 也会被当成画了数字"
         );
+        assert!(
+            !BASE.as_chunks::<4>().0.contains(&UPDATE_DOT),
+            "底图没有更新小点的颜色"
+        );
+        assert!(!has_update_dot(&plain));
+    }
+
+    #[test]
+    fn update_dot_sits_in_the_top_right_and_keeps_the_overdue_badge() {
+        let plain = tray_icon_rgba(0);
+        let marked = tray_icon_marked(0, true);
+        let both = tray_icon_marked(1, true);
+        assert!(has_update_dot(&marked));
+        assert!(has_update_dot(&both));
+        assert!(has_badge_pixels(&both));
+        assert!(!has_badge_pixels(&marked));
+        for y in 0..DOT as usize {
+            for x in 0..DOT as usize {
+                assert_eq!(
+                    pixel(&marked, DOT_X as usize + x, DOT_Y as usize + y),
+                    UPDATE_DOT
+                );
+            }
+        }
+        let side = TRAY_ICON_PX as usize;
+        for y in 0..side {
+            for x in 0..side {
+                let in_dot = (x as isize) >= DOT_X
+                    && (x as isize) < DOT_X + DOT
+                    && (y as isize) >= DOT_Y
+                    && (y as isize) < DOT_Y + DOT;
+                if in_dot {
+                    continue;
+                }
+                assert_eq!(pixel(&marked, x, y), pixel(&plain, x, y));
+            }
+        }
+        let layout = badge_layout(1);
+        assert!(layout.y > DOT_Y + DOT, "逾期徽章在小点下面");
     }
 
     #[test]

@@ -312,6 +312,9 @@ mod tests {
         assert!(script.contains("Get-IsccBanner"));
         assert!(script.contains("Compiler engine version: Inno Setup 6.7.3"));
         assert!(script.contains("Assert-GuiSubsystem"));
+        assert!(script.contains("latest.json"));
+        assert!(script.contains("Get-FileHash"));
+        assert!(script.contains("-Algorithm SHA256"));
         assert!(script.contains("发布版必须是 GUI (2)"));
         assert!(script.contains("/DIR=`\"$innoRoot`\""));
         assert!(!installer_bundles_webview(script));

@@ -1,4 +1,4 @@
-//! 面板的设置页：开机启动、热角、搜索条热键。
+//! 面板的设置页：开机启动、热角、搜索条热键，以及关于与更新。
 //!
 //! 决定在 `lanwork_core::panel` 和 `lanwork_core::shell`：先写 `config.json`，成功后才写注册表、
 //! 换热角；热键先注册新的、再写盘、再卸旧的。这里只把结果推给界面，并在失败时用配置里的原值重推，
@@ -53,6 +53,8 @@ impl SettingsPage {
         });
         data.on_choose_corner(|index| with_settings(move |page, ui| page.choose_corner(ui, index)));
         data.on_toggle_recording(|| with_settings(SettingsPage::toggle_recording));
+        data.on_update_clicked(crate::update::on_clicked);
+        crate::update::push_into(ui);
         let SettingsServices {
             config,
             hotkeys,

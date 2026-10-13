@@ -99,3 +99,29 @@ fn each_control_asks_for_its_own_change_and_does_not_flip_by_itself() {
     click(&ui, CONTROL_X + 90.0, row_center(2.0));
     assert_eq!(recordings.get(), 1);
 }
+
+#[test]
+fn the_update_button_asks_to_check_without_moving_the_rows_above() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    let clicks = Rc::new(Cell::new(0));
+    {
+        let clicks = Rc::clone(&clicks);
+        data.on_update_clicked(move || clicks.set(clicks.get() + 1));
+    }
+    assert_eq!(data.get_update_button().as_str(), "检查更新");
+    // 标题 48 + 分隔线 1 + 上边距 8 + 三行 144 + 按钮 y 52 + 半高 15。
+    click(
+        &ui,
+        CONTROL_X + 16.0,
+        48.0 + 1.0 + 8.0 + 48.0 * 3.0 + 52.0 + 15.0,
+    );
+    assert_eq!(clicks.get(), 1, "检查更新按钮能点到");
+    data.set_update_enabled(false);
+    click(
+        &ui,
+        CONTROL_X + 16.0,
+        48.0 + 1.0 + 8.0 + 48.0 * 3.0 + 52.0 + 15.0,
+    );
+    assert_eq!(clicks.get(), 1, "检查进行中不再发出请求");
+}

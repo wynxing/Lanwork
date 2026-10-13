@@ -1,5 +1,6 @@
 # 在 windows-latest 上编译 release、安装包和便携版，并静默安装再卸载。
-# 不创建 GitHub Release。签名和 latest.json 不在这里。
+# 不创建 GitHub Release，也不生成 minisign 签名。
+# 安装包生成之后写入 latest.json：版本、文件名、SHA-256。
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -209,6 +210,20 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $setup = Join-Path $out "Lanwork-Setup-$version.exe"
 if (-not (Test-Path $setup)) { throw "缺少 $setup" }
 Assert-ProductVersion $setup $version "安装包"
+
+$hash = (Get-FileHash -Algorithm SHA256 -Path $setup).Hash.ToLowerInvariant()
+if ($hash -notmatch '^[0-9a-f]{64}$') { throw "安装包 SHA-256 不是 64 位小写十六进制" }
+$setupName = "Lanwork-Setup-$version.exe"
+$latestPath = Join-Path $out "latest.json"
+$latestJson = "{`"version`":`"$version`",`"installer`":{`"name`":`"$setupName`",`"sha256`":`"$hash`"}}`n"
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($latestPath, $latestJson, $utf8)
+$latest = Get-Content -Raw -Encoding utf8 $latestPath | ConvertFrom-Json
+if ($latest.version -ne $version) { throw "latest.json 的 version 不是 $version" }
+if ($latest.installer.name -ne $setupName) { throw "latest.json 的安装包文件名不是 $setupName" }
+if ($latest.installer.sha256 -ne $hash) { throw "latest.json 的 sha256 对不上" }
+$again = (Get-FileHash -Algorithm SHA256 -Path $setup).Hash.ToLowerInvariant()
+if ($again -ne $hash) { throw "安装包在写入 latest.json 之后变了" }
 
 $zip = Join-Path $out "Lanwork-$version-portable-x64.zip"
 if (Test-Path $zip) { Remove-Item $zip }

@@ -36,7 +36,7 @@ pub use foreground::{
     NUDGE_MAX_WAIT_MS, NUDGE_MIN_WAIT_MS, NudgeWait, VirtualScreen, ZeroMove, absolute_to_pixel,
     nudge_wait, tick_after, zero_move,
 };
-pub use icon::{TRAY_ICON_PX, has_badge_pixels, tray_icon_rgba};
+pub use icon::{TRAY_ICON_PX, has_badge_pixels, has_update_dot, tray_icon_marked, tray_icon_rgba};
 pub use recording::{EndReason, EndReport, Ending, HotkeyRecording};
 pub use startup::{RunValueAction, quoted_executable, run_value_action};
 pub use theme::{

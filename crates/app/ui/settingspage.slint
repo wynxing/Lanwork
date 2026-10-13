@@ -1,8 +1,10 @@
-// 面板的设置页：开机启动、热角、搜索条热键，每项一行。版式由这里决定，数据和动作在 Rust。
+// 面板的设置页：开机启动、热角、搜索条热键，每项一行。下面是关于与更新。
+// 版式由这里决定，数据和动作在 Rust。
 // 数据和回调放在 SettingsPageData 里，面板窗口只负责把这个页面摆在标签内容区。
 // 控件只显示配置里的值；请求被拒绝或写盘失败时，Rust 重新推送原值，界面随之回到原状。
+// 前三行的位置不要改：布局测试按这个坐标点它们。
 
-import { Ink, Segments, ToggleSwitch } from "widgets.slint";
+import { Btn, Ink, Segments, ToggleSwitch } from "widgets.slint";
 
 export global SettingsPageData {
     in property <bool> launch-at-startup;
@@ -10,10 +12,18 @@ export global SettingsPageData {
     in property <int> corner;
     in property <string> hotkey;
     in property <bool> recording;
+    in property <string> version-text: "0.2.0";
+    in property <string> update-status;
+    in property <bool> update-status-error: false;
+    in property <string> update-notes;
+    in property <bool> update-notes-visible: false;
+    in property <string> update-button: "检查更新";
+    in property <bool> update-enabled: true;
 
     callback set-launch-at-startup(bool);
     callback choose-corner(int);
     callback toggle-recording();
+    callback update-clicked();
 }
 
 component Row inherits Rectangle {
@@ -131,6 +141,70 @@ export component SettingsPage inherits Rectangle {
                 c: root.c;
                 clicked => {
                     SettingsPageData.toggle-recording();
+                }
+            }
+        }
+
+        // 关于与更新。没有说明段落。发行说明是 Release 正文。
+        Rectangle {
+            height: 88px + (SettingsPageData.update-notes-visible ? 120px : 0px);
+
+            Text {
+                x: 0px;
+                y: 0px;
+                width: 140px;
+                height: 28px;
+                text: "版本";
+                color: root.c.ink;
+                font-size: 14px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Text {
+                x: 140px;
+                y: 0px;
+                width: parent.width - 140px;
+                height: 28px;
+                text: SettingsPageData.version-text;
+                color: root.c.ink;
+                font-size: 14px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Text {
+                x: 140px;
+                y: 28px;
+                width: parent.width - 140px;
+                height: 20px;
+                text: SettingsPageData.update-status;
+                color: SettingsPageData.update-status-error ? root.c.critical : root.c.secondary;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if SettingsPageData.update-notes-visible: Text {
+                x: 0px;
+                y: 52px;
+                width: parent.width;
+                height: 112px;
+                text: SettingsPageData.update-notes;
+                color: root.c.ink;
+                font-size: 13px;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+
+            Btn {
+                x: 140px;
+                y: 52px + (SettingsPageData.update-notes-visible ? 120px : 0px);
+                text: SettingsPageData.update-button;
+                enabled: SettingsPageData.update-enabled;
+                c: root.c;
+                clicked => {
+                    SettingsPageData.update-clicked();
                 }
             }
         }

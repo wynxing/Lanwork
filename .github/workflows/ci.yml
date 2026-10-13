@@ -83,6 +83,7 @@ jobs:
           path: |
             packaging/out/*.exe
             packaging/out/*portable*.zip
+            packaging/out/latest.json
             packaging/out/*.log
             packaging/out/RELEASE.md
 
