@@ -16,6 +16,7 @@ pub const FILE_GROUP_W: &str = "FileGroupDescriptorW";
 pub const FILE_GROUP_A: &str = "FileGroupDescriptor";
 pub const URL_W_NAME: &str = "UniformResourceLocatorW";
 pub const URL_A_NAME: &str = "UniformResourceLocator";
+pub const MOZ_URL_NAME: &str = "text/x-moz-url";
 
 const FD_W_SIZE: usize = 592;
 const FD_A_SIZE: usize = 332;
@@ -90,7 +91,7 @@ pub fn session_header(log_path: &str) -> String {
 
 每松开一次，看浏览器里原来的标签还在不在，有没有被关掉，有没有换到别的位置。
 
-这个程序只把拖放里的网址和标题记下来。浏览器附带的虚拟 .url 文件不会保存，也不会复制到磁盘。程序不会去点浏览器。
+这个程序只把拖放里的网址和标题记下来。标题在 descriptor-title 这一行，取自虚拟 .url 的文件名，去掉末尾的 .url。这个文件不会保存，也不会复制到磁盘，程序不去读它的内容。程序不会去点浏览器。
 
 下面每一段 kind=drop 都是一次拖放。测完后，把这个窗口里的字全选复制，或者打开日志文件，整段贴回去。
 
@@ -142,6 +143,8 @@ pub struct Extracted {
     pub url_w: Option<String>,
     pub url_a: Option<String>,
     pub virtual_names: Vec<String>,
+    pub virtual_titles: Vec<String>,
+    pub moz_url: Option<String>,
     pub descriptor_errors: Vec<String>,
     pub read_errors: Vec<String>,
     pub file_contents_offered: bool,
@@ -199,6 +202,20 @@ pub fn encode_utf16_text(text: &str) -> Vec<u8> {
         bytes.extend(unit.to_le_bytes());
     }
     bytes
+}
+
+/// `FileGroupDescriptorW` 里以 `.url` 结尾的文件名去掉这个后缀。大小写不敏感。
+/// 后缀前面没有字符时返回空。不以 `.url` 结尾的名字没有标题。
+pub fn title_from_url_filename(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    let cut = trimmed.len().saturating_sub(4);
+    let stem = trimmed.get(..cut)?;
+    let suffix = trimmed.get(cut..)?;
+    if suffix.eq_ignore_ascii_case(".url") {
+        Some(stem.to_string())
+    } else {
+        None
+    }
 }
 
 pub fn file_names_w(bytes: &[u8]) -> Result<Vec<String>, String> {
@@ -261,7 +278,10 @@ pub fn format_report(kind: &str, when: &str, extracted: &Extracted) -> String {
     push(&mut out, "format-priority=not-decided");
     push(&mut out, "plain-text-rule=not-decided");
     push(&mut out, "scheme-rule=not-decided");
-    push(&mut out, "extra-format-rule=not-decided");
+    push(
+        &mut out,
+        "extra-format-rule=CF_TEXT 与 UniformResourceLocator 仍待定",
+    );
     if let Some(error) = &extracted.enum_error {
         push(&mut out, &format!("format-enum-error={}", one_line(error)));
     }
@@ -383,7 +403,7 @@ pub fn format_report(kind: &str, when: &str, extracted: &Extracted) -> String {
             );
             push(
                 &mut out,
-                "UniformResourceLocatorW-note=产品规格尚未决定是否读取。这里只记录。",
+                "UniformResourceLocatorW-note=产品规格接受这一格式。这里记录读到的内容。",
             );
         }
         None => push(&mut out, "UniformResourceLocatorW-present=false"),
@@ -400,6 +420,16 @@ pub fn format_report(kind: &str, when: &str, extracted: &Extracted) -> String {
             );
         }
         None => push(&mut out, "UniformResourceLocator-present=false"),
+    }
+    match &extracted.moz_url {
+        Some(text) => {
+            push(&mut out, &format!("text/x-moz-url={}", one_line(text)));
+            push(
+                &mut out,
+                "text/x-moz-url-note=产品规格接受这一格式里的网址。标题不从这里取。",
+            );
+        }
+        None => push(&mut out, "text/x-moz-url-present=false"),
     }
     push(
         &mut out,
@@ -419,6 +449,20 @@ pub fn format_report(kind: &str, when: &str, extracted: &Extracted) -> String {
             &format!("virtual-url-name-{}={}", index + 1, one_line(name)),
         );
     }
+    push(
+        &mut out,
+        &format!("descriptor-title-count={}", extracted.virtual_titles.len()),
+    );
+    for (index, title) in extracted.virtual_titles.iter().enumerate() {
+        push(
+            &mut out,
+            &format!("descriptor-title-{}={}", index + 1, one_line(title)),
+        );
+    }
+    push(
+        &mut out,
+        "descriptor-title-note=标题取 FileGroupDescriptorW 文件名去掉末尾的 .url。不读取 FileContents。",
+    );
     for (index, error) in extracted.descriptor_errors.iter().enumerate() {
         push(
             &mut out,
@@ -910,6 +954,20 @@ pub fn check_parsers() -> Result<(), String> {
     ensure(FILE_GROUP_A == "FileGroupDescriptor", "group a name")?;
     ensure(URL_W_NAME == "UniformResourceLocatorW", "url w name")?;
     ensure(URL_A_NAME == "UniformResourceLocator", "url a name")?;
+    ensure(MOZ_URL_NAME == "text/x-moz-url", "moz url name")?;
+    ensure(
+        title_from_url_filename("Cursor Status.url").as_deref() == Some("Cursor Status"),
+        "cursor title",
+    )?;
+    ensure(
+        title_from_url_filename("页面.URL").as_deref() == Some("页面"),
+        "wide title",
+    )?;
+    ensure(title_from_url_filename(" notes.txt ").is_none(), "not url")?;
+    ensure(
+        title_from_url_filename(".url").as_deref() == Some(""),
+        "empty stem",
+    )?;
 
     let header = session_header(r"C:\Temp\lanwork-spike-urldrop.log");
     for phrase in ["锁图标", "链接", "标签", "虚拟 .url", "贴回去"] {
@@ -951,7 +1009,12 @@ pub fn check_parsers() -> Result<(), String> {
         }],
         unicode_text: Some(href.to_string()),
         url_w: Some(href.to_string()),
-        virtual_names: names,
+        moz_url: Some("https://example.com/a/?q=1\n示例标题".to_string()),
+        virtual_names: names.clone(),
+        virtual_titles: names
+            .iter()
+            .filter_map(|name| title_from_url_filename(name))
+            .collect(),
         file_contents_offered: true,
         hdrop_offered: true,
         ..Extracted::default()
@@ -975,11 +1038,16 @@ pub fn check_parsers() -> Result<(), String> {
         "text-uri-list-1-url-2=https://example.com/b",
         "cf-unicodetext=https://example.com/a/?q=1",
         "UniformResourceLocatorW=https://example.com/a/?q=1",
+        "UniformResourceLocatorW-note=产品规格接受这一格式。这里记录读到的内容。",
+        "text/x-moz-url=https://example.com/a/?q=1 示例标题",
+        "text/x-moz-url-note=产品规格接受这一格式里的网址。标题不从这里取。",
         "virtual-url-name-1=页面.url",
         "virtual-url-name-2=notes.txt",
+        "descriptor-title-count=1",
+        "descriptor-title-1=页面",
         "file-contents-offered=true",
         "cf-hdrop-offered=true",
-        "extra-format-rule=not-decided",
+        "extra-format-rule=CF_TEXT 与 UniformResourceLocator 仍待定",
     ] {
         if !report.contains(phrase) {
             return Err(format!("report missing {phrase}\n{report}"));
@@ -987,6 +1055,9 @@ pub fn check_parsers() -> Result<(), String> {
     }
     if report.contains("secret.example") {
         return Err("report included a url that was not extracted".to_string());
+    }
+    if report.contains("descriptor-title-2=") {
+        return Err("notes.txt was turned into a title".to_string());
     }
     Ok(())
 }

@@ -25,9 +25,9 @@ use windows::core::{BOOL, HRESULT, PCWSTR, Ref, implement};
 
 use crate::parse::{
     self, EFFECT_COPY, EFFECT_LINK, EFFECT_MOVE, Extracted, FILE_CONTENTS_NAME, FILE_GROUP_A,
-    FILE_GROUP_W, HTML_FORMAT_NAME, ListedFormat, URI_LIST_NAME, URL_A_NAME, URL_W_NAME,
-    UriListFound, choose_effect, decode_utf16_text, file_names_a, file_names_w, format_report,
-    parse_cf_html, parse_uri_list,
+    FILE_GROUP_W, HTML_FORMAT_NAME, ListedFormat, MOZ_URL_NAME, URI_LIST_NAME, URL_A_NAME,
+    URL_W_NAME, UriListFound, choose_effect, decode_utf16_text, file_names_a, file_names_w,
+    format_report, parse_cf_html, parse_uri_list, title_from_url_filename,
 };
 
 const MAX_BYTES: usize = 1024 * 1024;
@@ -235,10 +235,12 @@ fn read_data_object(data: &IDataObject) -> Extracted {
     let ansi_id = find_name(&extracted.formats, "CF_TEXT").or(Some(CF_TEXT.0));
     let url_w_id = find_name(&extracted.formats, URL_W_NAME).or_else(|| registered(URL_W_NAME));
     let url_a_id = find_name(&extracted.formats, URL_A_NAME).or_else(|| registered(URL_A_NAME));
+    let moz_id = find_name(&extracted.formats, MOZ_URL_NAME).or_else(|| registered(MOZ_URL_NAME));
     read_text(data, &mut extracted, unicode_id, "CF_UNICODETEXT", true);
     read_text(data, &mut extracted, ansi_id, "CF_TEXT", false);
     read_text(data, &mut extracted, url_w_id, URL_W_NAME, true);
     read_text(data, &mut extracted, url_a_id, URL_A_NAME, false);
+    read_text(data, &mut extracted, moz_id, MOZ_URL_NAME, true);
     let formats = extracted.formats.clone();
     read_descriptors(data, &formats, &mut extracted);
     extracted
@@ -266,6 +268,7 @@ fn read_text(
                 "CF_TEXT" => extracted.ansi_text = Some(text),
                 URL_W_NAME => extracted.url_w = Some(text),
                 URL_A_NAME => extracted.url_a = Some(text),
+                MOZ_URL_NAME => extracted.moz_url = Some(text),
                 _ => extracted.read_errors.push(format!("{name}={text}")),
             }
         }
@@ -287,7 +290,16 @@ fn read_descriptors(data: &IDataObject, formats: &[ListedFormat], extracted: &mu
             } else {
                 file_names_a(&bytes)
             } {
-                Ok(names) => extracted.virtual_names.extend(names),
+                Ok(names) => {
+                    if wide {
+                        extracted.virtual_titles.extend(
+                            names
+                                .iter()
+                                .filter_map(|name| title_from_url_filename(name)),
+                        );
+                    }
+                    extracted.virtual_names.extend(names);
+                }
                 Err(error) => extracted.descriptor_errors.push(error),
             },
             Ok(None) => {}
@@ -331,6 +343,7 @@ fn probe_known(data: &IDataObject, formats: &mut Vec<ListedFormat>) {
         (registered(FILE_GROUP_A), FILE_GROUP_A.to_string()),
         (registered(URL_W_NAME), URL_W_NAME.to_string()),
         (registered(URL_A_NAME), URL_A_NAME.to_string()),
+        (registered(MOZ_URL_NAME), MOZ_URL_NAME.to_string()),
         (Some(CF_UNICODETEXT.0), "CF_UNICODETEXT".to_string()),
         (Some(CF_TEXT.0), "CF_TEXT".to_string()),
         (Some(CF_HDROP.0), "CF_HDROP".to_string()),
@@ -785,6 +798,7 @@ pub(crate) fn check_synthetic_drop() -> Result<(), String> {
         "cf-text=https://example.com/a/?q=1",
         "UniformResourceLocatorW=https://example.com/a/?q=1",
         "virtual-url-name-1=页面.url",
+        "descriptor-title-1=页面",
         "file-contents-offered=true",
         "file-contents-read=false",
         "file-contents-written=false",

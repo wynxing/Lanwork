@@ -50,4 +50,4 @@ cargo run -p toast --release -- self-check
 cargo run -p urldrop -- self-test
 cargo run -p urldrop -- drop
 
-`drop` 打开窗口，等 Chrome 或 Edge 把地址栏锁图标或页面链接拖进来。步骤和要贴回去的日志写在 `spikes/urldrop/README.md`。`self-test` 不用浏览器。还没有手测通过记录，收纳界面不识别网址。
+`drop` 打开窗口，等 Chrome 或 Edge 把地址栏锁图标或页面链接拖进来。步骤和要贴回去的日志写在 `spikes/urldrop/README.md`。`self-test` 不用浏览器。锁图标在 Chrome 与 Edge 上有记录，页面链接未测，收纳界面不识别网址。

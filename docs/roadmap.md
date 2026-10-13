@@ -38,7 +38,7 @@
 | 背景 | 2026-10-09 至 2026-10-10。四种渲染器在 DESKTOP-7C3P6OG 上是磨砂并能透出背景，主题切换、关闭透明效果和节电通过，产品搜索条的亚克力与关闭透明效果后的纯色也由用户确认。透明渲染失败时退回纯色仍未满足，独显只有 FemtoVG 场景 A 的目视，这一项仍未通过。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | 渲染器 | 2026-10-08 至 2026-10-10。核显上 FemtoVG、Skia 软件、Skia OpenGL 和软件渲染各有空面板与 200 行列表的约 60 秒采样，文字目视清楚，但独显只补了 FemtoVG 场景 A，内存数字和没有 OpenGL 时退回软件渲染都未凑齐。默认 FemtoVG 已写入 architecture.md「运行时」，这一项仍未通过。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | 外部拖放 | 通过条件表七条都通过，产品用 OLE。`--slint` 拖放仍失败，没有路径。2026-10-09 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。见下方「外部拖放」。 |
-| 网址拖放 | 无记录。最小程序在 `spikes/urldrop`。通过标准是独立的最小程序从地址栏锁图标和页面链接取出网址（`CF_HTML`、`text/uri-list`、纯文本），不关闭、不移动浏览器标签。收纳悬浮窗不在这项通过标准里。外部拖放的通过条件表只覆盖文件，不覆盖这一项。没有通过记录之前，不写收纳网页引用的界面 |
+| 网址拖放 | 部分记录，未通过。2026-10-13，`spikes/urldrop`，手测构建 `4e1ec404755b1d4e77bec38cb0cc7f6ecb5fa256`。Chrome 与 Edge 的地址栏锁图标各 5 次取出了网址，chosen-effect 为 copy，标签留在原处。那次没有 `CF_HTML`，也没有 `text/uri-list`，网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。标题取 `FileGroupDescriptorW` 文件名去掉末尾 `.url`。不读取 `FileContents`。页面链接未测。机器、Windows build、GPU 与驱动、构建配置未提供。Slint 未使用。收纳悬浮窗不在这项通过标准里。外部拖放的通过条件表只覆盖文件，不覆盖这一项。页面链接通过之前，不写收纳网页引用的界面 |
 | Everything | 2026-10-09。Everything 1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪。单次查询远低于 150 ms，但样本不是 100 次，也不含 60 ms 等待和界面渲染，不写「已达到」。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | Windows Search | 2026-10-09。文件名查询通过且正文不返回，100 个有效样本的 P95 为 52.705 ms，第一次 Execute 的 Private Bytes 增量为 454,656 字节，不含 60 ms 等待和界面渲染，不写「已达到」。同日 14:24（UTC+8）停止 `WSearch` 后查询失败（`hresult` 2147614729，`message` 为空）且没有崩溃，错误文案不能依赖空的 `message`。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | 通知 | 有记录，未通过。见下方「通知（#7）」 |
@@ -163,13 +163,13 @@
 
 ## v0.2.0 之后
 
-下面三项排在 v0.2.0 之后。规格已写。收纳网页引用的界面没有代码；验证程序见上表「网址拖放」。
+下面三项排在 v0.2.0 之后。规格已写。收纳网页引用的界面没有代码；验证程序见上表「网址拖放」。锁图标有记录，页面链接未测，该项未全部通过。
 
 | 项 | 规格 | 代码 |
 | --- | --- | --- |
 | 外部 AI（本机 MCP） | [external-ai.md](external-ai.md) | 无 |
 | 扩展页与插件 | [extensions.md](extensions.md) | 无 |
-| 收纳网页引用 | [product.md](product.md)「收纳」 | 无。2026-10-13 写入规格。一条含网址、标题和网站图标，只存引用，不关闭、不移动浏览器标签。打开用默认浏览器重新打开。全部收纳里同一网址只保留一条：协议和主机名小写，去掉路径末尾的一个斜杠。搜索结果里会出现，类型「网页」，排在便签之后、文件之前。第一版接受拖入的地址栏锁图标或页面链接（`CF_HTML`、`text/uri-list`、纯文本网址），收纳悬浮窗同样接受。一键浏览器扩展更晚，先做 Chrome。图标是否获取或离线缓存，以及其他待定见产品规格。依赖技术验证「网址拖放」。验证程序在 `spikes/urldrop`，该项仍无通过记录 |
+| 收纳网页引用 | [product.md](product.md)「收纳」 | 无。2026-10-13 写入规格。一条含网址、标题和网站图标，只存引用，不关闭、不移动浏览器标签。打开用默认浏览器重新打开。全部收纳里同一网址只保留一条：协议和主机名小写，去掉路径末尾的一个斜杠。搜索结果里会出现，类型「网页」，排在便签之后、文件之前。第一版接受拖入的地址栏锁图标或页面链接。接受的格式是 `CF_HTML`、`text/uri-list`、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW`、`text/x-moz-url`。标题取 `FileGroupDescriptorW` 文件名去掉末尾 `.url`。收纳悬浮窗同样接受。一键浏览器扩展更晚，先做 Chrome。图标是否获取或离线缓存，以及其他待定见产品规格。依赖技术验证「网址拖放」。验证程序在 `spikes/urldrop`。锁图标有记录，页面链接未测，该项未全部通过 |
 
 ## 界面
 

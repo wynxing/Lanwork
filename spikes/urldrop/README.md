@@ -5,14 +5,15 @@
 它做的事：
 
 - 接受放到窗口上的拖放。
-- 从 `CF_HTML`（注册名 `HTML Format`）、`text/uri-list` 和纯文本 `CF_UNICODETEXT` 里取出网址。`CF_HTML` 里如果有标题，一并记下来。
-- 同一次拖放里的虚拟 `.url`（`FileGroupDescriptor` / `FileContents`）只记下文件名。不读取 `FileContents`，不把文件写进磁盘，也不存成路径。
+- 从 `CF_HTML`（注册名 `HTML Format`）、`text/uri-list`、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url` 里取出读到的内容。
+- 标题写在 `descriptor-title`。它是 `FileGroupDescriptorW` 的文件名去掉末尾的 `.url`。`Cursor Status.url` 记成 `Cursor Status`。
+- 同一次拖放里的虚拟 `.url` 会记下文件名。不读取 `FileContents`，不把文件写进磁盘，也不存成路径。
 - 放下时只回复复制或快捷方式。对方只允许移动时，这次放下被拒绝。
 - 不调用会关闭或移动浏览器标签的接口。
 
-几种格式同时出现时用哪一个、纯文本怎样才算网址、`CF_TEXT` 和 `UniformResourceLocator` 收不收，产品规格还没定。程序把读到的都写进日志，不替规格做选择。
+几种已接受格式同时出现时用哪一个、纯文本怎样才算网址、`CF_TEXT` 和 ANSI 的 `UniformResourceLocator` 收不收，产品规格还没定。程序把读到的都写进日志，不替规格做选择。
 
-手测通过之前，收纳页面不识别网址。
+锁图标在 Chrome 和 Edge 上已有记录，页面链接还没测。收纳页面不识别网址。
 
 ## 在 Windows 上运行
 
@@ -41,4 +42,4 @@ cargo run -p urldrop -- drop
 6. 关掉验证窗口。
 7. 把窗口里曾经显示的字全选复制，或者用记事本打开 `%TEMP%\lanwork-spike-urldrop.log`，把整段贴回去。
 
-贴回去的内容里，每次拖放都有一段 `kind=drop`。里面会有网址、能读到的标题、对方提供了哪些格式，以及 `file-contents-read=false`。`self-test` 的输出不要当作这次手测结果。
+贴回去的内容里，每次拖放都有一段 `kind=drop`。里面会有网址、`descriptor-title`、对方提供了哪些格式，以及 `file-contents-read=false`。`self-test` 的输出不要当作这次手测结果。锁图标已经有记录，还差页面链接。
