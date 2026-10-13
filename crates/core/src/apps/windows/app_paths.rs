@@ -149,12 +149,13 @@ fn read_default(key: &OpenKey, child: &str) -> Option<AppEntry> {
         name,
         source: AppSource::AppPaths,
         target: LaunchTarget::Path {
-            path: file,
+            path: file.clone(),
             args: String::new(),
             working_directory: None,
         },
         icon_path: None,
         icon_index: 0,
+        source_path: Some(file),
         alternate_names: Vec::new(),
     })
 }

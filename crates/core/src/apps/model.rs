@@ -16,6 +16,9 @@ pub struct AppEntry {
     pub target: LaunchTarget,
     pub icon_path: Option<PathBuf>,
     pub icon_index: i32,
+    /// 索引到的那个文件。快捷方式是 `.lnk`，游戏链接是 `.url`，
+    /// 直接收录的可执行文件就是它自己。商店应用没有。
+    pub source_path: Option<PathBuf>,
     pub alternate_names: Vec<String>,
 }
 
@@ -306,6 +309,7 @@ mod tests {
             target,
             icon_path: None,
             icon_index: 0,
+            source_path: None,
             alternate_names: Vec::new(),
         }
     }

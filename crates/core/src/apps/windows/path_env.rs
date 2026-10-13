@@ -61,12 +61,13 @@ fn read_dir_exes(dir: &Path) -> Result<Vec<AppEntry>, ()> {
             name,
             source: AppSource::Path,
             target: LaunchTarget::Path {
-                path,
+                path: path.clone(),
                 args: String::new(),
                 working_directory: None,
             },
             icon_path: None,
             icon_index: 0,
+            source_path: Some(path),
             alternate_names: Vec::new(),
         });
     }

@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use lanwork_core::apps::{AppEntry, AppHit, AppSource, LaunchTarget};
+use lanwork_core::apps::{
+    AppEntry, AppHit, AppSource, HiddenApp, LaunchTarget, UserCatalog, load_user_catalog,
+};
 use lanwork_core::dispatch::{
     AppLookup, Dispatch, DispatchError, FILE_QUERY_DELAY_MS, FileLookup, FileProgress, IconKey,
     IconLoader, MissingIcons, Monotonic, QueryView, RgbaImage, RowDetail, SearchGroup, SearchRow,
@@ -208,6 +210,7 @@ fn app_named(name: &str, kind: HitKind) -> AppHit {
             },
             icon_path: None,
             icon_index: 0,
+            source_path: None,
             alternate_names: Vec::new(),
         },
         kind,
@@ -1075,6 +1078,112 @@ fn file_and_folder_groups_keep_source_order_inside_each_group() {
         .to_json_line();
     assert!(line.contains("\"source\":\"windows_search\""));
     assert!(line.contains("\"end_ns\":80") || line.contains("\"end_ns\": 80"));
+}
+
+struct ListedApps {
+    hidden: Arc<Mutex<Vec<HiddenApp>>>,
+}
+
+impl AppLookup for ListedApps {
+    fn query(&mut self, _text: &str) -> Vec<AppHit> {
+        Vec::new()
+    }
+
+    fn hide(&mut self, key: &str) -> Result<(), String> {
+        if key.is_empty() {
+            return Err("不在索引里".to_owned());
+        }
+        let mut hidden = self.hidden.lock().expect("hidden");
+        if hidden.iter().any(|item| item.launch_key == key) {
+            return Ok(());
+        }
+        hidden.push(HiddenApp {
+            launch_key: key.to_owned(),
+            name: "记事本".to_owned(),
+        });
+        Ok(())
+    }
+
+    fn restore(&mut self, key: &str) -> bool {
+        let mut hidden = self.hidden.lock().expect("hidden");
+        let before = hidden.len();
+        hidden.retain(|item| item.launch_key != key);
+        hidden.len() != before
+    }
+
+    fn hidden_apps(&mut self) -> Vec<HiddenApp> {
+        self.hidden.lock().expect("hidden").clone()
+    }
+
+    fn user_catalog(&mut self) -> UserCatalog {
+        UserCatalog {
+            hidden: self.hidden.lock().expect("hidden").clone(),
+            ..UserCatalog::default()
+        }
+    }
+}
+
+struct BlankFiles;
+
+impl FileLookup for BlankFiles {
+    fn query(&mut self, sequence: u64, _text: &str) -> FileQueryResult {
+        FileQueryResult {
+            sequence,
+            everything: EverythingStatus::NotChecked,
+            windows_search: WindowsSearchStatus::NotChecked,
+            source: FileSource::Blank,
+            hits: Vec::new(),
+        }
+    }
+}
+
+#[test]
+fn hiding_an_app_is_written_and_a_failed_write_rolls_memory_back() {
+    let (_temp, store) = open_store();
+    let hidden = Arc::new(Mutex::new(Vec::new()));
+    let (dispatch, _, _) = ready(
+        store.clone(),
+        ListedApps {
+            hidden: Arc::clone(&hidden),
+        },
+        BlankFiles,
+    );
+    let key = r"path:C:\Apps\note.exe";
+    dispatch.hide_app(key).unwrap();
+    let saved = load_user_catalog(&store.user_apps_path()).unwrap();
+    assert_eq!(saved.hidden.len(), 1);
+    assert_eq!(saved.hidden[0].launch_key, key);
+    assert_eq!(saved.hidden[0].name, "记事本");
+    assert_eq!(dispatch.hidden_apps()[0].launch_key, key);
+
+    let path = store.user_apps_path();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let err = dispatch.hide_app(r"path:C:\Apps\other.exe").unwrap_err();
+    assert!(err.contains("写入用户应用目录失败"), "{err}");
+    assert_eq!(dispatch.hidden_apps().len(), 1, "写盘失败时内存回到隐藏前");
+    assert_eq!(hidden.lock().expect("hidden").len(), 1);
+
+    std::fs::remove_dir(&path).unwrap();
+    dispatch.restore_hidden_app(key).unwrap();
+    assert!(dispatch.hidden_apps().is_empty());
+    assert!(
+        load_user_catalog(&store.user_apps_path())
+            .unwrap()
+            .hidden
+            .is_empty()
+    );
+
+    dispatch.hide_app(key).unwrap();
+    std::fs::remove_file(store.user_apps_path()).unwrap();
+    std::fs::create_dir(store.user_apps_path()).unwrap();
+    assert!(dispatch.restore_hidden_app(key).is_err());
+    assert_eq!(
+        dispatch.hidden_apps()[0].launch_key,
+        key,
+        "恢复写盘失败时这一项仍在名单里"
+    );
+    assert!(dispatch.hide_app("").is_err());
 }
 
 fn write_todo(store: &Store, id: &str, body: &str) {

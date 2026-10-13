@@ -75,6 +75,12 @@ struct CacheEntry {
         skip_serializing_if = "Vec::is_empty"
     )]
     alternate_names: Vec<String>,
+    #[serde(
+        default,
+        rename = "sourcePath",
+        skip_serializing_if = "Option::is_none"
+    )]
+    source_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -209,6 +215,11 @@ impl CacheEntry {
                 .map(|path| path.to_string_lossy().into_owned()),
             icon_index: entry.icon_index,
             alternate_names: entry.alternate_names.clone(),
+            source_path: entry
+                .source_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .filter(|path| !path.is_empty()),
         }
     }
 
@@ -232,6 +243,12 @@ impl CacheEntry {
                 .filter(|path| !path.is_empty())
                 .map(PathBuf::from),
             icon_index: self.icon_index,
+            source_path: self
+                .source_path
+                .as_ref()
+                .map(|path| path.trim())
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from),
             alternate_names: self
                 .alternate_names
                 .iter()
@@ -355,6 +372,9 @@ mod tests {
             },
             icon_path: Some(PathBuf::from(r"C:\App\tool.exe")),
             icon_index: 2,
+            source_path: Some(PathBuf::from(
+                r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\带参数.lnk",
+            )),
             alternate_names: vec!["tool.exe".into()],
         }
     }
@@ -371,6 +391,7 @@ mod tests {
             },
             icon_path: None,
             icon_index: 0,
+            source_path: None,
             alternate_names: Vec::new(),
         };
         let game = AppEntry {
@@ -381,6 +402,7 @@ mod tests {
             },
             icon_path: None,
             icon_index: 0,
+            source_path: Some(PathBuf::from(r"C:\Start\Game.url")),
             alternate_names: vec!["Game.url".into()],
         };
         save_cache(&path, &[sample(), aumid.clone(), game.clone()]).unwrap();
@@ -389,6 +411,7 @@ mod tests {
         };
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].target, sample().target);
+        assert_eq!(entries[0].source_path, sample().source_path);
         assert_eq!(entries[0].icon_index, 2);
         assert_eq!(entries[0].alternate_names, vec!["tool.exe".to_owned()]);
         assert_eq!(entries[1], aumid);
@@ -431,6 +454,7 @@ mod tests {
         let entries = parse_cache(raw.as_bytes()).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries[0].alternate_names.is_empty());
+        assert!(entries[0].source_path.is_none());
         assert!(matches!(entries[0].target, LaunchTarget::Path { .. }));
         assert_eq!(entries[0].source, AppSource::StartMenu);
         assert_eq!(entries[1].source, AppSource::Store);

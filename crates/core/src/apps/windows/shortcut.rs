@@ -81,6 +81,7 @@ pub(crate) fn read_shortcut(path: &Path) -> Option<AppEntry> {
         },
         icon_path,
         icon_index,
+        source_path: Some(path.to_path_buf()),
         alternate_names,
     })
 }
@@ -110,6 +111,7 @@ fn read_url_shortcut(path: &Path) -> Option<AppEntry> {
         target: LaunchTarget::Url { url },
         icon_path: None,
         icon_index: 0,
+        source_path: Some(path.to_path_buf()),
         alternate_names,
     })
 }

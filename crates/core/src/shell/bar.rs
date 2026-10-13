@@ -4,7 +4,9 @@
 
 use std::path::PathBuf;
 
-use crate::apps::{LaunchTarget, containing_folder, supports_run_as_admin};
+use crate::apps::{
+    AppEntry, LaunchTarget, file_folder, launch_key, shortcut_target_folder, supports_run_as_admin,
+};
 use crate::dispatch::{FileProgress, RowDetail, SearchGroup, SearchRow, UsageKey, ViewPhase};
 use crate::search::classify_prefix;
 
@@ -327,8 +329,12 @@ pub enum RowAction {
     Shell(LaunchTarget),
     /// 动词 `runas`。只有本地 exe 的应用。
     Elevated(LaunchTarget),
+    /// 动词 `runasuser`。只有本地 exe 的应用。
+    RunAsUser(LaunchTarget),
     /// 打开这个目录。
     OpenFolder(PathBuf),
+    /// 从搜索结果里隐藏这个应用。键是启动目标的去重键。
+    HideApp { key: String },
     /// 打开面板、切到待办并定位该条。
     PanelTodo { list_id: String, item_id: String },
     /// 打开面板、切到便签并打开该篇。
@@ -340,11 +346,105 @@ pub enum RowAction {
 }
 
 impl RowAction {
-    /// 打开了这一项本身时次数加 1。打开所在目录不算打开这一项。
+    /// 打开了这一项本身时次数加 1。打开目录和隐藏不算打开这一项。
     #[must_use]
     pub fn counts_as_open(&self) -> bool {
-        !matches!(self, Self::OpenFolder(_) | Self::WebSearch { .. })
+        !matches!(
+            self,
+            Self::OpenFolder(_) | Self::HideApp { .. } | Self::WebSearch { .. }
+        )
     }
+}
+
+/// 应用结果右键菜单的一项。顺序和 Alt 数字是产品规格。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMenuAction {
+    RunAsUser,
+    RunAsAdmin,
+    OpenFileFolder,
+    OpenTargetFolder,
+    Hide,
+}
+
+/// 菜单上看得见的一行。不可用的项仍占着原来的 Alt 数字。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppMenuItem {
+    pub action: AppMenuAction,
+    pub label: &'static str,
+    pub hint: &'static str,
+    pub enabled: bool,
+}
+
+const APP_MENU: [(AppMenuAction, &str, &str); 5] = [
+    (AppMenuAction::RunAsUser, "以其他用户身份运行", "Alt+1"),
+    (AppMenuAction::RunAsAdmin, "以管理员身份运行", "Alt+2"),
+    (AppMenuAction::OpenFileFolder, "打开文件所在文件夹", "Alt+3"),
+    (AppMenuAction::OpenTargetFolder, "打开目标文件夹", "Alt+4"),
+    (AppMenuAction::Hide, "隐藏", "Alt+5"),
+];
+
+/// 应用结果的右键菜单。五项都在，做不到的那一项 `enabled` 为假。
+#[must_use]
+pub fn app_menu(entry: &AppEntry) -> [AppMenuItem; 5] {
+    APP_MENU.map(|(action, label, hint)| AppMenuItem {
+        action,
+        label,
+        hint,
+        enabled: menu_enabled(entry, action),
+    })
+}
+
+fn menu_enabled(entry: &AppEntry, action: AppMenuAction) -> bool {
+    match action {
+        AppMenuAction::RunAsUser | AppMenuAction::RunAsAdmin => {
+            supports_run_as_admin(&entry.target)
+        }
+        AppMenuAction::OpenFileFolder => file_folder(entry).is_some(),
+        AppMenuAction::OpenTargetFolder => shortcut_target_folder(entry).is_some(),
+        AppMenuAction::Hide => !launch_key(&entry.target).is_empty(),
+    }
+}
+
+/// 菜单项对应的动作。不可用时为 `None`。
+#[must_use]
+pub fn app_menu_command(entry: &AppEntry, action: AppMenuAction) -> Option<RowAction> {
+    if !menu_enabled(entry, action) {
+        return None;
+    }
+    match action {
+        AppMenuAction::RunAsUser => Some(RowAction::RunAsUser(entry.target.clone())),
+        AppMenuAction::RunAsAdmin => Some(RowAction::Elevated(entry.target.clone())),
+        AppMenuAction::OpenFileFolder => file_folder(entry).map(RowAction::OpenFolder),
+        AppMenuAction::OpenTargetFolder => shortcut_target_folder(entry).map(RowAction::OpenFolder),
+        AppMenuAction::Hide => Some(RowAction::HideApp {
+            key: launch_key(&entry.target),
+        }),
+    }
+}
+
+/// Alt+数字在菜单开着和关着时去向不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AltRoute {
+    /// 菜单开着。`None` 表示这个数字没有对应的菜单项。
+    Menu(Option<AppMenuAction>),
+    /// 菜单关着。数字原样交给结果列表。
+    Result(u32),
+}
+
+#[must_use]
+pub fn alt_route(menu_open: bool, digit: u32) -> AltRoute {
+    if !menu_open {
+        return AltRoute::Result(digit);
+    }
+    let action = match digit {
+        1 => Some(AppMenuAction::RunAsUser),
+        2 => Some(AppMenuAction::RunAsAdmin),
+        3 => Some(AppMenuAction::OpenFileFolder),
+        4 => Some(AppMenuAction::OpenTargetFolder),
+        5 => Some(AppMenuAction::Hide),
+        _ => None,
+    };
+    AltRoute::Menu(action)
 }
 
 /// 产品规格「搜索」的 Enter、Ctrl+Enter 和 Ctrl+Shift+Enter。没有动作时为 `None`。
@@ -357,11 +457,10 @@ pub fn row_action(detail: &RowDetail, chord: EnterChord) -> Option<RowAction> {
         (RowDetail::App(hit), EnterChord::Plain) => {
             Some(RowAction::Shell(hit.entry.target.clone()))
         }
-        (RowDetail::App(hit), EnterChord::Ctrl) => {
-            containing_folder(&hit.entry.target).map(RowAction::OpenFolder)
+        (RowDetail::App(hit), EnterChord::Ctrl | EnterChord::CtrlShift) => {
+            supports_run_as_admin(&hit.entry.target)
+                .then(|| RowAction::Elevated(hit.entry.target.clone()))
         }
-        (RowDetail::App(hit), EnterChord::CtrlShift) => supports_run_as_admin(&hit.entry.target)
-            .then(|| RowAction::Elevated(hit.entry.target.clone())),
         (RowDetail::File { path } | RowDetail::Folder { path }, EnterChord::Plain) => {
             Some(RowAction::Shell(path_target(path)))
         }
@@ -628,6 +727,7 @@ mod tests {
                 target,
                 icon_path: None,
                 icon_index: 0,
+                source_path: None,
                 alternate_names: Vec::new(),
             },
             kind: HitKind::Exact,
@@ -948,13 +1048,114 @@ mod tests {
         );
         assert_eq!(
             row_action(&detail, EnterChord::Ctrl),
-            Some(RowAction::OpenFolder(PathBuf::from("C:/Tools")))
+            Some(RowAction::Elevated(exe()))
         );
         assert_eq!(
             row_action(&detail, EnterChord::CtrlShift),
             Some(RowAction::Elevated(exe()))
         );
         assert_eq!(row_action(&detail, EnterChord::Other), None);
+    }
+
+    #[test]
+    fn app_menu_keeps_alt_numbers_and_disables_a_missing_target() {
+        let mut detail = app(exe());
+        let RowDetail::App(hit) = &mut detail else {
+            panic!("app");
+        };
+        hit.entry.source_path = Some(PathBuf::from(
+            "C:/ProgramData/Microsoft/Windows/Start Menu/Programs/Demo.lnk",
+        ));
+        let menu = app_menu(&hit.entry);
+        assert_eq!(
+            menu.map(|item| (item.label, item.hint, item.enabled)),
+            [
+                ("以其他用户身份运行", "Alt+1", true),
+                ("以管理员身份运行", "Alt+2", true),
+                ("打开文件所在文件夹", "Alt+3", true),
+                ("打开目标文件夹", "Alt+4", true),
+                ("隐藏", "Alt+5", true),
+            ]
+        );
+        assert_eq!(
+            app_menu_command(&hit.entry, AppMenuAction::OpenFileFolder),
+            Some(RowAction::OpenFolder(PathBuf::from(
+                "C:/ProgramData/Microsoft/Windows/Start Menu/Programs"
+            )))
+        );
+        assert_eq!(
+            app_menu_command(&hit.entry, AppMenuAction::OpenTargetFolder),
+            Some(RowAction::OpenFolder(PathBuf::from("C:/Tools")))
+        );
+        assert!(matches!(
+            app_menu_command(&hit.entry, AppMenuAction::RunAsUser),
+            Some(RowAction::RunAsUser(_))
+        ));
+        assert!(matches!(
+            app_menu_command(&hit.entry, AppMenuAction::Hide),
+            Some(RowAction::HideApp { .. })
+        ));
+
+        let direct = app(exe());
+        let RowDetail::App(direct) = &direct else {
+            panic!("app");
+        };
+        assert!(!app_menu(&direct.entry)[3].enabled);
+        assert_eq!(
+            app_menu_command(&direct.entry, AppMenuAction::OpenTargetFolder),
+            None
+        );
+        assert_eq!(
+            app_menu_command(&direct.entry, AppMenuAction::OpenFileFolder),
+            Some(RowAction::OpenFolder(PathBuf::from("C:/Tools")))
+        );
+
+        for target in [
+            LaunchTarget::Aumid {
+                aumid: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".to_owned(),
+            },
+            LaunchTarget::Url {
+                url: "steam://rungameid/570".to_owned(),
+            },
+        ] {
+            let detail = app(target);
+            let RowDetail::App(hit) = &detail else {
+                panic!("app");
+            };
+            let menu = app_menu(&hit.entry);
+            assert!(!menu[0].enabled);
+            assert!(!menu[1].enabled);
+            assert!(!menu[3].enabled);
+            assert!(menu[4].enabled);
+            assert_eq!(
+                app_menu_command(&hit.entry, AppMenuAction::RunAsAdmin),
+                None
+            );
+            assert!(matches!(
+                app_menu_command(&hit.entry, AppMenuAction::Hide),
+                Some(RowAction::HideApp { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn alt_digits_go_to_the_menu_only_while_it_is_open() {
+        assert_eq!(alt_route(false, 1), AltRoute::Result(1));
+        assert_eq!(alt_route(false, 9), AltRoute::Result(9));
+        assert_eq!(
+            alt_route(true, 1),
+            AltRoute::Menu(Some(AppMenuAction::RunAsUser))
+        );
+        assert_eq!(
+            alt_route(true, 4),
+            AltRoute::Menu(Some(AppMenuAction::OpenTargetFolder))
+        );
+        assert_eq!(
+            alt_route(true, 5),
+            AltRoute::Menu(Some(AppMenuAction::Hide))
+        );
+        assert_eq!(alt_route(true, 6), AltRoute::Menu(None));
+        assert_eq!(alt_route(true, 9), AltRoute::Menu(None));
     }
 
     #[test]
@@ -1047,8 +1248,10 @@ mod tests {
     #[test]
     fn open_folder_is_not_an_open() {
         assert!(!RowAction::OpenFolder(PathBuf::from("C:\\")).counts_as_open());
+        assert!(!RowAction::HideApp { key: "path".into() }.counts_as_open());
         assert!(RowAction::Shell(exe()).counts_as_open());
         assert!(RowAction::Elevated(exe()).counts_as_open());
+        assert!(RowAction::RunAsUser(exe()).counts_as_open());
     }
 
     #[test]
