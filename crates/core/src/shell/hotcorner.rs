@@ -2,7 +2,8 @@
 //!
 //! 产品规格：所选角连续停留 350ms 后打开面板；离开该角后才允许再次触发；
 //! 停留期间不重复打开；每一块显示器的所选角都可以触发；有全屏应用时不触发；
-//! 可以关掉。角的像素边长、拖动时是否触发、跨屏全屏是否抑制，规格没有写，见架构文档。
+//! 按住鼠标左键时不触发，松开后重新计算停留；可以关掉。
+//! 角的像素边长、跨屏全屏是否抑制，规格没有写，见架构文档。
 
 use std::time::{Duration, Instant};
 
@@ -71,12 +72,15 @@ pub struct Foreground<'a> {
 /// 一轮轮询读到的光标、显示器和前台窗口。
 ///
 /// `foreground` 只在光标已经落在所选角里时才需要。不在角里时可以是 `None`。
+/// `left_button_down` 为真时这一拍不计停留，也不打开。不在角里时调用方可以传假。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Observation<'a> {
     pub cursor: (i32, i32),
     pub monitors: &'a [PxRect],
     pub foreground: Option<Foreground<'a>>,
     pub exclusive_d3d: bool,
+    /// 鼠标左键当前按着。轮询用 `GetAsyncKeyState` 的高位，不在这里读。
+    pub left_button_down: bool,
 }
 
 /// 光标是否落在某一块显示器的所选角里。关闭时恒为假。
@@ -157,6 +161,8 @@ pub fn monitor_suppressed(
 pub enum WatchPhase {
     /// 武装着，没有在计时。关闭时也是这个。
     Idle,
+    /// 在角内，但鼠标左键按着，停留不计。
+    ButtonDown,
     /// 在角内，停留还没到 350ms。
     Dwelling,
     /// 到点之后解除武装，等光标离开。
@@ -169,6 +175,8 @@ pub struct CornerWatch {
     corner: HotCorner,
     armed: bool,
     since: Option<Instant>,
+    /// 最近一拍在角内且左键按着。只在仍武装时让 [`WatchPhase`] 变成 `ButtonDown`。
+    held: bool,
 }
 
 impl CornerWatch {
@@ -178,6 +186,7 @@ impl CornerWatch {
             corner,
             armed: true,
             since: None,
+            held: false,
         }
     }
 
@@ -191,6 +200,8 @@ impl CornerWatch {
     pub fn phase(&self) -> WatchPhase {
         if !self.armed {
             WatchPhase::Disarmed
+        } else if self.held {
+            WatchPhase::ButtonDown
         } else if self.since.is_some() {
             WatchPhase::Dwelling
         } else {
@@ -203,6 +214,7 @@ impl CornerWatch {
     /// `observation` 为 `None` 表示这一拍没有读数（光标或显示器读失败）。
     /// 不把失败当成离开，也不打开。规格没有写失败算不算离开，待定。
     /// 关闭时不打开，并重新武装。
+    /// `left_button_down` 为真时不打开，也不把这一拍算进 350ms。
     pub fn poll(
         &mut self,
         corner: HotCorner,
@@ -236,24 +248,40 @@ impl CornerWatch {
                 suppressed = true;
             }
         }
-        self.sample(inside, suppressed, now)
+        self.sample(inside, suppressed, observation.left_button_down, now)
     }
 
     fn rearm(&mut self) {
         self.armed = true;
         self.since = None;
+        self.held = false;
     }
 
     /// 在角内满 350ms 触发一次，然后解除武装。被抑制时到点也不打开，同样解除武装。
     /// 离开角内后重新武装。角内中途离开再进入，停留从头算。
-    fn sample(&mut self, inside: bool, suppressed: bool, now: Instant) -> bool {
+    /// 左键按着时不计这一拍：清掉已开始的停留，不打开，也不解除武装。
+    /// 松开后仍在角内则从这一拍重新计时。已经解除武装时，按住左键不重新武装。
+    fn sample(
+        &mut self,
+        inside: bool,
+        suppressed: bool,
+        left_button_down: bool,
+        now: Instant,
+    ) -> bool {
         if !inside {
             self.rearm();
             return false;
         }
         if !self.armed {
+            self.held = false;
             return false;
         }
+        if left_button_down {
+            self.since = None;
+            self.held = true;
+            return false;
+        }
+        self.held = false;
         let since = *self.since.get_or_insert(now);
         if now.saturating_duration_since(since) >= DWELL {
             self.armed = false;
@@ -314,6 +342,25 @@ mod tests {
             monitors,
             foreground,
             exclusive_d3d,
+            left_button_down: false,
+        };
+        watch.poll(corner, Some(&observation), now)
+    }
+
+    fn poll_button(
+        watch: &mut CornerWatch,
+        corner: HotCorner,
+        cursor: (i32, i32),
+        monitors: &[PxRect],
+        down: bool,
+        now: Instant,
+    ) -> bool {
+        let observation = Observation {
+            cursor,
+            monitors,
+            foreground: None,
+            exclusive_d3d: false,
+            left_button_down: down,
         };
         watch.poll(corner, Some(&observation), now)
     }
@@ -1144,6 +1191,303 @@ mod tests {
                 rect: None,
             }),
             true
+        ));
+    }
+
+    #[test]
+    fn holding_the_left_button_in_the_corner_does_not_open() {
+        let mut watch = CornerWatch::new(HotCorner::TopRight);
+        let t0 = Instant::now();
+        let monitors = [screen()];
+        let corner = (1919, 0);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            true,
+            t0
+        ));
+        assert_eq!(watch.phase(), WatchPhase::ButtonDown);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            true,
+            t0 + at(350)
+        ));
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            true,
+            t0 + at(2_000)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::ButtonDown);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(2_000)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Dwelling);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(2_000 + 349)
+        ));
+        assert!(poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(2_000 + 350)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Disarmed);
+    }
+
+    #[test]
+    fn pressing_during_a_dwell_discards_the_elapsed_time() {
+        let mut watch = CornerWatch::new(HotCorner::TopRight);
+        let t0 = Instant::now();
+        let monitors = [screen()];
+        let corner = (1919, 0);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Dwelling);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(300)
+        ));
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            true,
+            t0 + at(340)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::ButtonDown);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            true,
+            t0 + at(900)
+        ));
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(900)
+        ));
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(900 + 349)
+        ));
+        assert!(poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(900 + 350)
+        ));
+    }
+
+    #[test]
+    fn button_down_after_a_trigger_does_not_open_again() {
+        let mut watch = CornerWatch::new(HotCorner::TopRight);
+        let t0 = Instant::now();
+        let monitors = [screen()];
+        let corner = (1919, 0);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0
+        ));
+        assert!(poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(350)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Disarmed);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            true,
+            t0 + at(400)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Disarmed);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(400 + 350)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Disarmed);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            (100, 100),
+            &monitors,
+            true,
+            t0 + at(800)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Idle);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(900)
+        ));
+        assert!(poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            corner,
+            &monitors,
+            false,
+            t0 + at(900 + 350)
+        ));
+    }
+
+    #[test]
+    fn leaving_while_the_button_is_down_rearms() {
+        let mut watch = CornerWatch::new(HotCorner::TopRight);
+        let t0 = Instant::now();
+        let monitors = [screen()];
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            true,
+            t0
+        ));
+        assert_eq!(watch.phase(), WatchPhase::ButtonDown);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            (100, 100),
+            &monitors,
+            true,
+            t0 + at(500)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Idle);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            (100, 100),
+            &monitors,
+            true,
+            t0 + at(600)
+        ));
+        assert_eq!(watch.phase(), WatchPhase::Idle);
+    }
+
+    #[test]
+    fn release_during_fullscreen_still_does_not_open() {
+        let mut watch = CornerWatch::new(HotCorner::TopRight);
+        let t0 = Instant::now();
+        let monitors = [primary()];
+        let video = Foreground {
+            class_name: "Chrome_WidgetWin_1",
+            rect: Some(primary()),
+        };
+        let step = |watch: &mut CornerWatch, down: bool, now| {
+            let observation = Observation {
+                cursor: (2559, 0),
+                monitors: &monitors,
+                foreground: Some(video),
+                exclusive_d3d: false,
+                left_button_down: down,
+            };
+            watch.poll(HotCorner::TopRight, Some(&observation), now)
+        };
+        assert!(!step(&mut watch, true, t0));
+        assert_eq!(watch.phase(), WatchPhase::ButtonDown);
+        assert!(!step(&mut watch, true, t0 + at(800)));
+        assert!(!step(&mut watch, false, t0 + at(800)));
+        assert_eq!(watch.phase(), WatchPhase::Dwelling);
+        assert!(!step(&mut watch, false, t0 + at(800 + 350)));
+        assert_eq!(watch.phase(), WatchPhase::Disarmed);
+    }
+
+    #[test]
+    fn a_missed_reading_while_the_button_is_down_is_not_a_release() {
+        let mut watch = CornerWatch::new(HotCorner::TopRight);
+        let t0 = Instant::now();
+        let monitors = [screen()];
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            true,
+            t0
+        ));
+        assert!(!watch.poll(HotCorner::TopRight, None, t0 + at(400)));
+        assert_eq!(watch.phase(), WatchPhase::ButtonDown);
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            false,
+            t0 + at(400)
+        ));
+        assert!(!poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            false,
+            t0 + at(400 + 349)
+        ));
+        assert!(poll_button(
+            &mut watch,
+            HotCorner::TopRight,
+            (1919, 0),
+            &monitors,
+            false,
+            t0 + at(400 + 350)
         ));
     }
 
