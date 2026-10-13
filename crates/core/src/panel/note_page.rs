@@ -3,8 +3,11 @@
 //! 输入是 [`NoteCommands`](crate::notes::NoteCommands) 的快照。这里不读写盘，不读时钟。
 //! 规则仍在便签服务里。列表顺序（置顶在前，其后按更新时间从新到旧）由服务给出，这里不重排回收站以外的顺序。
 
-use super::float_snap::{DockState, PxBox, ScreenBounds, dock_applies};
-use crate::notes::{FloatGeometry, Note};
+use super::float_snap::{
+    DockInput, DockState, PxBox, ScreenBounds, Transition, dock_applies, snap_after_clamp,
+    transition, visible_box,
+};
+use crate::notes::{DockEdge, FloatGeometry, Note};
 use crate::shell::{WorkArea, to_logical, to_physical};
 
 use super::todo_page::trash_days_left;
@@ -185,7 +188,91 @@ pub fn contain_float(
     place_in(saved, monitor.area, width, height)
 }
 
+/// 拖动松手。改大小和点击仍只走 [`settle_float`]，不因为收进工作区而贴边。
+///
+/// 窗口移动了时，先用松开的矩形判断贴边。已经在阈值内就贴在显示器外沿，不收进工作区。
+/// 没贴上时，把展开矩形收进工作区，再只对松开时越出工作区的那一侧做一次判断。
+/// 这一侧是可贴的外沿才收成把手。底边越出不会因为夹回后上边进了阈值而贴上边。
+/// 在越出的方向上铺满工作区时，贴越出的那一侧，不改贴对侧。滑动从松开的矩形开始。
+/// 夹回是几何计算，不是另一次系统拖动；所以第二次判断在这里完成，不能只改坐标。
+#[must_use]
+pub fn release_float(
+    state: &DockState,
+    screens: &[ScreenBounds],
+    input: DockInput,
+    monitors: &[MonitorWork],
+    fallback: MonitorWork,
+) -> Transition {
+    let DockInput::DragFinished {
+        rect: released,
+        moved,
+        from_collapsed,
+        size_changed,
+    } = input
+    else {
+        return transition(state, screens, input);
+    };
+    let before = visible_box(state, screens);
+    let first = transition(
+        state,
+        screens,
+        DockInput::DragFinished {
+            rect: released,
+            moved,
+            from_collapsed,
+            size_changed,
+        },
+    );
+    let mut from = before;
+    let mut to = first.to;
+    let mut animate = from != to;
+    if animate {
+        from = released;
+        if from == to {
+            animate = false;
+        }
+    }
+    let settled = settle_float(first.state, screens, monitors, fallback);
+    let mut state_now = first.state;
+    if settled != state_now {
+        state_now = settled;
+        to = visible_box(&state_now, screens);
+        if animate && from == to {
+            animate = false;
+        }
+    }
+    if moved && state_now.dock.is_none() {
+        let before_clamp = first.state.expanded;
+        let monitor = chosen_monitor(
+            before_clamp.x,
+            before_clamp.y,
+            before_clamp.width.max(1),
+            before_clamp.height.max(1),
+            monitors,
+            fallback,
+        );
+        let sides = crossed_outer_sides(before_clamp, monitor.area);
+        if let Some(snapped) = snap_after_clamp(state_now.expanded, screens, &sides)
+            && dock_applies(&snapped, screens)
+        {
+            state_now = snapped;
+            to = visible_box(&state_now, screens);
+            from = released;
+            animate = from != to;
+        }
+    }
+    Transition {
+        state: state_now,
+        from,
+        to,
+        animate,
+    }
+}
+
 /// 没有贴边，或记下的贴边对不上这些屏幕时，把展开矩形收进工作区。贴边对得上时原样返回。
+///
+/// 拖动松手不要只调用这个函数：超出贴边阈值时它会把窗口夹到工作区边缘，但不会再判断贴边。
+/// 那条路径在 [`release_float`]。
 #[must_use]
 pub fn settle_float(
     state: DockState,
@@ -306,6 +393,21 @@ fn overlap(x: i32, y: i32, width: u32, height: u32, area: WorkArea) -> i64 {
     }
 }
 
+/// 松开时越出这块工作区的可贴外沿。底边越出不产生候选。
+fn crossed_outer_sides(rect: PxBox, area: WorkArea) -> Vec<DockEdge> {
+    let mut sides = Vec::new();
+    if rect.x < area.left {
+        sides.push(DockEdge::Left);
+    }
+    if rect.right() > area.right {
+        sides.push(DockEdge::Right);
+    }
+    if rect.y < area.top {
+        sides.push(DockEdge::Top);
+    }
+    sides
+}
+
 fn clamp_start(start: i32, length: u32, low: i32, high: i32) -> i32 {
     let last = i64::from(high) - i64::from(length);
     let clamped = i64::from(start).min(last).max(i64::from(low));
@@ -314,9 +416,11 @@ fn clamp_start(start: i32, length: u32, low: i32, high: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::float_snap::{DockInput, ScreenBounds, transition};
+    use super::super::float_snap::{
+        DockInput, ScreenBounds, Transition, snap_on_release, transition,
+    };
     use super::*;
-    use crate::notes::{DockEdge, TimestampMillis};
+    use crate::notes::{DockEdge, FloatDock, TimestampMillis};
 
     fn note(id: &str, title: &str, tags: &[&str], pinned: bool, deleted: Option<i64>) -> Note {
         Note {
@@ -716,6 +820,316 @@ mod tests {
             adjusted: true,
         };
         inside(&placed, primary.area);
+    }
+
+    fn px(x: i32, y: i32, width: u32, height: u32) -> PxBox {
+        PxBox {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// 任务栏在底边。左、右、上三条工作区边和显示器外沿重合。
+    fn bottom_taskbar() -> (ScreenBounds, MonitorWork) {
+        let primary = monitor_split(area(0, 0, 1920, 1080), area(0, 0, 1920, 1040), 96);
+        (screen(0, 0, 1920, 1080, 96), primary)
+    }
+
+    fn drag_release(
+        start: PxBox,
+        released: PxBox,
+        monitors: &[MonitorWork],
+        fallback: MonitorWork,
+        screens: &[ScreenBounds],
+    ) -> Transition {
+        release_float(
+            &DockState {
+                expanded: start,
+                dock: None,
+            },
+            screens,
+            DockInput::DragFinished {
+                rect: released,
+                moved: true,
+                from_collapsed: false,
+                size_changed: false,
+            },
+            monitors,
+            fallback,
+        )
+    }
+
+    /// 便签、收纳、待办的拖动松手，以及叠页拆出去的那一页，都走 `release_float`。
+    #[test]
+    fn dragging_past_the_left_right_or_top_clamps_then_collapses() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let monitors = [primary];
+        let home = px(400, 120, 320, 360);
+
+        let left = px(-80, 100, 320, 360);
+        assert!(
+            snap_on_release(left, &screens).is_none(),
+            "离左边 80 物理像素，第一次判断不贴"
+        );
+        let pulled = contain_float(
+            geometry(left.x, left.y, left.width, left.height),
+            &monitors,
+            primary,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(pulled.origin, (0, 100), "先夹到工作区左沿");
+        let collapsed = drag_release(home, left, &monitors, primary, &screens);
+        let dock = collapsed.state.dock.expect("夹回后再贴左边");
+        assert_eq!(dock.edge, DockEdge::Left);
+        assert!(dock.collapsed);
+        assert_eq!(collapsed.state.expanded.x, 0);
+        assert_eq!(collapsed.state.expanded.y, 100);
+        assert!(collapsed.animate);
+        assert_eq!(collapsed.from, left);
+        assert_eq!(collapsed.to, px(0, 260, 3, 40));
+
+        let right = px(1800, 80, 320, 360);
+        assert!(snap_on_release(right, &screens).is_none());
+        let pulled = contain_float(
+            geometry(right.x, right.y, right.width, right.height),
+            &monitors,
+            primary,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(pulled.origin, (1600, 80), "先夹到工作区右沿");
+        let collapsed = drag_release(home, right, &monitors, primary, &screens);
+        let dock = collapsed.state.dock.expect("夹回后再贴右边");
+        assert_eq!(dock.edge, DockEdge::Right);
+        assert!(dock.collapsed);
+        assert_eq!(collapsed.state.expanded.x, 1600);
+        assert_eq!(collapsed.state.expanded.y, 80);
+        assert!(collapsed.animate);
+        assert_eq!(collapsed.from, right);
+        assert_eq!(collapsed.to, px(1917, 240, 3, 40));
+
+        let top = px(400, -90, 320, 360);
+        assert!(snap_on_release(top, &screens).is_none());
+        let pulled = contain_float(
+            geometry(top.x, top.y, top.width, top.height),
+            &monitors,
+            primary,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(pulled.origin, (400, 0), "先夹到工作区上沿");
+        let collapsed = drag_release(home, top, &monitors, primary, &screens);
+        let dock = collapsed.state.dock.expect("夹回后再贴上边");
+        assert_eq!(dock.edge, DockEdge::Top);
+        assert!(dock.collapsed);
+        assert_eq!(collapsed.state.expanded, px(400, 0, 320, 360));
+        assert!(collapsed.animate);
+        assert_eq!(collapsed.from, top);
+        assert_eq!(collapsed.to, px(540, 0, 40, 3));
+    }
+
+    #[test]
+    fn dragging_a_collapsed_handle_past_the_left_edge_clamps_and_collapses_again() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let released = px(-80, 260, 3, 40);
+        let outcome = release_float(
+            &DockState {
+                expanded: px(0, 100, 320, 360),
+                dock: Some(FloatDock {
+                    edge: DockEdge::Left,
+                    offset: 100,
+                    collapsed: true,
+                }),
+            },
+            &screens,
+            DockInput::DragFinished {
+                rect: released,
+                moved: true,
+                from_collapsed: true,
+                size_changed: false,
+            },
+            &[primary],
+            primary,
+        );
+        let dock = outcome.state.dock.expect("把手拖出左边，夹回后仍收起");
+        assert_eq!(dock.edge, DockEdge::Left);
+        assert!(dock.collapsed);
+        assert_eq!(outcome.state.expanded, px(0, 100, 320, 360));
+        assert!(outcome.animate);
+        assert_eq!(outcome.from, released);
+        assert_eq!(outcome.to, px(0, 260, 3, 40));
+    }
+
+    #[test]
+    fn dragging_past_the_bottom_clamps_without_collapsing() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let released = px(400, 900, 320, 360);
+        let outcome = drag_release(
+            px(400, 120, 320, 360),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        assert!(outcome.state.dock.is_none(), "底边不贴");
+        assert_eq!(outcome.state.expanded, px(400, 680, 320, 360));
+        assert!(!outcome.animate, "只夹回时不滑向把手");
+        assert_eq!(outcome.to, outcome.state.expanded);
+    }
+
+    #[test]
+    fn a_full_height_window_pulled_up_from_the_bottom_does_not_snap_to_the_top() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let released = px(400, 40, 320, 1040);
+        assert!(
+            snap_on_release(released, &screens).is_none(),
+            "上边离外沿 40 物理像素，第一次判断不贴"
+        );
+        let outcome = drag_release(
+            px(400, 0, 320, 1040),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        assert!(
+            outcome.state.dock.is_none(),
+            "越出的是底边，夹回后上边进了阈值也不贴"
+        );
+        assert_eq!(outcome.state.expanded, px(400, 0, 320, 1040));
+    }
+
+    #[test]
+    fn a_full_width_window_pulled_back_from_the_right_snaps_right_not_left() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let released = px(100, 100, 1920, 360);
+        assert!(snap_on_release(released, &screens).is_none());
+        let outcome = drag_release(
+            px(0, 100, 1920, 360),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        let dock = outcome.state.dock.expect("越出的是右边，铺满后仍贴右边");
+        assert_eq!(dock.edge, DockEdge::Right);
+        assert!(dock.collapsed);
+        assert_eq!(outcome.state.expanded, px(0, 100, 1920, 360));
+        assert_eq!(outcome.to, px(1917, 260, 3, 40));
+    }
+
+    #[test]
+    fn dragging_past_the_left_at_144_dpi_clamps_then_collapses() {
+        let bounds = area(0, 0, 2560, 1440);
+        let primary = monitor_split(bounds, area(0, 0, 2560, 1400), 144);
+        let screens = [screen(0, 0, 2560, 1440, 144)];
+        let released = px(-40, 200, 400, 400);
+        assert!(
+            snap_on_release(released, &screens).is_none(),
+            "144 DPI 的阈值是 18 物理像素，越出 40 不在第一次判断里"
+        );
+        let outcome = drag_release(
+            px(200, 200, 400, 400),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        let dock = outcome.state.dock.expect("夹回后再贴左边");
+        assert_eq!(dock.edge, DockEdge::Left);
+        assert!(dock.collapsed);
+        assert_eq!(outcome.state.expanded.x, 0);
+        assert_eq!(outcome.state.expanded.y, 200);
+        assert_eq!(outcome.from, released);
+        assert_eq!(outcome.to, px(0, 370, 5, 60), "144 DPI 下把手厚 5、长 60");
+    }
+
+    #[test]
+    fn a_resize_past_the_edge_clamps_without_collapsing() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let grown = px(1700, 80, 400, 360);
+        let outcome = release_float(
+            &DockState {
+                expanded: px(1700, 80, 200, 360),
+                dock: None,
+            },
+            &screens,
+            DockInput::DragFinished {
+                rect: grown,
+                moved: false,
+                from_collapsed: false,
+                size_changed: true,
+            },
+            &[primary],
+            primary,
+        );
+        assert!(outcome.state.dock.is_none());
+        assert_eq!(outcome.state.expanded, px(1520, 80, 400, 360));
+        assert!(!outcome.animate);
+    }
+
+    #[test]
+    fn a_release_inside_the_slop_stays_on_the_monitor_edge() {
+        let screens = [screen(0, 0, 1920, 1080, 96)];
+        let primary = monitor_split(area(0, 0, 1920, 1080), area(0, 40, 1920, 1080), 96);
+        let released = px(400, 0, 320, 360);
+        let outcome = drag_release(
+            px(400, 200, 320, 360),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        let dock = outcome.state.dock.expect("已经在阈值内，直接贴上沿");
+        assert_eq!(dock.edge, DockEdge::Top);
+        assert!(dock.collapsed);
+        assert_eq!(
+            outcome.state.expanded.y, 0,
+            "贴住显示器外沿，不先拉进工作区"
+        );
+    }
+
+    #[test]
+    fn thirteen_pixels_inside_the_right_edge_does_not_collapse() {
+        let (display, primary) = bottom_taskbar();
+        let screens = [display];
+        let released = px(1587, 100, 320, 360);
+        let outcome = drag_release(
+            px(400, 100, 320, 360),
+            released,
+            &[primary],
+            primary,
+            &screens,
+        );
+        assert!(outcome.state.dock.is_none());
+        assert_eq!(outcome.state.expanded, released);
+    }
+
+    #[test]
+    fn clamping_onto_a_shared_edge_does_not_collapse() {
+        let left = monitor_split(area(0, 0, 1920, 1080), area(0, 0, 1920, 1040), 96);
+        let right = monitor_split(area(1920, 0, 3840, 1080), area(1920, 0, 3840, 1040), 96);
+        let screens = [
+            screen(0, 0, 1920, 1080, 96),
+            screen(1920, 0, 3840, 1080, 96),
+        ];
+        let released = px(1700, 100, 320, 360);
+        let outcome = drag_release(
+            px(400, 100, 320, 360),
+            released,
+            &[left, right],
+            left,
+            &screens,
+        );
+        assert!(outcome.state.dock.is_none(), "两块屏幕相接的边不是外侧");
+        assert_eq!(outcome.state.expanded.x, 1600);
+        assert_eq!(outcome.state.expanded.y, 100);
     }
 
     #[test]

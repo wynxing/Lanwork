@@ -11,11 +11,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::notes::{FloatGeometry, FloatStackSlot, NoteCommands};
 use lanwork_core::panel::{
-    DockInput, DockState, DragOrigin, DropEffect, DropInput, Flip, OtherFloat, PageStack, PxBox,
-    StackMember, StackPage, StartupPage, assemble_stacks, collapsed_handles_close, detach_page,
-    dock_merge_gap, dot_row_size, dpi_at, filter_open_pages, fit_dot_row, flip_index,
-    handle_dot_count, merge_stacks, moved_enough, pages_to_park, plan_startup, restore_log_line,
-    snap_on_release, stack_drop_effect, transition,
+    DockState, DragOrigin, DropEffect, DropInput, Flip, OtherFloat, PageStack, PxBox, StackMember,
+    StackPage, StartupPage, assemble_stacks, collapsed_handles_close, detach_page, dock_merge_gap,
+    dot_row_size, dpi_at, filter_open_pages, fit_dot_row, flip_index, handle_dot_count,
+    merge_stacks, moved_enough, pages_to_park, plan_startup, restore_log_line, snap_on_release,
+    stack_drop_effect,
 };
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
@@ -1283,22 +1283,17 @@ fn solo_at(before: SavedFloat, released: PxBox) -> SavedFloat {
         width: before.geometry.width,
         height: before.geometry.height,
     };
-    let screens = float_dock::screens();
-    let next = transition(
+    let change = float_dock::release_drag(
         &DockState {
             expanded,
             dock: None,
         },
-        &screens,
-        DockInput::DragFinished {
-            rect: expanded,
-            moved: true,
-            from_collapsed: false,
-            size_changed: false,
-        },
+        expanded,
+        true,
+        false,
+        false,
     );
-    let settled = float_dock::settle(next.state);
-    saved_from(settled.expanded, settled.dock)
+    saved_from(change.state.expanded, change.state.dock)
 }
 
 fn on_tab_move(key: isize, entering: bool, x: i32, y: i32, _width: u32, _height: u32) {
