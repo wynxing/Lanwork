@@ -43,7 +43,7 @@ impl TimestampMillis {
 /// 悬浮窗的位置和大小，物理像素，位置是虚拟屏幕坐标。
 ///
 /// 存在便签文件的 `floatWindow` 里。这是界面记下的值，服务不判断它是否还在某个显示器内。
-/// 贴边时这里仍是展开后的矩形，不是细条。
+/// 贴边时这里仍是展开后的矩形，不是收起后的把手。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FloatGeometry {
     pub x: i32,
@@ -62,7 +62,7 @@ pub enum DockEdge {
 
 /// 悬浮窗贴边。存在便签或分组文件的 `floatDock` 里。
 ///
-/// `offset` 是沿边的位置，物理像素：左、右是 y，上是 x。`collapsed` 为真时窗口收成细条。
+/// `offset` 是沿边的位置，物理像素：左、右是 y，上是 x。`collapsed` 为真时窗口收成把手。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FloatDock {
     pub edge: DockEdge,

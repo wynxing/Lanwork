@@ -1,15 +1,27 @@
 //! 便签和收纳悬浮窗的贴边几何。不读光标，也不调用窗口 API。
 //!
-//! 产品规格写了：松手时贴住屏幕外侧的左、右或上边就收成细条；两块屏幕共用的边不算；
-//! 点细条展开，再点或失焦收回；把展开的窗口拖离这条边就取消贴边。
-//! 细条有多厚、离边多近算贴住、同时贴住两条边时选哪一条、滑出要多久，规格没有写。
-//! 下面的常数是当前做法，不是产品规则，待定。
+//! 产品规格写了：松手时贴住屏幕外侧的左、右或上边就收成一个小把手；两块屏幕共用的边不算；
+//! 点把手展开，再点或失焦收回；把展开的窗口拖离这条边就取消贴边。
+//! 把手厚 [`HANDLE_THICKNESS_LOGICAL`]、长 [`HANDLE_LENGTH_LOGICAL`] 逻辑像素，沿这条边居中。
+//! 收起后的窗口是点击区，比把手稍大，见 [`STRIP_HIT_THICKNESS_LOGICAL`] 和 [`STRIP_HIT_LENGTH_LOGICAL`]。
+//! 离边多近算贴住、同时贴住两条边时选哪一条、滑出要多久，规格没有写。
 
 use crate::notes::{DockEdge, FloatDock};
 use crate::shell::{BASE_DPI, to_physical};
 
-/// 细条在贴边方向上的厚度，逻辑像素。随所贴屏幕的 DPI 换成物理像素。待定。
-pub const STRIP_LOGICAL_PX: u32 = 8;
+/// 看得见的把手在贴边方向上的厚度，逻辑像素。随窗口缩放。产品规格已定。
+pub const HANDLE_THICKNESS_LOGICAL: u32 = 3;
+
+/// 看得见的把手沿边的长度，逻辑像素。随窗口缩放。产品规格已定。
+pub const HANDLE_LENGTH_LOGICAL: u32 = 40;
+
+/// 收起后窗口在贴边方向上的厚度，逻辑像素。比把手厚，两侧多出来的是透明点击区。
+/// 随所贴屏幕的 DPI 换成物理像素。产品规格已定。
+pub const STRIP_HIT_THICKNESS_LOGICAL: u32 = 9;
+
+/// 收起后窗口沿边的长度，逻辑像素。比把手长，两端多出来的是透明点击区。
+/// 随所贴屏幕的 DPI 换成物理像素。产品规格已定。
+pub const STRIP_HIT_LENGTH_LOGICAL: u32 = 48;
 
 /// 窗口对应的边离屏幕外边不超过这么多逻辑像素，松手算贴住。待定。
 pub const SNAP_SLOP_LOGICAL: u32 = 12;
@@ -63,21 +75,21 @@ pub struct OuterEdge {
     pub dpi: u32,
 }
 
-/// 展开时的窗口，以及可选的贴边。`expanded` 始终是展开尺寸，不是细条。
+/// 展开时的窗口，以及可选的贴边。`expanded` 始终是展开尺寸，不是收起后的点击区。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DockState {
     pub expanded: PxBox,
     pub dock: Option<FloatDock>,
 }
 
-/// 界面在拖动结束、点细条、失焦时交给几何模块的一件事。
+/// 界面在拖动结束、点把手、失焦时交给几何模块的一件事。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DockInput {
     DragFinished {
         rect: PxBox,
         /// 松开时的左上角相对按下时移动超过了点击阈值。
         moved: bool,
-        /// 这次拖动开始时窗口是收起的细条。
+        /// 这次拖动开始时窗口是收起的把手。
         from_collapsed: bool,
         /// 宽或高变了。位置没动时用来分辨改大小和拖动。
         size_changed: bool,
@@ -96,8 +108,14 @@ pub struct Transition {
 }
 
 #[must_use]
-pub fn strip_thickness(dpi: u32) -> u32 {
-    let px = to_physical(STRIP_LOGICAL_PX, dpi);
+pub fn strip_hit_thickness(dpi: u32) -> u32 {
+    let px = to_physical(STRIP_HIT_THICKNESS_LOGICAL, dpi);
+    u32::try_from(px).unwrap_or(1).max(1)
+}
+
+#[must_use]
+pub fn strip_hit_length(dpi: u32) -> u32 {
+    let px = to_physical(STRIP_HIT_LENGTH_LOGICAL, dpi);
     u32::try_from(px).unwrap_or(1).max(1)
 }
 
@@ -326,12 +344,17 @@ fn resize_in_place(state: &DockState, screens: &[ScreenBounds], rect: PxBox) -> 
 
 fn snap_to(state: &DockState, edge: OuterEdge, rect: PxBox, from_collapsed: bool) -> DockState {
     let size = if from_collapsed { state.expanded } else { rect };
-    let offset = clamp_offset(
-        along_origin(edge.edge, rect),
-        along_length(edge.edge, size),
-        edge.start,
-        edge.end,
-    );
+    // 收起时 `rect` 是点击区，不是展开窗口。沿边原点要让把手仍落在窗口这段边的正中。
+    let raw = if from_collapsed {
+        window_along_from_handle(
+            along_origin(edge.edge, rect),
+            along_length(edge.edge, size),
+            along_length(edge.edge, rect),
+        )
+    } else {
+        along_origin(edge.edge, rect)
+    };
+    let offset = clamp_offset(raw, along_length(edge.edge, size), edge.start, edge.end);
     let dock = FloatDock {
         edge: edge.edge,
         offset,
@@ -354,12 +377,7 @@ fn snap_to(state: &DockState, edge: OuterEdge, rect: PxBox, from_collapsed: bool
 fn undock(state: &DockState, rect: PxBox, from_collapsed: bool) -> DockState {
     DockState {
         expanded: if from_collapsed {
-            PxBox {
-                x: rect.x,
-                y: rect.y,
-                width: state.expanded.width,
-                height: state.expanded.height,
-            }
+            expanded_from_handle(state, rect)
         } else {
             rect
         },
@@ -457,16 +475,20 @@ fn flush_box(resolved: &Resolved, expanded: PxBox) -> PxBox {
 }
 
 fn strip_box(resolved: &Resolved, expanded: PxBox) -> PxBox {
-    let thickness = strip_thickness(resolved.edge.dpi);
-    let along = along_length(resolved.edge.edge, expanded).max(thickness);
+    let thickness = strip_hit_thickness(resolved.edge.dpi);
+    let want = strip_hit_length(resolved.edge.dpi);
     let span = u32::try_from(resolved.edge.end.saturating_sub(resolved.edge.start)).unwrap_or(0);
     let along = if span == 0 {
-        along
+        want.max(1)
     } else {
-        along.min(span).max(1)
+        want.min(span).max(1)
     };
-    let offset = clamp_offset(
-        resolved.offset,
+    let origin = clamp_offset(
+        centered_along(
+            resolved.offset,
+            along_length(resolved.edge.edge, expanded),
+            along,
+        ),
         along,
         resolved.edge.start,
         resolved.edge.end,
@@ -474,21 +496,64 @@ fn strip_box(resolved: &Resolved, expanded: PxBox) -> PxBox {
     match resolved.edge.edge {
         DockEdge::Left => PxBox {
             x: resolved.edge.at,
-            y: offset,
+            y: origin,
             width: thickness,
             height: along,
         },
         DockEdge::Right => PxBox {
             x: resolved.edge.at.saturating_sub_unsigned(thickness),
-            y: offset,
+            y: origin,
             width: thickness,
             height: along,
         },
         DockEdge::Top => PxBox {
-            x: offset,
+            x: origin,
             y: resolved.edge.at,
             width: along,
             height: thickness,
+        },
+    }
+}
+
+/// 把手（点击区）沿边的起点，使它落在展开窗口这一段的正中。
+fn centered_along(window_origin: i32, window_len: u32, handle_len: u32) -> i32 {
+    let pad = window_len.saturating_sub(handle_len) / 2;
+    window_origin.saturating_add_unsigned(pad)
+}
+
+/// [`centered_along`] 的逆运算。拖动收起的点击区之后，还原展开窗口的沿边原点。
+fn window_along_from_handle(handle_origin: i32, window_len: u32, handle_len: u32) -> i32 {
+    let pad = window_len.saturating_sub(handle_len) / 2;
+    handle_origin.saturating_sub_unsigned(pad)
+}
+
+/// 从收起的点击区还原展开矩形。贴住的那条边跟着点击区走，沿边方向保持居中。
+fn expanded_from_handle(state: &DockState, handle: PxBox) -> PxBox {
+    let expanded = state.expanded;
+    match state.dock.map(|dock| dock.edge) {
+        Some(DockEdge::Left) => PxBox {
+            x: handle.x,
+            y: window_along_from_handle(handle.y, expanded.height, handle.height),
+            width: expanded.width,
+            height: expanded.height,
+        },
+        Some(DockEdge::Right) => PxBox {
+            x: handle.right().saturating_sub_unsigned(expanded.width),
+            y: window_along_from_handle(handle.y, expanded.height, handle.height),
+            width: expanded.width,
+            height: expanded.height,
+        },
+        Some(DockEdge::Top) => PxBox {
+            x: window_along_from_handle(handle.x, expanded.width, handle.width),
+            y: handle.y,
+            width: expanded.width,
+            height: expanded.height,
+        },
+        None => PxBox {
+            x: handle.x,
+            y: handle.y,
+            width: expanded.width,
+            height: expanded.height,
         },
     }
 }
@@ -791,11 +856,15 @@ mod tests {
     }
 
     #[test]
-    fn slop_and_strip_thickness_follow_dpi() {
+    fn slop_and_the_handle_box_follow_dpi() {
         assert_eq!(snap_slop(96), 12);
         assert_eq!(snap_slop(144), 18);
-        assert_eq!(strip_thickness(96), 8);
-        assert_eq!(strip_thickness(144), 12);
+        assert_eq!(HANDLE_THICKNESS_LOGICAL, 3);
+        assert_eq!(HANDLE_LENGTH_LOGICAL, 40);
+        assert_eq!(strip_hit_thickness(96), 9);
+        assert_eq!(strip_hit_thickness(144), 14);
+        assert_eq!(strip_hit_length(96), 48);
+        assert_eq!(strip_hit_length(144), 72);
 
         let low = [screen(0, 0, 1920, 1080, 96)];
         assert!(snap_on_release(window(12, 200, 100, 100), &low).is_some());
@@ -844,9 +913,8 @@ mod tests {
         assert_eq!(snapped.state.dock.unwrap().edge, DockEdge::Left);
         assert!(snapped.state.dock.unwrap().collapsed);
         assert_eq!(snapped.state.expanded.width, 320);
-        assert_eq!(snapped.to.width, strip_thickness(96));
-        assert_eq!(snapped.to.x, 0);
-        assert_eq!(snapped.to.y, 180);
+        // 360 高的窗口，48 长的点击区居中：180 + (360 - 48) / 2 = 336。
+        assert_eq!(snapped.to, window(0, 336, 9, 48));
 
         let expanded = transition(&snapped.state, &screens, DockInput::StripClick);
         assert!(!expanded.state.dock.unwrap().collapsed);
@@ -854,7 +922,7 @@ mod tests {
 
         let collapsed = transition(&expanded.state, &screens, DockInput::Blur);
         assert!(collapsed.state.dock.unwrap().collapsed);
-        assert_eq!(collapsed.to.width, strip_thickness(96));
+        assert_eq!(collapsed.to, window(0, 336, 9, 48));
 
         let again = transition(&expanded.state, &screens, DockInput::StripClick);
         assert!(again.state.dock.unwrap().collapsed);
@@ -889,18 +957,86 @@ mod tests {
             window(0, 180, 320, 360),
             Some(dock(DockEdge::Left, 180, true)),
         );
+        let handle = visible_box(&collapsed, &screens);
+        assert_eq!(handle, window(0, 336, 9, 48));
         let away = transition(
             &collapsed,
             &screens,
             DockInput::DragFinished {
-                rect: window(100, 220, strip_thickness(96), 360),
+                rect: window(handle.x + 100, handle.y + 40, handle.width, handle.height),
                 moved: true,
                 from_collapsed: true,
-                size_changed: true,
+                size_changed: false,
             },
         );
         assert!(away.state.dock.is_none());
         assert_eq!(away.state.expanded, window(100, 220, 320, 360));
+    }
+
+    #[test]
+    fn dragging_the_handle_along_the_edge_keeps_it_centered_on_the_window() {
+        let screens = [screen(0, 0, 1920, 1080, 96)];
+        let collapsed = state(
+            window(0, 180, 320, 360),
+            Some(dock(DockEdge::Left, 180, true)),
+        );
+        let handle = visible_box(&collapsed, &screens);
+        let moved = transition(
+            &collapsed,
+            &screens,
+            DockInput::DragFinished {
+                rect: window(handle.x, handle.y + 40, handle.width, handle.height),
+                moved: true,
+                from_collapsed: true,
+                size_changed: false,
+            },
+        );
+        assert_eq!(moved.state.dock.unwrap().edge, DockEdge::Left);
+        assert!(moved.state.dock.unwrap().collapsed);
+        assert_eq!(moved.state.dock.unwrap().offset, 220);
+        assert_eq!(moved.state.expanded, window(0, 220, 320, 360));
+        assert_eq!(moved.to, window(0, 376, 9, 48));
+    }
+
+    #[test]
+    fn dragging_a_right_or_top_handle_inward_keeps_the_snapped_side_with_the_handle() {
+        let screens = [screen(0, 0, 1920, 1080, 96)];
+        let right = state(
+            window(1920 - 320, 180, 320, 360),
+            Some(dock(DockEdge::Right, 180, true)),
+        );
+        let handle = visible_box(&right, &screens);
+        assert_eq!(handle, window(1920 - 9, 336, 9, 48));
+        let away = transition(
+            &right,
+            &screens,
+            DockInput::DragFinished {
+                rect: window(handle.x - 100, handle.y, handle.width, handle.height),
+                moved: true,
+                from_collapsed: true,
+                size_changed: false,
+            },
+        );
+        assert!(away.state.dock.is_none());
+        assert_eq!(away.state.expanded, window(1920 - 100 - 320, 180, 320, 360));
+
+        let top = state(window(30, 0, 500, 280), Some(dock(DockEdge::Top, 30, true)));
+        let handle = visible_box(&top, &screens);
+        assert_eq!(handle, window(30 + (500 - 48) / 2, 0, 48, 9));
+        let away = transition(
+            &top,
+            &screens,
+            DockInput::DragFinished {
+                rect: window(handle.x, handle.y + 80, handle.width, handle.height),
+                moved: true,
+                from_collapsed: true,
+                size_changed: false,
+            },
+        );
+        assert!(away.state.dock.is_none());
+        assert_eq!(away.state.expanded.y, 80);
+        assert_eq!(away.state.expanded.x, 30);
+        assert_eq!(away.state.expanded.width, 500);
     }
 
     #[test]
@@ -914,7 +1050,7 @@ mod tests {
             &collapsed,
             &screens,
             DockInput::DragFinished {
-                rect: window(0, 180, 8, 360),
+                rect: window(0, 336, 9, 48),
                 moved: false,
                 from_collapsed: true,
                 size_changed: false,
@@ -961,17 +1097,17 @@ mod tests {
             Some(dock(DockEdge::Right, 50, true)),
         );
         let strip = visible_box(&right, &right_screen);
-        assert_eq!(strip.width, 12);
+        assert_eq!(strip.width, 14);
         assert_eq!(strip.right(), 1920);
-        assert_eq!(strip.y, 50);
-        assert_eq!(strip.height, 400);
+        assert_eq!(strip.y, 50 + (400 - 72) / 2);
+        assert_eq!(strip.height, 72);
 
         let top = state(window(30, 0, 500, 280), Some(dock(DockEdge::Top, 30, true)));
         let strip = visible_box(&top, &[screen(0, 0, 1920, 1080, 96)]);
-        assert_eq!(strip.height, 8);
+        assert_eq!(strip.height, 9);
         assert_eq!(strip.y, 0);
-        assert_eq!(strip.x, 30);
-        assert_eq!(strip.width, 500);
+        assert_eq!(strip.x, 30 + (500 - 48) / 2);
+        assert_eq!(strip.width, 48);
     }
 
     #[test]

@@ -1,8 +1,8 @@
 // 收纳分组的悬浮窗。只显示该分组的条目：上沿一条可拖动的细条，右侧是关闭，下面是条目列表。
-// 窗口始终在最上层。贴边收起时整窗变成细条。条目列表和面板的收纳页是同一个组件。
+// 窗口始终在最上层。贴边收起时只留下一个小把手，窗口其余部分透明。条目列表和面板的收纳页是同一个组件。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Check, Ink } from "widgets.slint";
+import { Btn, Check, EdgeHandle, Ink } from "widgets.slint";
 import { RefsList, ShelvesPageData } from "shelvespage.slint";
 
 export component ShelfFloat inherits Window {
@@ -61,10 +61,13 @@ export component ShelfFloat inherits Window {
     out property <length> action-y: action-bar.absolute-position.y;
     out property <length> close-x: close-box.absolute-position.x;
     out property <length> strip-x: edge-strip.absolute-position.x;
+    out property <length> strip-y: edge-strip.absolute-position.y;
     out property <length> strip-width: edge-strip.width;
-    property <length> band: 8px;
+    out property <length> strip-height: edge-strip.height;
+    out property <length> grip-width: edge-strip.grip-width;
+    out property <length> grip-height: edge-strip.grip-height;
 
-    background: acrylic ? transparent : solid-color;
+    background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
     init => {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
@@ -130,45 +133,27 @@ export component ShelfFloat inherits Window {
             }
         }
 
-        if root.collapsed: Rectangle {
+        if root.collapsed: EdgeHandle {
             x: 0px;
             y: 0px;
             width: parent.width;
             height: parent.height;
-            background: c.accent;
-
-            Rectangle {
-                x: parent.width > parent.height ? (parent.width - 10px) / 2 : (parent.width - 2px) / 2;
-                y: parent.width > parent.height ? (parent.height - 2px) / 2 : (parent.height - 10px) / 2;
-                width: parent.width > parent.height ? 10px : 2px;
-                height: parent.width > parent.height ? 2px : 10px;
-                background: #ffffff;
-            }
-
-            TouchArea {
-                accessible-role: button;
-                accessible-label: "细条";
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                        root.drag-window();
-                    }
-                }
+            dark: root.dark;
+            along-vertical: dock-edge != "top";
+            press-drags: true;
+            pressed => {
+                root.drag-window();
             }
         }
 
-        edge-strip := Rectangle {
-            x: dock-edge == "right" ? parent.width - band : 0px;
-            y: dock-edge == "top" ? 0px : dock-edge == "right" ? 28px : 0px;
-            width: dock-edge == "top" ? parent.width - 28px : band;
-            height: dock-edge == "top" ? band : dock-edge == "right" ? parent.height - 28px : parent.height;
+        edge-strip := EdgeHandle {
+            x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
+            y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
             visible: !root.collapsed && dock-edge != "";
-            background: c.accent;
-            TouchArea {
-                accessible-role: button;
-                accessible-label: "细条";
-                clicked => {
-                    root.strip-clicked();
-                }
+            dark: root.dark;
+            along-vertical: dock-edge != "top";
+            clicked => {
+                root.strip-clicked();
             }
         }
 
