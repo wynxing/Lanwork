@@ -46,3 +46,8 @@ cargo run -p toast --release -- activation-check
 cargo run -p toast --release -- self-check
 
 `activation-check` 不点击通知，也不写 HKCU。它在本进程创建模拟面板，再用另一个进程 `CoCreateInstance` 激活器并调用 `Activate`。本机已经有 `toast.exe` 时，它不注册产品 CLSID，只注册一个内存里的探测 CLSID，避免抢走正在运行的服务器。`self-check` 会先做这一步，再做注册表往返；结束时仍会注销 spike 的 HKCU 项。
+
+cargo run -p urldrop -- self-test
+cargo run -p urldrop -- drop
+
+`drop` 打开窗口，等 Chrome 或 Edge 把地址栏锁图标或页面链接拖进来。步骤和要贴回去的日志写在 `spikes/urldrop/README.md`。`self-test` 不用浏览器。还没有手测通过记录，收纳界面不识别网址。

@@ -16,6 +16,7 @@
 | `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。产品用 50ms 轮询，见「运行时」。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
 | `spikes/toast` | 通知技术验证的最小程序。只验证注册、显示、点击参数和模拟面板定位，不进发布包，也不被 `lanwork` 依赖。运行命令写在 `spikes/README.md`。验证记录没有全部通过之前，待办界面不调用它。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
 | `spikes/dnd` | 外部拖放验证程序，包名 `dnd`。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
+| `spikes/urldrop` | 网址拖放验证程序，包名 `urldrop`。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md` 和 `spikes/urldrop/README.md`。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
 | `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合「性能测量」协议的实测记录。各项结论见 [roadmap.md](roadmap.md)「技术验证」。 |
@@ -28,10 +29,10 @@
 | 内容 | 将落在 |
 | --- | --- |
 | 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、设置页（开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」）、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板搜索框还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
-| 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
+| 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast`、`spikes/dnd` 与 `spikes/urldrop` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。见 [roadmap.md](roadmap.md)「技术验证」，这一项仍未通过 |
 | 外部 AI（本机 MCP）、扩展页与插件 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [extensions.md](extensions.md)。现在没有代码。技术验证表里没有对应项；没有通过记录之前，不写依赖它们的界面 |
-| 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。现在没有代码。拖放和打开见「收纳」的「网页引用」。依赖技术验证「网址拖放」；没有通过记录之前，不写这部分界面 |
+| 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。现在没有代码。拖放和打开见「收纳」的「网页引用」。依赖技术验证「网址拖放」；没有通过记录之前，不写这部分界面。验证程序在 `spikes/urldrop` |
 | 待办悬浮窗 | `crates/app` 与 `crates/core`。可见行为见 [product.md](product.md)「待办」。现在没有代码。位置记在数据目录的 `todo-float.json`，不写进清单文件。贴边和叠页加入现有悬浮窗，见「待办悬浮窗」。「背景」和「渲染器」仍没有通过记录。窗口外观沿用便签悬浮窗，代码可以写在这两项通过之前；写了也不改变这两项的记录 |
 
 ## 技术验证
@@ -435,7 +436,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 ## 收纳
 
-服务在 `lanwork_core::shelves`，薄命令是 `ShelfCommands`。一个分组一个 `shelves/<id>.json`。分组目前只保存路径引用。服务不调用删除、移动、复制用户文件的接口，也不关闭或移动浏览器标签。界面拖放按本节末尾的原生 OLE 方案。外部拖放的通过条件表见 [roadmap.md](roadmap.md)，七条都已通过，只覆盖文件。收纳页和收纳悬浮窗的代码已写，见「收纳页」，没有 Windows 验收记录。网页引用见本节末尾，排在 v0.2.0 之后，现在没有代码。
+服务在 `lanwork_core::shelves`，薄命令是 `ShelfCommands`。一个分组一个 `shelves/<id>.json`。分组目前只保存路径引用。服务不调用删除、移动、复制用户文件的接口，也不关闭或移动浏览器标签。界面拖放按本节末尾的原生 OLE 方案。外部拖放的通过条件表见 [roadmap.md](roadmap.md)，七条都已通过，只覆盖文件。收纳页和收纳悬浮窗的代码已写，见「收纳页」，没有 Windows 验收记录。网页引用见本节末尾，排在 v0.2.0 之后，收纳里现在没有代码。
 
 文件字段：`schemaVersion`、`id`、`name`、`order`、可选的 `todoIds`（旧文件是单条 `todoId`，只读）、可选的 `floatWindow`（悬浮窗的展开位置和大小，缺省表示没记录过）、可选的 `floatDock`（贴边；旧文件的 `floatPinned` 能读，不再写回）、可选的 `floatStack`（叠页，与便签同一结构，见「叠页」）、`refs`。引用字段：`path`、`name`、`folder`、`addedAt`。`addedAt` 是 Unix 纪元起的 UTC 毫秒。不保存文件内容和图标。
 
@@ -496,7 +497,9 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 ### 网页引用
 
-2026-10-13 决定，排在 v0.2.0 之后。可见行为以产品规格「收纳」的「网页引用」为准。现在没有代码。技术验证「网址拖放」没有通过记录之前，不写依赖它的界面。该项的通过标准是独立的最小程序取出网址，不包括收纳悬浮窗。现有放下目标只接受 `CF_HDROP`，不识别网址。
+2026-10-13 决定，排在 v0.2.0 之后。可见行为以产品规格「收纳」的「网页引用」为准。收纳里现在没有代码。技术验证「网址拖放」没有通过记录之前，不写依赖它的界面。该项的通过标准是独立的最小程序取出网址，不包括收纳悬浮窗。产品里现有放下目标只接受 `CF_HDROP`，不识别网址。
+
+验证程序在 `spikes/urldrop`，包名 `urldrop`，不在 `lanwork` 的依赖里，不进发布包。它开一个窗口接受放下，从注册名 `HTML Format`（`CF_HTML`）、注册名 `text/uri-list` 和 `CF_UNICODETEXT` 读出网址；`CF_HTML` 里有标题就一起记到日志。同一份数据里的 `FileGroupDescriptor` / `FileContents` 只记下描述符里的文件名，不调用 `FileContents` 的 `GetData`，不把字节写进磁盘。不调用会关闭或移动浏览器标签的接口。效果只返回复制或快捷方式，源只提供移动时拒绝。`CF_TEXT`、`UniformResourceLocator`、`UniformResourceLocatorW` 若对方提供，日志里单独列出，产品是否接受仍按上面的待定。几种格式同时出现时先用哪一个仍待定，程序全部列出，不选一个当作规则。手测通过记录还没有。收纳页和收纳悬浮窗仍不识别网址。
 
 已经定下的机制：
 
