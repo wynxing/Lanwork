@@ -1,6 +1,10 @@
 //! 悬浮窗在系统把 DWM 样式清掉之后要不要重设，以及收起时要不要拦住隐藏。
 //!
 //! 不调用窗口 API。Win32 消息在 `float_frame` 里翻译成这里的 [`FrameNotice`]。
+//! 收起后看得见的范围也在这里算：窗口区域只留把手，点击区多出来的一圈另做命中。
+
+use lanwork_core::panel::{HANDLE_LENGTH_LOGICAL, HANDLE_THICKNESS_LOGICAL};
+use lanwork_core::shell::to_physical;
 
 /// 壳层或系统刚对这个悬浮窗做的一件事。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +55,72 @@ pub(crate) const ICONIC_ORIGIN: i32 = -32_000;
 #[must_use]
 pub(crate) fn is_iconic_origin(x: i32, y: i32) -> bool {
     x <= ICONIC_ORIGIN || y <= ICONIC_ORIGIN
+}
+
+/// 客户区里把手所占的矩形。原点是客户区左上角，单位是物理像素。
+///
+/// 宽高按窗口 DPI 把 3×40 逻辑像素换算后再居中，和界面里 `EdgeHandle` 的画法同一套数。
+/// 客户区比把手还小时收到客户区以内，避免区域比窗口大。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GripRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[must_use]
+pub(crate) fn collapsed_grip(client_width: u32, client_height: u32, dpi: u32) -> GripRect {
+    let client_width = client_width.max(1);
+    let client_height = client_height.max(1);
+    let thick = px_len(HANDLE_THICKNESS_LOGICAL, dpi).min(client_width.min(client_height));
+    let long = px_len(HANDLE_LENGTH_LOGICAL, dpi);
+    let horizontal = client_width >= client_height;
+    let (mut width, mut height) = if horizontal {
+        (long.min(client_width), thick.min(client_height))
+    } else {
+        (thick.min(client_width), long.min(client_height))
+    };
+    width = width.max(1);
+    height = height.max(1);
+    GripRect {
+        x: i32::try_from((client_width - width) / 2).unwrap_or(0),
+        y: i32::try_from((client_height - height) / 2).unwrap_or(0),
+        width,
+        height,
+    }
+}
+
+/// 点在点击区里、但不在把手矩形里。这些像素被窗口区域裁掉，不能靠窗口自己收到鼠标。
+#[must_use]
+pub(crate) fn point_in_padding(
+    client_width: u32,
+    client_height: u32,
+    dpi: u32,
+    x: i32,
+    y: i32,
+) -> bool {
+    if x < 0 || y < 0 {
+        return false;
+    }
+    let Ok(x) = u32::try_from(x) else {
+        return false;
+    };
+    let Ok(y) = u32::try_from(y) else {
+        return false;
+    };
+    if x >= client_width || y >= client_height {
+        return false;
+    }
+    let grip = collapsed_grip(client_width, client_height, dpi);
+    let left = u32::try_from(grip.x).unwrap_or(0);
+    let top = u32::try_from(grip.y).unwrap_or(0);
+    let in_grip = x >= left && y >= top && x - left < grip.width && y - top < grip.height;
+    !in_grip
+}
+
+fn px_len(logical: u32, dpi: u32) -> u32 {
+    u32::try_from(to_physical(logical, dpi).max(1)).unwrap_or(1)
 }
 
 #[must_use]
@@ -235,5 +305,54 @@ mod tests {
         let topmost = expanded(FrameNotice::TopmostReasserted);
         assert!(topmost.reapply);
         assert!(topmost.reapply_again);
+    }
+
+    #[test]
+    fn collapsed_grip_is_the_centered_handle_and_padding_is_the_rest_of_the_hit_area() {
+        let grip = collapsed_grip(48, 9, 96);
+        assert_eq!(
+            grip,
+            GripRect {
+                x: 4,
+                y: 3,
+                width: 40,
+                height: 3
+            }
+        );
+        assert!(point_in_padding(48, 9, 96, 0, 4), "长度方向两端是点击区");
+        assert!(point_in_padding(48, 9, 96, 24, 0), "厚度方向两侧是点击区");
+        assert!(
+            !point_in_padding(48, 9, 96, 24, 4),
+            "把手正中不是点击区余量"
+        );
+        assert!(!point_in_padding(48, 9, 96, -1, 4));
+        assert!(!point_in_padding(48, 9, 96, 48, 4));
+
+        let side = collapsed_grip(9, 48, 96);
+        assert_eq!(
+            side,
+            GripRect {
+                x: 3,
+                y: 4,
+                width: 3,
+                height: 40
+            }
+        );
+        assert!(point_in_padding(9, 48, 96, 0, 24));
+        assert!(!point_in_padding(9, 48, 96, 4, 24));
+
+        // 144 DPI：9→14，3→5，48→72，40→60。居中后两侧各余 (14-5)/2 = 4。
+        let scaled = collapsed_grip(72, 14, 144);
+        assert_eq!(
+            scaled,
+            GripRect {
+                x: 6,
+                y: 4,
+                width: 60,
+                height: 5
+            }
+        );
+        assert!(point_in_padding(72, 14, 144, 6, 0));
+        assert!(!point_in_padding(72, 14, 144, 36, 6));
     }
 }

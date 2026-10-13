@@ -33,6 +33,8 @@ export component NoteFloat inherits Window {
     // 一叠的页数和当前下标。1 页时和原来的悬浮窗一样。
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
+    // 收起时，光标在点击区余量里。把手会更亮。
+    in property <bool> pad-hover;
     in-out property <string> body <=> editor.body;
     out property <string> preedit: editor.preedit;
 
@@ -155,6 +157,7 @@ export component NoteFloat inherits Window {
         press-drags: true;
         pages: root.stack-pages;
         page-index: root.stack-index;
+        pad-hover: root.pad-hover;
         pressed => {
             root.drag-window();
         }

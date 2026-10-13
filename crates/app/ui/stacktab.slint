@@ -1,5 +1,5 @@
-// 叠页的页码。单独一个小窗，挂在悬浮窗原来的边框外面，不占内容区。
-// 拖这块页签把当前页拆出去。尺寸是当前做法，待定。
+// 叠页的页点。单独一个小窗，挂在悬浮窗原来的边框外面、水平居中，不占内容区。
+// 拖某一个点把那一页拆出去。点一下换到那一页。尺寸是当前做法，待定。
 
 import { Palette } from "std-widgets.slint";
 
@@ -8,13 +8,16 @@ export component StackTab inherits Window {
     no-frame: true;
     always-on-top: true;
     default-font-family: "Microsoft YaHei UI";
-    preferred-width: 40px;
+    // 和 `DOT_SLOT_LOGICAL`、`DOT_ROW_LOGICAL_HEIGHT` 一致。
+    preferred-width: max(root.pages, 1) * 12px;
     preferred-height: 16px;
 
     in property <bool> dark;
-    in property <string> label;
+    in property <int> pages: 1;
+    in property <int> current: 0;
 
-    callback drag-tab();
+    // 按下某个点。拖动和单击的区分在外壳：没挪开就换到这一页。
+    callback drag-dot(int);
 
     background: transparent;
 
@@ -25,32 +28,35 @@ export component StackTab inherits Window {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
     }
 
-    Rectangle {
-        x: 0px;
-        y: 0px;
-        width: parent.width;
-        height: parent.height;
-        border-radius: 4px;
-        background: dark ? #2b2b2be6 : #f3f3f3e6;
+    // 和收起把手上的点一样：小圆点，当前页更亮。这里直接画在桌面上，所以跟主题走，
+    // 亮色用深灰，暗色用浅灰，不另铺一块底。
+    property <length> dot: 4px;
+    property <length> slot: 12px;
+    property <[int]> marks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-        Text {
-            x: 0px;
-            y: 0px;
-            width: parent.width;
-            height: parent.height;
-            text: root.label;
-            font-size: 11px;
-            color: dark ? #f3f3f3 : #1b1b1b;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+    for mark in marks: Rectangle {
+        visible: mark < root.pages;
+        x: mark * slot;
+        y: 0px;
+        width: slot;
+        height: parent.height;
+        background: transparent;
+
+        Rectangle {
+            width: dot;
+            height: dot;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: dot;
+            background: mark == root.current ? (dark ? #f4f4f4f2 : #5e5e5ef2) : (dark ? #cfcfcf99 : #5e5e5e99);
         }
 
         TouchArea {
             accessible-role: button;
-            accessible-label: root.label;
+            accessible-label: "页点";
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                    root.drag-tab();
+                    root.drag-dot(mark);
                 }
             }
         }

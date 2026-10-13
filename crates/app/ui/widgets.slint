@@ -299,6 +299,8 @@ export component EdgeHandle inherits Rectangle {
     // 一叠里有几页。大于 1 时把手上画小点，一页一个，当前页更亮。
     in property <int> pages: 1;
     in property <int> page-index: 0;
+    // 光标在点击区里、但不在被裁掉的把手区域上。外壳用鼠标钩子补上这一圈。
+    in property <bool> pad-hover;
     callback pressed();
     callback clicked();
 
@@ -323,7 +325,7 @@ export component EdgeHandle inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         border-radius: root.grip-thick / 2;
-        background: area.has-hover ? root.lit : root.rest;
+        background: (area.has-hover || root.pad-hover) ? root.lit : root.rest;
 
         // 点画在把手上，不另占一块。超过 16 页时只画前 16 个，待定。
         if root.pages > 1: Rectangle {
