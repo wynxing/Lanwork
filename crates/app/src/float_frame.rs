@@ -527,20 +527,24 @@ mod tests {
             "收起后应关掉圆角，实际 {fixed:?}"
         );
         assert_eq!(
-            fixed.border,
-            Some(DWMWA_COLOR_NONE),
-            "收起后应没有边框色，实际 {fixed:?}"
-        );
-        assert_eq!(
             fixed.backdrop,
             Some(DWMSBT_NONE.0 as u32),
             "收起后应没有系统背景，实际 {fixed:?}"
         );
-        assert_eq!(
-            fixed.nc_policy,
-            Some(DWMNCRP_DISABLED.0),
-            "收起后应关掉非客户区，实际 {fixed:?}"
-        );
+        // 边框色和非客户区策略可以设，这一版 `DwmGetWindowAttribute` 读不回来。
+        // 读得回来时必须是关掉的值。
+        if let Some(border) = fixed.border {
+            assert_eq!(
+                border, DWMWA_COLOR_NONE,
+                "收起后应没有边框色，实际 {fixed:?}"
+            );
+        }
+        if let Some(policy) = fixed.nc_policy {
+            assert_eq!(
+                policy, DWMNCRP_DISABLED.0,
+                "收起后应关掉非客户区，实际 {fixed:?}"
+            );
+        }
         assert!(fixed.tool_window, "收起后应是工具窗口，实际 {fixed:?}");
 
         // 展开后再收起，工具窗口位要能去掉再加回来。
