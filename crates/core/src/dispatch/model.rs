@@ -54,6 +54,8 @@ pub enum UsageKey {
     App(String),
     Todo(String),
     Note(String),
+    /// 收纳网页引用。键是规范化后的网址。
+    Web(String),
     File(String),
     Folder(String),
     /// 网页搜索那一条。打开它不计使用次数，这个键只用来保持选中。
@@ -93,6 +95,10 @@ pub enum RowDetail {
     },
     Note {
         id: String,
+    },
+    /// 收纳里保存的网址。打开时用这一份，不再从拖放数据里重读。
+    Web {
+        url: String,
     },
     File {
         path: String,

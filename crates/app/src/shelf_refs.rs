@@ -1,7 +1,8 @@
 //! 收纳页和收纳悬浮窗共用的条目列表逻辑：行数据、可见行的存在检查与图标、按下与拖出、放下的路径整理。
 //!
 //! 两处各有自己的窗口和 `ShelvesPageData` 全局（全局在每个窗口里各一份），这里只持有状态，
-//! 不决定把结果交给哪个窗口。不打开、不复制、不移动、不删除被引用的文件。
+//! 不决定把结果交给哪个窗口。路径引用不打开、不复制、不移动、不删除原文件。网页引用只保存网址，
+//! 不读取虚拟 `.url` 的内容，也不关闭或移动浏览器标签。网页行不拖出。
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -10,11 +11,11 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use lanwork_core::apps::launch;
+use lanwork_core::apps::{LaunchTarget, launch};
 use lanwork_core::dispatch::{IconCache, IconKey, RgbaImage};
-use lanwork_core::panel::{LinkedTodo, passed_drag_threshold, visible_paths};
+use lanwork_core::panel::{LinkedTodo, ShelfLine, passed_drag_threshold};
 use lanwork_core::shell::path_target;
-use lanwork_core::shelves::{IncomingRef, ShelfCommands, ShelfRef};
+use lanwork_core::shelves::{IncomingRef, ShelfCommands};
 use slint::platform::{PointerEventButton, WindowEvent};
 use slint::{LogicalPosition, Model, ModelRc, VecModel};
 
@@ -62,6 +63,8 @@ pub(crate) struct RefsView {
     first: usize,
     count: usize,
     selected: Option<String>,
+    /// 选中的是网页引用。路径和网址字符串碰巧相同也不能当成同一条。
+    selected_web: bool,
     press: Option<Press>,
 }
 
@@ -75,6 +78,7 @@ impl RefsView {
             first: 0,
             count: 0,
             selected: None,
+            selected_web: false,
             press: None,
         }
     }
@@ -87,9 +91,14 @@ impl RefsView {
         self.selected.as_deref()
     }
 
+    pub(crate) fn selected_is_web(&self) -> bool {
+        self.selected_web
+    }
+
     /// 换了分组：忘掉选中、按下和已知的存在、图标状态。
     pub(crate) fn clear(&mut self) {
         self.selected = None;
+        self.selected_web = false;
         self.press = None;
         self.exists.clear();
         self.icons.clear();
@@ -104,39 +113,54 @@ impl RefsView {
         self.exists.get(path) == Some(&false)
     }
 
-    pub(crate) fn select(&mut self, refs: &[ShelfRef], index: i32) {
-        if let Some(item) = usize::try_from(index)
+    pub(crate) fn select(&mut self, lines: &[ShelfLine], index: i32) {
+        if let Some(line) = usize::try_from(index)
             .ok()
-            .and_then(|index| refs.get(index))
+            .and_then(|index| lines.get(index))
         {
-            self.selected = Some(item.path.clone());
+            self.selected = Some(line.key.clone());
+            self.selected_web = line.web;
         }
     }
 
     pub(crate) fn deselect(&mut self) {
         self.selected = None;
+        self.selected_web = false;
     }
 
     /// 选中的条目已经不在分组里时取消选中。
-    pub(crate) fn keep_selected(&mut self, refs: &[ShelfRef]) {
-        if let Some(path) = &self.selected
-            && !refs.iter().any(|item| &item.path == path)
-        {
+    pub(crate) fn keep_selected(&mut self, lines: &[ShelfLine]) {
+        let still = self.selected.as_ref().is_some_and(|key| {
+            lines
+                .iter()
+                .any(|line| line.web == self.selected_web && &line.key == key)
+        });
+        if !still {
             self.selected = None;
+            self.selected_web = false;
         }
     }
 
+    fn same_line(&self, line: &ShelfLine) -> bool {
+        self.selected.as_deref() == Some(line.key.as_str()) && self.selected_web == line.web
+    }
+
     /// 条目行跟着分组和已知的存在、图标状态重排。行数不变时逐行更新，列表的滚动位置不动。
-    pub(crate) fn push(&self, refs: &[ShelfRef], data: &ShelvesPageData<'_>) {
-        let rows: Vec<ShelfRefRow> = refs
+    /// 网页行不取图标，也不标「路径不存在」。
+    pub(crate) fn push(&self, lines: &[ShelfLine], data: &ShelvesPageData<'_>) {
+        let rows: Vec<ShelfRefRow> = lines
             .iter()
-            .map(|item| {
-                let icon = self.icons.get(&item.path);
+            .map(|line| {
+                let icon = if line.web {
+                    None
+                } else {
+                    self.icons.get(&line.key)
+                };
                 ShelfRefRow {
-                    name: item.name.as_str().into(),
+                    name: line.name.as_str().into(),
                     icon: icon.cloned().unwrap_or_default(),
                     has_icon: icon.is_some(),
-                    missing: self.is_missing(&item.path),
+                    missing: !line.web && self.is_missing(&line.key),
                 }
             })
             .collect();
@@ -147,45 +171,48 @@ impl RefsView {
         } else {
             self.model.set_vec(rows);
         }
-        let index = self
-            .selected
-            .as_ref()
-            .and_then(|path| refs.iter().position(|item| &item.path == path))
+        let index = lines
+            .iter()
+            .position(|line| self.same_line(line))
             .map_or(-1, to_i32);
         data.set_selected_ref(index);
         data.set_selected_path(self.selected.clone().unwrap_or_default().into());
     }
 
-    /// 只给可见的行查路径是否存在和取图标。`force` 为真时丢掉已知的存在状态重新查，
-    /// 这样文件被删掉或补回之后能更新。返回要在后台做的检查，没有要做的返回 `None`。
+    /// 只给可见的路径行查是否存在和取图标。网页行跳过。`force` 为真时丢掉已知的存在状态重新查。
     pub(crate) fn refresh(
         &mut self,
-        refs: &[ShelfRef],
+        lines: &[ShelfLine],
         force: bool,
         data: &ShelvesPageData<'_>,
     ) -> Option<ProbePlan> {
-        let visible = visible_paths(refs, self.first, self.count.max(1));
+        let visible: Vec<&ShelfLine> = lines
+            .iter()
+            .skip(self.first)
+            .take(self.count.max(1))
+            .filter(|line| !line.web)
+            .collect();
         if force {
             self.epoch = self.epoch.wrapping_add(1);
-            for path in &visible {
-                self.exists.remove(path);
+            for line in &visible {
+                self.exists.remove(&line.key);
             }
         }
         let to_check: Vec<String> = visible
             .iter()
-            .filter(|path| !self.exists.contains_key(*path))
-            .cloned()
+            .filter(|line| !self.exists.contains_key(&line.key))
+            .map(|line| line.key.clone())
             .collect();
         let to_icon: Vec<String> = visible
             .iter()
-            .filter(|path| !self.icons.contains_key(*path))
-            .cloned()
+            .filter(|line| !self.icons.contains_key(&line.key))
+            .map(|line| line.key.clone())
             .collect();
-        let keep: HashSet<&String> = visible.iter().collect();
+        let keep: HashSet<&str> = visible.iter().map(|line| line.key.as_str()).collect();
         let before = self.icons.len();
-        self.icons.retain(|path, _| keep.contains(path));
+        self.icons.retain(|path, _| keep.contains(path.as_str()));
         if self.icons.len() != before {
-            self.push(refs, data);
+            self.push(lines, data);
         }
         (!to_check.is_empty() || !to_icon.is_empty()).then_some(ProbePlan {
             epoch: self.epoch,
@@ -208,15 +235,15 @@ impl RefsView {
         }
     }
 
-    pub(crate) fn press(&mut self, refs: &[ShelfRef], index: i32, x: f32, y: f32) {
-        self.press = usize::try_from(index)
+    pub(crate) fn press(&mut self, lines: &[ShelfLine], index: i32, x: f32, y: f32) {
+        let line = usize::try_from(index)
             .ok()
-            .and_then(|index| refs.get(index))
-            .map(|item| Press {
-                path: item.path.clone(),
-                x,
-                y,
-            });
+            .and_then(|index| lines.get(index));
+        self.press = line.filter(|line| !line.web).map(|line| Press {
+            path: line.key.clone(),
+            x,
+            y,
+        });
     }
 
     pub(crate) fn release(&mut self) {
@@ -397,6 +424,22 @@ pub(crate) fn parent_folder(path: &str) -> Option<String> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .and_then(Path::to_str)
         .map(str::to_owned)
+}
+
+/// 用默认浏览器打开保存的网址。放在后台线程，失败时在工作线程里调用 `on_error`。
+pub(crate) fn spawn_open_url(
+    url: String,
+    on_error: impl FnOnce(String) + Send + 'static,
+) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("lanwork-shelf-open".into())
+        .spawn(move || {
+            if let Err(err) = launch(&LaunchTarget::Url { url }) {
+                on_error(err.message);
+            }
+        })
+        .map(|_| ())
+        .map_err(|err| err.to_string())
 }
 
 /// 用 Windows Shell 打开路径。放在后台线程，失败时在工作线程里调用 `on_error`。

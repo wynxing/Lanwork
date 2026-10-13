@@ -936,6 +936,7 @@ fn glyph(detail: &RowDetail) -> i32 {
         RowDetail::Folder { .. } => 4,
         RowDetail::Browser { .. } => 5,
         RowDetail::WebSearch { .. } => 6,
+        RowDetail::Web { .. } => 7,
     }
 }
 

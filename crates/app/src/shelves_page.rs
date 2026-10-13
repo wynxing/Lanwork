@@ -2,7 +2,7 @@
 //!
 //! 窗口在 `panel`，版式在 `ui/shelvespage.slint`，OLE 在 `shelf_dnd`，规则在 `lanwork_core::shelves`
 //! 和 `lanwork_core::panel`。这里把服务的结果排成界面要的行，并把用户的动作交给服务。
-//! 只保存路径引用；不打开、不复制、不移动、不删除被引用的文件。
+//! 路径引用不打开、不复制、不移动、不删除原文件。网页引用只保存网址和标题，不关闭或移动浏览器标签。
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -11,20 +11,20 @@ use std::sync::{Arc, Mutex};
 
 use lanwork_core::dispatch::IconCache;
 use lanwork_core::panel::{
-    GroupRow, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids, linked_todos,
-    pick_selection, reordered_group_ids, todo_choices,
+    GroupRow, ShelfLine, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids,
+    linked_todos, pick_selection, reordered_group_ids, shelf_lines, todo_choices,
 };
-use lanwork_core::shelves::{IncomingRef, Shelf, ShelfCommands, ShelfRef};
+use lanwork_core::shelves::{IncomingRef, IncomingWeb, Shelf, ShelfCommands};
 use lanwork_core::storage::Store;
 use lanwork_core::todos::{TodoCommands, TodoList};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::panel::with_shelves;
-use crate::shelf_dnd::DragOutcome;
+use crate::shelf_dnd::{DragOutcome, IncomingDrop};
 use crate::shelf_refs::{
     InlineDrag, Moved, ProbeResult, RefsView, drag_error, drag_now, joined_titles, parent_folder,
     prepare_drop, push_links, release_grab, schedule_drag, skipped_message, spawn_launch,
-    spawn_probe, to_i32,
+    spawn_open_url, spawn_probe, to_i32,
 };
 use crate::{Panel, ShelfGroupRow, ShelfTodoRow, ShelvesPageData};
 
@@ -221,13 +221,13 @@ impl ShelvesPage {
         self.refresh_visible(ui, true);
     }
 
-    fn refs(&self) -> &[ShelfRef] {
-        self.selected_shelf()
-            .map_or(&[], |shelf| shelf.refs.as_slice())
+    fn lines_of(shelf: Option<&Shelf>) -> Vec<ShelfLine> {
+        shelf.map(shelf_lines).unwrap_or_default()
     }
 
     fn push_refs(&self, ui: &Panel) {
-        self.view.push(self.refs(), &ui.global::<ShelvesPageData>());
+        let lines = Self::lines_of(self.selected_shelf());
+        self.view.push(&lines, &ui.global::<ShelvesPageData>());
     }
 
     /// 只给可见的行查路径是否存在和取图标。查询放在后台线程，结果回到界面线程再合并。
@@ -235,13 +235,14 @@ impl ShelvesPage {
         let (Some(shelves), Some(group_id)) = (self.shelves.clone(), self.selected.clone()) else {
             return;
         };
-        let refs = self
+        let lines = self
             .list
             .iter()
             .find(|shelf| shelf.id == group_id)
-            .map_or(&[][..], |shelf| shelf.refs.as_slice());
+            .map(shelf_lines)
+            .unwrap_or_default();
         let data = ui.global::<ShelvesPageData>();
-        let Some(plan) = self.view.refresh(refs, force, &data) else {
+        let Some(plan) = self.view.refresh(&lines, force, &data) else {
             return;
         };
         let spawned = spawn_probe(shelves, Arc::clone(&self.icon_cache), plan, move |result| {
@@ -340,22 +341,25 @@ impl ShelvesPage {
     }
 
     fn select_ref(&mut self, ui: &Panel, index: i32) {
-        if let Some(shelf) = self.selected_shelf() {
-            let refs = shelf.refs.clone();
-            self.view.select(&refs, index);
-            self.push_refs(ui);
-        }
+        let lines = Self::lines_of(self.selected_shelf());
+        self.view.select(&lines, index);
+        self.push_refs(ui);
     }
 
     fn remove_ref(&mut self, ui: &Panel) {
-        let (Some(shelves), Some(id), Some(path)) = (
+        let (Some(shelves), Some(id), Some(key)) = (
             self.shelves.clone(),
             self.selected.clone(),
             self.view.selected().map(str::to_owned),
         ) else {
             return;
         };
-        match shelves.remove_ref(&id, &path) {
+        let removed = if self.view.selected_is_web() {
+            shelves.remove_web_ref(&id, &key)
+        } else {
+            shelves.remove_ref(&id, &key)
+        };
+        match removed {
             Ok(_) => {
                 ui.set_error(SharedString::new());
                 self.view.deselect();
@@ -365,21 +369,29 @@ impl ShelvesPage {
         }
     }
 
-    /// Enter 或双击：用 Windows Shell 打开。已知不存在的路径直接显示错误。
+    /// Enter、双击或「打开」：路径用 Windows Shell 打开，网页引用用默认浏览器打开保存的网址。
     fn open_ref(&mut self, ui: &Panel) {
-        let Some(path) = self.view.selected().map(str::to_owned) else {
+        let Some(key) = self.view.selected().map(str::to_owned) else {
             return;
         };
-        if self.view.is_missing(&path) {
+        if self.view.selected_is_web() {
+            ui.set_error(SharedString::new());
+            self.spawn_open_url(ui, key);
+            return;
+        }
+        if self.view.is_missing(&key) {
             self.fail(ui, "路径不存在");
             return;
         }
         ui.set_error(SharedString::new());
-        self.spawn_open(ui, path);
+        self.spawn_open(ui, key);
     }
 
-    /// Ctrl+Enter：打开所在目录，即路径的上一级。
+    /// Ctrl+Enter：打开路径的上一级。网页引用没有所在目录，这次按键不做任何事。
     fn open_ref_folder(&mut self, ui: &Panel) {
+        if self.view.selected_is_web() {
+            return;
+        }
         let Some(path) = self.view.selected() else {
             return;
         };
@@ -393,6 +405,17 @@ impl ShelvesPage {
 
     fn spawn_open(&self, ui: &Panel, path: String) {
         let spawned = spawn_launch(path, |message| {
+            let _ = slint::invoke_from_event_loop(move || {
+                with_shelves(move |page, ui| page.fail(ui, &message));
+            });
+        });
+        if let Err(err) = spawned {
+            self.fail(ui, &format!("打开失败：{err}"));
+        }
+    }
+
+    fn spawn_open_url(&self, ui: &Panel, url: String) {
+        let spawned = spawn_open_url(url, |message| {
             let _ = slint::invoke_from_event_loop(move || {
                 with_shelves(move |page, ui| page.fail(ui, &message));
             });
@@ -514,10 +537,8 @@ impl ShelvesPage {
     }
 
     fn ref_press(&mut self, index: i32, x: f32, y: f32) {
-        let refs = self.selected_shelf().map(|shelf| shelf.refs.clone());
-        if let Some(refs) = refs {
-            self.view.press(&refs, index, x, y);
-        }
+        let lines = Self::lines_of(self.selected_shelf());
+        self.view.press(&lines, index, x, y);
     }
 
     /// 移动超过系统拖动阈值就拖出按下的那一条。同步执行时把路径交给 `inline`，由回调在借用结束后
@@ -556,6 +577,32 @@ impl ShelvesPage {
         }
     }
 
+    /// 放下的网址加入放下那一刻选中的分组。没有分组时由服务创建「收纳」。
+    fn add_dropped_web(&mut self, ui: &Panel, target: Option<&str>, url: &str, title: &str) {
+        let Some(shelves) = self.shelves.clone() else {
+            self.fail(ui, "收纳服务没有打开");
+            return;
+        };
+        match shelves.add_web_refs(
+            target,
+            &[IncomingWeb {
+                url: url.to_owned(),
+                title: title.to_owned(),
+            }],
+        ) {
+            Ok(outcome) => {
+                if target.is_none()
+                    && let Some(group) = outcome.group
+                {
+                    self.selected = Some(group.id);
+                }
+                ui.set_error(SharedString::new());
+                self.reload(ui);
+            }
+            Err(err) => self.fail(ui, &err.to_string()),
+        }
+    }
+
     /// 把选中的分组打开成悬浮窗。
     fn float_group(&mut self, ui: &Panel) {
         let Some(id) = self.selected.clone() else {
@@ -568,8 +615,22 @@ impl ShelvesPage {
     }
 }
 
-/// OLE 放下目标读到路径之后调用。文件夹标记在后台线程里查，结果回到界面线程再写入服务。
-pub(crate) fn dropped(paths: Vec<PathBuf>) {
+/// OLE 放下目标读到路径或网址之后调用。文件夹标记在后台线程里查，网址直接回到界面线程写入。
+pub(crate) fn dropped(incoming: IncomingDrop) {
+    match incoming {
+        IncomingDrop::Web { url, title } => {
+            let target = drop_target();
+            let _ = slint::invoke_from_event_loop(move || {
+                with_shelves(move |page, ui| {
+                    page.add_dropped_web(ui, target.as_deref(), &url, &title);
+                });
+            });
+        }
+        IncomingDrop::Paths(paths) => dropped_paths(paths),
+    }
+}
+
+fn dropped_paths(paths: Vec<PathBuf>) {
     let target = drop_target();
     let spawned = prepare_drop(paths, move |incoming, skipped| {
         let _ = slint::invoke_from_event_loop(move || {

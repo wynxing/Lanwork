@@ -8,7 +8,7 @@
 
 | 路径 | 现状 |
 | --- | --- |
-| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除只删除回收站里的条目。删除前把 id 写入 `todo-purge-pending.json`，清单写入成功后发出 `TodoNotice::Purged`。进入回收站满 30 天（30×86400000 毫秒）时，启动加载和 `purge_expired` 清除。原清单已删除时恢复到系统收件箱，没有收件箱则创建一次；这个收件箱就是默认清单。每月重复的日是 31、目标月没有 31 日时落到该月最后一天。锚点日写在周期的 `monthDay`。旧记录没有该字段时，用当前到期日的日子。下一次仍按这个日子，所以 1 月 31 日完成后是 2 月的最后一天，再完成回到 3 月 31 日。29 日或 30 日在目标月不存在时仍不猜测。在重复截止日当天完成不再生成下一次。已完成的条目可以取消完成，`order` 不变。重复待办完成时把下一次记在 `generatedNext`；取消完成时只在它仍是当时生成的那一条时从清单移除。下一次已被改过或已完成时不删除，该处理仍待定。没有这条记录的旧数据不猜测要删哪一条。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。网页引用未接入，排在 v0.2.0 之后，见「收纳」的「网页引用」。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。热角的角判定、350ms 停留、离开后重新武装、全屏抑制和按住左键时不计停留在 `shell::hotcorner`。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。备份与导入 `backup`（`lanwork_core::backup`）已接入，见「数据」。应用内更新的版本比较、`latest.json` 和界面状态在 `update`（`lanwork_core::update`），见「更新」。 |
+| `crates/core` | 包名 `lanwork-core`。模型、服务、存储放在这个 crate。不依赖 Slint，也不依赖 Win32 窗口 API。已接入 `search`：`classify_prefix`（`search/prefix.rs`，搜索条整段输入的前缀分类）和匹配引擎（应用、待办、便签共用）。已接入 `parse_todo_due_prefix`（`crates/core/src/capture.rs`）：待办收集剩余文本的日期前缀解析，今天的日期由调用方传入。存储模块 `storage`（`lanwork_core::storage`）已接入，见「数据」。便签服务 `notes`（`lanwork_core::notes`）已接入，见「数据」。待办服务 `todos`（`crates/core/src/todos`，`lanwork_core::todos`）已接入：清单与条目、收件箱、周期生成、软删除与恢复、当前标记、处理模式、跨清单移动，以及 `movedAt`、`currentSince` 的加载修复。薄命令是 `TodoCommands`。永久删除只删除回收站里的条目。删除前把 id 写入 `todo-purge-pending.json`，清单写入成功后发出 `TodoNotice::Purged`。进入回收站满 30 天（30×86400000 毫秒）时，启动加载和 `purge_expired` 清除。原清单已删除时恢复到系统收件箱，没有收件箱则创建一次；这个收件箱就是默认清单。每月重复的日是 31、目标月没有 31 日时落到该月最后一天。锚点日写在周期的 `monthDay`。旧记录没有该字段时，用当前到期日的日子。下一次仍按这个日子，所以 1 月 31 日完成后是 2 月的最后一天，再完成回到 3 月 31 日。29 日或 30 日在目标月不存在时仍不猜测。在重复截止日当天完成不再生成下一次。已完成的条目可以取消完成，`order` 不变。重复待办完成时把下一次记在 `generatedNext`；取消完成时只在它仍是当时生成的那一条时从清单移除。下一次已被改过或已完成时不删除，该处理仍待定。没有这条记录的旧数据不猜测要删哪一条。收纳服务 `shelves`（`crates/core/src/shelves`，`lanwork_core::shelves`）已接入：分组、路径引用、去重、待办关联和存在性检查。网页引用已接入，排在 v0.2.0 之后，有代码，未在 Windows 上验收，见「收纳」的「网页引用」。薄命令是 `ShelfCommands`。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，仍见「收纳」。应用索引 `apps`（`lanwork_core::apps`）已接入，见「搜索」。配置 `config`（`lanwork_core::config`）已接入，见「数据」。外壳里不调用 Win32 的决定在 `shell`（`lanwork_core::shell`），见「程序外壳」。热角的角判定、350ms 停留、离开后重新武装、全屏抑制和按住左键时不计停留在 `shell::hotcorner`。文件索引 `files`（`lanwork_core::files`）已接入，见「搜索」。查询调度在 `lanwork_core::dispatch`，见「搜索」。备份与导入 `backup`（`lanwork_core::backup`）已接入，见「数据」。应用内更新的版本比较、`latest.json` 和界面状态在 `update`（`lanwork_core::update`），见「更新」。 |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板。搜索条已有界面并调用查询调度，见「程序外壳」的「搜索条」。面板有标签框架、待办页、便签页、收纳页和设置页（开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」），便签悬浮窗也在这里，见「程序外壳」的「面板」「便签页与悬浮窗」和「设置页」。热角的 50ms 轮询在 `crates/app/src/hotcorner.rs`，见「热角」。应用内更新的下载和安装在 `crates/app/src/update.rs`，见「更新」。没有 Windows 验收。 |
 | `spikes/hello` | 技术验证目录里的示例程序。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。 |
 | `spikes/fileidx` | Everything SDK 与 Windows Search 文件名查询的技术验证程序。不在 `lanwork` 的依赖里，不进发布包。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
@@ -32,7 +32,7 @@
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast`、`spikes/dnd` 与 `spikes/urldrop` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。见 [roadmap.md](roadmap.md)「技术验证」，这一项仍未通过 |
 | 外部 AI（本机 MCP）、扩展页与插件 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [extensions.md](extensions.md)。现在没有代码。技术验证表里没有对应项；没有通过记录之前，不写依赖它们的界面 |
-| 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。现在没有代码。拖放和打开见「收纳」的「网页引用」。依赖的技术验证「网址拖放」已通过，结论见 [roadmap.md](roadmap.md)。验证程序在 `spikes/urldrop`。收纳界面仍不识别网址 |
+| 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。有代码，未在 Windows 上验收。拖放和打开见「收纳」的「网页引用」。依赖的技术验证「网址拖放」已通过，结论见 [roadmap.md](roadmap.md)。验证程序在 `spikes/urldrop`。浏览器扩展还没有代码 |
 | 待办悬浮窗 | `crates/app` 的 `todo_float` 与 `crates/core` 的 `todos/float_file`。可见行为见 [product.md](product.md)「待办」。有代码，未在 Windows 上验收。位置记在数据目录的 `todo-float.json`，不写进清单文件，进入导出和备份白名单。贴边和叠页加入现有悬浮窗，见「待办悬浮窗」。「背景」和「渲染器」仍没有通过记录。窗口外观沿用便签悬浮窗，写了也不改变这两项的记录 |
 
 ## 技术验证
@@ -279,7 +279,7 @@ Lanwork/
 - 收件箱是 `kind=inbox` 的待办清单，首次需要时创建一次。
 - 待办可带到期日、提醒、周期、来源，以及至多一个当前标记。旧记录的来源 `type` 仍是 `github-pr` 或 `github-issue`，并带 `url`、`repo`、`number`，这样已有待办能打开。打开来源只看 URL 是不是 `http` / `https`，不按仓库或编号另做处理。没有再从本机 `gh` 创建来源的服务。每月重复的锚点日是周期上的 `monthDay`（1 至 31）。缺少该字段的旧记录按当前到期日的日子计算。已经写下的 `monthDay` 不因本次到期日落到月末而改掉。
 - 取消完成把 `completed` 改回 false，不改 `order`。面板把未完成排在已完成之前，所以该条回到未完成条目里原来的顺序位置。这个先后本身不是产品规则。重复待办在完成并生成下一次时，把那一条的 id 和当时的标题、到期日、提醒、周期、来源写入本条的 `generatedNext`，并把那一条标成 `generatedUntouched`。完成前服务不记录这条关系，下一次只是插在后面的克隆。没有 `generatedNext` 的旧记录取消完成时不猜测要删哪一条。取消完成时，只有该条仍在同一清单里紧跟本条、`generatedUntouched` 仍为真、字段与 `generatedNext` 一致、`everCompleted` 为假、未完成、不在回收站、不是当前、并且没有 `movedAt` 和 `originListId`，才从清单里直接移除。这不是软删除，不写 `todo-purge-pending.json`，也不发 `Purged`。`everCompleted` 在标为完成时写下，取消完成不清，缺字段视为假。改标题、到期日、提醒、周期、来源、排序位置、当前标记、软删除、移动或完成都会清掉 `generatedUntouched`。下一次已被用户改过或已经完成（含完成后又取消完成）时不删除，只把本条标回未完成并清掉 `generatedNext`。这一支产品规格仍待定，不删除是保守处理，不是另一条产品规则。这样移除不通知收纳；下一次若已有关联，规格没有写，这里不解。写盘失败走同一套回滚：内存保持操作前，不发 `EntityChanged`。回收站里的条目服务拒绝取消完成，面板也不显示这个按钮，与回收站不可改一致。
-- 收纳服务在 `lanwork_core::shelves`。分组文件是 `shelves/<id>.json`，字段为名称、排序、关联待办 id 的列表 `todoIds`（按关联的先后，没有关联时不写这个字段），以及引用列表。旧文件的单条 `todoId` 读入时成为列表的第一项，之后写这个分组时只写 `todoIds`，不再写 `todoId`。每条引用保存绝对路径、显示名、是否文件夹和加入时间，不保存文件内容和图标。路径规范化和存在性检查见「收纳」。网页引用的字段还没定，现在不写入这些文件，见「收纳」的「网页引用」。
+- 收纳服务在 `lanwork_core::shelves`。分组文件是 `shelves/<id>.json`，字段为名称、排序、关联待办 id 的列表 `todoIds`（按关联的先后，没有关联时不写这个字段），路径引用列表 `refs`，以及可选的网页引用列表 `webRefs`。旧文件的单条 `todoId` 读入时成为列表的第一项，之后写这个分组时只写 `todoIds`，不再写 `todoId`。每条路径引用保存绝对路径、显示名、是否文件夹和加入时间，不保存文件内容和图标。每条网页引用保存去掉首尾空白后的网址原文 `url`、去掉首尾空白后的标题 `title`（可以是空字符串）和 `addedAt`。没有图标字段，也不写页面正文。没有 `webRefs` 的旧文件读成空列表。路径规范化和存在性检查见「收纳」。网页引用的比较和挑选见「收纳」的「网页引用」。
 - 待办悬浮窗的位置在数据目录的 `todo-float.json`，不写在清单文件里。规格见「待办悬浮窗」。文件在时进入导出和备份白名单。`manifest.json` 的 `counts` 不为它加一项，仍待定。旧包没有这个路径时导入不失败。导入按白名单替换数据文件：包里没有 `todo-float.json` 时，本地这份文件会被删掉，与其他数据文件相同。已打开的服务在这次重载里丢掉这份缓存，随后写位置不会把导入前的叠页写回。
 - 便签带递增的 `revision`。保存时带上加载时的 revision，与磁盘不一致则返回冲突错误，调用方保留正文。冲突之后的可见行为以产品规格为准。
 - 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`，以及可选的 `floatWindow`（`x`、`y`、`width`、`height`，物理像素，位置是虚拟屏幕坐标，贴边时仍是展开矩形）、可选的 `floatDock`（`edge`、`offset`、`collapsed`）和可选的 `floatStack`（`id`、`index`、`current`，见「叠页」）。旧文件里的 `floatPinned` 能读，不再写回，与列表里的 `pinned` 无关。旧文件没有 `floatWindow` 或 `floatDock` 照常加载；它们随便签文件进入导出、备份和导入。`set_float` 同时写这两项：不带 `revision`，不改 `revision` 和 `updatedAt`，所以编辑区手里的版本号不会因此过期，列表顺序也不变；回收站里的便签同样可以记。不认识的 `edge` 当成没有贴边。服务不判断记下的值是否还在某个显示器内。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。删除写入 `deletedAt`，文件留在 `notes/`。永久删除只删除已经软删除的文件；删文件成功后、发布变更前从内存去掉。进入回收站满 30 天（30×86400000 毫秒）的便签，`deleted` 不再返回，`restore` 不恢复、也不写盘。打开服务时清除一次；外壳也可以调用 `NoteCommands::purge_expired`。服务不建定时器，调用间隔未在规格里写明。某一篇删不掉时记日志并跳过，打开服务仍成功，其余便签照常可用。服务不做覆盖。冲突后的版本选择、关闭和退出时的未保存正文由界面处理。
@@ -380,7 +380,7 @@ Lanwork/
 
 `rank_hits` 做组内排序。同一个候选项 id 只留一条，命中类型取完全匹配、前缀、全拼、首字母、子串、模糊里最前的一种。然后按这个类型排序。同一种类型里，调用方经 `FrequencySource` 传入的使用频率高的在前。类型和频率都相同，则保持该候选项在输入里第一次出现的相对顺序。引擎不保存使用次数。次数如何加 1 已写入产品规格。本模块仍不把次数写入磁盘，由调用方传入。已接入的便签服务不保存这个次数。
 
-`allocate_display` 按浏览器、应用、待办、便签、文件、文件夹收已经排好的各组结果。每组先取至多 8 条。20 条还没满时，再按同一顺序把前面组剩下的结果取完，再取后面的组，直到满 20 条或没有更多结果。同一组入选的条目在输出里挨在一起。浏览器组只由调用方在 `open_website` 认为输入像网址时放入一条。`SearchGroup::WebSearch` 没有分组序号，`allocate_display` 不收它。产品规格在便签和文件之间还有一组「网页」，是收纳里的网页引用，排在 v0.2.0 之后。当前这个函数没有这一组，现有调用不因此改变。落地时标题走与待办标题相同的 `prepare` 和 `query`，网址只做原文匹配、不做拼音，打开走 `LaunchTarget::Url`。索引读收纳服务的内存，随收纳的 `EntityChanged` 更新。现在没有这段索引。
+`allocate_display` 按浏览器、应用、待办、便签、网页、文件、文件夹收已经排好的各组结果。每组先取至多 8 条。20 条还没满时，再按同一顺序把前面组剩下的结果取完，再取后面的组，直到满 20 条或没有更多结果。同一组入选的条目在输出里挨在一起。浏览器组只由调用方在 `open_website` 认为输入像网址时放入一条。`SearchGroup::WebSearch` 没有分组序号，`allocate_display` 不收它。「网页」组是收纳里的网页引用，排在便签之后、文件之前。标题走与待办标题相同的 `prepare` 和 `query`；标题为空时不建名称字段。网址只做原文匹配、不做拼音。打开走 `LaunchTarget::Url`。索引读收纳服务的内存，随收纳的 `EntityChanged` 更新。收纳服务打不开时这一组为空。有代码，未在 Windows 上验收。
 
 网页搜索行由调度在输入非空白时接在分配结果之后，所以不占 20 条名额，最多 21 行；产品规格对名额待定。搜索引擎在 `lanwork_core::search::WebSearchEngine`：`google`（默认）、`bing`、`baidu`，地址分别是 `https://www.google.com/search?q=`、`https://www.bing.com/search?q=`、`https://www.baidu.com/s?wd=`，搜索词去掉首尾空白后按 UTF-8 百分号编码，只保留字母、数字和 `-_.~`。名称是「搜索 Google：」「搜索必应：」「搜索百度：」加原样的搜索词。`config.json` 的字段是 `webSearchEngine`，缺省为 `google`；取值不在这三个里时按字段不合法处理，本次用默认配置。启动时 `Dispatch::set_web_search_engine` 读一次配置，设置页还没做，改配置后要重启才生效。用法键是 `UsageKey::WebSearch`，界面不对它 `record_open`。
 
@@ -439,7 +439,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 ## 收纳
 
-服务在 `lanwork_core::shelves`，薄命令是 `ShelfCommands`。一个分组一个 `shelves/<id>.json`。分组目前只保存路径引用。服务不调用删除、移动、复制用户文件的接口，也不关闭或移动浏览器标签。界面拖放按本节末尾的原生 OLE 方案。外部拖放的通过条件表见 [roadmap.md](roadmap.md)，七条都已通过，只覆盖文件。收纳页和收纳悬浮窗的代码已写，见「收纳页」，没有 Windows 验收记录。网页引用见本节末尾，排在 v0.2.0 之后，收纳里现在没有代码。
+服务在 `lanwork_core::shelves`，薄命令是 `ShelfCommands`。一个分组一个 `shelves/<id>.json`。分组保存路径引用和网页引用。服务不调用删除、移动、复制用户文件的接口，也不关闭或移动浏览器标签。界面拖放按本节末尾的原生 OLE 方案。外部拖放的通过条件表见 [roadmap.md](roadmap.md)，七条都已通过，只覆盖文件。收纳页和收纳悬浮窗的代码已写，见「收纳页」，没有 Windows 验收记录。网页引用见本节末尾，排在 v0.2.0 之后，有代码，未在 Windows 上验收。
 
 文件字段：`schemaVersion`、`id`、`name`、`order`、可选的 `todoIds`（旧文件是单条 `todoId`，只读）、可选的 `floatWindow`（悬浮窗的展开位置和大小，缺省表示没记录过）、可选的 `floatDock`（贴边；旧文件的 `floatPinned` 能读，不再写回）、可选的 `floatStack`（叠页，与便签同一结构，见「叠页」）、`refs`。引用字段：`path`、`name`、`folder`、`addedAt`。`addedAt` 是 Unix 纪元起的 UTC 毫秒。不保存文件内容和图标。
 
@@ -492,7 +492,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 外部拖入和拖出用原生 OLE。Slint 1.18.1 的窗口内拖放不能代替它，原因见「运行时」。2026-10-09 的资源管理器手测见 [roadmap.md](roadmap.md)。`24b7624` 上长路径拖入失败；同日 10:56（UTC+8）在 `3311ecc` 上拖入通过。同日 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。`--slint` 拖放没有路径。通过条件表七条都通过，该项按该表通过，产品用 OLE。下面是 `spikes/dnd` 里已经观察到的做法。
 
-- 拖入：事件循环线程调用 `OleInitialize`。本机该线程是 `APTTYPE_MAINSTA`（主 STA），不是 MTA。`MainWindow::new` 之前 COM 尚未初始化；进入 winit 事件循环后由 winit 初始化。拿到 HWND 后 `RegisterDragDrop` 返回 `DRAGDROP_E_ALREADYREGISTERED`，于是 `RevokeDragDrop` 再注册自己的 `IDropTarget`。注册之后窗口属性 `OleDropTargetInterface` 的指针与自己的接口相同。只接受 `CF_HDROP`。指针在收纳区域外返回 `DROPEFFECT_NONE`；区域内只从源提供的效果里选复制，其次快捷方式，不返回移动。验证程序没有标签，用一个矩形代替收纳区域，区域外的判定有单元测试。产品里仍只在收纳标签显示时接受放下。
+- 拖入：事件循环线程调用 `OleInitialize`。本机该线程是 `APTTYPE_MAINSTA`（主 STA），不是 MTA。`MainWindow::new` 之前 COM 尚未初始化；进入 winit 事件循环后由 winit 初始化。拿到 HWND 后 `RegisterDragDrop` 返回 `DRAGDROP_E_ALREADYREGISTERED`，于是 `RevokeDragDrop` 再注册自己的 `IDropTarget`。注册之后窗口属性 `OleDropTargetInterface` 的指针与自己的接口相同。验证程序只接受 `CF_HDROP`。产品里的放下目标另外识别「网页引用」里的网址格式。`DragEnter` 只 `QueryGetData`，不 `GetData`。`Drop` 才 `GetData`，先试 `CF_HTML`、`UniformResourceLocatorW`、`text/x-moz-url`、`CF_UNICODETEXT`。读到网址时不再取 `CF_HDROP` 或 `FileContents`。`FileGroupDescriptorW` 里有以 `.url` 结尾的文件名、但解析不出网址时，拒绝这次放下，不把虚拟 `.url` 存成路径。资源管理器拖普通文件时也会带这个格式，文件名不是 `.url` 时仍按路径引用处理。指针在收纳区域外返回 `DROPEFFECT_NONE`；区域内只从源提供的效果里选复制，其次快捷方式，不返回移动。验证程序没有标签，用一个矩形代替收纳区域，区域外的判定有单元测试。产品里仍只在收纳标签显示时接受放下。
 - 拖出：按下后，物理像素位移严格超过 `SM_CXDRAG` 或 `SM_CYDRAG` 才调用 `DoDragDrop`。`IDataObject` 用 `IShellItemArray::BindToHandler(BHID_DataObject)`。允许的效果只有 `DROPEFFECT_COPY | DROPEFFECT_LINK`。取消由 `IDropSource::QueryContinueDrag` 返回 `DRAGDROP_S_CANCEL`。`DoDragDrop` 的模态循环会吃掉鼠标抬起，列表行的 `TouchArea` 会一直抓着鼠标，下一次按下仍落在刚才那一行。拖出结束（成功、取消或出错）后要向窗口补 `PointerReleased` 和 `PointerExited`。自动化没有调用 `DoDragDrop`：它要等键盘或鼠标状态变化才会第一次询问是否继续，调用会作用到光标下的窗口。自测用 `dispatch_event` 先拖长路径那一行，再拖文件夹那一行，第二次必须是文件夹。
 - 不解析 `.lnk`。合成的 `CF_HDROP` 能读回超过 260 个 UTF-16 单元的路径，`DragQueryFileW` 先问长度再分配。Shell 的 `IDataObject` 对 269 个 UTF-16 单元的路径调用 `GetData(CF_HDROP)` 仍返回 `0x8007007A`：外壳用固定 260 单元组 `CF_HDROP`，这时还没有 `HDROP`。失败后改用 `SHCreateShellItemArrayFromDataObject` 和 `IShellItem::GetDisplayName(SIGDN_FILESYSPATH)`，单元测试读回了原路径，快捷方式路径没有被解析成目标。2026-10-09 10:56（UTC+8）在 `3311ecc` 的 `--ole` 上，资源管理器把这条长路径拖进红色矩形，控制台给出完整 `paths=`，`effect=1`，没有再出现 `0x8007007A`。这次走的是上述外壳项退路。
 - 路径是否存在只对可见条目调用上面的 `check_exists`，结果回到界面线程更新。不监视文件系统。
@@ -500,24 +500,30 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 ### 网页引用
 
-2026-10-13 决定，排在 v0.2.0 之后。可见行为以产品规格「收纳」的「网页引用」为准。收纳里现在没有代码。技术验证「网址拖放」已通过，结论见 [roadmap.md](roadmap.md)「技术验证」。通过标准是独立的最小程序取出网址，不包括收纳悬浮窗。产品里现有放下目标只接受 `CF_HDROP`，不识别网址。
+2026-10-13 决定，排在 v0.2.0 之后。可见行为以产品规格「收纳」的「网页引用」为准。有代码，未在 Windows 上验收。技术验证「网址拖放」已通过，结论见 [roadmap.md](roadmap.md)「技术验证」。通过标准是独立的最小程序取出网址，不包括收纳悬浮窗。
 
-验证程序在 `spikes/urldrop`，包名 `urldrop`，不在 `lanwork` 的依赖里，不进发布包。它开一个窗口接受放下，从注册名 `HTML Format`（`CF_HTML`）、`CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url` 读出内容并写入日志。`text/uri-list` 若出现也写入日志；2026-10-13 的锁图标和页面链接都没有提供它。标题另记一行：取 `FileGroupDescriptorW` 的文件名，去掉末尾的 `.url`。页面链接的标题是链接文字，与该文件名相同。同一份数据里的 `FileContents` 不调用 `GetData`，不把字节写进磁盘，也不把虚拟 `.url` 存成路径。不调用会关闭或移动浏览器标签的接口。效果只返回复制或快捷方式，源只提供移动时拒绝。`CF_TEXT` 和 `UniformResourceLocator`（ANSI）若对方提供，日志里单独列出，产品是否接受仍待定。几种已接受格式同时出现时先用哪一个仍待定，程序全部列出，不选一个当作规则。收纳页和收纳悬浮窗仍不识别网址。
+验证程序在 `spikes/urldrop`，包名 `urldrop`，不在 `lanwork` 的依赖里，不进发布包。它开一个窗口接受放下，把注册名 `HTML Format`（`CF_HTML`）、`CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url` 都写入日志，不从中选一条当作产品规则。`text/uri-list` 若出现也写入日志；2026-10-13 的锁图标和页面链接都没有提供它。标题另记一行：取 `FileGroupDescriptorW` 的文件名，去掉末尾的 `.url`。页面链接的标题是链接文字，与该文件名相同。同一份数据里的 `FileContents` 不调用 `GetData`。产品代码把已经手测过的解析抄进 `lanwork_core::shelves::weblink`，不把 `urldrop` 加进依赖。
 
 已经定下的机制：
 
 - 与路径引用一样只存引用。不调用会关闭或移动浏览器标签的接口，不把页面正文写入数据目录。
-- 第一版在现有 OLE 放下目标上增加识别，面板收纳页和收纳悬浮窗都要识别。接受的格式是注册剪贴板格式 `HTML Format`（`CF_HTML`）、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url`。几种格式同时出现时先读哪一个，见下面的待定。地址栏锁图标和页面链接都走这一条。同一拖放里的虚拟 `.url` 文件（`FileGroupDescriptor` / `FileContents`）不存成路径引用，也不复制进数据目录。不调用 `FileContents` 的 `GetData`。标题取 `FileGroupDescriptorW` 的文件名，去掉末尾的 `.url`，大小写不敏感。`Cursor Status.url` 的标题是 `Cursor Status`。页面链接的标题是链接文字，与该文件名相同。2026-10-13 手测：锁图标没有 `CF_HTML`，页面链接有，文档标题为空；两种拖放都没有 `text/uri-list`。网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。Chrome 与 Edge 都通过。
+- 面板收纳页和收纳悬浮窗的 OLE 放下目标都识别网址。接受的格式是注册剪贴板格式 `HTML Format`（`CF_HTML`）、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url`。地址栏锁图标和页面链接都走这一条。`DragEnter` 只 `QueryGetData`。`Drop` 才 `GetData`。读到可保存的网址时，不再调用 `CF_HDROP` 或 `FileContents` 的 `GetData`，虚拟 `.url` 不存成路径，也不复制进数据目录。`FileGroupDescriptorW` 里有以 `.url` 结尾的文件名、但解析不出网址时拒绝这次放下。标题取 `FileGroupDescriptorW` 里第一个以 `.url` 结尾的文件名，去掉这个后缀，大小写不敏感。`Cursor Status.url` 的标题是 `Cursor Status`。不用 `CF_HTML` 的文档标题，也不用 `SourceURL`，也不用 `text/x-moz-url` 的第二行。2026-10-13 手测：锁图标没有 `CF_HTML`，页面链接有，文档标题为空；两种拖放都没有 `text/uri-list`。网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。Chrome 与 Edge 都通过。
 - 打开与「打开网址」相同：把保存的网址作为 `LaunchTarget::Url` 交给 `ShellExecuteExW`，动词 `open`，由默认浏览器处理。`crates/core` 不启动浏览器。搜索里的「网页」组走同一条打开，见上面的 `allocate_display`。
-- 去重键按产品规格「同一网址只保留一条」：去掉首尾空白，协议和主机名小写，去掉路径末尾的一个 `/`（含问号或井号前的那个）。不改路径其余大小写、`www`、端口、用户名、查询和片段，也不套用路径引用的简单大写。比较范围是全部分组。键相同则不新增，保留先加入的那一条的网址原文、标题、图标和分组。
+- 去重键按产品规格「同一网址只保留一条」：去掉首尾空白，协议和主机名小写，去掉路径末尾的一个 `/`（含问号或井号前的那个）。不改路径其余大小写、`www`、端口、用户名、查询和片段，也不套用路径引用的简单大写。比较范围是全部分组。键相同则不新增，保留先加入的那一条的网址原文、标题和分组。加载时内存里也按这个键只留先加入的一条，写盘要等这个分组下次保存。
+- 分组文件另有可选数组 `webRefs`。每项是 `url`、`title`、`addedAt`。`url` 是去掉首尾空白后的原文，不是规范化键。没有这个数组的旧文件读成空列表。路径引用的 `refs` 读法不变。列表里路径引用在前，网页引用在后。分组计数是两者之和。
 - 一键浏览器扩展不在拖入这一版，先做 Chrome，其它浏览器更晚。扩展的宿主、安装方式，以及点一下写入的是当前页还是链接，都还没定。扩展落地时同样不得关闭或移动标签。
 
-还没定的机制，定下来之前不改 `shelves/<id>.json` 的读法，以免把未定格式写进旧文件：
+下面是实现选择，不是产品规则。产品规格里对应的项仍待定：
 
-- 网页引用在分组文件里的形状。现在的 `refs` 只有 `path`、`name`、`folder`、`addedAt`。网址、标题、图标是放进同一列表，还是另列一张表；图标是另一段网址、缓存文件名，还是内嵌字节，都待定。
-- 图标是向网站获取还是离线缓存，见产品规格待定。缓存目录今天固定是 `%LOCALAPPDATA%\Lanwork\cache`，可删除后重建，不进导出包。图标若放这里，删除缓存后条目仍在、图标可以没有；若放进分组文件，就随导出走。放哪边待定。在此之前不改导出白名单，也不把图标字节写进分组文件。
-- 多种已接受格式同时存在时先读哪一个。`text/uri-list` 在 2026-10-13 的锁图标和页面链接里都没有出现，注册名未验证，是否接受待定。`CF_TEXT` 是否与 `CF_UNICODETEXT` 同样接受，待定。`UniformResourceLocator`（ANSI）是否读取，待定。`CF_HTML`、`UniformResourceLocatorW` 和 `text/x-moz-url` 已经接受，不在这里重开。
-- 纯文本怎样才算网址。搜索里「像网址」的判断是实现选择，不是产品规则，不要直接拿来当收纳的接受条件，除非以后写进产品规格。去重用的规范化已经写在产品规格里，不拿「像网址」来代替。
+- 格式顺序：先取 `CF_HTML` 里第一个能规范化的 `<a href>`，然后 `UniformResourceLocatorW`，然后 `text/x-moz-url` 的第一行非空行，最后整段去掉首尾空白的 `CF_UNICODETEXT`。一次只保存一条。
+- 怎样才算网址：去掉首尾空白后，长度不超过 16384 个字符，中间没有空白，有方案、`://` 和非空主机。方案由 ASCII 字母、数字、`+`、`-`、`.` 组成。不拒绝 `http` / `https` 以外的方案。搜索里「像网址」的判断不拿来当收纳的接受条件。不是一整段网址的纯文本忽略，不显示错误。`CF_TEXT`、ANSI 的 `UniformResourceLocator` 和 `text/uri-list` 仍不读取。
+- 同一次拖放里已经读出网址时，只保存这一条网页引用，不另存真实文件。`FileGroupDescriptorW` 里有以 `.url` 结尾的文件名、但四种网址格式都解析不出网址时，这次放下拒绝，不读 `CF_HDROP`。描述符里没有这种文件名、也没有读出网址时，仍按原来的路径引用处理。资源管理器拖普通文件时也会带 `FileGroupDescriptorW`，文件名不是 `.url` 就不当成虚拟网址。只有 `CF_HDROP`、描述符里也没有 `.url` 文件名的真实 `.url` 文件仍是路径引用，不解析文件内容。
+- 没有 `.url` 文件名时标题存空字符串。列表和搜索里的名称退回保存的网址。
+- 打开：双击、Enter 和现有的「打开」按钮打开保存的网址。单击只选中。Ctrl+Enter 不做任何事，不打开上一级，也不显示错误。搜索里 Enter 或单击打开保存的网址并计一次使用；Ctrl+Enter 和 Ctrl+Shift+Enter 没有动作。
+- 网页行不开始拖出。图标位置留空，不标「路径不存在」。后来打不开的网址也不另做「路径不存在」那种提示。
+- 图标仍不获取、不缓存、不写进分组文件。不为网页引用另加白名单条目：分组 JSON 整份进入导出和备份，因此 `webRefs` 跟着走，里面没有图标字节，也没有页面正文。待办悬浮窗的 `todo-float.json` 仍按「待办悬浮窗」进入白名单。
+
+图标是向网站获取还是离线缓存、失败时显示什么、图标是否进入导出，仍按产品规格待定。在此之前不为图标另加导出文件，也不把图标字节写进分组文件。
 
 ## 更新
 

@@ -1,4 +1,4 @@
-//! 待办和便签的常驻索引。
+//! 待办、便签和收纳网页引用的常驻索引。
 //!
 //! 查询只读这份内存。变更来自 `EntityChanged` 之后对服务内存的重读，不读盘。
 
@@ -8,6 +8,7 @@ use crate::notes::{NoteCommands, display_title};
 use crate::search::{
     FieldInput, FieldRole, Hit, MatchIndex, SearchGroup, prepare, query_prepared, rank_hits,
 };
+use crate::shelves::{ShelfCommands, normalize_web_url, web_display_name};
 use crate::todos::TodoCommands;
 
 use super::model::{RowDetail, SearchRow, UsageKey};
@@ -17,6 +18,8 @@ pub(crate) struct MemoryIndex {
     todo_match: MatchIndex,
     notes: Vec<IndexedNote>,
     note_match: MatchIndex,
+    webs: Vec<IndexedWeb>,
+    web_match: MatchIndex,
 }
 
 struct IndexedTodo {
@@ -32,6 +35,12 @@ struct IndexedNote {
     body: String,
 }
 
+struct IndexedWeb {
+    url: String,
+    title: String,
+    key: String,
+}
+
 impl MemoryIndex {
     pub(crate) fn empty() -> Self {
         Self {
@@ -39,6 +48,8 @@ impl MemoryIndex {
             todo_match: MatchIndex::new(),
             notes: Vec::new(),
             note_match: MatchIndex::new(),
+            webs: Vec::new(),
+            web_match: MatchIndex::new(),
         }
     }
 
@@ -104,6 +115,47 @@ impl MemoryIndex {
         self.note_match = match_index;
     }
 
+    /// 收纳服务打不开时清空。同一规范化网址在全部分组里只应有一条，索引按列表顺序各建一行。
+    pub(crate) fn rebuild_webs(&mut self, shelves: Option<&ShelfCommands>) {
+        let Some(shelves) = shelves else {
+            self.webs.clear();
+            self.web_match = MatchIndex::new();
+            return;
+        };
+        let listed = shelves.list().unwrap_or_default();
+        let mut rows = Vec::new();
+        let mut match_index = MatchIndex::new();
+        for shelf in listed {
+            for web in shelf.web_refs {
+                let Some(id) = u64::try_from(rows.len()).ok() else {
+                    break;
+                };
+                let Some(normalized) = normalize_web_url(&web.url) else {
+                    continue;
+                };
+                let mut fields = Vec::with_capacity(2);
+                if !web.title.trim().is_empty() {
+                    fields.push(FieldInput {
+                        role: FieldRole::Name,
+                        text: &web.title,
+                    });
+                }
+                fields.push(FieldInput {
+                    role: FieldRole::Body,
+                    text: &web.url,
+                });
+                match_index.insert(id, &fields);
+                rows.push(IndexedWeb {
+                    key: normalized.key,
+                    url: web.url,
+                    title: web.title,
+                });
+            }
+        }
+        self.webs = rows;
+        self.web_match = match_index;
+    }
+
     pub(crate) fn todo_ids(&self) -> Vec<String> {
         self.todos.iter().map(|row| row.item_id.clone()).collect()
     }
@@ -135,6 +187,19 @@ impl MemoryIndex {
         rank_hits(&hits, |id| counts.get(id as usize).copied().unwrap_or(0))
             .into_iter()
             .filter_map(|hit| self.note_row(hit, text))
+            .collect()
+    }
+
+    pub(crate) fn rank_webs(&self, text: &str, freq: &HashMap<UsageKey, u64>) -> Vec<SearchRow> {
+        let hits = self.web_match.query(text);
+        let counts = self
+            .webs
+            .iter()
+            .map(|row| count(freq, &UsageKey::Web(row.key.clone())))
+            .collect::<Vec<_>>();
+        rank_hits(&hits, |id| counts.get(id as usize).copied().unwrap_or(0))
+            .into_iter()
+            .filter_map(|hit| self.web_row(hit))
             .collect()
     }
 
@@ -171,6 +236,22 @@ impl MemoryIndex {
             location,
             icon: None,
             detail: RowDetail::Note { id: row.id.clone() },
+        })
+    }
+
+    fn web_row(&self, hit: Hit) -> Option<SearchRow> {
+        let index = usize::try_from(hit.id).ok()?;
+        let row = self.webs.get(index)?;
+        Some(SearchRow {
+            group: SearchGroup::Web,
+            kind: Some(hit.kind),
+            usage: UsageKey::Web(row.key.clone()),
+            label: web_display_name(&row.title, &row.url),
+            location: row.url.clone(),
+            icon: None,
+            detail: RowDetail::Web {
+                url: row.url.clone(),
+            },
         })
     }
 }

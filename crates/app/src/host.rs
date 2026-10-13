@@ -152,7 +152,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     let shelves = open_shelves(store, &todos);
     let dispatch = notes
         .clone()
-        .and_then(|notes| open_dispatch(store, &todos, notes));
+        .and_then(|notes| open_dispatch(store, &todos, notes, shelves.clone()));
     let mut icons = None;
     if let Some(dispatch) = &dispatch {
         dispatch.set_web_search_engine(config.current().web_search_engine);
@@ -246,6 +246,7 @@ fn open_dispatch(
     store: &Store,
     todos: &TodoCommands,
     notes: NoteCommands,
+    shelves: Option<ShelfCommands>,
 ) -> Option<Arc<Dispatch>> {
     let apps = match AppIndex::open_from_process() {
         Ok(apps) => apps,
@@ -267,6 +268,7 @@ fn open_dispatch(
         Services {
             todos: todos.clone(),
             notes,
+            shelves,
         },
         apps,
         FileCommands::open(store.clone()),

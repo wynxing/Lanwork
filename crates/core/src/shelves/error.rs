@@ -23,6 +23,8 @@ pub enum ShelfError {
     UnsupportedSchema { id: String, found: u32 },
     /// 不是本服务接受的绝对路径。
     InvalidPath { path: String },
+    /// 不是可以保存的网址。
+    InvalidUrl { url: String },
     /// 排序没有覆盖全部分组，或含有未知 id。
     InvalidOrder,
     /// 多次尝试后仍无法分配不冲突的 id。
@@ -48,6 +50,7 @@ impl fmt::Display for ShelfError {
                 write!(f, "收纳 schemaVersion {found} 不受支持：{id}")
             }
             Self::InvalidPath { path } => write!(f, "路径无效：{path}"),
+            Self::InvalidUrl { url } => write!(f, "网址无效：{url}"),
             Self::InvalidOrder => write!(f, "排序无效"),
             Self::AllocateId => write!(f, "无法分配收纳标识"),
             Self::TargetGroupRequired => write!(f, "没有指定收纳分组"),

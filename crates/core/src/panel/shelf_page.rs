@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use crate::shelves::{Shelf, ShelfRef};
+use crate::shelves::{Shelf, ShelfRef, web_display_name};
 use crate::todos::{TodoItem, TodoList};
 
 /// 左侧分组一行。`todo_titles` 是各条关联待办的标题，按关联的先后；找不到的待办不在其中。
@@ -53,7 +53,7 @@ pub fn group_rows(shelves: &[Shelf], lists: &[TodoList]) -> Vec<GroupRow> {
         .map(|shelf| GroupRow {
             id: shelf.id.clone(),
             name: shelf.name.clone(),
-            count: shelf.refs.len(),
+            count: shelf.refs.len() + shelf.web_refs.len(),
             todo_titles: shelf
                 .todo_ids
                 .iter()
@@ -149,6 +149,35 @@ pub fn todo_choices(lists: &[TodoList], keyword: &str) -> Vec<TodoChoice> {
         .collect()
 }
 
+/// 分组里的一行。路径引用在前，网页引用在后。`web` 为真时 `key` 是保存的网址。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShelfLine {
+    pub key: String,
+    pub name: String,
+    pub web: bool,
+}
+
+/// 路径引用保持原顺序，网页引用接在后面。网页行的名称用标题，标题为空时用网址。
+#[must_use]
+pub fn shelf_lines(shelf: &Shelf) -> Vec<ShelfLine> {
+    let mut lines = Vec::with_capacity(shelf.refs.len() + shelf.web_refs.len());
+    for item in &shelf.refs {
+        lines.push(ShelfLine {
+            key: item.path.clone(),
+            name: item.name.clone(),
+            web: false,
+        });
+    }
+    for item in &shelf.web_refs {
+        lines.push(ShelfLine {
+            key: item.url.clone(),
+            name: web_display_name(&item.title, &item.url),
+            web: true,
+        });
+    }
+    lines
+}
+
 /// 当前分组里第 `first` 行起的至多 `count` 条引用的路径。只给可见的行用。
 #[must_use]
 pub fn visible_paths(refs: &[ShelfRef], first: usize, count: usize) -> Vec<String> {
@@ -179,6 +208,7 @@ mod tests {
                     added_at: 0,
                 })
                 .collect(),
+            web_refs: Vec::new(),
             float: None,
             float_dock: None,
             float_stack: None,
@@ -344,5 +374,34 @@ mod tests {
         assert_eq!(visible_paths(&shelf.refs, 1, 2), ["2", "3"]);
         assert_eq!(visible_paths(&shelf.refs, 3, 10), ["4"]);
         assert!(visible_paths(&shelf.refs, 9, 2).is_empty());
+    }
+
+    #[test]
+    fn group_count_and_lines_put_web_refs_after_paths() {
+        let mut shelf = shelf("a", &[], &["C:\\a"]);
+        shelf.web_refs.push(crate::shelves::WebRef {
+            url: "https://example.com/a".to_owned(),
+            title: String::new(),
+            added_at: 1,
+        });
+        shelf.web_refs.push(crate::shelves::WebRef {
+            url: "https://example.com/b".to_owned(),
+            title: "页面".to_owned(),
+            added_at: 2,
+        });
+        let rows = group_rows(std::slice::from_ref(&shelf), &[]);
+        assert_eq!(rows[0].count, 3);
+        let lines = shelf_lines(&shelf);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| (line.key.as_str(), line.name.as_str(), line.web))
+                .collect::<Vec<_>>(),
+            [
+                ("C:\\a", "C:\\a", false),
+                ("https://example.com/a", "https://example.com/a", true),
+                ("https://example.com/b", "页面", true),
+            ]
+        );
     }
 }

@@ -20,27 +20,28 @@ use std::time::Duration;
 use lanwork_core::dispatch::IconCache;
 use lanwork_core::panel::{
     DropEffect, DropZone, FLOAT_HEIGHT, FLOAT_WIDTH, Flip, LinkedTodo, PanelTarget, PxBox,
-    StackPage, float_default_origin, linked_todos,
+    ShelfLine, StackPage, float_default_origin, linked_todos, shelf_lines,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
-use lanwork_core::shelves::{IncomingRef, ShelfCommands, ShelfError, ShelfRef};
+use lanwork_core::shelves::{IncomingRef, IncomingWeb, ShelfCommands, ShelfError};
 use lanwork_core::storage::Store;
 use lanwork_core::todos::TodoCommands;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle, SharedString};
 
 use crate::float_dock::{self, Motion, SavedFloat};
-use crate::shelf_dnd::{DragOutcome, DropState, Registration, register};
+use crate::shelf_dnd::{DragOutcome, DropState, IncomingDrop, Registration, register};
 use crate::shelf_refs::{
     InlineDrag, Moved, ProbeResult, RefsView, drag_error, drag_now, parent_folder, prepare_drop,
-    push_links, release_grab, schedule_drag, skipped_message, spawn_launch, spawn_probe,
+    push_links, release_grab, schedule_drag, skipped_message, spawn_launch, spawn_open_url,
+    spawn_probe,
 };
 use crate::{ShelfFloat, ShelvesPageData, bar_win};
 
 struct FloatWindow {
     ui: ShelfFloat,
     group_id: String,
-    refs: Vec<ShelfRef>,
+    lines: Vec<ShelfLine>,
     todo_ids: Vec<String>,
     links: Vec<LinkedTodo>,
     view: RefsView,
@@ -418,7 +419,7 @@ impl Floats {
         let mut window = FloatWindow {
             ui,
             group_id: group_id.to_owned(),
-            refs: shelf.refs,
+            lines: shelf_lines(&shelf),
             todo_ids: shelf.todo_ids,
             links: Vec::new(),
             view: RefsView::new(),
@@ -559,8 +560,22 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
     });
 }
 
-/// OLE 放下目标读到路径之后调用。文件夹标记在后台线程里查，结果回到界面线程再写入服务。
-fn dropped(group_id: &str, paths: Vec<PathBuf>) {
+/// OLE 放下目标读到路径或网址之后调用。文件夹标记在后台线程里查，网址直接回到界面线程写入。
+fn dropped(group_id: &str, incoming: IncomingDrop) {
+    match incoming {
+        IncomingDrop::Web { url, title } => {
+            let id = group_id.to_owned();
+            let _ = slint::invoke_from_event_loop(move || {
+                with_window(&id, move |window, ctx| {
+                    window.add_dropped_web(ctx, &url, &title)
+                });
+            });
+        }
+        IncomingDrop::Paths(paths) => dropped_paths(group_id, paths),
+    }
+}
+
+fn dropped_paths(group_id: &str, paths: Vec<PathBuf>) {
     let id = group_id.to_owned();
     let on_done = id.clone();
     let spawned = prepare_drop(paths, move |incoming, skipped| {
@@ -603,12 +618,12 @@ impl FloatWindow {
             match register(
                 hwnd,
                 Arc::clone(&self.drop_state),
-                Arc::new(move |paths| dropped(&id, paths)),
+                Arc::new(move |incoming| dropped(&id, incoming)),
             ) {
                 Ok(registration) => self.registration = Some(registration),
-                Err(message) => ctx
-                    .store
-                    .log_warn(&format!("收纳悬浮窗拖入没有装上，不能拖入文件：{message}")),
+                Err(message) => ctx.store.log_warn(&format!(
+                    "收纳悬浮窗拖入没有装上，不能拖入文件或网址：{message}"
+                )),
             }
             if self.parked {
                 crate::float_frame::forget(hwnd);
@@ -898,7 +913,7 @@ impl FloatWindow {
 
     fn push(&self) {
         self.view
-            .push(&self.refs, &self.ui.global::<ShelvesPageData>());
+            .push(&self.lines, &self.ui.global::<ShelvesPageData>());
     }
 
     fn fail(&self, message: &str) {
@@ -913,12 +928,12 @@ impl FloatWindow {
     fn reload(&mut self, ctx: &Ctx<'_>, force: bool) {
         match ctx.shelves.get(&self.group_id) {
             Ok(shelf) => {
-                self.refs = shelf.refs;
+                self.lines = shelf_lines(&shelf);
                 self.todo_ids = shelf.todo_ids;
                 self.clear_error();
             }
             Err(ShelfError::NotFound { .. }) => {
-                self.refs = Vec::new();
+                self.lines = Vec::new();
                 self.todo_ids = Vec::new();
                 self.view.clear();
             }
@@ -927,7 +942,7 @@ impl FloatWindow {
                 return;
             }
         }
-        self.view.keep_selected(&self.refs);
+        self.view.keep_selected(&self.lines);
         self.push();
         self.refresh_links(ctx.todos, ctx.store);
         self.refresh_visible(ctx, force);
@@ -981,7 +996,7 @@ impl FloatWindow {
 
     fn refresh_visible(&mut self, ctx: &Ctx<'_>, force: bool) {
         let data = self.ui.global::<ShelvesPageData>();
-        let Some(plan) = self.view.refresh(&self.refs, force, &data) else {
+        let Some(plan) = self.view.refresh(&self.lines, force, &data) else {
             return;
         };
         let id = self.group_id.clone();
@@ -1010,25 +1025,33 @@ impl FloatWindow {
     }
 
     fn select_ref(&mut self, index: i32) {
-        self.view.select(&self.refs, index);
+        self.view.select(&self.lines, index);
         self.push();
     }
 
-    /// Enter 或双击：用 Windows Shell 打开。已知不存在的路径直接显示错误。
+    /// Enter、双击或「打开」：路径用 Windows Shell 打开，网页引用用默认浏览器打开保存的网址。
     fn open_ref(&mut self) {
-        let Some(path) = self.view.selected().map(str::to_owned) else {
+        let Some(key) = self.view.selected().map(str::to_owned) else {
             return;
         };
-        if self.view.is_missing(&path) {
+        if self.view.selected_is_web() {
+            self.clear_error();
+            self.spawn_open_url(key);
+            return;
+        }
+        if self.view.is_missing(&key) {
             self.fail("路径不存在");
             return;
         }
         self.clear_error();
-        self.spawn_open(path);
+        self.spawn_open(key);
     }
 
-    /// Ctrl+Enter：打开所在目录，即路径的上一级。
+    /// Ctrl+Enter：打开路径的上一级。网页引用没有所在目录，这次按键不做任何事。
     fn open_ref_folder(&mut self) {
+        if self.view.selected_is_web() {
+            return;
+        }
         let Some(path) = self.view.selected() else {
             return;
         };
@@ -1052,15 +1075,32 @@ impl FloatWindow {
         }
     }
 
-    /// 「移除引用」：只从这个分组删掉选中的那一条，不动原文件。
+    fn spawn_open_url(&self, url: String) {
+        let id = self.group_id.clone();
+        let spawned = spawn_open_url(url, move |message| {
+            let _ = slint::invoke_from_event_loop(move || {
+                with_window(&id, move |window, _| window.fail(&message));
+            });
+        });
+        if let Err(err) = spawned {
+            self.fail(&format!("打开失败：{err}"));
+        }
+    }
+
+    /// 「移除引用」：只从这个分组删掉选中的那一条。路径不删原文件，网址不关闭标签。
     fn remove_ref(&mut self, ctx: &Ctx<'_>) {
         if self.closed {
             return;
         }
-        let Some(path) = self.view.selected().map(str::to_owned) else {
+        let Some(key) = self.view.selected().map(str::to_owned) else {
             return;
         };
-        match ctx.shelves.remove_ref(&self.group_id, &path) {
+        let removed = if self.view.selected_is_web() {
+            ctx.shelves.remove_web_ref(&self.group_id, &key)
+        } else {
+            ctx.shelves.remove_ref(&self.group_id, &key)
+        };
+        match removed {
             Ok(_) => {
                 self.view.deselect();
                 self.reload(ctx, true);
@@ -1070,7 +1110,7 @@ impl FloatWindow {
     }
 
     fn ref_press(&mut self, index: i32, x: f32, y: f32) {
-        self.view.press(&self.refs, index, x, y);
+        self.view.press(&self.lines, index, x, y);
     }
 
     /// 移动超过系统拖动阈值就拖出按下的那一条。同步执行时把路径交给 `inline`，由回调在借用结束后
@@ -1121,6 +1161,22 @@ impl FloatWindow {
         }
         if let Some(message) = skipped_message(skipped) {
             self.fail(&message);
+        }
+    }
+
+    fn add_dropped_web(&mut self, ctx: &Ctx<'_>, url: &str, title: &str) {
+        if self.closed {
+            return;
+        }
+        match ctx.shelves.add_web_refs(
+            Some(&self.group_id),
+            &[IncomingWeb {
+                url: url.to_owned(),
+                title: title.to_owned(),
+            }],
+        ) {
+            Ok(_) => self.reload(ctx, true),
+            Err(err) => self.fail(&err.to_string()),
         }
     }
 

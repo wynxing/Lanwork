@@ -1,29 +1,39 @@
 //! 收纳页的原生 OLE 拖入和拖出。判定规则在 `lanwork_core::panel`（`drop_effect`、`continue_drag` 等），
-//! 这里只接 Win32。做法来自 `spikes/dnd`，那份记录见 `docs/roadmap.md`「外部拖放」。
+//! 这里只接 Win32。文件拖放来自 `spikes/dnd`，网址读取来自 `spikes/urldrop`。
 //!
-//! 放下目标注册在面板的窗口句柄上，所以只在收纳标签显示、指针在收纳页区域内、数据里有文件时才接受。
-//! 允许的效果只有复制和快捷方式，不返回移动。只读路径，不打开、不复制、不移动、不删除用户文件。
+//! 放下目标注册在面板和收纳悬浮窗的窗口句柄上。只在接受区域内、数据里有文件或可识别的网址时才接受。
+//! 允许的效果只有复制和快捷方式，不返回移动。路径只读，不打开、不复制、不移动、不删除用户文件。
+//! `DragEnter` 只 `QueryGetData`。`Drop` 才 `GetData`，先试网址格式，再读路径。
+//! 描述符里有以 `.url` 结尾的文件名、但解析不出网址时拒绝，不把虚拟 `.url` 存成路径。不读 `FileContents`。
 
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use lanwork_core::panel::{
     DragContinue, DropZone, EFFECT_NONE, OUTGOING_EFFECTS, continue_drag, drop_effect,
 };
+use lanwork_core::shelves::{
+    PickedWebRef, WebDropInput, decode_utf16_text, file_names_w, pick_web_drop,
+    title_from_url_filename,
+};
 use windows::Win32::Foundation::{
     DRAGDROP_E_ALREADYREGISTERED, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS,
-    HWND, POINT, POINTL, S_OK,
+    HGLOBAL, HWND, POINT, POINTL, S_OK,
 };
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::Com::{
-    CoTaskMemFree, DVASPECT_CONTENT, FORMATETC, IDataObject, TYMED_HGLOBAL,
+    CoTaskMemFree, DVASPECT_CONTENT, FORMATETC, IDataObject, IStream, STGMEDIUM, TYMED_HGLOBAL,
+    TYMED_ISTREAM,
 };
+use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{
-    CF_HDROP, DROPEFFECT, DoDragDrop, IDropSource, IDropSource_Impl, IDropTarget, IDropTarget_Impl,
-    OleInitialize, RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop,
+    CF_HDROP, CF_UNICODETEXT, DROPEFFECT, DoDragDrop, IDropSource, IDropSource_Impl, IDropTarget,
+    IDropTarget_Impl, OleInitialize, RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop,
 };
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
@@ -35,8 +45,15 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDRAG, SM_CYDRAG};
 use windows::core::{BOOL, HRESULT, PCWSTR, implement};
 
-/// 放下目标读到文件路径之后调用。在界面线程上、OLE 的放下回调里执行，所以只应登记，不应做耗时的事。
-pub(crate) type DropSink = Arc<dyn Fn(Vec<PathBuf>) + Send + Sync>;
+/// 一次放下。网址优先：已经读出网址时不再读 `CF_HDROP` 或 `FileContents`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IncomingDrop {
+    Paths(Vec<PathBuf>),
+    Web { url: String, title: String },
+}
+
+/// 放下目标读到路径或网址之后调用。在界面线程上、OLE 的放下回调里执行，所以只应登记，不应做耗时的事。
+pub(crate) type DropSink = Arc<dyn Fn(IncomingDrop) + Send + Sync>;
 
 /// 放下目标要读的状态。界面线程更新，放下回调读取。
 #[derive(Default)]
@@ -111,6 +128,8 @@ struct ShelfDrop {
     sink: DropSink,
     /// 这一轮 `DragEnter` 看到数据里有文件。`DragOver` 没有数据对象，靠它判断。
     has_files: AtomicBool,
+    /// 这一轮 `DragEnter` 用 `QueryGetData` 看到网址格式或 `FileGroupDescriptorW`。不调用 `GetData`。
+    has_web: AtomicBool,
 }
 
 #[allow(non_snake_case)]
@@ -123,8 +142,13 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
         let files = data.as_ref().is_some_and(has_hdrop);
+        let web = data.as_ref().is_some_and(offers_web);
         self.has_files.store(files, Ordering::Release);
-        write_effect(effect, self.state.effect(point, files, read_effect(effect)));
+        self.has_web.store(web, Ordering::Release);
+        write_effect(
+            effect,
+            self.state.effect(point, files || web, read_effect(effect)),
+        );
         Ok(())
     }
 
@@ -134,13 +158,18 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
         point: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
-        let files = self.has_files.load(Ordering::Acquire);
-        write_effect(effect, self.state.effect(point, files, read_effect(effect)));
+        let payload =
+            self.has_files.load(Ordering::Acquire) || self.has_web.load(Ordering::Acquire);
+        write_effect(
+            effect,
+            self.state.effect(point, payload, read_effect(effect)),
+        );
         Ok(())
     }
 
     fn DragLeave(&self) -> windows::core::Result<()> {
         self.has_files.store(false, Ordering::Release);
+        self.has_web.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -151,9 +180,12 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
         point: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
+        let cached_web = self.has_web.swap(false, Ordering::AcqRel);
         self.has_files.store(false, Ordering::Release);
         let files = data.as_ref().is_some_and(has_hdrop);
-        let chosen = self.state.effect(point, files, read_effect(effect));
+        let chosen = self
+            .state
+            .effect(point, files || cached_web, read_effect(effect));
         write_effect(effect, chosen);
         if chosen == EFFECT_NONE {
             return Ok(());
@@ -162,8 +194,22 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
             write_effect(effect, EFFECT_NONE);
             return Ok(());
         };
+        let read = read_web_drop(data);
+        if let Some(picked) = read.picked {
+            (self.sink)(IncomingDrop::Web {
+                url: picked.url,
+                title: picked.title,
+            });
+            return Ok(());
+        }
+        // 浏览器拖放的虚拟 .url 写在 FileGroupDescriptorW 里。解析不出网址就拒绝，不把这份虚拟文件存成路径。
+        // 资源管理器拖普通文件时也会带这个格式，文件名不是 .url，仍按路径引用处理。
+        if read.virtual_url {
+            write_effect(effect, EFFECT_NONE);
+            return Ok(());
+        }
         match paths_from_data_object(data) {
-            Ok(paths) if !paths.is_empty() => (self.sink)(paths),
+            Ok(paths) if !paths.is_empty() => (self.sink)(IncomingDrop::Paths(paths)),
             _ => write_effect(effect, EFFECT_NONE),
         }
         Ok(())
@@ -184,6 +230,171 @@ fn has_hdrop(data: &IDataObject) -> bool {
     let format = hdrop_format();
     // SAFETY: format 是局部变量，调用期间有效；只查询格式，不取数据。
     unsafe { data.QueryGetData(&format) }.is_ok()
+}
+
+fn query_clipboard(data: &IDataObject, id: u16) -> bool {
+    if id == 0 {
+        return false;
+    }
+    let format = FORMATETC {
+        cfFormat: id,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32 | TYMED_ISTREAM.0 as u32,
+    };
+    // SAFETY: format 指向局部变量。只查询，不取数据。
+    unsafe { data.QueryGetData(&format) }.is_ok()
+}
+
+/// `DragEnter` 用来决定光标。只 `QueryGetData`，不 `GetData`。
+fn offers_web(data: &IDataObject) -> bool {
+    let ids = web_format_ids();
+    query_clipboard(data, ids.html)
+        || query_clipboard(data, ids.url_w)
+        || query_clipboard(data, ids.moz)
+        || query_clipboard(data, CF_UNICODETEXT.0)
+        || query_clipboard(data, ids.descriptor)
+}
+
+const WEB_READ_LIMIT: usize = 1024 * 1024;
+
+struct WebFormatIds {
+    html: u16,
+    url_w: u16,
+    moz: u16,
+    descriptor: u16,
+}
+
+fn web_format_ids() -> &'static WebFormatIds {
+    static IDS: OnceLock<WebFormatIds> = OnceLock::new();
+    IDS.get_or_init(|| WebFormatIds {
+        html: register_clipboard_format("HTML Format"),
+        url_w: register_clipboard_format("UniformResourceLocatorW"),
+        moz: register_clipboard_format("text/x-moz-url"),
+        descriptor: register_clipboard_format("FileGroupDescriptorW"),
+    })
+}
+
+fn register_clipboard_format(name: &str) -> u16 {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: wide 以 0 结尾，调用期间有效。失败时返回 0。
+    let id = unsafe { RegisterClipboardFormatW(PCWSTR(wide.as_ptr())) };
+    u16::try_from(id).unwrap_or(0)
+}
+
+struct WebRead {
+    picked: Option<PickedWebRef>,
+    /// 描述符里有以 `.url` 结尾的文件名。这是浏览器拖放的虚拟文件，不是资源管理器里的普通文件。
+    virtual_url: bool,
+}
+
+/// 只读已经接受的网址格式和 `FileGroupDescriptorW`。不查询、不读取 `FileContents` 和 `CF_HDROP`。
+fn read_web_drop(data: &IDataObject) -> WebRead {
+    let ids = web_format_ids();
+    let html = read_clipboard_bytes(data, ids.html);
+    let url_w = read_clipboard_bytes(data, ids.url_w).map(|bytes| decode_utf16_text(&bytes));
+    let moz = read_clipboard_bytes(data, ids.moz).map(|bytes| decode_utf16_text(&bytes));
+    let unicode =
+        read_clipboard_bytes(data, CF_UNICODETEXT.0).map(|bytes| decode_utf16_text(&bytes));
+    let names = read_clipboard_bytes(data, ids.descriptor)
+        .and_then(|bytes| file_names_w(&bytes).ok())
+        .unwrap_or_default();
+    let virtual_url = names
+        .iter()
+        .any(|name| title_from_url_filename(name).is_some());
+    WebRead {
+        picked: pick_web_drop(&WebDropInput {
+            html: html.as_deref(),
+            url_w: url_w.as_deref(),
+            moz_url: moz.as_deref(),
+            unicode_text: unicode.as_deref(),
+            descriptor_names: &names,
+        }),
+        virtual_url,
+    }
+}
+
+fn read_clipboard_bytes(data: &IDataObject, id: u16) -> Option<Vec<u8>> {
+    if id == 0 || id == CF_HDROP.0 {
+        return None;
+    }
+    let format = FORMATETC {
+        cfFormat: id,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32 | TYMED_ISTREAM.0 as u32,
+    };
+    // SAFETY: format 指向局部变量。失败表示没有这种格式。
+    if unsafe { data.QueryGetData(&format) }.is_err() {
+        return None;
+    }
+    // SAFETY: 同上。GetData 成功时 medium 由调用方释放。
+    let mut medium = unsafe { data.GetData(&format) }.ok()?;
+    let bytes = medium_bytes(&medium);
+    // SAFETY: medium 来自本次 GetData，还没有释放。
+    unsafe { ReleaseStgMedium(&mut medium) };
+    bytes
+}
+
+fn medium_bytes(medium: &STGMEDIUM) -> Option<Vec<u8>> {
+    if medium.tymed & (TYMED_HGLOBAL.0 as u32) != 0 {
+        // SAFETY: tymed 标明这是 HGLOBAL。联合体字段在这次调用期间有效。
+        let global = unsafe { medium.u.hGlobal };
+        return hglobal_bytes(global);
+    }
+    if medium.tymed & (TYMED_ISTREAM.0 as u32) != 0 {
+        // SAFETY: tymed 标明这是 IStream。
+        let stream = unsafe { medium.u.pstm.as_ref() }?;
+        return read_stream(stream).ok();
+    }
+    None
+}
+
+fn hglobal_bytes(global: HGLOBAL) -> Option<Vec<u8>> {
+    if global.is_invalid() {
+        return None;
+    }
+    // SAFETY: global 来自 STGMEDIUM，调用期间有效。
+    let size = unsafe { GlobalSize(global) };
+    if size == 0 {
+        return None;
+    }
+    // SAFETY: 同上。失败时指针为空。
+    let ptr = unsafe { GlobalLock(global) };
+    if ptr.is_null() {
+        return None;
+    }
+    let take = size.min(WEB_READ_LIMIT);
+    // SAFETY: GlobalLock 成功，可读 take 个字节，不超过分配大小。
+    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), take) }.to_vec();
+    // SAFETY: 与上面的 GlobalLock 成对。
+    let _ = unsafe { GlobalUnlock(global) };
+    Some(bytes)
+}
+
+fn read_stream(stream: &IStream) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        if out.len() >= WEB_READ_LIMIT {
+            return Ok(out);
+        }
+        let space = u32::try_from((WEB_READ_LIMIT - out.len()).min(buf.len())).unwrap_or(0);
+        let mut read = 0u32;
+        // SAFETY: buf 可写 space 个字节，read 指向局部变量。
+        let hr = unsafe { stream.Read(buf.as_mut_ptr().cast(), space, Some(&mut read)) };
+        if hr.is_err() {
+            return Err(format!("IStream::Read {hr}"));
+        }
+        if read == 0 {
+            break;
+        }
+        let count = usize::try_from(read).unwrap_or(0).min(buf.len());
+        out.extend_from_slice(&buf[..count]);
+    }
+    Ok(out)
 }
 
 /// 先用外壳项取路径：外壳用固定 260 单元组 `CF_HDROP`，路径更长时 `GetData` 要么失败（0x8007007A），
@@ -298,6 +509,7 @@ pub(crate) fn register(
         state,
         sink,
         has_files: AtomicBool::new(false),
+        has_web: AtomicBool::new(false),
     }
     .into();
     // SAFETY: hwnd 是本进程、本线程创建的窗口，target 是有效接口，登记会自己持有一份引用。
@@ -511,7 +723,7 @@ mod tests {
     struct Probe {
         target: IDropTarget,
         state: Arc<DropState>,
-        received: mpsc::Receiver<Vec<PathBuf>>,
+        received: mpsc::Receiver<IncomingDrop>,
     }
 
     fn probe() -> Probe {
@@ -519,16 +731,17 @@ mod tests {
         state.set_zone(open_zone());
         let (send, received) = mpsc::channel();
         let send = Mutex::new(send);
-        let sink: DropSink = Arc::new(move |paths| {
+        let sink: DropSink = Arc::new(move |incoming| {
             let _ = send
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .send(paths);
+                .send(incoming);
         });
         let target: IDropTarget = ShelfDrop {
             state: Arc::clone(&state),
             sink,
             has_files: AtomicBool::new(false),
+            has_web: AtomicBool::new(false),
         }
         .into();
         Probe {
@@ -585,7 +798,10 @@ mod tests {
         }
         .expect("Drop");
         assert_eq!(effect.0, EFFECT_COPY);
-        let paths = probe.received.try_recv().expect("sink got the paths");
+        let IncomingDrop::Paths(paths) = probe.received.try_recv().expect("sink got the paths")
+        else {
+            panic!("file drop should keep the path");
+        };
         assert_eq!(paths.len(), 1);
         assert!(same_file(&paths[0], &file));
 
@@ -641,6 +857,333 @@ mod tests {
             "nothing was dropped on the first"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    use std::sync::atomic::AtomicUsize;
+
+    use lanwork_core::shelves::{chrome_like_cf_html, descriptor_w, encode_utf16_text};
+    use windows::Win32::Foundation::{
+        DV_E_FORMATETC, DV_E_TYMED, E_INVALIDARG, E_NOTIMPL, OLE_E_ADVISENOTSUPPORTED, S_FALSE,
+    };
+    use windows::Win32::System::Com::{
+        IAdviseSink, IDataObject_Impl, IEnumFORMATETC, IEnumFORMATETC_Impl, IEnumSTATDATA,
+    };
+    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc};
+    use windows::core::{BOOL, Ref};
+
+    #[implement(IDataObject)]
+    struct MemData {
+        items: Vec<(u16, Vec<u8>)>,
+        gets: Arc<Mutex<Vec<u16>>>,
+    }
+
+    #[implement(IEnumFORMATETC)]
+    struct FormatEnum {
+        items: Vec<FORMATETC>,
+        cursor: AtomicUsize,
+    }
+
+    fn medium_from_bytes(bytes: &[u8]) -> windows::core::Result<STGMEDIUM> {
+        let global = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1)) }?;
+        let ptr = unsafe { GlobalLock(global) };
+        if ptr.is_null() {
+            return Err(E_NOTIMPL.into());
+        }
+        unsafe {
+            if !bytes.is_empty() {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.cast(), bytes.len());
+            }
+            let _ = GlobalUnlock(global);
+        }
+        let mut medium = STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0 as u32,
+            ..Default::default()
+        };
+        medium.u.hGlobal = global;
+        Ok(medium)
+    }
+
+    #[allow(non_snake_case)]
+    impl IDataObject_Impl for MemData_Impl {
+        fn GetData(&self, format: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
+            let hr = self.QueryGetData(format);
+            if hr != S_OK {
+                return Err(hr.into());
+            }
+            let format = unsafe { &*format };
+            self.gets
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(format.cfFormat);
+            let bytes = self
+                .items
+                .iter()
+                .find(|(id, _)| *id == format.cfFormat)
+                .map(|(_, bytes)| bytes.clone())
+                .unwrap_or_default();
+            medium_from_bytes(&bytes)
+        }
+
+        fn GetDataHere(&self, _: *const FORMATETC, _: *mut STGMEDIUM) -> windows::core::Result<()> {
+            Err(E_NOTIMPL.into())
+        }
+
+        fn QueryGetData(&self, format: *const FORMATETC) -> HRESULT {
+            if format.is_null() {
+                return E_INVALIDARG;
+            }
+            let format = unsafe { &*format };
+            let known = self.items.iter().any(|(id, _)| *id == format.cfFormat);
+            if !known {
+                return DV_E_FORMATETC;
+            }
+            let tymed = format.tymed;
+            if tymed != 0 && tymed & (TYMED_HGLOBAL.0 as u32) == 0 {
+                return DV_E_TYMED;
+            }
+            S_OK
+        }
+
+        fn GetCanonicalFormatEtc(&self, _: *const FORMATETC, _: *mut FORMATETC) -> HRESULT {
+            DV_E_FORMATETC
+        }
+
+        fn SetData(
+            &self,
+            _: *const FORMATETC,
+            _: *const STGMEDIUM,
+            _: BOOL,
+        ) -> windows::core::Result<()> {
+            Err(E_NOTIMPL.into())
+        }
+
+        fn EnumFormatEtc(&self, direction: u32) -> windows::core::Result<IEnumFORMATETC> {
+            if direction != 1 {
+                return Err(E_NOTIMPL.into());
+            }
+            let items = self
+                .items
+                .iter()
+                .map(|(id, _)| FORMATETC {
+                    cfFormat: *id,
+                    ptd: std::ptr::null_mut(),
+                    dwAspect: DVASPECT_CONTENT.0,
+                    lindex: -1,
+                    tymed: TYMED_HGLOBAL.0 as u32,
+                })
+                .collect();
+            Ok(FormatEnum {
+                items,
+                cursor: AtomicUsize::new(0),
+            }
+            .into())
+        }
+
+        fn DAdvise(
+            &self,
+            _: *const FORMATETC,
+            _: u32,
+            _: Ref<IAdviseSink>,
+        ) -> windows::core::Result<u32> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
+        }
+
+        fn DUnadvise(&self, _: u32) -> windows::core::Result<()> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
+        }
+
+        fn EnumDAdvise(&self) -> windows::core::Result<IEnumSTATDATA> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
+        }
+    }
+
+    #[allow(non_snake_case)]
+    impl IEnumFORMATETC_Impl for FormatEnum_Impl {
+        fn Next(&self, celt: u32, rgelt: *mut FORMATETC, fetched: *mut u32) -> HRESULT {
+            if celt == 0 {
+                if !fetched.is_null() {
+                    unsafe { *fetched = 0 };
+                }
+                return S_OK;
+            }
+            if rgelt.is_null() {
+                return E_INVALIDARG;
+            }
+            let cursor = self.cursor.load(Ordering::Relaxed);
+            let available = self.items.len().saturating_sub(cursor);
+            let take = usize::try_from(celt).unwrap_or(0).min(available);
+            unsafe {
+                for (index, item) in self.items[cursor..cursor + take].iter().enumerate() {
+                    rgelt.add(index).write(*item);
+                }
+                if !fetched.is_null() {
+                    *fetched = u32::try_from(take).unwrap_or(u32::MAX);
+                }
+            }
+            self.cursor.store(cursor + take, Ordering::Relaxed);
+            if take == usize::try_from(celt).unwrap_or(usize::MAX) {
+                S_OK
+            } else {
+                S_FALSE
+            }
+        }
+
+        fn Skip(&self, celt: u32) -> windows::core::Result<()> {
+            let cursor = self.cursor.load(Ordering::Relaxed);
+            let next = cursor.saturating_add(usize::try_from(celt).unwrap_or(usize::MAX));
+            if next > self.items.len() {
+                self.cursor.store(self.items.len(), Ordering::Relaxed);
+                return Err(S_FALSE.into());
+            }
+            self.cursor.store(next, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn Reset(&self) -> windows::core::Result<()> {
+            self.cursor.store(0, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn Clone(&self) -> windows::core::Result<IEnumFORMATETC> {
+            Ok(FormatEnum {
+                items: self.items.clone(),
+                cursor: AtomicUsize::new(self.cursor.load(Ordering::Relaxed)),
+            }
+            .into())
+        }
+    }
+
+    #[test]
+    fn url_drop_uses_the_html_href_and_the_descriptor_title_without_reading_file_contents() {
+        ensure_ole();
+        let ids = web_format_ids();
+        let contents_id = register_clipboard_format("FileContents");
+        let href = "https://github.com/example/page";
+        let gets = Arc::new(Mutex::new(Vec::new()));
+        let data: IDataObject = MemData {
+            items: vec![
+                (
+                    ids.html,
+                    chrome_like_cf_html("https://example.com/source", href, "链接文字"),
+                ),
+                (ids.url_w, encode_utf16_text("https://example.com/lock")),
+                (
+                    CF_UNICODETEXT.0,
+                    encode_utf16_text("https://example.com/lock"),
+                ),
+                (ids.descriptor, descriptor_w(&["页面.url"])),
+                (
+                    contents_id,
+                    b"[InternetShortcut]\r\nURL=https://secret.example/hidden\r\n".to_vec(),
+                ),
+                (CF_HDROP.0, b"C:\\should-not-read.url\0".to_vec()),
+            ],
+            gets: Arc::clone(&gets),
+        }
+        .into();
+        let probe = probe();
+        probe.state.set_accepting(true);
+        let all = EFFECT_COPY | EFFECT_MOVE | EFFECT_LINK;
+        assert_eq!(offer(&probe, &data, 10, all), EFFECT_COPY);
+        assert!(
+            gets.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "DragEnter 只 QueryGetData，不 GetData"
+        );
+
+        let point = POINTL { x: 10, y: 10 };
+        let mut effect = DROPEFFECT(all);
+        unsafe {
+            probe
+                .target
+                .Drop(&data, MODIFIERKEYS_FLAGS(0), point, &mut effect)
+        }
+        .expect("Drop");
+        assert_eq!(effect.0, EFFECT_COPY);
+        assert_eq!(
+            probe.received.try_recv().expect("web sink"),
+            IncomingDrop::Web {
+                url: href.to_owned(),
+                title: "页面".to_owned(),
+            }
+        );
+
+        let mut effect = DROPEFFECT(EFFECT_MOVE);
+        unsafe {
+            probe
+                .target
+                .Drop(&data, MODIFIERKEYS_FLAGS(0), point, &mut effect)
+        }
+        .expect("move-only drop");
+        assert_eq!(effect.0, EFFECT_NONE);
+        assert!(probe.received.try_recv().is_err());
+
+        let recorded = gets.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert!(
+            recorded
+                .iter()
+                .all(|id| *id != contents_id && *id != CF_HDROP.0),
+            "virtual file was read: {recorded:?}"
+        );
+    }
+
+    #[test]
+    fn descriptor_without_a_parsed_url_rejects_instead_of_reading_hdrop() {
+        ensure_ole();
+        let ids = web_format_ids();
+        let contents_id = register_clipboard_format("FileContents");
+        let gets = Arc::new(Mutex::new(Vec::new()));
+        let data: IDataObject = MemData {
+            items: vec![
+                (ids.html, b"Version:0.9\r\nStartHTML:00000000\r\n".to_vec()),
+                (ids.url_w, encode_utf16_text("not a url")),
+                (
+                    ids.moz,
+                    encode_utf16_text("also not\nhttps://example.com/second"),
+                ),
+                (CF_UNICODETEXT.0, encode_utf16_text("C:\\virtual\\page.url")),
+                (ids.descriptor, descriptor_w(&["page.url"])),
+                (
+                    contents_id,
+                    b"[InternetShortcut]\r\nURL=https://secret.example/hidden\r\n".to_vec(),
+                ),
+                (CF_HDROP.0, b"C:\\virtual\\page.url\0".to_vec()),
+            ],
+            gets: Arc::clone(&gets),
+        }
+        .into();
+        let probe = probe();
+        probe.state.set_accepting(true);
+        let all = EFFECT_COPY | EFFECT_MOVE | EFFECT_LINK;
+        assert_eq!(offer(&probe, &data, 10, all), EFFECT_COPY);
+        assert!(
+            gets.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty(),
+            "DragEnter 只 QueryGetData，不 GetData"
+        );
+
+        let point = POINTL { x: 10, y: 10 };
+        let mut effect = DROPEFFECT(all);
+        unsafe {
+            probe
+                .target
+                .Drop(&data, MODIFIERKEYS_FLAGS(0), point, &mut effect)
+        }
+        .expect("Drop");
+        assert_eq!(effect.0, EFFECT_NONE);
+        assert!(
+            probe.received.try_recv().is_err(),
+            "解析不出网址时不把虚拟 .url 存成路径"
+        );
+        let recorded = gets.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert!(
+            recorded
+                .iter()
+                .all(|id| *id != contents_id && *id != CF_HDROP.0),
+            "rejected drop still read a virtual file: {recorded:?}"
+        );
     }
 
     fn test_window() -> HWND {

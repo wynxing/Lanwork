@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::shelves::{
-    DEFAULT_GROUP_NAME, FloatGeometry, IncomingRef, ShelfCommands, ShelfError, normalize_path,
+    DEFAULT_GROUP_NAME, FloatGeometry, IncomingRef, IncomingWeb, ShelfCommands, ShelfError,
+    normalize_path,
 };
 use lanwork_core::storage::{CollectionKind, DocumentId, EntityKind, Store, StorePaths};
 use lanwork_core::todos::{
@@ -845,4 +846,157 @@ fn float_stack_round_trips_on_a_group_and_a_missing_field_stays_unset() {
     .unwrap();
     let cmds = ShelfCommands::open(fix.store.clone()).unwrap();
     assert!(cmds.get("plain").unwrap().float_stack.is_none());
+    assert!(cmds.get("plain").unwrap().web_refs.is_empty());
+}
+
+fn web(url: &str, title: &str) -> IncomingWeb {
+    IncomingWeb {
+        url: url.to_owned(),
+        title: title.to_owned(),
+    }
+}
+
+#[test]
+fn web_refs_dedupe_by_normalized_url_and_keep_the_first_row() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let first = cmds.create_group("甲").unwrap();
+    let second = cmds.create_group("乙").unwrap();
+    let added = cmds
+        .add_web_refs(Some(&first.id), &[web("HTTP://Example.COM/a/", "先")])
+        .unwrap();
+    assert_eq!(added.added, 1);
+    let duplicate = cmds
+        .add_web_refs(Some(&second.id), &[web("http://example.com/a", "后")])
+        .unwrap();
+    assert_eq!(duplicate.added, 0);
+    let kept = cmds.get(&first.id).unwrap();
+    assert_eq!(kept.web_refs.len(), 1);
+    assert_eq!(kept.web_refs[0].url, "HTTP://Example.COM/a/");
+    assert_eq!(kept.web_refs[0].title, "先");
+    assert!(cmds.get(&second.id).unwrap().web_refs.is_empty());
+
+    let slash = cmds
+        .add_web_refs(
+            Some(&first.id),
+            &[
+                web("http://example.com/", "根"),
+                web("http://example.com", "根二"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(slash.added, 1);
+    assert_eq!(
+        cmds.get(&first.id).unwrap().web_refs[1].url,
+        "http://example.com/"
+    );
+    let query = cmds
+        .add_web_refs(
+            Some(&second.id),
+            &[
+                web("http://example.com/a/?q=1", "问号"),
+                web("http://example.com/a?q=1", "问号二"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(query.added, 1);
+
+    let distinct = cmds
+        .add_web_refs(
+            Some(&second.id),
+            &[
+                web("https://example.com/a", "安全"),
+                web("http://example.com/A", "大写"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(distinct.added, 2);
+    assert_eq!(cmds.get(&second.id).unwrap().web_refs.len(), 3);
+}
+
+#[test]
+fn removing_a_web_ref_lets_the_same_url_be_added_again() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let group = cmds.create_group("甲").unwrap();
+    cmds.add_web_refs(Some(&group.id), &[web("https://example.com/a", "页")])
+        .unwrap();
+    cmds.remove_web_ref(&group.id, "https://example.com/a/")
+        .unwrap();
+    assert!(cmds.get(&group.id).unwrap().web_refs.is_empty());
+    let again = cmds
+        .add_web_refs(Some(&group.id), &[web("https://example.com/a", "再")])
+        .unwrap();
+    assert_eq!(again.added, 1);
+    assert_eq!(cmds.get(&group.id).unwrap().web_refs[0].title, "再");
+}
+
+#[test]
+fn an_invalid_url_writes_nothing() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let err = cmds.add_web_refs(None, &[web("不是网址", "")]).unwrap_err();
+    assert!(matches!(err, ShelfError::InvalidUrl { .. }), "{err}");
+    assert_eq!(shelf_json_count(&fix.store), 0);
+
+    let group = cmds.create_group("甲").unwrap();
+    let err = cmds
+        .add_web_refs(
+            Some(&group.id),
+            &[web("https://example.com/ok", "好"), web("nope", "")],
+        )
+        .unwrap_err();
+    assert!(matches!(err, ShelfError::InvalidUrl { .. }), "{err}");
+    assert!(cmds.get(&group.id).unwrap().web_refs.is_empty());
+}
+
+#[test]
+fn web_refs_are_stored_in_the_group_file_without_a_page_body() {
+    let fix = fixture();
+    let cmds = commands(&fix.store);
+    let outcome = cmds
+        .add_web_refs(None, &[web("https://example.com/page", "页面")])
+        .unwrap();
+    let group = outcome.group.expect("created");
+    assert_eq!(group.name, DEFAULT_GROUP_NAME);
+    let path = fix
+        .store
+        .document_path(&DocumentId::Shelf(group.id.clone()))
+        .unwrap();
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("webRefs"), "{text}");
+    assert!(text.contains("https://example.com/page"), "{text}");
+    assert!(text.contains("页面"), "{text}");
+    assert!(!text.contains("icon"), "{text}");
+    assert!(!text.to_ascii_lowercase().contains("<html"), "{text}");
+    assert!(!text.contains("FileContents"), "{text}");
+}
+
+#[test]
+fn reloading_keeps_the_earliest_web_ref_when_files_disagree() {
+    let fix = fixture();
+    let dir = fix.store.collection_dir(CollectionKind::Shelves);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("g1.json"),
+        r#"{"schemaVersion":1,"id":"g1","name":"甲","order":0,"webRefs":[{"url":"http://example.com/a","title":"先","addedAt":1}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("g2.json"),
+        r#"{"schemaVersion":1,"id":"g2","name":"乙","order":1,"webRefs":[{"url":"HTTP://Example.COM/a/","title":"后","addedAt":2}]}"#,
+    )
+    .unwrap();
+    let cmds = ShelfCommands::open(fix.store.clone()).unwrap();
+    assert_eq!(cmds.get("g1").unwrap().web_refs[0].title, "先");
+    assert_eq!(
+        cmds.get("g1").unwrap().web_refs[0].url,
+        "http://example.com/a"
+    );
+    assert!(cmds.get("g2").unwrap().web_refs.is_empty());
+    let disk = std::fs::read_to_string(dir.join("g2.json")).unwrap();
+    assert!(disk.contains("后"), "{disk}");
+    cmds.rename_group("g2", "乙乙").unwrap();
+    let disk = std::fs::read_to_string(dir.join("g2.json")).unwrap();
+    assert!(!disk.contains("后"), "{disk}");
 }
