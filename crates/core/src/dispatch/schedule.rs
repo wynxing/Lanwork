@@ -16,6 +16,7 @@ use crate::search::{
     FieldRole, Hit, HitKind, OPEN_WEBSITE_LABEL, RankedGroup, SearchGroup, WebSearchEngine,
     allocate_display, classify_prefix, open_website, rank_hits,
 };
+use crate::shelves::ShelfCommands;
 use crate::storage::{self, EntityKind, Error as StorageError, StartupError, Store};
 use crate::todos::TodoCommands;
 
@@ -98,10 +99,13 @@ impl FileLookup for FileCommands {
     }
 }
 
-/// 待办和便签服务。索引在启动完成之后读它们的内存。
+/// 待办、便签和收纳服务。索引在启动完成之后读它们的内存。
+///
+/// 收纳打不开时 `shelves` 为 `None`，搜索里的「网页」组为空。
 pub struct Services {
     pub todos: TodoCommands,
     pub notes: NoteCommands,
+    pub shelves: Option<ShelfCommands>,
 }
 
 /// 可替换的来源和时钟。测试用它换掉文件查询和时钟。
@@ -115,8 +119,8 @@ pub struct Sides<A, F, C, I> {
 /// 搜索条和面板共用的查询调度。
 ///
 /// 调用顺序：`TodoCommands::boot` 成功，再 `NoteCommands::open`（导入恢复会换文件），
-/// 然后 [`Dispatch::build`]。这两份服务必须就是正在写入的那一份；克隆仍共享内存。
-/// 查询时不读盘。变更消息发出时，待办和便签的内存已经是新值。
+/// 然后 [`Dispatch::build`]。这几份服务必须就是正在写入的那一份；克隆仍共享内存。
+/// 查询时不读盘。变更消息发出时，待办、便签和收纳的内存已经是新值。
 pub struct Dispatch {
     store: Store,
     inner: Mutex<Inner>,
@@ -129,6 +133,7 @@ pub struct Dispatch {
 struct Inner {
     todos: TodoCommands,
     notes: NoteCommands,
+    shelves: Option<ShelfCommands>,
     index: MemoryIndex,
     changes: std::sync::mpsc::Receiver<crate::storage::EntityChanged>,
     built: bool,
@@ -225,6 +230,7 @@ impl Dispatch {
             inner: Mutex::new(Inner {
                 todos: services.todos,
                 notes: services.notes,
+                shelves: services.shelves,
                 index: MemoryIndex::empty(),
                 changes,
                 built: false,
@@ -439,9 +445,11 @@ impl Inner {
     fn rebuild(&mut self) -> Result<(), String> {
         self.index.rebuild_todos(&self.todos)?;
         self.index.rebuild_notes(&self.notes);
+        self.index.rebuild_webs(self.shelves.as_ref());
         while self.changes.try_recv().is_ok() {}
         self.index.rebuild_todos(&self.todos)?;
         self.index.rebuild_notes(&self.notes);
+        self.index.rebuild_webs(self.shelves.as_ref());
         Ok(())
     }
 
@@ -451,11 +459,13 @@ impl Inner {
         }
         let mut todo = false;
         let mut note = false;
+        let mut shelf = false;
         while let Ok(event) = self.changes.try_recv() {
             match event.kind {
                 EntityKind::Todo => todo = true,
                 EntityKind::Note => note = true,
-                _ => {}
+                EntityKind::Shelf => shelf = true,
+                EntityKind::Config => {}
             }
         }
         if todo {
@@ -465,6 +475,9 @@ impl Inner {
         }
         if note {
             self.index.rebuild_notes(&self.notes);
+        }
+        if shelf {
+            self.index.rebuild_webs(self.shelves.as_ref());
         }
         Ok(())
     }
@@ -768,6 +781,13 @@ fn local_groups(
             items: notes,
         });
     }
+    let webs = index.rank_webs(text, freq);
+    if !webs.is_empty() {
+        groups.push(RankedGroup {
+            group: SearchGroup::Web,
+            items: webs,
+        });
+    }
     groups
 }
 
@@ -1024,6 +1044,7 @@ mod tests {
             Services {
                 todos,
                 notes: notes.clone(),
+                shelves: None,
             },
             Sides {
                 apps: NoApps,

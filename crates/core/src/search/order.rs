@@ -125,6 +125,8 @@ pub enum SearchGroup {
     Todo,
     /// 不在回收站中的便签。
     Note,
+    /// 收纳里的网页引用。在便签之后、文件之前。
+    Web,
     /// 文件。
     File,
     /// 文件夹。
@@ -133,11 +135,12 @@ pub enum SearchGroup {
     WebSearch,
 }
 
-const SEARCH_GROUPS: [SearchGroup; 6] = [
+const SEARCH_GROUPS: [SearchGroup; 7] = [
     SearchGroup::Browser,
     SearchGroup::Application,
     SearchGroup::Todo,
     SearchGroup::Note,
+    SearchGroup::Web,
     SearchGroup::File,
     SearchGroup::Folder,
 ];
@@ -149,8 +152,9 @@ impl SearchGroup {
             Self::Application => Some(1),
             Self::Todo => Some(2),
             Self::Note => Some(3),
-            Self::File => Some(4),
-            Self::Folder => Some(5),
+            Self::Web => Some(4),
+            Self::File => Some(5),
+            Self::Folder => Some(6),
             Self::WebSearch => None,
         }
     }
@@ -163,14 +167,14 @@ impl SearchGroup {
 /// 同一个 [`SearchGroup`] 出现多次时，条目按传入顺序接在后面。[`SearchGroup::WebSearch`] 被忽略。
 #[must_use]
 pub fn allocate_display<T: Clone>(groups: &[RankedGroup<T>]) -> Vec<(SearchGroup, T)> {
-    let mut buckets: [Vec<T>; 6] = std::array::from_fn(|_| Vec::new());
+    let mut buckets: [Vec<T>; 7] = std::array::from_fn(|_| Vec::new());
     for grouped in groups {
         if let Some(index) = grouped.group.index() {
             buckets[index].extend(grouped.items.iter().cloned());
         }
     }
 
-    let mut take = [0usize; 6];
+    let mut take = [0usize; 7];
     let mut total = 0usize;
     for index in 0..SEARCH_GROUPS.len() {
         if total >= DISPLAY_LIMIT {

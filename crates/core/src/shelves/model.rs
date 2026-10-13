@@ -30,6 +30,8 @@ pub struct Shelf {
     /// 关联的待办 id，按关联的先后。同一条只出现一次。旧文件的单条 `todoId` 读入时成为第一项。
     pub todo_ids: Vec<String>,
     pub refs: Vec<ShelfRef>,
+    /// 网页引用。只保存网址和标题，不保存页面正文，也不保存网站图标字节。
+    pub web_refs: Vec<WebRef>,
     /// 这个分组的悬浮窗上次的展开位置和大小。没有记录时为 `None`。旧文件没有这个字段。
     pub float: Option<FloatGeometry>,
     /// 贴边。没有记录时不贴边。旧文件里的 `floatPinned` 不进这个字段。
@@ -45,6 +47,21 @@ pub struct ShelfRef {
     pub name: String,
     pub folder: bool,
     pub added_at: i64,
+}
+
+/// 一条网页引用。`url` 是拖入时的原文（去掉首尾空白），比较用 [`super::weblink::normalize_web_url`]。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebRef {
+    pub url: String,
+    pub title: String,
+    pub added_at: i64,
+}
+
+/// 拖入的一条网址。服务不访问网络，也不读取页面。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingWeb {
+    pub url: String,
+    pub title: String,
 }
 
 /// 拖入时调用方给出的路径，以及它是不是文件夹。
@@ -102,6 +119,8 @@ pub(crate) struct ShelfFile {
     todo_ids: Vec<String>,
     #[serde(default)]
     refs: Vec<RefFile>,
+    #[serde(rename = "webRefs", default, skip_serializing_if = "Vec::is_empty")]
+    web_refs: Vec<WebRefFile>,
     #[serde(
         rename = "floatWindow",
         default,
@@ -125,6 +144,16 @@ pub(crate) struct ShelfFile {
     /// 旧的逐窗钉住。读进来就丢掉，不再写回。
     #[serde(rename = "floatPinned", default, skip_serializing)]
     _legacy_float_pinned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WebRefFile {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    title: String,
+    #[serde(rename = "addedAt", default)]
+    added_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +196,15 @@ impl ShelfFile {
                     added_at: item.added_at,
                 })
                 .collect(),
+            web_refs: shelf
+                .web_refs
+                .iter()
+                .map(|item| WebRefFile {
+                    url: item.url.clone(),
+                    title: item.title.clone(),
+                    added_at: item.added_at,
+                })
+                .collect(),
         }
     }
 
@@ -202,6 +240,22 @@ impl ShelfFile {
                 added_at: item.added_at,
             });
         }
+        let mut web_refs = Vec::new();
+        let mut seen_web = Vec::new();
+        for item in self.web_refs {
+            let Some(normalized) = super::weblink::normalize_web_url(&item.url) else {
+                continue;
+            };
+            if seen_web.iter().any(|key| key == &normalized.key) {
+                continue;
+            }
+            seen_web.push(normalized.key);
+            web_refs.push(WebRef {
+                url: normalized.stored,
+                title: item.title.trim().to_owned(),
+                added_at: item.added_at,
+            });
+        }
         let mut todo_ids: Vec<String> = Vec::new();
         for id in self.legacy_todo_id.into_iter().chain(self.todo_ids) {
             if !todo_ids.contains(&id) {
@@ -214,6 +268,7 @@ impl ShelfFile {
             order: self.order,
             todo_ids,
             refs,
+            web_refs,
             float: self.float,
             float_dock: self.float_dock,
             float_stack: self.float_stack,

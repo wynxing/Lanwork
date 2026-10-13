@@ -213,6 +213,7 @@ pub fn group_label(group: SearchGroup) -> &'static str {
         SearchGroup::Application => "应用",
         SearchGroup::Todo => "待办",
         SearchGroup::Note => "便签",
+        SearchGroup::Web => "网页",
         SearchGroup::File => "文件",
         SearchGroup::Folder => "文件夹",
         SearchGroup::WebSearch => "网页搜索",
@@ -475,6 +476,9 @@ pub fn row_action(detail: &RowDetail, chord: EnterChord) -> Option<RowAction> {
             Some(RowAction::PanelNote { id: id.clone() })
         }
         (RowDetail::Note { id }, EnterChord::Ctrl) => Some(RowAction::FloatNote { id: id.clone() }),
+        (RowDetail::Web { url }, EnterChord::Plain) => {
+            Some(RowAction::Shell(LaunchTarget::Url { url: url.clone() }))
+        }
         (RowDetail::WebSearch { url }, EnterChord::Plain) => {
             Some(RowAction::WebSearch { url: url.clone() })
         }
@@ -663,6 +667,7 @@ mod tests {
             SearchGroup::Application,
             SearchGroup::Todo,
             SearchGroup::Note,
+            SearchGroup::Web,
         ] {
             assert!(!location_always_shown(group));
         }
@@ -676,11 +681,12 @@ mod tests {
                 SearchGroup::Application,
                 SearchGroup::Todo,
                 SearchGroup::Note,
+                SearchGroup::Web,
                 SearchGroup::File,
                 SearchGroup::Folder,
             ]
             .map(group_label),
-            ["浏览器", "应用", "待办", "便签", "文件", "文件夹"]
+            ["浏览器", "应用", "待办", "便签", "网页", "文件", "文件夹"]
         );
     }
 
@@ -1243,6 +1249,20 @@ mod tests {
             Some(RowAction::FloatNote { id: "n".to_owned() })
         );
         assert_eq!(row_action(&note, EnterChord::CtrlShift), None);
+
+        let web = RowDetail::Web {
+            url: "https://example.com/a".to_owned(),
+        };
+        let open_web = row_action(&web, EnterChord::Plain).unwrap();
+        assert_eq!(
+            open_web,
+            RowAction::Shell(LaunchTarget::Url {
+                url: "https://example.com/a".to_owned()
+            })
+        );
+        assert!(open_web.counts_as_open());
+        assert_eq!(row_action(&web, EnterChord::Ctrl), None);
+        assert_eq!(row_action(&web, EnterChord::CtrlShift), None);
     }
 
     #[test]

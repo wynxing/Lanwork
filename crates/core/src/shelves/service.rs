@@ -127,6 +127,7 @@ impl ShelfService {
             order,
             todo_ids: Vec::new(),
             refs: Vec::new(),
+            web_refs: Vec::new(),
             float: None,
             float_dock: None,
             float_stack: None,
@@ -216,6 +217,7 @@ impl ShelfService {
                     order: next_order(groups.iter().map(|group| group.order))?,
                     todo_ids: Vec::new(),
                     refs: Vec::new(),
+                    web_refs: Vec::new(),
                     float: None,
                     float_dock: None,
                     float_stack: None,
@@ -270,6 +272,102 @@ impl ShelfService {
             return Err(ShelfError::RefNotFound {
                 id: id.to_owned(),
                 path: path.to_owned(),
+            });
+        }
+        self.persist_one(&shelf)?;
+        Ok(shelf)
+    }
+
+    /// 把网址加入分组。
+    ///
+    /// 比较范围是全部分组：规范化结果相同则不新增，也不改先加入的那一条。
+    /// `group_id` 为空且当前没有分组时，创建名为「收纳」的分组，和引用同一次写入。
+    /// 一批里有一条无法规范化，则整批不写。写盘失败时不留下空分组。
+    pub fn add_web_refs(
+        &self,
+        group_id: Option<&str>,
+        incoming: &[super::model::IncomingWeb],
+    ) -> Result<AddRefsOutcome, ShelfError> {
+        if let Some(id) = group_id {
+            self.check_group_id(id)?;
+        }
+        let prepared = prepare_web(incoming)?;
+        let _write = lock_mutex(&self.inner.write);
+        self.ensure_usable()?;
+        let groups = self.groups()?;
+        let shelf = match group_id {
+            Some(id) => self.group(id)?,
+            None if groups.is_empty() => {
+                if prepared.is_empty() {
+                    return Ok(AddRefsOutcome {
+                        group: None,
+                        added: 0,
+                    });
+                }
+                let id = self.allocate_id()?;
+                Shelf {
+                    id,
+                    name: super::model::DEFAULT_GROUP_NAME.to_owned(),
+                    order: next_order(groups.iter().map(|group| group.order))?,
+                    todo_ids: Vec::new(),
+                    refs: Vec::new(),
+                    web_refs: Vec::new(),
+                    float: None,
+                    float_dock: None,
+                    float_stack: None,
+                }
+            }
+            None => return Err(ShelfError::TargetGroupRequired),
+        };
+        let mut seen = web_keys(&groups);
+        let mut next = shelf.clone();
+        let added_at = (self.inner.now)();
+        let mut added = 0usize;
+        for item in prepared {
+            if !seen.insert(item.key) {
+                continue;
+            }
+            next.web_refs.push(super::model::WebRef {
+                url: item.stored,
+                title: item.title,
+                added_at,
+            });
+            added += 1;
+        }
+        if added == 0 {
+            let group = if group_id.is_some() {
+                Some(shelf)
+            } else {
+                None
+            };
+            return Ok(AddRefsOutcome { group, added: 0 });
+        }
+        self.persist_one(&next)?;
+        Ok(AddRefsOutcome {
+            group: Some(next),
+            added,
+        })
+    }
+
+    /// 从分组去掉一条网页引用。不关闭、不移动浏览器标签。
+    pub fn remove_web_ref(&self, id: &str, url: &str) -> Result<Shelf, ShelfError> {
+        self.check_group_id(id)?;
+        let normalized =
+            super::weblink::normalize_web_url(url).ok_or_else(|| ShelfError::InvalidUrl {
+                url: url.to_owned(),
+            })?;
+        let _write = lock_mutex(&self.inner.write);
+        self.ensure_usable()?;
+        let mut shelf = self.group(id)?;
+        let before = shelf.web_refs.len();
+        shelf.web_refs.retain(|item| {
+            super::weblink::normalize_web_url(&item.url)
+                .is_none_or(|existing| existing.key != normalized.key)
+        });
+        if shelf.web_refs.len() == before {
+            return Err(ShelfError::RefNotFound {
+                id: id.to_owned(),
+                path: url.to_owned(),
             });
         }
         self.persist_one(&shelf)?;
@@ -764,6 +862,85 @@ fn reorder(mut groups: Vec<Shelf>, ids: &[String]) -> Result<Vec<Shelf>, ShelfEr
     Ok(ordered)
 }
 
+struct PreparedWeb {
+    key: String,
+    stored: String,
+    title: String,
+}
+
+fn prepare_web(incoming: &[super::model::IncomingWeb]) -> Result<Vec<PreparedWeb>, ShelfError> {
+    let mut prepared = Vec::with_capacity(incoming.len());
+    for item in incoming {
+        let normalized =
+            super::weblink::normalize_web_url(&item.url).ok_or_else(|| ShelfError::InvalidUrl {
+                url: item.url.clone(),
+            })?;
+        prepared.push(PreparedWeb {
+            key: normalized.key,
+            stored: normalized.stored,
+            title: item.title.trim().to_owned(),
+        });
+    }
+    Ok(prepared)
+}
+
+fn web_keys(groups: &[Shelf]) -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    for group in groups {
+        for web in &group.web_refs {
+            if let Some(normalized) = super::weblink::normalize_web_url(&web.url) {
+                keys.insert(normalized.key);
+            }
+        }
+    }
+    keys
+}
+
+/// 全部分组里规范化结果相同的网址只留先加入的那一条。不写盘，下次保存该分组时才写回去。
+fn collapse_duplicate_web_refs(groups: &mut BTreeMap<String, Shelf>) {
+    let mut ranked = Vec::new();
+    for shelf in groups.values() {
+        for (index, web) in shelf.web_refs.iter().enumerate() {
+            let Some(normalized) = super::weblink::normalize_web_url(&web.url) else {
+                continue;
+            };
+            ranked.push((
+                normalized.key,
+                web.added_at,
+                shelf.order,
+                shelf.id.clone(),
+                index,
+            ));
+        }
+    }
+    ranked.sort_by(|left, right| {
+        left.1
+            .cmp(&right.1)
+            .then(left.2.cmp(&right.2))
+            .then(left.3.cmp(&right.3))
+            .then(left.4.cmp(&right.4))
+    });
+    let mut winner = BTreeMap::<String, (String, usize)>::new();
+    for (key, _, _, id, index) in &ranked {
+        winner
+            .entry(key.clone())
+            .or_insert_with(|| (id.clone(), *index));
+    }
+    for shelf in groups.values_mut() {
+        let id = shelf.id.clone();
+        let mut kept = Vec::new();
+        for (index, web) in shelf.web_refs.iter().enumerate() {
+            let Some(normalized) = super::weblink::normalize_web_url(&web.url) else {
+                continue;
+            };
+            if winner.get(&normalized.key) == Some(&(id.clone(), index)) {
+                kept.push(web.clone());
+            }
+        }
+        shelf.web_refs = kept;
+    }
+}
+
 fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -792,6 +969,7 @@ fn reload_inner(inner: &Inner) -> Result<(), ShelfError> {
             }
         }
     }
+    collapse_duplicate_web_refs(&mut cache.groups);
     *lock_mutex(&inner.cache) = cache;
     Ok(())
 }

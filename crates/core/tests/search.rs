@@ -637,6 +637,19 @@ fn display_slots_fill_eight_per_group_then_the_remainder_in_group_order() {
     );
 }
 
+#[test]
+fn web_refs_are_shown_after_notes_and_before_files() {
+    let shown = allocate_display(&[
+        group(SearchGroup::File, 1),
+        group(SearchGroup::Web, 1),
+        group(SearchGroup::Note, 1),
+    ]);
+    assert_eq!(
+        shown.iter().map(|(group, _)| *group).collect::<Vec<_>>(),
+        vec![SearchGroup::Note, SearchGroup::Web, SearchGroup::File]
+    );
+}
+
 fn group(group: SearchGroup, count: u64) -> RankedGroup<u64> {
     RankedGroup {
         group,

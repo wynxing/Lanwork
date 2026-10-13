@@ -522,6 +522,48 @@ fn shelf_links_go_through_export_and_import_including_the_old_single_field() {
 }
 
 #[test]
+fn shelf_web_refs_and_todo_float_travel_in_the_same_export() {
+    let fx = fixture();
+    write_rel(
+        &fx.store,
+        "shelves/web.json",
+        r#"{"schemaVersion":1,"id":"web","name":"收纳","order":0,"refs":[],"webRefs":[{"url":"https://example.com/a","title":"示例","addedAt":1}]}"#,
+    );
+    write_rel(
+        &fx.store,
+        "todo-float.json",
+        r#"{"schemaVersion":1,"floatWindow":{"x":4,"y":5,"width":6,"height":7},"marker":"keep-float"}"#,
+    );
+    let shelves = ShelfCommands::open(fx.store.clone()).unwrap();
+    let commands = BackupCommands::open(fx.store.clone());
+    let package = fx._temp.path().join("both.zip");
+    commands.export(&package, 130).unwrap();
+    let packed = String::from_utf8_lossy(&std::fs::read(&package).unwrap()).into_owned();
+    assert!(packed.contains("webRefs"), "{packed}");
+    assert!(packed.contains("https://example.com/a"));
+    assert!(packed.contains("todo-float.json"));
+    assert!(packed.contains("keep-float"));
+    assert!(!packed.contains("<html"), "导出不含页面正文");
+
+    write_rel(
+        &fx.store,
+        "shelves/web.json",
+        r#"{"schemaVersion":1,"id":"web","name":"收纳","order":0,"refs":[]}"#,
+    );
+    write_rel(
+        &fx.store,
+        "todo-float.json",
+        r#"{"schemaVersion":1,"floatWindow":{"x":1,"y":1,"width":1,"height":1}}"#,
+    );
+    commands.import(&package, 140).unwrap();
+    let group = shelves.get("web").unwrap();
+    assert_eq!(group.web_refs.len(), 1);
+    assert_eq!(group.web_refs[0].url, "https://example.com/a");
+    assert_eq!(group.web_refs[0].title, "示例");
+    assert!(read_rel(&fx.store, "todo-float.json").contains("keep-float"));
+}
+
+#[test]
 fn todo_float_file_is_copied_by_export_and_absent_from_old_packages() {
     let fx = fixture();
     let commands = BackupCommands::open(fx.store.clone());

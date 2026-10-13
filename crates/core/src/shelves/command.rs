@@ -6,7 +6,7 @@ use crate::storage::Store;
 use crate::todos::TodoCommands;
 
 use super::error::ShelfError;
-use super::model::{AddRefsOutcome, IncomingRef, Shelf};
+use super::model::{AddRefsOutcome, IncomingRef, IncomingWeb, Shelf};
 use super::service::ShelfService;
 use crate::notes::{FloatDock, FloatGeometry, FloatStackSlot};
 
@@ -89,6 +89,36 @@ impl ShelfCommands {
             });
         }
         self.service.remove_ref(id, path)
+    }
+
+    /// 把网址加入分组。规则见 [`ShelfService::add_web_refs`]。
+    pub fn add_web_refs(
+        &self,
+        group_id: Option<&str>,
+        incoming: &[IncomingWeb],
+    ) -> Result<AddRefsOutcome, ShelfError> {
+        if let Some(id) = group_id {
+            self.service.check_group_id(id)?;
+        }
+        for item in incoming {
+            if item.url.is_empty() || item.url.contains('\0') {
+                return Err(ShelfError::InvalidUrl {
+                    url: item.url.clone(),
+                });
+            }
+        }
+        self.service.add_web_refs(group_id, incoming)
+    }
+
+    /// 从分组去掉一条网页引用。
+    pub fn remove_web_ref(&self, id: &str, url: &str) -> Result<Shelf, ShelfError> {
+        self.service.check_group_id(id)?;
+        if url.is_empty() {
+            return Err(ShelfError::InvalidUrl {
+                url: url.to_owned(),
+            });
+        }
+        self.service.remove_web_ref(id, url)
     }
 
     pub fn link_todo(&self, id: &str, todo_id: &str) -> Result<Shelf, ShelfError> {

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::shelves::IncomingWeb;
 use crate::storage::{DocumentId, Store, StorePaths};
 use crate::todos::TodoNotice;
 
@@ -73,6 +74,25 @@ fn second_write_failure_restores_the_first_group() {
     );
     assert_eq!(std::fs::read(&first_path).unwrap(), first_before);
     assert_eq!(std::fs::read(&second_path).unwrap(), second_before);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn failed_web_write_does_not_leave_a_group() {
+    let (_temp, store, service) = service();
+    let rx = store.subscribe();
+    service.fail_next_write_at(0);
+    let err = service
+        .add_web_refs(
+            None,
+            &[IncomingWeb {
+                url: "https://example.com/a".to_owned(),
+                title: "页".to_owned(),
+            }],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("写入失败"), "{err}");
+    assert!(service.list().unwrap().is_empty());
     assert!(rx.try_recv().is_err());
 }
 

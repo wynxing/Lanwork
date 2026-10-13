@@ -131,7 +131,7 @@
 | --- | --- |
 | 🤖 **外部 AI** | 本机 MCP，默认关闭，在设置里打开。只改待办和便签。规格见 [docs/external-ai.md](docs/external-ai.md)。排在 v0.2.0 之后，还没有代码 |
 | 🧩 **扩展页与插件** | 面板上的「扩展」标签。声明式插件，一行一个，分类和接受拖放的「导入」。番茄钟是第一个官方插件。规格见 [docs/extensions.md](docs/extensions.md)。排在 v0.2.0 之后，还没有代码 |
-| 🔗 **收纳网页引用** | 收纳可以保存网址、标题和网站图标，只存引用，不关闭、不移动浏览器标签。打开后用默认浏览器重新打开。同一网址只保留一条，并出现在搜索结果里。第一版接受拖入的地址栏锁图标或页面链接。接受的格式是 `CF_HTML`、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW`、`text/x-moz-url`。标题取 `FileGroupDescriptorW` 文件名去掉末尾 `.url`；页面链接的标题是链接文字。悬浮窗同样接受。一键浏览器扩展更晚，先做 Chrome。规格见 [docs/product.md](docs/product.md)「收纳」。2026-10-13 决定，排在 v0.2.0 之后，收纳里还没有代码。技术验证「网址拖放」已通过：锁图标和页面链接，Chrome 与 Edge。`text/uri-list` 没有出现 |
+| 🔗 **收纳网页引用** | 收纳可以保存网址、标题和网站图标，只存引用，不关闭、不移动浏览器标签。打开后用默认浏览器重新打开。同一网址只保留一条，并出现在搜索结果里。第一版接受拖入的地址栏锁图标或页面链接。接受的格式是 `CF_HTML`、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW`、`text/x-moz-url`。标题取 `FileGroupDescriptorW` 文件名去掉末尾 `.url`；页面链接的标题是链接文字。悬浮窗同样接受。一键浏览器扩展更晚，先做 Chrome。规格见 [docs/product.md](docs/product.md)「收纳」。2026-10-13 决定，排在 v0.2.0 之后。有代码，未在 Windows 上验收。技术验证「网址拖放」已通过：锁图标和页面链接，Chrome 与 Edge。`text/uri-list` 没有出现。浏览器扩展还没有代码 |
 
 不做的事：「今日」聚合页、GitHub PR/Issue 追踪、由搜索词自动创建待办、云同步、文件内容搜索。完整清单见 [产品规格](docs/product.md)「明确不做」。
 

@@ -19,6 +19,7 @@ use lanwork_core::files::{
 };
 use lanwork_core::notes::{EMPTY_TITLE_DISPLAY, NoteCommands, NoteInput};
 use lanwork_core::search::{HitKind, WebSearchEngine};
+use lanwork_core::shelves::{IncomingWeb, ShelfCommands};
 use lanwork_core::storage::{DocumentId, Store, StorePaths};
 use lanwork_core::todos::{NewTodo, TodoCommands};
 
@@ -153,7 +154,11 @@ fn booted(store: &Store) -> Services {
     let todos = TodoCommands::open(store.clone());
     todos.boot().unwrap();
     let notes = NoteCommands::open(store.clone()).unwrap();
-    Services { todos, notes }
+    Services {
+        todos,
+        notes,
+        shelves: None,
+    }
 }
 
 fn dispatch<A, F, I>(
@@ -192,6 +197,7 @@ where
     let kept = Services {
         todos: services.todos.clone(),
         notes: services.notes.clone(),
+        shelves: None,
     };
     let (dispatch, now) = dispatch(store, services, apps, files, MissingIcons);
     dispatch.build().unwrap();
@@ -293,7 +299,11 @@ fn index_is_refused_before_boot() {
     let notes = NoteCommands::open(store.clone()).unwrap();
     let (dispatch, _) = dispatch(
         store,
-        Services { todos, notes },
+        Services {
+            todos,
+            notes,
+            shelves: None,
+        },
         NoApps,
         ScriptFiles {
             calls: Arc::new(Mutex::new(Vec::new())),
@@ -1184,6 +1194,74 @@ fn hiding_an_app_is_written_and_a_failed_write_rolls_memory_back() {
         "恢复写盘失败时这一项仍在名单里"
     );
     assert!(dispatch.hide_app("").is_err());
+}
+
+#[test]
+fn shelf_web_refs_appear_after_notes_and_before_files() {
+    let (_temp, store) = open_store();
+    let services = booted(&store);
+    services
+        .notes
+        .create(&NoteInput {
+            title: "cursor 笔记".to_owned(),
+            body: String::new(),
+            tags: Vec::new(),
+            pinned: false,
+        })
+        .unwrap();
+    let shelves = ShelfCommands::open(store.clone()).unwrap();
+    shelves
+        .add_web_refs(
+            None,
+            &[IncomingWeb {
+                url: "https://example.com/cursor-only".to_owned(),
+                title: "Cursor Status".to_owned(),
+            }],
+        )
+        .unwrap();
+    let (files, _) = script(file_result(
+        FileSource::Everything,
+        vec![file_hit("cursor.txt", FileKind::File)],
+    ));
+    let (dispatch, now) = dispatch(
+        store,
+        Services {
+            todos: services.todos,
+            notes: services.notes,
+            shelves: Some(shelves),
+        },
+        NoApps,
+        files,
+        MissingIcons,
+    );
+    dispatch.build().unwrap();
+    let view = dispatch.submit(Surface::SearchBar, "cursor").unwrap();
+    assert_eq!(groups(&view), vec![SearchGroup::Note, SearchGroup::Web]);
+    let web = results(&view)
+        .find(|row| row.group == SearchGroup::Web)
+        .unwrap();
+    assert_eq!(web.label, "Cursor Status");
+    assert_eq!(web.location, "https://example.com/cursor-only");
+    assert!(matches!(
+        &web.detail,
+        RowDetail::Web { url } if url == "https://example.com/cursor-only"
+    ));
+    assert_eq!(
+        web.usage,
+        UsageKey::Web("https://example.com/cursor-only".to_owned())
+    );
+
+    now.store(FILE_QUERY_DELAY_MS * 1_000_000, Ordering::SeqCst);
+    let merged = dispatch.poll().unwrap();
+    assert_eq!(
+        groups(&merged.view),
+        vec![SearchGroup::Note, SearchGroup::Web, SearchGroup::File]
+    );
+
+    let by_url = dispatch.submit(Surface::Panel, "cursor-only").unwrap();
+    assert_eq!(groups(&by_url), vec![SearchGroup::Web]);
+    dispatch.record_open(&web.usage);
+    assert_eq!(dispatch.usage_count(&web.usage), 1);
 }
 
 fn write_todo(store: &Store, id: &str, body: &str) {
