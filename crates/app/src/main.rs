@@ -20,6 +20,9 @@ mod bar_win;
 #[cfg(windows)]
 mod float_dock;
 #[cfg(windows)]
+mod float_frame;
+mod frame_policy;
+#[cfg(windows)]
 mod host;
 #[cfg(windows)]
 mod hotcorner;
