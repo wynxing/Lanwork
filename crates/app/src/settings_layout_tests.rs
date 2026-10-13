@@ -101,6 +101,26 @@ fn each_control_asks_for_its_own_change_and_does_not_flip_by_itself() {
 }
 
 #[test]
+fn the_update_button_asks_to_check_without_moving_the_rows_above() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    let clicks = Rc::new(Cell::new(0));
+    {
+        let clicks = Rc::clone(&clicks);
+        data.on_update_clicked(move || clicks.set(clicks.get() + 1));
+    }
+    assert_eq!(data.get_update_button().as_str(), "检查更新");
+    // 标题 48 + 分隔线 1 + 上边距 8 + 三行 144 + 按钮 y 52 + 半高 15。
+    // 隐藏的应用在这个固定高度的更新块下面，不改变按钮位置。
+    let y = TITLE + 1.0 + PAD_TOP + ROW * 3.0 + 52.0 + 15.0;
+    click(&ui, CONTROL_X + 16.0, y);
+    assert_eq!(clicks.get(), 1, "检查更新按钮能点到");
+    data.set_update_enabled(false);
+    click(&ui, CONTROL_X + 16.0, y);
+    assert_eq!(clicks.get(), 1, "检查进行中不再发出请求");
+}
+
+#[test]
 fn restore_asks_for_the_hidden_app_under_the_pointer() {
     let (ui, _window) = open(false);
     let data = ui.global::<SettingsPageData>();
@@ -113,8 +133,8 @@ fn restore_asks_for_the_hidden_app_under_the_pointer() {
         let restored = Rc::clone(&restored);
         data.on_restore_hidden(move |index| restored.borrow_mut().push(index));
     }
-    // 三行设置、节标题，然后第一条隐藏项右侧的「恢复」。
-    let y = TITLE + 1.0 + PAD_TOP + ROW * 3.0 + 40.0 + 22.0;
+    // 三行、说明收起时的更新块 88、节标题 40，然后第一条右侧的「恢复」。
+    let y = TITLE + 1.0 + PAD_TOP + ROW * 3.0 + 88.0 + 40.0 + 22.0;
     click(&ui, WIDTH as f32 - 24.0 - 16.0, y);
     assert_eq!(*restored.borrow(), [0]);
 }

@@ -43,6 +43,7 @@ jobs:
           files: |
             packaging/out/Lanwork-Setup-*.exe
             packaging/out/*portable*.zip
+            packaging/out/latest.json
           draft: false
           prerelease: false
           make_latest: true

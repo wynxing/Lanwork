@@ -33,6 +33,8 @@ ArchitecturesInstallIn64BitMode=x64os
 ; 6.1 是 Inno Setup 6.7.3 的编译器下限，不是产品最低版本。
 MinVersion=6.1
 AppMutex=Local\Lanwork.SingleInstance.Mutex
+; 应用内更新在进程退出后使用 /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS。
+; 不传 /DIR，不删除用户数据。静默安装发现互斥量还在就退出，所以要等进程结束再启动。
 CloseApplications=yes
 CloseApplicationsFilter=lanwork.exe
 RestartApplications=no

@@ -4,7 +4,7 @@
 //! 面板在 `panel`，设置页在 `settings_page`，搜索条在 `searchbar`，热角轮询在 `hotcorner`。
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,7 +18,7 @@ use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::PanelTab;
 use lanwork_core::shell::{
     HotkeyRole, QuitDecision, QuitGate, ShellCommand, SystemLight, TRAY_ICON_PX, quit_decision,
-    resolve_theme, resume_quit_later, tray_icon_rgba,
+    resolve_theme, resume_quit_later, tray_icon_marked,
 };
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::{
@@ -199,6 +199,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     if let Err(err) = crate::hotcorner::start(config.current().hot_corner, Some(store.clone())) {
         store.log_warn(&format!("热角轮询没有启动：{err}"));
     }
+    crate::update::start(store.clone());
 
     // 搜索条收起时所有窗口都隐藏，事件循环不能因此结束。
     let run = slint::run_event_loop_until_quit().map_err(|err| err.to_string());
@@ -392,11 +393,27 @@ fn refresh_badge(tray: &Tray, todos: &TodoCommands, store: &Store) {
             0
         }
     };
-    tray.set_badge_icon(tray_image(overdue));
+    OVERDUE.store(overdue, Ordering::Release);
+    paint_tray(tray);
 }
 
-fn tray_image(overdue: u32) -> slint::Image {
-    let rgba = tray_icon_rgba(overdue);
+/// 有新版本时在托盘图标右上角加一个小点。逾期徽章仍在右下角。
+pub(crate) fn set_update_dot(on: bool) {
+    UPDATE_DOT.store(on, Ordering::Release);
+    let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
+    if let Some(tray) = tray {
+        paint_tray(&tray);
+    }
+}
+
+fn paint_tray(tray: &Tray) {
+    let overdue = OVERDUE.load(Ordering::Acquire);
+    let update = UPDATE_DOT.load(Ordering::Acquire);
+    tray.set_badge_icon(tray_image(overdue, update));
+}
+
+fn tray_image(overdue: u32, update: bool) -> slint::Image {
+    let rgba = tray_icon_marked(overdue, update);
     let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(TRAY_ICON_PX, TRAY_ICON_PX);
     for (pixel, chunk) in buffer
         .make_mut_slice()
@@ -445,10 +462,13 @@ thread_local! {
 }
 
 static QUIT: QuitGate = QuitGate::new();
+static OVERDUE: AtomicU32 = AtomicU32::new(0);
+static UPDATE_DOT: AtomicBool = AtomicBool::new(false);
 
 /// 先保存便签窗口里没写盘的修改。都写成了才结束进程；有写不成的，留下，等用户在那个窗口里
 /// 重试、放弃修改或选定冲突版本，之后由 [`continue_quit`] 接着退出。
-fn request_quit() {
+/// 已经核对过的安装包会在真正退出前交给助手。
+pub(crate) fn request_quit() {
     QUIT.request();
     attempt_quit();
 }
@@ -466,8 +486,13 @@ fn attempt_quit() {
     let unsaved = panel::flush_notes_for_quit() + note_float::flush_for_quit();
     match quit_decision(unsaved) {
         QuitDecision::Exit => {
-            QUIT.clear();
             shelf_float::save_for_quit();
+            if crate::update::spawn_pending_install().is_err() {
+                QUIT.clear();
+                crate::update::install_spawn_failed();
+                return;
+            }
+            QUIT.clear();
             let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
             if let Some(tray) = tray {
                 let _ = tray.hide();

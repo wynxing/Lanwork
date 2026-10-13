@@ -59,6 +59,10 @@ mod shelf_refs;
 #[cfg(windows)]
 mod shelves_page;
 #[cfg(windows)]
+mod update;
+#[cfg(windows)]
+mod update_http;
+#[cfg(windows)]
 mod winutil;
 
 fn main() {
