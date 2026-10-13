@@ -58,6 +58,11 @@ pub(crate) fn hwnd_of(window: &slint::Window) -> Option<HWND> {
 
 /// 光标所在显示器的工作区和有效 DPI。
 pub(crate) fn cursor_monitor() -> Option<(WorkArea, u32)> {
+    cursor_reading().map(|reading| (reading.work, reading.dpi))
+}
+
+/// 光标所在显示器。`bounds` 是 `rcMonitor`，`work` 是 `rcWork`。
+pub(crate) fn cursor_reading() -> Option<MonitorReading> {
     let mut point = POINT::default();
     // SAFETY: 输出指针指向本函数的局部变量。
     unsafe { GetCursorPos(&mut point) }.ok()?;
@@ -82,16 +87,11 @@ pub(crate) fn cursor_monitor() -> Option<(WorkArea, u32)> {
         Ok(()) if dpi_x > 0 => dpi_x,
         _ => lanwork_core::shell::BASE_DPI,
     };
-    let work = info.rcWork;
-    Some((
-        WorkArea {
-            left: work.left,
-            top: work.top,
-            right: work.right,
-            bottom: work.bottom,
-        },
+    Some(MonitorReading {
+        bounds: area_of(info.rcMonitor),
+        work: area_of(info.rcWork),
         dpi,
-    ))
+    })
 }
 
 /// 一块显示器的读数。`bounds` 是 `rcMonitor`，`work` 是 `rcWork`，物理像素。

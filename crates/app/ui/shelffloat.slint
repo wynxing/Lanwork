@@ -13,8 +13,8 @@ export component ShelfFloat inherits Window {
     default-font-size: 14px;
     preferred-width: 320px;
     preferred-height: 360px;
-    min-width: thin ? 1px : 200px;
-    min-height: thin ? 1px : 120px;
+    min-width: thin ? 1px : min(200px, limit-width);
+    min-height: thin ? 1px : min(200px, limit-height);
     in property <length> limit-width: 100000px;
     in property <length> limit-height: 100000px;
     max-width: thin ? 100000px : limit-width;

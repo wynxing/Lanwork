@@ -120,9 +120,10 @@ pub fn float_default_origin(
     )
 }
 
-/// 一块显示器的工作区，物理像素，以及这块屏的有效 DPI。
+/// 一块显示器。`bounds` 是 `rcMonitor`（含任务栏），`area` 是 `rcWork`。物理像素，以及这块屏的有效 DPI。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MonitorWork {
+    pub bounds: WorkArea,
     pub area: WorkArea,
     pub dpi: u32,
 }
@@ -157,8 +158,9 @@ pub fn restore_float(
 
 /// 不贴边的悬浮窗整扇留在工作区里。产品规格「便签」的「工作区」。
 ///
-/// 取与窗口重叠面积最大的工作区；都不重叠时用 `fallback`（光标所在显示器）。
-/// 最小尺寸是 `min_logical`，按选中这块屏的有效 DPI 换成物理像素。
+/// 先按与 `rcMonitor` 的重叠面积选屏，不按工作区。只落在任务栏那一条里也算这一块。
+/// 都不重叠时用 `fallback`（光标所在显示器）。然后收进选中这块的 `rcWork`，缩放用这块的 DPI。
+/// 最小尺寸是 `min_logical`，按这块屏的有效 DPI 换成物理像素。
 /// 大小先收到不超过这块工作区；工作区比最小尺寸还小时缩到工作区那么大。再把位置拉回。
 /// 已经记下的宽高仍是物理像素，这里不按 DPI 重算它们，只在小于最小尺寸时放大。
 #[must_use]
@@ -275,7 +277,7 @@ fn chosen_monitor(
     monitors
         .iter()
         .copied()
-        .map(|monitor| (overlap(x, y, width, height, monitor.area), monitor))
+        .map(|monitor| (overlap(x, y, width, height, monitor.bounds), monitor))
         .filter(|(shared, _)| *shared > 0)
         .max_by_key(|(shared, _)| *shared)
         .map_or(fallback, |(_, monitor)| monitor)
@@ -500,8 +502,18 @@ mod tests {
     }
 
     fn monitor(left: i32, top: i32, right: i32, bottom: i32, dpi: u32) -> MonitorWork {
+        let bounds = area(left, top, right, bottom);
         MonitorWork {
-            area: area(left, top, right, bottom),
+            bounds,
+            area: bounds,
+            dpi,
+        }
+    }
+
+    fn monitor_split(bounds: WorkArea, work: WorkArea, dpi: u32) -> MonitorWork {
+        MonitorWork {
+            bounds,
+            area: work,
             dpi,
         }
     }
@@ -630,6 +642,7 @@ mod tests {
         let work = area(0, 0, 500, 400);
         let origin = float_default_origin(work, 400, 300, 96, 7);
         let primary = MonitorWork {
+            bounds: work,
             area: work,
             dpi: 96,
         };
@@ -744,5 +757,42 @@ mod tests {
             adjusted: true,
         };
         inside(&placed, primary.area);
+    }
+
+    #[test]
+    fn a_window_over_the_taskbar_stays_on_that_monitor_when_work_areas_disagree() {
+        // A 的工作区少了底边 40px。窗口跨过两块屏，和工作区比，B 重叠更大；和整块屏比，A 更大。
+        let left = monitor_split(area(0, 0, 1920, 1080), area(0, 0, 1920, 1040), 96);
+        let right = monitor(1920, 0, 3840, 1080, 96);
+        let placed = contain_float(
+            geometry(1750, 900, 320, 360),
+            &[left, right],
+            right,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(placed.size, (320, 360));
+        assert_eq!(placed.origin, (1600, 680));
+        inside(&placed, left.area);
+        assert!(placed.origin.0 + 320 <= 1920, "不应被拉到右边那块屏");
+    }
+
+    #[test]
+    fn a_rect_that_only_covers_the_taskbar_stays_on_that_monitor() {
+        let left = monitor_split(area(0, 0, 1920, 1080), area(0, 0, 1920, 1040), 144);
+        let cursor = monitor(1920, 0, 3840, 1080, 96);
+        let placed = contain_float(
+            geometry(100, 1050, 50, 20),
+            &[left, cursor],
+            cursor,
+            (FLOAT_MIN_WIDTH, FLOAT_MIN_HEIGHT),
+        );
+        assert_eq!(
+            placed.size,
+            (300, 180),
+            "用这块屏的 144 DPI，不用光标所在屏的 96"
+        );
+        assert_eq!(placed.origin, (100, 1040 - 180));
+        inside(&placed, left.area);
+        assert!(placed.origin.0 < 1920);
     }
 }

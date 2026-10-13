@@ -344,6 +344,7 @@ fn work_monitors() -> Vec<MonitorWork> {
     bar_win::monitors()
         .into_iter()
         .map(|reading| MonitorWork {
+            bounds: reading.bounds,
             area: reading.work,
             dpi: reading.dpi,
         })
@@ -351,16 +352,24 @@ fn work_monitors() -> Vec<MonitorWork> {
 }
 
 fn fallback_work() -> MonitorWork {
-    let (area, dpi) = bar_win::cursor_monitor().unwrap_or((
-        WorkArea {
-            left: 0,
-            top: 0,
-            right: 1920,
-            bottom: 1080,
+    let desktop = WorkArea {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1080,
+    };
+    bar_win::cursor_reading().map_or(
+        MonitorWork {
+            bounds: desktop,
+            area: desktop,
+            dpi: lanwork_core::shell::BASE_DPI,
         },
-        lanwork_core::shell::BASE_DPI,
-    ));
-    MonitorWork { area, dpi }
+        |reading| MonitorWork {
+            bounds: reading.bounds,
+            area: reading.work,
+            dpi: reading.dpi,
+        },
+    )
 }
 
 #[allow(clippy::cast_precision_loss)]
