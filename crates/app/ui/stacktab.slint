@@ -1,5 +1,5 @@
-// 叠页的页码圆圈。单独一个小窗，挂在悬浮窗原来的边框外面、与窗口左边缘对齐，不占内容区。
-// 拖某一个圆圈把那一页拆出去。点一下换到那一页。
+// 叠页的彩色圆点。单独一个小窗，挂在悬浮窗原来的边框外面、与窗口左边缘对齐，不占内容区。
+// 拖某一个圆点把那一页拆出去。点一下换到那一页。
 // 直径、间隔和行高与 `DOT_DIAMETER_LOGICAL`、`DOT_GAP_LOGICAL`、`DOT_ROW_LOGICAL_HEIGHT` 一致。
 
 import { Palette } from "std-widgets.slint";
@@ -8,24 +8,22 @@ export component StackTab inherits Window {
     title: "Lanwork";
     no-frame: true;
     always-on-top: true;
-    default-font-family: "Microsoft YaHei UI";
 
     in property <bool> dark;
     in property <int> pages: 1;
     in property <int> current: 0;
 
-    // 按下某个圆圈。拖动和单击的区分在外壳：没挪开就换到这一页。
+    // 按下某个圆点。拖动和单击的区分在外壳：没挪开就换到这一页。
     callback drag-dot(int);
 
     background: transparent;
 
-    // 20 逻辑像素，落在要求的 18–22 里。间隔 4。行高等于直径，圆圈上沿贴着窗口下沿。
-    property <length> diameter: 20px;
+    // 16 逻辑像素，落在 14–18 里。间隔 4。行高等于直径，圆点上沿贴着窗口下沿。
+    property <length> diameter: 16px;
     property <length> gap: 4px;
-    property <color> accent: dark ? #60cdff : #005fb8;
-    property <color> on-accent: dark ? #1b1b1b : #ffffff;
-    // 次要灰，细描边，不另铺底。
-    property <color> quiet: dark ? #9a9a9a : #767676;
+    // 其余页更透。悬停只提到 0.72，不到当前页那么实。
+    property <float> rest-opacity: 0.42;
+    property <float> hover-opacity: 0.72;
 
     preferred-width: max(root.pages, 1) * diameter + max(root.pages - 1, 0) * gap;
     preferred-height: diameter;
@@ -47,27 +45,21 @@ export component StackTab inherits Window {
         height: root.diameter;
         background: transparent;
 
-        Rectangle {
-            width: 100%;
-            height: 100%;
-            border-radius: root.diameter / 2;
-            border-width: mark == root.current ? 0px : 1px;
-            border-color: root.quiet;
-            background: mark == root.current ? root.accent : transparent;
-            clip: true;
+        // 红黄绿之后续蓝、紫、橙、粉、青，满八种再循环。
+        // `/` 在 Slint 里是浮点除法，(mark / 8) * 8 会回到 mark 本身，所以用 mod。
+        property <int> hue: round(mod(mark, 8));
+        property <bool> here: mark == root.current;
+        property <color> tone:
+            hue == 0 ? #ff5f57 :
+            hue == 1 ? #febc2e :
+            hue == 2 ? #28c840 :
+            hue == 3 ? #5ac8fa :
+            hue == 4 ? #bf5af2 :
+            hue == 5 ? #ff9f0a :
+            hue == 6 ? #ff6b9d :
+            #2eb8c8;
 
-            Text {
-                width: 100%;
-                height: 100%;
-                text: "" + (mark + 1);
-                font-size: 11px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                color: mark == root.current ? root.on-accent : root.quiet;
-            }
-        }
-
-        TouchArea {
+        touch := TouchArea {
             width: 100%;
             height: 100%;
             accessible-role: button;
@@ -76,6 +68,16 @@ export component StackTab inherits Window {
                 if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                     root.drag-dot(mark);
                 }
+            }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: root.diameter / 2;
+                background: tone;
+                border-width: here ? 1.5px : 0px;
+                border-color: touch.has-hover ? #ffffff : #ffffffb3;
+                opacity: here ? 1.0 : (touch.has-hover ? root.hover-opacity : root.rest-opacity);
             }
         }
     }

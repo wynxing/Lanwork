@@ -526,10 +526,43 @@ fn row_span(pages: u32) -> u32 {
     DOT_DIAMETER_LOGICAL * pages + DOT_GAP_LOGICAL * pages.saturating_sub(1)
 }
 
-fn is_accent(pixel: u16) -> bool {
-    let red = i32::from((pixel >> 11) & 0x1f);
-    let blue = i32::from(pixel & 0x1f);
-    blue >= 16 && blue >= red + 8
+struct Rgb {
+    r: i32,
+    g: i32,
+    b: i32,
+}
+
+fn rgb(pixel: u16) -> Rgb {
+    Rgb {
+        r: i32::from((pixel >> 11) & 0x1f),
+        g: i32::from((pixel >> 5) & 0x3f),
+        b: i32::from(pixel & 0x1f),
+    }
+}
+
+fn describe(pixel: u16) -> String {
+    let color = rgb(pixel);
+    format!("r{} g{} b{}", color.r, color.g, color.b)
+}
+
+fn is_red(pixel: u16) -> bool {
+    let color = rgb(pixel);
+    color.r >= 8 && color.r > color.b + 4 && color.r * 2 > color.g
+}
+
+fn is_yellow(pixel: u16) -> bool {
+    let color = rgb(pixel);
+    color.r >= 8 && color.g >= 12 && color.b + 6 < color.r && color.g > color.b * 2
+}
+
+fn is_green(pixel: u16) -> bool {
+    let color = rgb(pixel);
+    color.g >= 12 && color.g > color.r * 2 && color.g > color.b * 2
+}
+
+fn is_light_ring(pixel: u16) -> bool {
+    let color = rgb(pixel);
+    color.r >= 24 && color.g >= 40 && color.b >= 16
 }
 
 fn pixels_in(pixels: &[u16], width: u32, x0: u32, x1: u32) -> impl Iterator<Item = u16> + '_ {
@@ -542,30 +575,6 @@ fn pixels_in(pixels: &[u16], width: u32, x0: u32, x1: u32) -> impl Iterator<Item
     })
 }
 
-fn accent_count(pixels: &[u16], width: u32, x0: u32, x1: u32) -> u32 {
-    pixels_in(pixels, width, x0, x1)
-        .filter(|pixel| is_accent(*pixel))
-        .count()
-        .try_into()
-        .unwrap_or(u32::MAX)
-}
-
-fn digit_count(pixels: &[u16], width: u32, origin_x: u32) -> u32 {
-    let mut count = 0u32;
-    for y in 6u32..14 {
-        for x in (origin_x + 6)..(origin_x + 14) {
-            let index = usize::try_from(y.saturating_mul(width).saturating_add(x)).unwrap_or(0);
-            if pixels
-                .get(index)
-                .is_some_and(|pixel| *pixel != 0 && !is_accent(*pixel))
-            {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
 fn ink_count(pixels: &[u16], width: u32, x0: u32, x1: u32) -> u32 {
     pixels_in(pixels, width, x0, x1)
         .filter(|pixel| *pixel != 0)
@@ -574,32 +583,29 @@ fn ink_count(pixels: &[u16], width: u32, x0: u32, x1: u32) -> u32 {
         .unwrap_or(u32::MAX)
 }
 
-fn leftmost_ink(pixels: &[u16], width: u32, x0: u32, x1: u32) -> Option<u32> {
-    let height = u32::try_from(pixels.len()).unwrap_or(0) / width.max(1);
-    let mut found = None;
-    for y in 0..height {
-        for x in x0..x1 {
-            let index = usize::try_from(y.saturating_mul(width).saturating_add(x)).ok()?;
-            if pixels.get(index).is_some_and(|pixel| *pixel != 0) {
-                found = Some(found.map_or(x, |current: u32| current.min(x)));
-            }
-        }
-    }
-    found
+fn dot_center(pixels: &[u16], width: u32, origin: u32) -> u16 {
+    let mid = DOT_DIAMETER_LOGICAL / 2;
+    let index = usize::try_from(
+        mid.saturating_mul(width)
+            .saturating_add(origin)
+            .saturating_add(mid),
+    )
+    .unwrap_or(0);
+    pixels.get(index).copied().unwrap_or(0)
 }
 
 #[test]
-fn page_circles_are_numbered_left_aligned_and_the_current_one_is_filled() {
+fn page_dots_are_soft_colors_left_aligned_and_the_current_one_is_solid() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
-    let wide = 200u32;
+    let wide = 220u32;
     window.set_size(slint::PhysicalSize::new(wide, DOT_DIAMETER_LOGICAL));
 
     let ui = StackTab::new().expect("stack tab");
     ui.window()
         .set_size(slint::PhysicalSize::new(wide, DOT_DIAMETER_LOGICAL));
     ui.set_dark(false);
-    ui.set_pages(3);
+    ui.set_pages(5);
     ui.set_current(0);
     ui.show().expect("show");
     slint::platform::update_timers_and_animations();
@@ -612,50 +618,75 @@ fn page_circles_are_numbered_left_aligned_and_the_current_one_is_filled() {
     let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
     let first = circle_origin(0);
     let second = circle_origin(1);
-    let end = row_span(3);
-    assert_eq!(end, 68, "三页一行是 20×3 + 4×2");
+    let third = circle_origin(2);
+    let end = row_span(5);
+    assert_eq!(DOT_DIAMETER_LOGICAL, 16);
+    assert_eq!(end, 16 * 5 + 4 * 4, "五页一行是 16×5 + 4×4");
     assert!(
         ink_count(&pixels, wide, 0, 4) > 0,
-        "第一个圆圈贴着这一行的左边缘"
+        "第一个圆点贴着这一行的左边缘"
     );
     assert_eq!(
         ink_count(&pixels, wide, end, wide),
         0,
-        "圆圈靠左排，右侧留空，不在窗口里居中"
+        "圆点靠左排，右侧留空"
     );
     assert_eq!(
         ink_count(&pixels, wide, DOT_DIAMETER_LOGICAL, second),
         0,
-        "圆圈之间有一段空白间隔"
+        "圆点之间有一段空白间隔"
+    );
+
+    let red = dot_center(&pixels, wide, first);
+    let yellow = dot_center(&pixels, wide, second);
+    let green = dot_center(&pixels, wide, third);
+    assert!(is_red(red), "第 1 页是红，实际 {}", describe(red));
+    assert!(is_yellow(yellow), "第 2 页是黄，实际 {}", describe(yellow));
+    assert!(is_green(green), "第 3 页是绿，实际 {}", describe(green));
+    assert!(
+        luminance(red) > luminance(yellow) && luminance(red) > luminance(green),
+        "当前页比其余页更实"
     );
     assert!(
-        accent_count(&pixels, wide, first, DOT_DIAMETER_LOGICAL) > 30,
-        "当前页是填实的主题色"
+        pixels_in(&pixels, wide, first, first + DOT_DIAMETER_LOGICAL).any(is_light_ring),
+        "当前页边上有浅色细光圈"
     );
     assert!(
-        digit_count(&pixels, wide, first) > 0,
-        "当前页圆圈里有反色页码"
-    );
-    assert!(digit_count(&pixels, wide, second) > 0, "其余页圆圈里有页码");
-    assert_eq!(
-        accent_count(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL),
-        0,
-        "其余页不用主题色填充"
-    );
-    let quiet = leftmost_ink(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL);
-    assert!(
-        quiet.is_some_and(|x| x < second + 3),
-        "其余页的细描边贴着圆圈外沿，实际左缘 {quiet:?}"
+        !pixels_in(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL).any(is_light_ring),
+        "其余页没有光圈"
     );
 
     let center_y = logical(DOT_DIAMETER_LOGICAL) / 2.0;
-    for index in 0..3 {
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(logical(second + DOT_DIAMETER_LOGICAL / 2), center_y),
+    });
+    slint::platform::update_timers_and_animations();
+    let hovered = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
+    let yellow_hot = dot_center(&hovered, wide, second);
+    assert!(
+        luminance(yellow_hot) > luminance(yellow),
+        "悬停后其余页更亮：{} -> {}",
+        describe(yellow),
+        describe(yellow_hot)
+    );
+    assert!(
+        luminance(yellow_hot) < luminance(red),
+        "悬停后的其余页仍比当前页更透"
+    );
+
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(-20.0, -20.0),
+    });
+    slint::platform::update_timers_and_animations();
+
+    for index in 0..5 {
         let x = logical(circle_origin(index) + DOT_DIAMETER_LOGICAL / 2);
         click(&ui, x, center_y);
         assert_eq!(
             hit.get(),
             i32::try_from(index).unwrap(),
-            "点第 {index} 个圆圈"
+            "点第 {} 个圆点",
+            index + 1
         );
     }
     click(
@@ -663,42 +694,39 @@ fn page_circles_are_numbered_left_aligned_and_the_current_one_is_filled() {
         logical(DOT_DIAMETER_LOGICAL + DOT_GAP_LOGICAL / 2),
         center_y,
     );
-    assert_eq!(hit.get(), 2, "点在圆圈之间的间隔上不换页");
+    assert_eq!(hit.get(), 4, "点在圆点之间的间隔上不换页");
 
     ui.set_current(1);
     slint::platform::update_timers_and_animations();
     let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
-    assert!(accent_count(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL) > 30);
-    assert_eq!(accent_count(&pixels, wide, first, DOT_DIAMETER_LOGICAL), 0);
+    let red = dot_center(&pixels, wide, first);
+    let yellow = dot_center(&pixels, wide, second);
+    assert!(is_yellow(yellow), "当前页换成黄，实际 {}", describe(yellow));
+    assert!(luminance(yellow) > luminance(red), "黄比退下去的红更实");
 
     ui.set_dark(true);
     slint::platform::update_timers_and_animations();
     let pixels = render_pixels(&window, (wide, DOT_DIAMETER_LOGICAL));
     assert!(
-        accent_count(&pixels, wide, second, second + DOT_DIAMETER_LOGICAL) > 30,
-        "暗色主题的当前页仍是主题色"
-    );
-    assert_eq!(
-        accent_count(&pixels, wide, first, DOT_DIAMETER_LOGICAL),
-        0,
-        "暗色主题的其余页仍是细描边"
+        is_yellow(dot_center(&pixels, wide, second)),
+        "暗色主题仍用同一套圆点颜色"
     );
 
-    let many = 12u32;
+    let many = 9u32;
     let span = row_span(many);
     window.set_size(slint::PhysicalSize::new(span, DOT_DIAMETER_LOGICAL));
     ui.window()
         .set_size(slint::PhysicalSize::new(span, DOT_DIAMETER_LOGICAL));
     ui.set_pages(i32::try_from(many).unwrap());
-    ui.set_current(i32::try_from(many - 1).unwrap());
+    ui.set_current(0);
     slint::platform::update_timers_and_animations();
     let pixels = render_pixels(&window, (span, DOT_DIAMETER_LOGICAL));
-    let last = circle_origin(many - 1);
-    assert!(
-        accent_count(&pixels, span, last, last + DOT_DIAMETER_LOGICAL) > 30,
-        "两位数页码的当前页仍填满圆圈"
+    let again = dot_center(&pixels, span, circle_origin(8));
+    assert!(is_red(again), "第 9 页回到红，实际 {}", describe(again));
+    click(
+        &ui,
+        logical(circle_origin(8) + DOT_DIAMETER_LOGICAL / 2),
+        center_y,
     );
-    assert!(digit_count(&pixels, span, last) > 0, "两位数页码画在圆圈里");
-    click(&ui, logical(last + DOT_DIAMETER_LOGICAL / 2), center_y);
-    assert_eq!(hit.get(), i32::try_from(many - 1).unwrap(), "点第 12 页");
+    assert_eq!(hit.get(), 8, "点第 9 页");
 }

@@ -4,8 +4,8 @@
 //! 把某一个页点拖出去就拆出那一页；点一个页点换到那一页；整叠一起贴边；
 //! 两条已经收起的把手在同一条屏幕边上靠近时合成一叠；成员、当前页和贴边要能记下。
 //! 一半按哪一边的面积算、合成后用谁的位置、页序、当前页、到头是否循环、多近算靠近，规格没有写。
-//! 页码圆圈的直径、间距、行高、靠左和深浅色已经写进产品规格。
-//! 圆圈最多画几个、下方放不下时改挂到上方，规格没有写成唯一做法。
+//! 彩色圆点的直径、间距、行高、靠左、颜色和透明度已经写进产品规格。
+//! 圆点最多画几个、下方放不下时改挂到上方，规格没有写成唯一做法。
 //! 下面这些仍是当前做法，不是产品规则，待定。
 
 use crate::notes::{DockEdge, FloatDock, FloatGeometry, FloatStackSlot};
@@ -18,11 +18,11 @@ use super::float_snap::{PxBox, ScreenBounds};
 /// 两条收起的把手沿边离这么多逻辑像素以内就合成一叠。不是产品规格。
 pub const DOCK_MERGE_GAP_LOGICAL: u32 = 48;
 
-/// 页码圆圈的直径，逻辑像素。产品规格。96 DPI 下是 20 物理像素。
-pub const DOT_DIAMETER_LOGICAL: u32 = 20;
-/// 相邻页码圆圈的间隔，逻辑像素。产品规格。96 DPI 下是 4 物理像素。
+/// 彩色圆点的直径，逻辑像素。产品规格。96 DPI 下是 16 物理像素。
+pub const DOT_DIAMETER_LOGICAL: u32 = 16;
+/// 相邻彩色圆点的间隔，逻辑像素。产品规格。96 DPI 下是 4 物理像素。
 pub const DOT_GAP_LOGICAL: u32 = 4;
-/// 页码圆圈那一行窗口的逻辑高度。与直径相同，圆圈上沿贴着内容框下沿。
+/// 彩色圆点那一行窗口的逻辑高度。与直径相同，圆点上沿贴着内容框下沿。
 pub const DOT_ROW_LOGICAL_HEIGHT: u32 = DOT_DIAMETER_LOGICAL;
 
 /// 把手上最多画这么多个点。再多的页数仍只画这些点。待定。
@@ -570,9 +570,9 @@ pub fn slots_for(stack: &PageStack) -> Vec<(StackPage, FloatStackSlot)> {
         .collect()
 }
 
-/// 页码圆圈那一行的物理宽高。一页不占地方，调用方在少于两页时不要显示。
-/// 宽度是直径乘个数，再加间隔乘（个数 − 1）。第一个圆圈的左沿就是这一行的左沿。
-/// 超过 [`HANDLE_DOT_CAP`] 时只按那么多个圆圈算。
+/// 彩色圆点那一行的物理宽高。一页不占地方，调用方在少于两页时不要显示。
+/// 宽度是直径乘个数，再加间隔乘（个数 − 1）。第一个圆点的左沿就是这一行的左沿。
+/// 超过 [`HANDLE_DOT_CAP`] 时只按那么多个圆点算。
 #[must_use]
 pub fn dot_row_size(pages: usize, dpi: u32) -> (u32, u32) {
     let count = handle_dot_count(pages).max(1);
@@ -1187,6 +1187,7 @@ mod tests {
             "三个直径加两段间隔"
         );
         assert_eq!(height, DOT_ROW_LOGICAL_HEIGHT);
+        assert_eq!(DOT_DIAMETER_LOGICAL, 16, "直径落在 14–18 逻辑像素里");
         assert_eq!(height, DOT_DIAMETER_LOGICAL);
         let below = place_dots(frame, width, height, Some(0), Some(1080));
         assert_eq!(below.x, frame.x, "与窗口左边缘对齐");
