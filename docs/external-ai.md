@@ -112,7 +112,7 @@
 | `updatedAt` | 只读 |
 | `deletedAt` | 只读。不在回收站则没有 |
 
-这些工具不读写 `floatWindow`、`floatDock`、`floatStack`。悬浮位置仍只由界面记录。成功写入不另加外部来源标记。
+这些工具不读写 `floatWindow`、`floatDock`、`floatStack`，也不读写待办悬浮窗的 `todo-float.json`。悬浮位置仍只由界面记录。成功写入不另加外部来源标记。
 
 ### 客户端
 
