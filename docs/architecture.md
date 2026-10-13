@@ -32,6 +32,7 @@
 | 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、设置页（只有开机启动、热角、搜索条热键）、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用，面板搜索框还没有。快速收集的预览和提交还没有。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/hello`、`spikes/fileidx`、`spikes/render`、`spikes/hotcorner`、`spikes/toast` 与 `spikes/dnd` 已经在 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。技术验证表里的这一项仍未通过 |
+| 外部 AI（本机 MCP）、扩展页与插件 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [extensions.md](extensions.md)。现在没有代码。技术验证表里没有对应项；没有通过记录之前，不写依赖它们的界面 |
 
 ## 技术验证
 
