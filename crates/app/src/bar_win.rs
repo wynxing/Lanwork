@@ -9,15 +9,16 @@ use lanwork_core::shell::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DWM_SYSTEMBACKDROP_TYPE, DWMNCRP_DISABLED, DWMNCRP_USEWINDOWSTYLE, DWMSBT_NONE,
-    DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE,
-    DWMWA_NCRENDERING_POLICY, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
-    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWINDOWATTRIBUTE,
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+    DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DWM_SYSTEMBACKDROP_TYPE, DWMNCRP_DISABLED,
+    DWMNCRP_USEWINDOWSTYLE, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR,
+    DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DWMWA_SYSTEMBACKDROP_TYPE,
+    DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
+    DWMWINDOWATTRIBUTE, DwmEnableBlurBehindWindow, DwmExtendFrameIntoClientArea,
+    DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MonitorFromPoint,
+    CreateRectRgn, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
 };
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
@@ -350,6 +351,8 @@ fn keep_topmost(key: isize) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
     }
+    // SetWindowPos 会把收起窗口的逐像素透明清掉。登记过的悬浮窗在这里按当前状态重设。
+    crate::float_frame::after_topmost(key);
 }
 
 /// 这个悬浮窗要一直留在最上层。别的程序（包括全屏）到前台时再置一次。
@@ -366,6 +369,7 @@ pub(crate) fn unwatch_topmost(hwnd: HWND) {
     TOPMOST.with(|list| set_flag(list, key, false));
     SIZING.with(|list| set_flag(list, key, false));
     BLUR_HOLD.with(|list| set_flag(list, key, false));
+    crate::float_frame::forget(hwnd);
 }
 
 fn ensure_foreground_hook() -> bool {
@@ -488,6 +492,13 @@ pub(crate) fn bring_to_front(hwnd: HWND) -> ForegroundTake {
     if hwnd.0.is_null() {
         return ForegroundTake::Failed;
     }
+    let taken = take_foreground(hwnd);
+    // 显示或还原会清掉收起样式。搜索条和面板没有登记，这里什么也不做。
+    crate::float_frame::after_topmost(hwnd_key(hwnd));
+    taken
+}
+
+fn take_foreground(hwnd: HWND) -> ForegroundTake {
     if is_foreground(hwnd) {
         return ForegroundTake::Plain;
     }
@@ -644,7 +655,10 @@ pub(crate) fn apply_dwm(hwnd: HWND, wanted: Backdrop, dark: bool) -> Backdrop {
     Backdrop::Solid
 }
 
-/// 收起后的窗口只画把手。关掉圆角、边框、非客户区阴影和亚克力，透明像素才能透出后面的画面。
+/// 收起后的窗口只画把手。关掉圆角、边框、非客户区阴影和亚克力，再打开逐像素 alpha。
+///
+/// 系统背景类型设成 `DWMSBT_NONE` 会把 winit 创建窗口时打开的透明清掉，所以模糊区域放在最后。
+/// 调用方在还原、重新显示、主题、DPI 和再次置顶之后都要再调一次。
 pub(crate) fn apply_collapsed_frame(hwnd: HWND, dark: bool) {
     let corner = DWMWCP_DONOTROUND;
     let _ = set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner);
@@ -654,11 +668,31 @@ pub(crate) fn apply_collapsed_frame(hwnd: HWND, dark: bool) {
     let _ = set_attribute(hwnd, DWMWA_BORDER_COLOR, &border);
     let policy = DWMNCRP_DISABLED;
     let _ = set_attribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy);
-    let _ = extend_frame(hwnd);
     if windows_build().is_some_and(|build| build >= lanwork_core::shell::MIN_BACKDROP_BUILD) {
         let none: DWM_SYSTEMBACKDROP_TYPE = DWMSBT_NONE;
         let _ = set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &none);
     }
+    let _ = extend_frame(hwnd);
+    enable_per_pixel_alpha(hwnd);
+}
+
+/// 空的模糊区域：不产生磨砂，只让客户区的 alpha 透出后面的画面。winit 只在创建时做一次。
+fn enable_per_pixel_alpha(hwnd: HWND) {
+    // SAFETY: 宽高为负的矩形区域是空的。DWM 在调用期间复制它。
+    let region = unsafe { CreateRectRgn(0, 0, -1, -1) };
+    if region.is_invalid() {
+        return;
+    }
+    let behind = DWM_BLURBEHIND {
+        dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+        fEnable: true.into(),
+        hRgnBlur: region,
+        fTransitionOnMaximized: false.into(),
+    };
+    // SAFETY: hwnd 是本进程的窗口，region 在这次调用返回前有效。
+    let _ = unsafe { DwmEnableBlurBehindWindow(hwnd, &behind) };
+    // SAFETY: region 是上面创建的 GDI 对象，调用返回后由这里释放。
+    let _ = unsafe { DeleteObject(region.into()) };
 }
 
 fn extend_frame(hwnd: HWND) -> bool {

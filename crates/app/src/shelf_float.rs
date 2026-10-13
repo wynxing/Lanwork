@@ -379,6 +379,11 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
             if matches!(event, winit::event::WindowEvent::Focused(false)) {
                 with_window(&id, |window, _| window.on_blur());
             }
+            if crate::float_frame::wants_refresh(event) {
+                with_window(&id, |window, _| {
+                    window.refresh_backdrop(window.ui.get_dark());
+                });
+            }
             EventResult::Propagate
         }
     });
@@ -639,16 +644,15 @@ impl FloatWindow {
     fn refresh_backdrop(&mut self, dark: bool) {
         let collapsed = self.ui.get_collapsed();
         let actual = match self.hwnd() {
-            Some(hwnd) if collapsed => {
-                bar_win::apply_collapsed_frame(hwnd, dark);
-                Backdrop::Solid
-            }
-            Some(hwnd) => bar_win::apply_dwm(hwnd, bar_win::current_backdrop(), dark),
+            Some(hwnd) => crate::float_frame::sync(hwnd, collapsed, dark),
             None => Backdrop::Solid,
         };
         self.ui
             .set_acrylic(!collapsed && actual == Backdrop::Acrylic);
         self.ui.set_solid_color(rgb(solid_rgb(dark)));
+        if collapsed {
+            self.ui.window().request_redraw();
+        }
     }
 
     /// 显示在最前。位置和大小不动。
