@@ -8,7 +8,7 @@
 use crate::notes::{DockEdge, FloatStackSlot};
 use crate::shell::to_physical;
 
-use super::float_snap::PxBox;
+use super::float_snap::{PxBox, ScreenBounds};
 
 /// 两条收起的把手沿边相距不超过这么多逻辑像素，就合成一叠。待定。
 ///
@@ -223,7 +223,57 @@ pub fn flip_index(stack: &PageStack, dir: Flip) -> Option<usize> {
     }
 }
 
-/// 两个都收起、贴在同一条边上，沿边的间隔不超过 `max_gap`（含碰上和重叠）。
+/// 打不开的页从一叠里拿掉之后还留下什么。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilteredPages {
+    pub pages: Vec<StackPage>,
+    /// 原来的当前页还留着时，它在 `pages` 里的新下标。被丢掉时是 `None`。
+    pub current: Option<usize>,
+    pub dropped: Vec<StackPage>,
+}
+
+/// 留下 `can_open` 为真的页。当前页被丢掉时 `current` 是 `None`，调用方不要因此藏起还看得见的页。
+#[must_use]
+pub fn filter_open_pages(
+    stack: &PageStack,
+    can_open: impl Fn(&StackPage) -> bool,
+) -> FilteredPages {
+    let mut pages = Vec::new();
+    let mut dropped = Vec::new();
+    let mut current = None;
+    for (index, page) in stack.pages.iter().enumerate() {
+        if can_open(page) {
+            if index == stack.current {
+                current = Some(pages.len());
+            }
+            pages.push(page.clone());
+        } else {
+            dropped.push(page.clone());
+        }
+    }
+    FilteredPages {
+        pages,
+        current,
+        dropped,
+    }
+}
+
+/// 目标页确实显示出来之后，才藏其余页。显示失败时一张都不藏。
+#[must_use]
+pub fn pages_to_park(pages: &[StackPage], shown: &StackPage, shown_ok: bool) -> Vec<StackPage> {
+    if !shown_ok {
+        return Vec::new();
+    }
+    pages
+        .iter()
+        .filter(|page| *page != shown)
+        .cloned()
+        .collect()
+}
+
+/// 两个都收起、贴在同一块屏幕的同一条边上，沿边和垂直于边的间隔都不超过 `max_gap`。
+///
+/// 碰上和重叠的间隔算 0。把手中心不在任何一块已知屏幕上时不合。上下叠放的两块屏幕、左右并排的两块屏幕，即使沿边数字很近，也不是同一条边。
 #[must_use]
 pub fn collapsed_handles_close(
     a: PxBox,
@@ -231,22 +281,48 @@ pub fn collapsed_handles_close(
     b: PxBox,
     b_edge: DockEdge,
     max_gap: i32,
+    screens: &[ScreenBounds],
 ) -> bool {
     if a_edge != b_edge {
         return false;
     }
-    let (a0, a1, b0, b1) = match a_edge {
-        DockEdge::Left | DockEdge::Right => (a.y, a.bottom(), b.y, b.bottom()),
-        DockEdge::Top => (a.x, a.right(), b.x, b.right()),
+    let (along, across) = match a_edge {
+        DockEdge::Left | DockEdge::Right => (
+            span_gap(a.y, a.bottom(), b.y, b.bottom()),
+            span_gap(a.x, a.right(), b.x, b.right()),
+        ),
+        DockEdge::Top => (
+            span_gap(a.x, a.right(), b.x, b.right()),
+            span_gap(a.y, a.bottom(), b.y, b.bottom()),
+        ),
     };
-    let gap = if a1 < b0 {
+    if along > max_gap || across > max_gap {
+        return false;
+    }
+    match (screen_of(screens, a), screen_of(screens, b)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn span_gap(a0: i32, a1: i32, b0: i32, b1: i32) -> i32 {
+    if a1 < b0 {
         b0.saturating_sub(a1)
     } else if b1 < a0 {
         a0.saturating_sub(b1)
     } else {
         0
-    };
-    gap <= max_gap
+    }
+}
+
+fn screen_of(screens: &[ScreenBounds], rect: PxBox) -> Option<usize> {
+    let width = i32::try_from(rect.width).unwrap_or(0);
+    let height = i32::try_from(rect.height).unwrap_or(0);
+    let x = rect.x.saturating_add(width / 2);
+    let y = rect.y.saturating_add(height / 2);
+    screens.iter().position(|screen| {
+        x >= screen.left && x < screen.right && y >= screen.top && y < screen.bottom
+    })
 }
 
 /// 松手时先看有没有盖住另一个悬浮窗超过一半，再决定拆页还是整叠移动。
@@ -687,46 +763,120 @@ mod tests {
         );
     }
 
+    fn screen(left: i32, top: i32, right: i32, bottom: i32) -> ScreenBounds {
+        ScreenBounds {
+            left,
+            top,
+            right,
+            bottom,
+            dpi: 96,
+        }
+    }
+
     #[test]
     fn collapsed_handles_on_the_same_edge_merge_only_when_they_are_close() {
+        let area = [screen(-100, -100, 4000, 4000)];
         let left = rect(0, 100, 9, 48);
         assert!(collapsed_handles_close(
             left,
             DockEdge::Left,
             rect(0, 160, 9, 48),
             DockEdge::Left,
-            48
+            48,
+            &area
         ));
         assert!(collapsed_handles_close(
             left,
             DockEdge::Left,
             rect(0, 100, 9, 48),
             DockEdge::Left,
-            48
+            48,
+            &area
         ));
         assert!(!collapsed_handles_close(
             left,
             DockEdge::Left,
             rect(0, 220, 9, 48),
             DockEdge::Left,
-            48
+            48,
+            &area
         ));
         assert!(!collapsed_handles_close(
             left,
             DockEdge::Left,
             rect(1900, 100, 9, 48),
             DockEdge::Right,
-            48
+            48,
+            &area
+        ));
+        assert!(!collapsed_handles_close(
+            left,
+            DockEdge::Left,
+            rect(200, 100, 9, 48),
+            DockEdge::Left,
+            48,
+            &area
         ));
         assert!(collapsed_handles_close(
             rect(40, 0, 48, 9),
             DockEdge::Top,
             rect(80, 0, 48, 9),
             DockEdge::Top,
-            12
+            12,
+            &area
+        ));
+        let stacked = [screen(0, 0, 1920, 1080), screen(0, 1080, 1920, 2160)];
+        assert!(
+            !collapsed_handles_close(
+                rect(0, 1032, 9, 48),
+                DockEdge::Left,
+                rect(0, 1080, 9, 48),
+                DockEdge::Left,
+                48,
+                &stacked
+            ),
+            "上下两块屏幕的左边不算同一条边"
+        );
+        let side_by_side = [screen(0, 0, 1920, 1080), screen(1920, 0, 3840, 1080)];
+        assert!(
+            !collapsed_handles_close(
+                rect(0, 100, 9, 48),
+                DockEdge::Left,
+                rect(1920, 100, 9, 48),
+                DockEdge::Left,
+                48,
+                &side_by_side
+            ),
+            "并排两块屏幕的左边不合"
+        );
+        assert!(!collapsed_handles_close(
+            left,
+            DockEdge::Left,
+            rect(0, 160, 9, 48),
+            DockEdge::Left,
+            48,
+            &[]
         ));
         assert_eq!(dock_merge_gap(96), 48);
         assert_eq!(dock_merge_gap(144), 72);
+    }
+
+    #[test]
+    fn pages_that_cannot_open_drop_out_and_a_failed_show_parks_nothing() {
+        let trashed = stack("s", vec![note("a"), note("trash"), note("c")], 1);
+        let filtered = filter_open_pages(&trashed, |page| page != &note("trash"));
+        assert_eq!(filtered.pages, vec![note("a"), note("c")]);
+        assert!(filtered.current.is_none(), "当前页打不开时不另指一页");
+        assert_eq!(filtered.dropped, vec![note("trash")]);
+
+        let later = stack("s", vec![note("a"), note("trash"), note("c")], 2);
+        let kept = filter_open_pages(&later, |page| page != &note("trash"));
+        assert_eq!(kept.pages, vec![note("a"), note("c")]);
+        assert_eq!(kept.current, Some(1));
+
+        let show = note("c");
+        assert!(pages_to_park(&kept.pages, &show, false).is_empty());
+        assert_eq!(pages_to_park(&kept.pages, &show, true), vec![note("a")]);
     }
 
     #[test]

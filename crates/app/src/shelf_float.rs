@@ -154,7 +154,9 @@ pub(crate) fn apply_theme(dark: bool) {
         floats.dark = dark;
         for window in floats.windows.values_mut() {
             window.ui.set_dark(dark);
-            window.refresh_backdrop(dark);
+            if !window.parked {
+                window.refresh_backdrop(dark);
+            }
         }
     });
 }
@@ -489,6 +491,13 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
             if matches!(event, winit::event::WindowEvent::Focused(false)) {
                 with_window(&id, |window, _| window.on_blur());
             }
+            if crate::float_frame::wants_refresh(event) {
+                with_window(&id, |window, _| {
+                    if !window.parked {
+                        window.refresh_backdrop(window.ui.get_dark());
+                    }
+                });
+            }
             EventResult::Propagate
         }
     });
@@ -589,9 +598,6 @@ impl FloatWindow {
                 ctx.store
                     .log_warn("收纳悬浮窗的前台通知没有装上，全屏时细条可能被盖住");
             }
-            let visible = self.session.visible();
-            float_dock::place(self.ui.window(), Some(hwnd), visible);
-            self.origin = Some((visible.x, visible.y));
             self.drop_state.set_accepting(true);
             self.drop_state.set_zone(DropZone::everywhere());
             let id = self.group_id.clone();
@@ -605,6 +611,18 @@ impl FloatWindow {
                     .store
                     .log_warn(&format!("收纳悬浮窗拖入没有装上，不能拖入文件：{message}")),
             }
+            if self.parked {
+                crate::float_frame::forget(hwnd);
+                let _ = self.ui.hide();
+                return;
+            }
+            let visible = self.session.visible();
+            float_dock::place(self.ui.window(), Some(hwnd), visible);
+            self.origin = Some((visible.x, visible.y));
+        }
+        if self.parked {
+            let _ = self.ui.hide();
+            return;
         }
         self.sync_chrome();
         self.refresh_backdrop(ctx.dark);
@@ -689,6 +707,10 @@ impl FloatWindow {
         }
         self.parked = true;
         self.report = false;
+        // 收起的把手不许被一键回到桌面藏起来。这一页要藏，先卸掉那条登记。
+        if let Some(hwnd) = self.hwnd() {
+            crate::float_frame::forget(hwnd);
+        }
         let _ = self.ui.hide();
     }
 
@@ -761,6 +783,10 @@ impl FloatWindow {
         if self.hwnd_key().is_some_and(bar_win::size_move_blocks_blur) {
             return;
         }
+        let page = StackPage::Shelf(self.group_id.clone());
+        if crate::float_group::companion_blocks_blur(&page) {
+            return;
+        }
         if let Some(motion) = self.session.blur() {
             self.report = true;
             self.follow(motion);
@@ -831,16 +857,15 @@ impl FloatWindow {
     fn refresh_backdrop(&mut self, dark: bool) {
         let collapsed = self.ui.get_collapsed();
         let actual = match self.hwnd() {
-            Some(hwnd) if collapsed => {
-                bar_win::apply_collapsed_frame(hwnd, dark);
-                Backdrop::Solid
-            }
-            Some(hwnd) => bar_win::apply_dwm(hwnd, bar_win::current_backdrop(), dark),
+            Some(hwnd) => crate::float_frame::sync(hwnd, collapsed, dark),
             None => Backdrop::Solid,
         };
         self.ui
             .set_acrylic(!collapsed && actual == Backdrop::Acrylic);
         self.ui.set_solid_color(rgb(solid_rgb(dark)));
+        if collapsed {
+            self.ui.window().request_redraw();
+        }
     }
 
     /// 显示在最前。位置和大小不动。
