@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use lanwork_core::notes::{FloatDock, FloatGeometry};
 use lanwork_core::panel::{
-    ANIM_STEPS, DockInput, DockState, MonitorWork, PxBox, ScreenBounds, dpi_at, edge_label,
-    lerp_box, logical_work_limits, moved_enough, settle_float, transition, visible_box,
+    ANIM_STEPS, DockInput, DockState, MonitorWork, PxBox, ScreenBounds, Transition, dpi_at,
+    edge_label, lerp_box, logical_work_limits, moved_enough, release_float, settle_float,
+    transition, visible_box,
 };
 use lanwork_core::shell::WorkArea;
 use windows::Win32::Foundation::HWND;
@@ -130,43 +131,24 @@ impl Session {
             }
             None => (true, false, false),
         };
-        let mut motion = self.apply(
-            &screens,
-            DockInput::DragFinished {
-                rect,
-                moved,
-                from_collapsed,
-                size_changed,
-            },
-        );
-        // 松手时窗口已经在 `rect`。几何模块给的起点是拖动前的位置，滑出要从松手的地方开始。
-        if motion.animate {
-            motion.from = rect;
-            if let Some(anim) = &mut self.anim {
-                anim.from = rect;
-            }
-            if motion.from == motion.to {
-                motion.animate = false;
-                self.anim = None;
-            }
+        let before = self.state;
+        let change = release_drag(&before, rect, moved, from_collapsed, size_changed);
+        self.state = change.state;
+        if change.animate {
+            self.anim = Some(Anim {
+                from: change.from,
+                to: change.to,
+                step: 0,
+            });
+        } else {
+            self.anim = None;
         }
-        let settled = settle(self.state);
-        if settled != self.state {
-            self.state = settled;
-            let to = visible_box(&self.state, &screens);
-            motion.to = to;
-            motion.persist = true;
-            if let Some(anim) = &mut self.anim {
-                anim.to = to;
-                if anim.from == to {
-                    self.anim = None;
-                    motion.animate = false;
-                }
-            } else {
-                motion.animate = false;
-            }
+        Motion {
+            persist: change.state != before,
+            animate: change.animate,
+            from: change.from,
+            to: change.to,
         }
-        motion
     }
 
     pub(crate) fn set_absorb_lock(&mut self, locked: bool) {
@@ -338,6 +320,28 @@ pub(crate) fn session_for_open(
 
 pub(crate) fn settle(state: DockState) -> DockState {
     settle_float(state, &screens(), &work_monitors(), fallback_work())
+}
+
+/// 拖动松手。屏幕和工作区从当前显示器读。便签、收纳、待办和叠页共用。
+pub(crate) fn release_drag(
+    state: &DockState,
+    released: PxBox,
+    moved: bool,
+    from_collapsed: bool,
+    size_changed: bool,
+) -> Transition {
+    release_float(
+        state,
+        &screens(),
+        DockInput::DragFinished {
+            rect: released,
+            moved,
+            from_collapsed,
+            size_changed,
+        },
+        &work_monitors(),
+        fallback_work(),
+    )
 }
 
 fn work_monitors() -> Vec<MonitorWork> {

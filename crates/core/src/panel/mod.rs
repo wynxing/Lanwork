@@ -30,8 +30,8 @@ pub use note_edit::{AUTOSAVE_IDLE_MS, EditSession, SaveOutcome, SaveProblem};
 pub use note_page::{
     FLOAT_CASCADE, FLOAT_CASCADE_STEPS, FLOAT_HEIGHT, FLOAT_MIN_HEIGHT, FLOAT_MIN_WIDTH,
     FLOAT_WIDTH, FloatPlacement, MonitorWork, NoteRow, NoteView, contain_float,
-    float_default_origin, list_rows, locate_note, logical_work_limits, restore_float, settle_float,
-    tag_names, trash_rows,
+    float_default_origin, list_rows, locate_note, logical_work_limits, release_float,
+    restore_float, settle_float, tag_names, trash_rows,
 };
 
 pub use settings_page::{
