@@ -255,7 +255,7 @@ Lanwork/
 - 写入：进程内一把互斥锁。同目录写 `<name>.tmp`，调用 `FlushFileBuffers` 后，目标已存在时用 `ReplaceFileW`（`REPLACEFILE_WRITE_THROUGH`），否则用 `MoveFileExW`（`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`）。替换失败则删除临时文件、保留原文件，并返回带路径的错误。不自动重试。数据目录位于 OneDrive 同步的「文档」下时，同步进程占用按同一规则报错。
 - 单个 JSON 无法解析时，把该文件改名为 `<id>.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，其他文件仍可读。日志不含文件内容。不认识的 `schemaVersion` 不隔离，由调用方拒绝。
 - 每个 JSON 对象带数字字段 `schemaVersion`。当前版本是 1。新字段可选并有默认值；缺少 `schemaVersion` 的旧文件按 1 读取。示例模型是 `ExampleDocument`，不是待办或便签模型。
-- 写盘成功后发布 `EntityChanged { kind, id, revision }`。`revision` 只在便签保存时携带新的修订号，其他实体为 None。跨文件批次在提交成功后按写入顺序发布；写盘失败或批次未提交不发布。订阅回调在写锁释放之后执行。
+- 写盘成功后发布 `EntityChanged { kind, id, revision }`。`revision` 只在便签保存时携带新的修订号，其他实体为 None。v0.2.0 之后外部 AI 落地时，待办也携带修订号，见 [external-ai.md](external-ai.md)：缺少 `revision` 按 0 读取，不一致则返回「待办保存冲突」；在此之前 `EntityChanged` 保持现在的行为。跨文件批次在提交成功后按写入顺序发布；写盘失败或批次未提交不发布。订阅回调在写锁释放之后执行。
 - 日志在 `logs/app.log`。单文件超过 1 MiB 时轮转，保留 `app.log`、`app.log.1`、`app.log.2`。不写文件内容，因此不写便签正文。落盘前去掉常见 GitHub token 形态，以及名称含 `TOKEN`、`SECRET`、`PASSWORD`、`CREDENTIAL`、或以 `_KEY` 结尾且值长度至少 8 的环境变量的值。错误里仍会写出文件路径。
 - `import.pending` 的内容是备份绝对路径的 UTF-8 文本，不是 JSON。它不进入导出包。
 - 收件箱是 `kind=inbox` 的待办清单，首次需要时创建一次。
