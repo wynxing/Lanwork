@@ -56,6 +56,16 @@ pub enum UsageKey {
     Note(String),
     /// 收纳网页引用。键是规范化后的网址。
     Web(String),
+    /// 收纳里的文件引用。分组 id 和路径一起计次，两个分组里的同一路径分开。
+    ShelfFile {
+        group_id: String,
+        path: String,
+    },
+    /// 收纳里的文件夹引用。计次方式和文件引用相同。
+    ShelfFolder {
+        group_id: String,
+        path: String,
+    },
     File(String),
     Folder(String),
     /// 网页搜索那一条。打开它不计使用次数，这个键只用来保持选中。
