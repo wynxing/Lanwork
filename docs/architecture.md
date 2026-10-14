@@ -120,7 +120,7 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 - **主题。** `ConfigCommands::set_theme` 写 `theme`，写成功之后调用 `host::refresh_theme`。写盘失败时不调用，分段仍显示原值。跟随系统时的解析见程序外壳的主题。
 - **网页搜索引擎。** `ConfigCommands::set_web_search_engine` 写 `webSearchEngine`，写成功之后 `Dispatch::set_web_search_engine`。搜索条正开着时按当前输入再查一次，最后一条的名称和将要打开的地址马上换成新引擎。写盘失败时不调用。
 - **待办。** 「安静时段」是开关。关上时不写 `quietHours`。打开且原来没有时段时写入 22:00–08:00；产品规格把这一段当例子，没有规定第一次打开的缺省，这是实现选择。打开后有开始和结束两个时刻，Enter 提交，格式与待办提醒相同（`HH:MM`，小时可以一位）。写盘失败或时刻无效时，输入回到配置里的值，错误在面板底部。「稍后」是天数，Enter 提交，1 至 30，错误是「处理模式顺延天数只接受 1 至 30」。处理模式的界面还没有，天数只进配置。
-- **安静时段的判断。** `is_quiet_now(hours, now)`。`hours` 为空返回假。开始与结束的分钟相同也返回假；这种值 `normalize` 拒绝，错误是「安静时段起止相同」，不写盘。同一天内结束晚于开始时，从开始到结束之前算安静。结束早于开始时跨过午夜：从开始到 24:00，再加上 0:00 到结束之前。开始时刻算在里面，结束时刻不算。端点是否包含，产品规格没有写，半开区间不是产品规则。到期通知的调度还没有。发出之前调用这个函数，为真则不弹。补发不在这里。
+- **安静时段的判断。** `is_quiet_now(hours, now)`。`hours` 为空返回假。开始与结束的分钟相同也返回假；这种值 `normalize` 拒绝，错误是「安静时段起止相同」，不写盘。同一天内结束晚于开始时，从开始到结束之前算安静。结束早于开始时跨过午夜：从开始到 24:00，再加上 0:00 到结束之前。开始时刻算在里面，结束时刻不算。端点是否包含，产品规格没有写，半开区间不是产品规则。提醒调度（#127）尚未并入，这里不把安静时段接进去。两边合并之后再接：用 `quietHours` 的开始和结束做成 `QuietSpan`，传给 `remind.rs` 的 `plan`，由 `quiet_end` 安排时段结束后的合并补发，并去掉 `in_quiet` 与 `is_quiet_now` 的重复判断。这一步还没做。
 - **数据。** 「数据目录」右边是 `Store::data_dir` 的路径，不是 `config.json` 的 `dataDir`。下面三行只有名称「备份」「导出」「导入」。没有选择目录、迁移、立即备份、导出、导入的按钮。
 - **其他。** 关于与更新在上，「隐藏的应用」在下。检查更新的按钮和说明区域见「更新」。隐藏名单的规则与以前相同。
 - **隐藏的应用。** 关于与更新下面是这一节。名单来自 `Dispatch::hidden_apps`。没有时显示「没有隐藏的应用」。每条右侧是「恢复」，调用 `restore_hidden_app` 写入 `user-apps.json`。写盘失败时把内存改回去，列表不变，错误显示在面板底部。恢复成功后搜索条按当前输入再查一次。
@@ -224,7 +224,7 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 
 到期通知使用操作系统自带的 WinRT `ToastNotificationManager`，由 `windows` crate 调用。不使用 Windows App SDK 的 `AppNotificationManager`：后者要求随包或在机器上部署 Windows App Runtime，解包后的程序还要先调用引导程序。这份运行时不进入本项目。`ToastNotificationManager` 在 Windows 11 上由系统提供。微软目前把该 API 标为维护状态，并推荐 `AppNotificationManager`；若下面的验证失败，先改本节，再决定是否更换 API。
 
-技术验证程序原在 `spikes/toast`（安装版检查通过、便携版点击失败，整体未通过；代码已归档）。正式的提醒调度和待办页定位仍不在这里实现。安静时段的起止在设置页写入 `quietHours`，判断函数是 `lanwork_core::config::is_quiet_now`。调度接上时，发出到期通知之前先调用它，为真则不弹。
+技术验证程序原在 `spikes/toast`（安装版检查通过、便携版点击失败，整体未通过；代码已归档）。正式的提醒调度在 #127，尚未并入；待办页定位仍不在这里实现。安静时段的起止已经写入 `quietHours`，判断函数是 `lanwork_core::config::is_quiet_now`。接到调度上还没做，见「设置页」的「安静时段的判断」。
 
 注册只写当前用户（HKCU），不写 HKLM，也不要求管理员权限。进程调用 `SetCurrentProcessExplicitAppUserModelID` 设置 AppUserModelID。通知 XML 的 `launch` 属性是待办 id。点击后，`INotificationActivationCallback::Activate` 的参数带回这个 id。仅拿到该参数还不算定位；定位是打开面板、切到待办并选中该条。验证程序用一个模拟列表面板演示这件事。注册缺失时不崩溃，改为只显示托盘逾期徽标。托盘徽标不能代替通知通过。
 
@@ -386,7 +386,7 @@ Lanwork/
 
 `rank_hits` 做组内排序。同一个候选项 id 只留一条，命中类型取完全匹配、前缀、全拼、首字母、子串、模糊里最前的一种。然后按这个类型排序。同一种类型里，调用方经 `FrequencySource` 传入的使用频率高的在前。类型和频率都相同，则保持该候选项在输入里第一次出现的相对顺序。引擎不保存使用次数。次数如何加 1 已写入产品规格。本模块仍不把次数写入磁盘，由调用方传入。已接入的便签服务不保存这个次数。
 
-`allocate_display` 按浏览器、应用、待办、便签、网页、文件、文件夹收已经排好的各组结果。每组先取至多 8 条。20 条还没满时，再按同一顺序把前面组剩下的结果取完，再取后面的组，直到满 20 条或没有更多结果。同一组入选的条目在输出里挨在一起。浏览器组只由调用方在 `open_website` 认为输入像网址时放入一条。`SearchGroup::WebSearch` 没有分组序号，`allocate_display` 不收它。「网页」组是收纳里的网页引用，排在便签之后、文件之前。标题走与待办标题相同的 `prepare` 和 `query`；标题为空时不建名称字段。网址只做原文匹配、不做拼音。打开走 `LaunchTarget::Url`。索引读收纳服务的内存，随收纳的 `EntityChanged` 更新。收纳服务打不开时这一组为空。有代码，未在 Windows 上验收。
+`allocate_display` 按浏览器、应用、待办、便签、收纳、文件、文件夹收已经排好的各组结果。每组先取至多 8 条。20 条还没满时，再按同一顺序把前面组剩下的结果取完，再取后面的组，直到满 20 条或没有更多结果。同一组入选的条目在输出里挨在一起。浏览器组只由调用方在 `open_website` 认为输入像网址时放入一条。`SearchGroup::WebSearch` 没有分组序号，`allocate_display` 不收它。「收纳」组取代原来的「网页」组，排在便签之后、本机文件之前。文件和文件夹引用按保存的名称走与待办标题相同的 `prepare` 和 `query`。网页引用的标题同样；标题为空时不建名称字段。网址只做原文匹配、不做拼音。不匹配路径和分组名。第二行用 `shelf_source`，与悬浮窗来源行同一格式。文件和文件夹打开走原来的 `RowDetail::File` / `Folder`。网页引用打开走 `LaunchTarget::Url`。已经进入这 20 条的收纳文件，按规范化路径从「文件」组去掉，空出的名额按文件来源的顺序补后面的文件；「文件夹」组不去重。索引读收纳服务的内存，随收纳的 `EntityChanged` 更新。收纳服务打不开时这一组为空。网站图标由搜索条读 `cache/web-icons/`，没有时再取；失败不画地球图形。有代码，未在 Windows 上验收。
 
 网页搜索行由调度在输入非空白时接在分配结果之后，所以不占 20 条名额，最多 21 行；产品规格对名额待定。搜索引擎在 `lanwork_core::search::WebSearchEngine`：`google`（默认）、`bing`、`baidu`，地址分别是 `https://www.google.com/search?q=`、`https://www.bing.com/search?q=`、`https://www.baidu.com/s?wd=`，搜索词去掉首尾空白后按 UTF-8 百分号编码，只保留字母、数字和 `-_.~`。名称是「搜索 Google：」「搜索必应：」「搜索百度：」加原样的搜索词。`config.json` 的字段是 `webSearchEngine`，缺省为 `google`；取值不在这三个里时按字段不合法处理，本次用默认配置。启动时 `Dispatch::set_web_search_engine` 读一次配置。设置页改 `webSearchEngine` 并写盘成功后再次调用它；搜索条正开着时按当前输入再查一次，名称和打开的地址马上换成新引擎。用法键是 `UsageKey::WebSearch`，界面不对它 `record_open`。
 
@@ -421,7 +421,7 @@ Everything 未运行或未就绪时，退回 Windows Search 索引。查询只�
 
 Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提供程序 `Search.CollatorDSO.1`，SQL 含 `System.FileName LIKE`，`TOP` 不超过 50。匹配方式（子串、前缀或整名，以及查询里的 `*`、`?` 和 `LIKE` 的 `%`、`_` 是否同义）待定；产品规格只写到按名称。`ISearchQueryHelper::GenerateSQLFromUserQuery` 的默认语句是 `CONTAINS(*)`，会返回正文命中，不作为产品查询。`ISearchManager` 只用来对照 SQL 和列出索引根。这次做法只说明技术验证里测通的调用，不表示「性能测量」的 P95 已经达到。
 
-文件索引服务在 `lanwork_core::files`，薄命令是 `FileCommands`。界面尚未调用。查询队列、60ms 等待、过期序号和分组合并不在这里；`query` 只把调用方传入的序号原样带回。
+文件索引服务在 `lanwork_core::files`，薄命令是 `FileCommands`。搜索条不直接调用它：外壳打开后交给 `Dispatch`，`poll` 在本地结果写出并且距这次输入已满 60ms 时调用 `query`。查询队列、60ms 等待、过期序号和分组合并不在这里；`query` 只把调用方传入的序号原样带回。
 
 每次查询前先检查 Everything，再决定要不要问 Windows Search。状态只有就绪、未就绪、未运行。Windows Search 只有可用、不可用。1.5 的 DLL 能连上但数据库还在加载时是未就绪，不再改问 1.4。1.5 未运行时才探测 1.4。1.5 先连未命名实例，管道不存在再连 `1.5a`。已经连上的客户端在下次查询前只调用 `IsDBLoaded`。探测失败按未运行，日志写服务端版本；读不到时写「未知」，不把 `GetLastError` 的 0 改写成管道不存在。DLL 缺失记一条日志，Everything 按未运行。两个 DLL 都按文件名放在程序目录：`Everything3_x64.dll`、`Everything64.dll`。开发构建在程序目录找不到时，再找仓库 `third_party/everything/`。发布构建不回退到编译机路径。不为查询启动进程，也不复制索引。
 
@@ -437,7 +437,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 查询调度的代码在 `lanwork_core::dispatch`，类型是 `Dispatch`。搜索条已调用它。`TodoCommands::boot` 成功并且 `NoteCommands::open` 在导入恢复之后完成，才调用 `Dispatch::build`。`Store::build_index` 在启动未完成时不会建索引。索引读的是这两份服务的内存：未完成且不在回收站的待办标题，以及未软删除便签的标题、标签和正文。之后只在 `EntityChanged` 的种类是待办或便签时，从同一份内存重建对应索引。查询不读盘。交给 `Dispatch` 的必须是正在写入的那一份命令；克隆仍是同一份内存。待办在提交批次之前写入内存。便签在写盘或删文件成功之后、发布变更之前更新内存。订阅者读到消息时，这两份内存已是新值。保存或永久删除便签的回调里不要再调用便签写入，写入锁还被这次操作持有。
 
-`submit` 的时钟读数是结果延迟的起点。搜索条先经 `classify_prefix`。空输入和收集前缀不进入查询队列，并使当前序号失效。组合中的预编辑不要调用 `submit`。序号从 1 递增。本地分组写好之后，并且距这次 `submit` 已满 60ms、期间没有更新的输入，才调用文件来源。文件查询返回时序号已经变了就不合并。不可用时结果上的说明是「文件索引不可用」，已有的应用、待办和便签行保留。文件服务最多交回 50 条，显示用 `allocate_display` 收到最多 20 条。
+`submit` 的时钟读数是结果延迟的起点。搜索条先经 `classify_prefix`。空输入和收集前缀不进入查询队列，并使当前序号失效。组合中的预编辑不要调用 `submit`。序号从 1 递增。本地分组写好之后，并且距这次 `submit` 已满 60ms、期间没有更新的输入，才调用文件来源。文件查询返回时序号已经变了就不合并。不可用时结果上的说明是「文件索引不可用」，已有的应用、待办、便签和收纳行保留。文件服务最多交回 50 条，显示用 `allocate_display` 收到最多 20 条。
 
 像网址的判断在 `lanwork_core::search::open_website`，见「打开网址」。待办来源校验仍用 `is_http_source_url`，不拿来决定这一条。应用、待办和便签的组内顺序用 `rank_hits`。`record_open` 把对应键的次数加 1，只放在本进程内存里，下一次查询才参与排序。`LatencyRecord::to_json_line` 的字段与 `tools/sample` 的延迟输入一致。终点由调用方用 `mark_rendered` 填上同序号、同一来源的 `end_ns`。被取代的记录单独标出；已经填了终点的记录不再标为被取代。热召回不在这一层。没有按「性能测量」采样时，这些记录不表示目标已经达到。
 
@@ -514,11 +514,11 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 - 与路径引用一样只存引用。不调用会关闭或移动浏览器标签的接口，不把页面正文写入数据目录。
 - 面板收纳页和收纳悬浮窗的 OLE 放下目标都识别网址。接受的格式是注册剪贴板格式 `HTML Format`（`CF_HTML`）、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW` 和 `text/x-moz-url`。地址栏锁图标和页面链接都走这一条。`DragEnter` 只 `QueryGetData`。`Drop` 才 `GetData`。读到可保存的网址时，不再调用 `CF_HDROP` 或 `FileContents` 的 `GetData`，虚拟 `.url` 不存成路径，也不复制进数据目录。`FileGroupDescriptorW` 里有以 `.url` 结尾的文件名、但解析不出网址时拒绝这次放下。标题取 `FileGroupDescriptorW` 里第一个以 `.url` 结尾的文件名，去掉这个后缀，大小写不敏感。`Cursor Status.url` 的标题是 `Cursor Status`。不用 `CF_HTML` 的文档标题，也不用 `SourceURL`，也不用 `text/x-moz-url` 的第二行。2026-10-13 手测：锁图标没有 `CF_HTML`，页面链接有，文档标题为空；两种拖放都没有 `text/uri-list`。网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。Chrome 与 Edge 都通过。
-- 打开与「打开网址」相同：把保存的网址作为 `LaunchTarget::Url` 交给 `ShellExecuteExW`，动词 `open`，由默认浏览器处理。`crates/core` 不启动浏览器。搜索里的「网页」组走同一条打开，见上面的 `allocate_display`。
+- 打开与「打开网址」相同：把保存的网址作为 `LaunchTarget::Url` 交给 `ShellExecuteExW`，动词 `open`，由默认浏览器处理。`crates/core` 不启动浏览器。搜索里的「收纳」组里的网页引用走同一条打开，见上面的 `allocate_display`。
 - 去重键按产品规格「同一网址只保留一条」：去掉首尾空白，协议和主机名小写，去掉路径末尾的一个 `/`（含问号或井号前的那个）。不改路径其余大小写、`www`、端口、用户名、查询和片段，也不套用路径引用的简单大写。比较范围是全部分组。键相同则不新增，保留先加入的那一条的网址原文、标题和分组。加载时内存里也按这个键只留先加入的一条，写盘要等这个分组下次保存。
 - 分组文件另有可选数组 `webRefs`。每项是 `url`、`title`、`addedAt`。`url` 是去掉首尾空白后的原文，不是规范化键。没有这个数组的旧文件读成空列表。路径引用的 `refs` 读法不变。列表里路径引用在前，网页引用在后。分组计数是两者之和。
 - 一键浏览器扩展不在拖入这一版，先做 Chrome，其它浏览器更晚。扩展的宿主、安装方式，以及点一下写入的是当前页还是链接，都还没定。扩展落地时同样不得关闭或移动标签。
-- 拖入写盘成功之后，以及面板收纳页或收纳悬浮窗把该条列出来且 `cache/web-icons/` 里没有这张图时，在后台线程取图标。用默认浏览器打开该条时，若界面上还没有图标，清掉这次运行记下的失败再取一次。保存和打开都不等这次请求。搜索条里的网页结果仍用类型字形，不读这份缓存。
+- 拖入写盘成功之后，以及面板收纳页或收纳悬浮窗把该条列出来且 `cache/web-icons/` 里没有这张图时，在后台线程取图标。用默认浏览器打开该条时，若界面上还没有图标，清掉这次运行记下的失败再取一次。保存和打开都不等这次请求。搜索条里的网页引用也读 `cache/web-icons/`。没有时后台再取；还没有或取失败时图标位留空，不画类型字形。
 - 优先页面里 `rel` 为 `icon`、`shortcut icon`、`apple-touch-icon` 或 `apple-touch-icon-precomposed` 的 `<link>`。跳过 SVG。相对地址按最终 URL 解析，按文档顺序尝试，最后试 `{origin}/favicon.ico`。只请求 `http` 和 `https`。带用户信息的地址不请求。
 - 失败时图标位留空，不画通用地球图标，条目仍在，不标「路径不存在」。不把失败写进磁盘。同一次进程里，列表触发的失败记在内存，滚动和重读不再请求。打开该条会再试。进程重启后，缓存没有就再取。
 - 缓存目录是数据目录下的 `cache/web-icons/`。文件名是规范化键的 SHA-256，扩展名 `.bin`。可以整份删除后重建。读写在 `lanwork_core::web_icons`，不在 `shelves` 里。读到坏文件时只删除这个目录下、文件名是 64 位小写十六进制加 `.bin` 的那一份，不碰到其它路径。不进分组 JSON。导出和备份的白名单不含这个目录。导入按白名单删除包里没有的数据文件时也不删它。分组 JSON 整份进入导出和备份，因此 `webRefs` 跟着走，里面没有图标字节，也没有页面正文。不为图标另加白名单条目。待办悬浮窗的 `todo-float.json` 仍按「待办悬浮窗」进入白名单。

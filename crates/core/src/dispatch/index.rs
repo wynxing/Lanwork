@@ -1,10 +1,11 @@
-//! 待办、便签和收纳网页引用的常驻索引。
+//! 待办、便签和收纳引用的常驻索引。
 //!
 //! 查询只读这份内存。变更来自 `EntityChanged` 之后对服务内存的重读，不读盘。
 
 use std::collections::HashMap;
 
 use crate::notes::{NoteCommands, display_title};
+use crate::panel::shelf_source;
 use crate::search::{
     FieldInput, FieldRole, Hit, MatchIndex, SearchGroup, prepare, query_prepared, rank_hits,
 };
@@ -18,8 +19,8 @@ pub(crate) struct MemoryIndex {
     todo_match: MatchIndex,
     notes: Vec<IndexedNote>,
     note_match: MatchIndex,
-    webs: Vec<IndexedWeb>,
-    web_match: MatchIndex,
+    shelves: Vec<IndexedShelf>,
+    shelf_match: MatchIndex,
 }
 
 struct IndexedTodo {
@@ -35,10 +36,16 @@ struct IndexedNote {
     body: String,
 }
 
-struct IndexedWeb {
-    url: String,
-    title: String,
-    key: String,
+struct IndexedShelf {
+    group_id: String,
+    group_name: String,
+    label: String,
+    item: ShelfHit,
+}
+
+enum ShelfHit {
+    Path { path: String, folder: bool },
+    Web { url: String, key: String },
 }
 
 impl MemoryIndex {
@@ -48,8 +55,8 @@ impl MemoryIndex {
             todo_match: MatchIndex::new(),
             notes: Vec::new(),
             note_match: MatchIndex::new(),
-            webs: Vec::new(),
-            web_match: MatchIndex::new(),
+            shelves: Vec::new(),
+            shelf_match: MatchIndex::new(),
         }
     }
 
@@ -115,18 +122,43 @@ impl MemoryIndex {
         self.note_match = match_index;
     }
 
-    /// 收纳服务打不开时清空。同一规范化网址在全部分组里只应有一条，索引按列表顺序各建一行。
-    pub(crate) fn rebuild_webs(&mut self, shelves: Option<&ShelfCommands>) {
+    /// 收纳服务打不开时清空。文件和文件夹按保存的名称索引，网页引用按标题和网址。
+    /// 同一分组里的路径不重复；同一网址在全部分组里只应有一条。
+    pub(crate) fn rebuild_shelves(&mut self, shelves: Option<&ShelfCommands>) {
         let Some(shelves) = shelves else {
-            self.webs.clear();
-            self.web_match = MatchIndex::new();
+            self.shelves.clear();
+            self.shelf_match = MatchIndex::new();
             return;
         };
         let listed = shelves.list().unwrap_or_default();
         let mut rows = Vec::new();
         let mut match_index = MatchIndex::new();
         for shelf in listed {
-            for web in shelf.web_refs {
+            for item in &shelf.refs {
+                let Some(id) = u64::try_from(rows.len()).ok() else {
+                    break;
+                };
+                if item.name.trim().is_empty() {
+                    continue;
+                }
+                match_index.insert(
+                    id,
+                    &[FieldInput {
+                        role: FieldRole::Name,
+                        text: &item.name,
+                    }],
+                );
+                rows.push(IndexedShelf {
+                    group_id: shelf.id.clone(),
+                    group_name: shelf.name.clone(),
+                    label: item.name.clone(),
+                    item: ShelfHit::Path {
+                        path: item.path.clone(),
+                        folder: item.folder,
+                    },
+                });
+            }
+            for web in &shelf.web_refs {
                 let Some(id) = u64::try_from(rows.len()).ok() else {
                     break;
                 };
@@ -145,15 +177,19 @@ impl MemoryIndex {
                     text: &web.url,
                 });
                 match_index.insert(id, &fields);
-                rows.push(IndexedWeb {
-                    key: normalized.key,
-                    url: web.url,
-                    title: web.title,
+                rows.push(IndexedShelf {
+                    group_id: shelf.id.clone(),
+                    group_name: shelf.name.clone(),
+                    label: web_display_name(&web.title, &web.url),
+                    item: ShelfHit::Web {
+                        key: normalized.key,
+                        url: web.url.clone(),
+                    },
                 });
             }
         }
-        self.webs = rows;
-        self.web_match = match_index;
+        self.shelves = rows;
+        self.shelf_match = match_index;
     }
 
     pub(crate) fn todo_ids(&self) -> Vec<String> {
@@ -190,16 +226,16 @@ impl MemoryIndex {
             .collect()
     }
 
-    pub(crate) fn rank_webs(&self, text: &str, freq: &HashMap<UsageKey, u64>) -> Vec<SearchRow> {
-        let hits = self.web_match.query(text);
+    pub(crate) fn rank_shelves(&self, text: &str, freq: &HashMap<UsageKey, u64>) -> Vec<SearchRow> {
+        let hits = self.shelf_match.query(text);
         let counts = self
-            .webs
+            .shelves
             .iter()
-            .map(|row| count(freq, &UsageKey::Web(row.key.clone())))
+            .map(|row| count(freq, &row.usage()))
             .collect::<Vec<_>>();
         rank_hits(&hits, |id| counts.get(id as usize).copied().unwrap_or(0))
             .into_iter()
-            .filter_map(|hit| self.web_row(hit))
+            .filter_map(|hit| self.shelf_row(hit))
             .collect()
     }
 
@@ -239,19 +275,58 @@ impl MemoryIndex {
         })
     }
 
-    fn web_row(&self, hit: Hit) -> Option<SearchRow> {
+    fn shelf_row(&self, hit: Hit) -> Option<SearchRow> {
         let index = usize::try_from(hit.id).ok()?;
-        let row = self.webs.get(index)?;
+        let row = self.shelves.get(index)?;
+        let (icon, detail) = match &row.item {
+            ShelfHit::Path {
+                path,
+                folder: false,
+            } => (icon_for_path(path), RowDetail::File { path: path.clone() }),
+            ShelfHit::Path { path, folder: true } => (
+                icon_for_path(path),
+                RowDetail::Folder { path: path.clone() },
+            ),
+            ShelfHit::Web { url, .. } => (None, RowDetail::Web { url: url.clone() }),
+        };
         Some(SearchRow {
-            group: SearchGroup::Web,
+            group: SearchGroup::Shelf,
             kind: Some(hit.kind),
-            usage: UsageKey::Web(row.key.clone()),
-            label: web_display_name(&row.title, &row.url),
-            location: row.url.clone(),
-            icon: None,
-            detail: RowDetail::Web {
-                url: row.url.clone(),
+            usage: row.usage(),
+            label: row.label.clone(),
+            location: shelf_source(Some(&row.group_name)),
+            icon,
+            detail,
+        })
+    }
+}
+
+impl IndexedShelf {
+    fn usage(&self) -> UsageKey {
+        match &self.item {
+            ShelfHit::Path {
+                path,
+                folder: false,
+            } => UsageKey::ShelfFile {
+                group_id: self.group_id.clone(),
+                path: path.clone(),
             },
+            ShelfHit::Path { path, folder: true } => UsageKey::ShelfFolder {
+                group_id: self.group_id.clone(),
+                path: path.clone(),
+            },
+            ShelfHit::Web { key, .. } => UsageKey::Web(key.clone()),
+        }
+    }
+}
+
+fn icon_for_path(path: &str) -> Option<super::model::IconKey> {
+    if path.is_empty() {
+        None
+    } else {
+        Some(super::model::IconKey {
+            path: path.to_owned(),
+            index: 0,
         })
     }
 }

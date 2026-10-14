@@ -4,7 +4,7 @@
 //! 有值时是 `{"start":"HH:MM","end":"HH:MM"}`。小时可以只写一位，写回时补成两位。
 //! 开始与结束相同由 [`super::model::normalize`] 拒绝。
 //!
-//! [`is_quiet_now`] 给到期通知用。调度还不在这里：发出通知之前调用它，为真则不弹。
+//! [`is_quiet_now`] 判断当前是否在安静时段里。提醒调度尚未并入，这里不调用它。
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
