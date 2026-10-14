@@ -134,7 +134,7 @@ fn moving_refs_relocates_paths_and_web_pages_without_touching_the_file() {
         .unwrap();
     let rx = store.subscribe();
     let same = service
-        .move_refs(&source.id, &source.id, &[path.clone()], &[])
+        .move_refs(&source.id, &source.id, std::slice::from_ref(&path), &[])
         .unwrap();
     assert_eq!(same.moved, 0);
     assert!(rx.try_recv().is_err(), "同一分组不写盘");

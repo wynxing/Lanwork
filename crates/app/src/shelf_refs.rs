@@ -26,7 +26,6 @@ use crate::{ShelfLinkRow, ShelfRefRow, ShelvesPageData};
 /// 按下条目行时记下的位置，指针移出阈值之后才开始拖出。
 struct Press {
     path: String,
-    web: bool,
     index: usize,
     x: f32,
     y: f32,
@@ -338,7 +337,6 @@ impl RefsView {
             .and_then(|index| lines.get(index));
         self.press = line.filter(|line| manage || !line.web).map(|line| Press {
             path: line.key.clone(),
-            web: line.web,
             index: usize::try_from(index).unwrap_or(0),
             x,
             y,
@@ -429,9 +427,12 @@ pub(crate) fn spawn_probe(
 /// 已经入队，循环一开始就看到按钮已松开而立刻结束。所以回调先在借用里只算出要拖的路径并交给
 /// [`InlineDrag::offer`]，借用结束后再由 [`InlineDrag::take`] 取走，在同一次回调里开始拖出。
 /// 如果回调本身就落在别的借用里（动作被推迟），`offer` 返回 false，退回 [`schedule_drag`]。
+/// 一次同步拖出：要交给资源管理器的路径，以及按下时的位置。
+type OfferedDrag = (Vec<String>, (f32, f32));
+
 pub(crate) struct InlineDrag {
     open: Cell<bool>,
-    start: RefCell<Option<(Vec<String>, (f32, f32))>>,
+    start: RefCell<Option<OfferedDrag>>,
 }
 
 impl InlineDrag {
@@ -452,7 +453,7 @@ impl InlineDrag {
     }
 
     /// 借用结束后取走同步接收到的路径，之后的 `offer` 都返回 false。
-    pub(crate) fn take(&self) -> Option<(Vec<String>, (f32, f32))> {
+    pub(crate) fn take(&self) -> Option<OfferedDrag> {
         self.open.set(false);
         self.start.borrow_mut().take()
     }
