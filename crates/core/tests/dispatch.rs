@@ -1260,8 +1260,187 @@ fn shelf_web_refs_appear_after_notes_and_before_files() {
 
     let by_url = dispatch.submit(Surface::Panel, "cursor-only").unwrap();
     assert_eq!(groups(&by_url), vec![SearchGroup::Shelf]);
+    // 「Status」只在标题里，网址是 cursor-only。只索引网址时这条不会出现。
+    let by_title = dispatch.submit(Surface::SearchBar, "status").unwrap();
+    assert_eq!(groups(&by_title), vec![SearchGroup::Shelf]);
+    let titled = results(&by_title).next().unwrap();
+    assert_eq!(titled.label, "Cursor Status");
+    assert_eq!(titled.kind, Some(HitKind::Substring));
     dispatch.record_open(&web.usage);
     assert_eq!(dispatch.usage_count(&web.usage), 1);
+}
+
+/// 网页引用的标题和网址都能命中，同一条只出现一次。
+/// 标题走与文件名相同的命中类型；网址只做原文。文件仍只按名称，不按路径。
+#[test]
+fn shelf_web_page_matches_its_title_and_its_url_once() {
+    let (_temp, store) = open_store();
+    let services = booted(&store);
+    let shelves = ShelfCommands::open(store.clone()).unwrap();
+    let group = shelves.create_group("作业").unwrap();
+    shelves
+        .add_web_refs(
+            Some(&group.id),
+            &[
+                IncomingWeb {
+                    url: "https://authserver.dgut.edu.cn/authserver/login".to_owned(),
+                    title: "应用中心".to_owned(),
+                },
+                IncomingWeb {
+                    url: "https://portal.dgut.example/home".to_owned(),
+                    title: "dgut 门户".to_owned(),
+                },
+                IncomingWeb {
+                    url: "https://library.example/books".to_owned(),
+                    title: "图书馆".to_owned(),
+                },
+                IncomingWeb {
+                    url: "https://notes.example/only-url-token".to_owned(),
+                    title: String::new(),
+                },
+            ],
+        )
+        .unwrap();
+    shelves
+        .add_refs(
+            Some(&group.id),
+            &[IncomingRef {
+                path: r"C:\dgut\readme.txt".to_owned(),
+                folder: false,
+            }],
+        )
+        .unwrap();
+    let (dispatch, _) = dispatch(
+        store,
+        Services {
+            todos: services.todos,
+            notes: services.notes,
+            shelves: Some(shelves),
+        },
+        NoApps,
+        BlankFiles,
+        MissingIcons,
+    );
+    dispatch.build().unwrap();
+
+    let by_title = dispatch.submit(Surface::SearchBar, "应用中心").unwrap();
+    let title_hits: Vec<_> = results(&by_title)
+        .filter(|row| row.group == SearchGroup::Shelf)
+        .collect();
+    assert_eq!(title_hits.len(), 1, "标题完全匹配只出现一条");
+    assert_eq!(title_hits[0].label, "应用中心");
+    assert_eq!(title_hits[0].kind, Some(HitKind::Exact));
+    assert_eq!(title_hits[0].location, "收纳 \u{00B7} 作业");
+    assert!(matches!(
+        &title_hits[0].detail,
+        RowDetail::Web { url } if url == "https://authserver.dgut.edu.cn/authserver/login"
+    ));
+
+    let by_part = dispatch.submit(Surface::SearchBar, "中心").unwrap();
+    let part = shelf_labeled(&by_part, "应用中心");
+    assert_eq!(part.kind, Some(HitKind::Substring));
+
+    let by_reading = dispatch
+        .submit(Surface::SearchBar, "yingyongzhongxin")
+        .unwrap();
+    assert_eq!(
+        shelf_labeled(&by_reading, "应用中心").kind,
+        Some(HitKind::Pinyin)
+    );
+    let by_initial = dispatch.submit(Surface::SearchBar, "yyzx").unwrap();
+    assert_eq!(
+        shelf_labeled(&by_initial, "应用中心").kind,
+        Some(HitKind::Initial)
+    );
+
+    let by_url = dispatch.submit(Surface::SearchBar, "dgut").unwrap();
+    let url_hits: Vec<_> = results(&by_url)
+        .filter(|row| row.group == SearchGroup::Shelf)
+        .map(|row| row.label.as_str())
+        .collect();
+    assert_eq!(
+        url_hits,
+        vec!["dgut 门户", "应用中心"],
+        "标题前缀排在只命中网址的子串之前，文件路径里的 dgut 不出现"
+    );
+    assert_eq!(
+        shelf_labeled(&by_url, "dgut 门户").kind,
+        Some(HitKind::Prefix),
+        "标题和网址同时含有 dgut 时只留更前的标题前缀，不另出一条"
+    );
+    assert_eq!(
+        shelf_labeled(&by_url, "应用中心").kind,
+        Some(HitKind::Substring)
+    );
+    assert!(
+        results(&by_url).all(|row| row.label != "readme.txt"),
+        "文件不按路径匹配"
+    );
+
+    let by_name = dispatch.submit(Surface::SearchBar, "readme").unwrap();
+    let file = shelf_labeled(&by_name, "readme.txt");
+    assert!(matches!(file.detail, RowDetail::File { .. }));
+    assert_eq!(file.kind, Some(HitKind::Prefix));
+    assert!(
+        results(&by_name).all(|row| !matches!(row.detail, RowDetail::Web { .. })),
+        "文件名不把网页引用再带出来"
+    );
+
+    let by_reading_title = dispatch.submit(Surface::SearchBar, "tushuguan").unwrap();
+    assert_eq!(
+        shelf_labeled(&by_reading_title, "图书馆").kind,
+        Some(HitKind::Pinyin),
+        "标题可以按拼音命中，网址本身没有这串字母"
+    );
+    let literal_url = dispatch.submit(Surface::SearchBar, "books").unwrap();
+    assert_eq!(
+        shelf_labeled(&literal_url, "图书馆").kind,
+        Some(HitKind::Substring)
+    );
+
+    let empty_title = dispatch
+        .submit(Surface::SearchBar, "only-url-token")
+        .unwrap();
+    let bare = shelf_labeled(&empty_title, "https://notes.example/only-url-token");
+    assert_eq!(bare.kind, Some(HitKind::Substring));
+
+    let shared = dispatch
+        .submit(Surface::SearchBar, "https://library.example/books")
+        .unwrap();
+    let shared_hits: Vec<_> = results(&shared)
+        .filter(|row| row.label == "图书馆")
+        .collect();
+    assert_eq!(shared_hits.len(), 1, "整段网址完全匹配也只出现一条");
+    assert_eq!(shared_hits[0].kind, Some(HitKind::Exact));
+
+    // 加粗用展示名称，和搜索条同一函数。标题命中加粗标题；只命中网址时标题不加粗。
+    assert_eq!(bold(title_hits[0], "应用"), Some("应用".to_owned()));
+    assert_eq!(bold(shelf_labeled(&by_url, "应用中心"), "dgut"), None);
+    assert_eq!(
+        bold(shelf_labeled(&by_url, "dgut 门户"), "dgut"),
+        Some("dgut".to_owned())
+    );
+    assert_eq!(
+        bold(bare, "only-url-token"),
+        Some("only-url-token".to_owned())
+    );
+    assert_eq!(bold(file, "readme"), Some("readme".to_owned()));
+    assert_eq!(
+        lanwork_core::shell::match_span("收纳 · 作业", "dgut"),
+        None,
+        "分组名不参与加粗"
+    );
+}
+
+fn bold(row: &SearchRow, query: &str) -> Option<String> {
+    lanwork_core::shell::match_span(&row.label, query)
+        .map(|(start, end)| row.label[start..end].to_owned())
+}
+
+fn shelf_labeled<'a>(view: &'a QueryView, label: &str) -> &'a SearchRow {
+    results(view)
+        .find(|row| row.group == SearchGroup::Shelf && row.label == label)
+        .unwrap_or_else(|| panic!("收纳结果里没有 {label}"))
 }
 
 #[test]
