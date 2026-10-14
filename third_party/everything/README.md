@@ -1,6 +1,6 @@
 # Everything SDK
 
-技术验证 `spikes/fileidx` 动态加载的 x64 DLL。固定版本，不在运行时下载。
+文件搜索动态加载的 x64 DLL（先前在 `spikes/fileidx` 验证通过，已接入核心与应用）。固定版本，不在运行时下载。
 
 两个压缩包都在 2026-10-08 从 voidtools 官网下载。许可原文在各目录的 `LICENSE.txt`。条款是同一份无担保的许可：可以免费使用、复制、修改、合并、发布、分发、再许可和销售，须保留版权声明和许可声明。
 
@@ -27,4 +27,4 @@
 
 `LoadLibraryW` 加载上面的 DLL。探测顺序是 SDK3（1.5）再 SDK（1.4）。SDK3 先连未命名实例，管道不存在再连 voidtools 文档里的 `1.5a`（1.5 alpha 的实例名）。1.4 这份 DLL 只找窗口类 `EVERYTHING_TASKBAR_NOTIFICATION`，没有实例名参数。
 
-查询最多取 50 条。状态区分见 `spikes/fileidx`。
+查询最多取 50 条。状态区分见 `crates/core/src/files/`。

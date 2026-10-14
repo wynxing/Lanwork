@@ -1,11 +1,3 @@
-cargo run -p hello
-cargo run -p ime
-cargo run -p dnd -- --self-test
-cargo run -p dnd -- --probe-no-ole
-cargo run -p dnd -- --slint
-cargo run -p dnd -- --ole
-cargo run -p fileidx -- probe
-
 渲染器和背景的测量程序是 `lanwork-render-spike`。四个 feature 互斥，默认是 FemtoVG。换渲染器时要关掉默认 feature：
 
 ```text
@@ -32,22 +24,3 @@ cargo run -p hotcorner --release -- run --scheme poll --interval-ms 100 --monito
 ```
 cargo run -p lanwork-sample --release -- sample --pid <pid> --duration-secs 300 --interval-ms 1000 --out sample.csv
 ```
-
-cargo run -p toast --release -- help
-cargo run -p toast --release -- register installed
-cargo run -p toast --release -- register portable
-cargo run -p toast --release -- unregister
-cargo run -p toast --release -- status
-cargo run -p toast --release -- serve
-cargo run -p toast --release -- show todo-001
-cargo run -p toast --release -- show todo-001 --repeat 3
-cargo run -p toast --release -- clear-history
-cargo run -p toast --release -- activation-check
-cargo run -p toast --release -- self-check
-
-`activation-check` 不点击通知，也不写 HKCU。它在本进程创建模拟面板，再用另一个进程 `CoCreateInstance` 激活器并调用 `Activate`。本机已经有 `toast.exe` 时，它不注册产品 CLSID，只注册一个内存里的探测 CLSID，避免抢走正在运行的服务器。`self-check` 会先做这一步，再做注册表往返；结束时仍会注销 spike 的 HKCU 项。
-
-cargo run -p urldrop -- self-test
-cargo run -p urldrop -- drop
-
-`drop` 打开窗口，等 Chrome 或 Edge 把地址栏锁图标或页面链接拖进来。步骤和要贴回去的日志写在 `spikes/urldrop/README.md`。`self-test` 不用浏览器。2026-10-13 的锁图标和页面链接已通过。收纳界面仍不识别网址。

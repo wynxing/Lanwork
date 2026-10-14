@@ -1,6 +1,7 @@
 # 实现状态
 
-行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析也在 `crates/core`（`parse_todo_due_prefix`），包括已写入产品规格的星期、下周和月底边界。规格缺口 #9 的各项可见行为已写入产品规格。便签服务在 `crates/core`（`lanwork_core::notes`）。待办服务在 `crates/core`（`lanwork_core::todos`）：清单、收件箱、周期、软删除与恢复、当前标记、处理模式和跨清单移动已有代码；永久删除只在回收站、满 30 天自动清除（删除前写入 `todo-purge-pending.json`）、原清单已删除时回到收件箱、每月 31 日在小月落到月末后下一次仍按原来的日子、重复截止日当天不再生成、取消完成（下一次仍是当时生成的才删除；已改过或已完成时不删除，仍待定），服务已实现。29 日或 30 日在目标月不存在时仍不猜测。收纳服务在 `crates/core`（`lanwork_core::shelves`）：分组、路径引用、去重、待办关联和存在性检查已有代码。网页引用于 2026-10-13 写入产品规格，排在 v0.2.0 之后。有代码，未在 Windows 上验收。技术验证「网址拖放」已通过：锁图标和页面链接，Chrome 与 Edge。`text/uri-list` 没有出现。浏览器扩展仍没有代码。待办悬浮窗于 2026-10-13 写入产品规格，已有代码，未在 Windows 上验收。关联待办时弹出搜索框并点击关联，已写入产品规格。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，产品规格仍未写。永久删除前写入 `todo-purge-pending.json`，收纳订阅后解除记录里已经不在清单中的关联；订阅前丢掉的 `Purged` 和写盘后中断都靠这份记录补上。读取时把残留 id 视为无关联仍未做，避免把尚不存在的待办 id 一起定掉。应用索引在 `crates/core` 的 `apps`。本地化显示名、排除启动文件夹、卸载过滤、Steam 与 Epic 的 `.url`、便携应用、别名和隐藏已有核心实现。搜索条应用结果的右键菜单已实现：以其他用户身份运行、以管理员身份运行、打开文件所在文件夹、打开目标文件夹、隐藏。Ctrl+Enter 和 Ctrl+Shift+Enter 以管理员身份运行。隐藏写入 user-apps.json，设置页「隐藏的应用」可以恢复。便携应用、别名和手动刷新的界面尚未实现。文件索引在 `crates/core`（`lanwork_core::files`）：Everything 与 Windows Search 的状态、查询和切换已有代码，界面尚未调用。查询调度在 `lanwork_core::dispatch`：待办与便签内存索引、序号、60ms 后的文件请求、分组配额、进程内使用次数、图标缓存和结果延迟记录。搜索条已调用，面板尚未调用。备份与导入在 `lanwork_core::backup`：每天第一次启动的自动备份、自动和手动合计最多 7 份、`user-apps.json` 进入导出和备份、导入中断后的恢复已有代码。设置里的备份、导出和导入界面尚未调用。没有按测量协议采样。测量工具的代码已在仓库中，协议记录仍空着。Everything 与 Windows Search 的记录见下表。外部拖放的通过条件表七条都已通过，产品用 OLE。2026-10-09 10:56（UTC+8）在 `3311ecc` 上长路径拖入通过，走的是 `SHCreateShellItemArrayFromDataObject` 的退路。同日 14:10–14:24（UTC+8）条件 7 记为通过，次数是用户估计。`--slint` 拖放仍没有路径。中文输入法在 2026-10-10 于 `52b5a3b` 记为通过（附已知问题）：跨 DPI 拖动松手后候选窗仍不显示，再输入一个字母后重新出现，用户判定可接受，不再继续修。网址拖放已通过，见下表。背景、渲染器、通知和热角仍未整项通过。程序外壳已有代码：单实例、托盘、全局热键、`config.json`、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板宿主。搜索条有代码（#21）：热键显示与收起、亚克力或纯色背景、结果列表、键盘选择和打开，见 architecture.md「搜索条」。它写在技术验证「背景」「渲染器」通过之前，这两项仍未通过，搜索条也没有 Windows 上的验收记录。面板有代码（#23、#24 的一部分）：标签框架、待办页，托盘「打开面板」「设置」、面板热键和搜索条的待办结果会打开面板并定位，见 architecture.md「面板」。它同样写在「背景」「渲染器」通过之前，没有 Windows 上的验收记录。面板搜索框和设置页只有开机启动、热角、搜索条热键三项，其余设置项，以及收集预览和提交，仍没有代码。便签页、便签悬浮窗、收纳页和收纳分组悬浮窗已有代码，没有 Windows 验收记录，细节见下面界面表。热角已接入 `lanwork.exe`：判定在 `lanwork_core::shell::hotcorner`，50ms 轮询、全屏抑制和角内 `GetAsyncKeyState(VK_LBUTTON)` 在 `crates/app`。按住鼠标左键（含拖动窗口经过角）时不计停留、不打开。没有 Windows 验收，这条也没有对 `lanwork.exe` 的验收。
+行为以 [product.md](product.md) 为准。本文只记录有没有代码和验证记录。工程骨架已在仓库中。搜索条前缀分类的纯函数在 `crates/core`（`search::classify_prefix`）。匹配引擎也在 `crates/core` 的 `search`。待办收集的日期前缀解析保留在 `crates/core`（`parse_todo_due_prefix`），待办快速收集（`+`）已放弃，便签快速收集（`/note`，#37）仍计划中。规格缺口 #9 的各项可见行为已写入产品规格。便签服务在 `crates/core`（`lanwork_core::notes`）。待办服务在 `crates/core`（`lanwork_core::todos`）：清单、收件箱、周期、软删除与恢复、当前标记、处理模式和跨清单移动已有代码；永久删除只在回收站、满 30 天自动清除（删除前写入 `todo-purge-pending.json`）、原清单已删除时回到收件箱、每月 31 日在小月落到月末后下一次仍按原来的日子、重复截止日当天不再生成、取消完成（下一次仍是当时生成的才删除；已改过或已完成时不删除，仍待定），服务已实现。29 日或 30 日在目标月不存在时仍不猜测。收纳服务在 `crates/core`（`lanwork_core::shelves`）：分组、路径引用、去重、待办关联和存在性检查已有代码。网页引用于 2026-10-13 写入产品规格，排在 v0.2.0 之后。有代码，未在 Windows 上验收。技术验证「网址拖放」已通过：锁图标和页面链接，Chrome 与 Edge。`text/uri-list` 没有出现。浏览器扩展仍没有代码。待办悬浮窗于 2026-10-13 写入产品规格，行为已定稿，已有代码，未在 Windows 上验收。关联待办时弹出搜索框并点击关联，已写入产品规格。已有分组但未指定目标、再次关联另一条待办、关联到尚不存在的待办 id，产品规格仍未写。永久删除前写入 `todo-purge-pending.json`，收纳订阅后解除记录里已经不在清单中的关联；订阅前丢掉的 `Purged` 和写盘后中断都靠这份记录补上。读取时把残留 id 视为无关联仍未做，避免把尚不存在的待办 id 一起定掉。应用索引在 `crates/core` 的 `apps`。本地化显示名、排除启动文件夹、卸载过滤、Steam 与 Epic 的 `.url`、便携应用、别名和隐藏已有核心实现。搜索条应用结果的右键菜单已实现：以其他用户身份运行、以管理员身份运行、打开文件所在文件夹、打开目标文件夹、隐藏。Ctrl+Enter 和 Ctrl+Shift+Enter 以管理员身份运行。隐藏写入 user-apps.json，设置页「隐藏的应用」可以恢复。便携应用、别名和手动刷新的界面尚未实现。文件索引在 `crates/core`（`lanwork_core::files`）：Everything 与 Windows Search 的状态、查询和切换已有代码，界面尚未调用。查询调度在 `lanwork_core::dispatch`：待办与便签内存索引、序号、60ms 后的文件请求、分组配额、进程内使用次数、图标缓存和结果延迟记录。搜索条已调用。备份与导入在 `lanwork_core::backup`：每天第一次启动的自动备份、自动和手动合计最多 7 份、`user-apps.json` 进入导出和备份、导入中断后的恢复已有代码。设置里的备份、导出和导入界面尚未调用。没有按测量协议采样。测量工具的代码已在仓库中，协议记录仍空着。Everything 与 Windows Search 的记录见下表。外部拖放的通过条件表七条都已通过，产品用 OLE。长路径拖入已通过，走的是 `SHCreateShellItemArrayFromDataObject` 的退路。条件 7 记为通过，无按次句柄泄漏。中文输入法在 2026-10-10 于 `52b5a3b` 记为通过（附已知问题）：跨 DPI 拖动松手后候选窗仍不显示，再输入一个字母后重新出现，用户判定可接受，不再继续修。网址拖放已通过，见下表。背景、渲染器、通知和热角仍未整项通过。程序外壳已有代码：单实例、托盘、全局热键、`config.json`、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板宿主。搜索条有代码（#21）：热键显示与收起、亚克力或纯色背景、结果列表、键盘选择和打开，右键菜单与 Ctrl+Enter 管理员运行已完成（#102），见 architecture.md「搜索条」。它写在技术验证「背景」「渲染器」通过之前，这两项仍未通过，搜索条也没有 Windows 上的验收记录。面板有代码（#23、#24 的一部分）：标签框架、待办页，托盘「打开面板」「设置」和搜索条的待办结果会打开面板并定位，见 architecture.md「面板」。它同样写在「背景」「渲染器」通过之前，没有 Windows 上的验收记录。设置页只有开机启动、热角、搜索条热键和「隐藏的应用」四项，其余设置项（面板热键与设置页回收站已放弃）仍没有代码。便签页、便签悬浮窗、收纳页和收纳分组悬浮窗已有代码，没有 Windows 验收记录，细节见下面界面表。热角已接入 `lanwork.exe`：判定在 `lanwork_core::shell::hotcorner`，50ms 轮询、全屏抑制和角内 `GetAsyncKeyState(VK_LBUTTON)` 在 `crates/app`。按住鼠标左键（含拖动窗口经过角）时不计停留、不打开已实现（#100）。剩余全屏抑制复测（针对 `lanwork.exe`）及 5 分钟移动/静止 CPU 采样待 Windows 验收。
+
 ## 测量工具
 
 | 项 | 状态 |
@@ -36,123 +37,17 @@
 | 中文输入法 | 2026-10-08～09，100% 缩放下单行、多行、候选窗、拖动后的候选窗、Enter 和数字键没有问题。2026-10-10 在 DESKTOP-HDJS01V 上复测 main `52b5a3b`（含 #74），主屏 100%、副屏 150%：外框不再变形、preedit 保留，跨 DPI 拖动松手后候选窗仍不显示、再输入一个字母后重新出现，用户判定可接受，条件 5 与该项记为「通过（附已知问题）」。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | 背景 | 2026-10-09 至 2026-10-10。四种渲染器在 DESKTOP-7C3P6OG 上是磨砂并能透出背景，主题切换、关闭透明效果和节电通过，产品搜索条的亚克力与关闭透明效果后的纯色也由用户确认。透明渲染失败时退回纯色仍未满足，独显只有 FemtoVG 场景 A 的目视，这一项仍未通过。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | 渲染器 | 2026-10-08 至 2026-10-10。核显上 FemtoVG、Skia 软件、Skia OpenGL 和软件渲染各有空面板与 200 行列表的约 60 秒采样，文字目视清楚，但独显只补了 FemtoVG 场景 A，内存数字和没有 OpenGL 时退回软件渲染都未凑齐。默认 FemtoVG 已写入 architecture.md「运行时」，这一项仍未通过。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
-| 外部拖放 | 通过条件表七条都通过，产品用 OLE。`--slint` 拖放仍失败，没有路径。2026-10-09 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。见下方「外部拖放」。 |
-| 网址拖放 | 通过。2026-10-13，`spikes/urldrop`，手测构建 `4e1ec404755b1d4e77bec38cb0cc7f6ecb5fa256`。Chrome 与 Edge 的地址栏锁图标各 5 次，以及页面链接（次数未提供），都取出了网址，chosen-effect 为 copy，标签留在原处。锁图标那次没有 `CF_HTML`，网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。页面链接的 `CF_HTML` 链接地址是 `https://github.com/1024XEngineer/neo-code`，文档标题为空，标题是链接文字，与 `FileGroupDescriptorW` 文件名去掉末尾 `.url` 相同。`text/uri-list` 在锁图标和页面链接里都没有出现。不读取 `FileContents`。机器、Windows build、GPU 与驱动、构建配置未提供。Slint 未使用。收纳悬浮窗不在这项通过标准里。外部拖放的通过条件表只覆盖文件，不覆盖这一项。收纳网页引用有代码，未在 Windows 上验收 |
+| 外部拖放 | 通过条件表七条均已通过，采用原生 OLE 实现，无按次句柄泄漏，主程序待 Windows 验收。原始记录见 commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
+| 网址拖放 | 通过。2026-10-13 手测构建 `4e1ec404755b1d4e77bec38cb0cc7f6ecb5fa256`。Chrome 与 Edge 的地址栏锁图标各 5 次，以及页面链接，都取出了网址，chosen-effect 为 copy，标签留在原处。锁图标那次没有 `CF_HTML`，网址在 `CF_UNICODETEXT` 和 `UniformResourceLocatorW`。页面链接的 `CF_HTML` 链接地址是 `https://github.com/1024XEngineer/neo-code`，文档标题为空，标题是链接文字，与 `FileGroupDescriptorW` 文件名去掉末尾 `.url` 相同。`text/uri-list` 在锁图标和页面链接里都没有出现。不读取 `FileContents`。收纳悬浮窗不在这项通过标准里。外部拖放的通过条件表只覆盖文件，不覆盖这一项。收纳网页引用有代码，未在 Windows 上验收。原始记录见 commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | Everything | 2026-10-09。Everything 1.4 与 1.5 都返回了文件名，并区分了未运行和未就绪。单次查询远低于 150 ms，但样本不是 100 次，也不含 60 ms 等待和界面渲染，不写「已达到」。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | Windows Search | 2026-10-09。文件名查询通过且正文不返回，100 个有效样本的 P95 为 52.705 ms，第一次 Execute 的 Private Bytes 增量为 454,656 字节，不含 60 ms 等待和界面渲染，不写「已达到」。同日 14:24（UTC+8）停止 `WSearch` 后查询失败（`hresult` 2147614729，`message` 为空）且没有崩溃，错误文案不能依赖空的 `message`。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
-| 通知 | 有记录，未通过。见下方「通知（#7）」 |
-| 热角 | 2026-10-08 至 2026-10-10。spike 上停留、离开再进入和静止 5 分钟有采样，2026-10-09 的移动 5 分钟里钩子与 50ms 轮询各 300 行（100ms 未测），产品用 50ms 轮询。副屏右上角的 50ms 轮询通过，但全屏时仍会触发，按住左键经过角不触发也还没有在 `lanwork.exe` 上复测，热角仍不算通过。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
+| 通知 | 安装版显示与点击定位验证通过，便携版按规格只提醒不定位，主程序完整集成待办到期通知待 Windows 验收。原始记录见 commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
+| 热角 | 2026-10-08 至 2026-10-10。spike 上停留、离开再进入和静止 5 分钟有采样，2026-10-09 的移动 5 分钟里钩子与 50ms 轮询各 300 行（100ms 未测），产品用 50ms 轮询。副屏右上角的 50ms 轮询通过。按住左键拖动窗口经过角不触发已在 `lanwork.exe` 实现（#100）。剩余全屏抑制复测（针对 `lanwork.exe`）以及 5 分钟移动/静止 CPU 采样待 Windows 验收，热角仍未整项通过。原始记录见 commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 | 空窗口采样 | 2026-10-08，commit `0b7fd5f`，release：脚本通过，300 行，首尾 298.989 秒，Private Bytes 峰值 49,729,536 字节，工作集峰值 77,799,424 字节，平均 CPU 0.204%，唤醒平均 69.150/秒，句柄 326–343，USER 23，GDI 17。没有加载协议规定的固定数据，不是性能测量验收，也不算「已达到」。raw records in git history at commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。 |
 
 ## 通知（#7）
 
-这项没有通过。下面有任何一条不是「通过」，整项就不通过。2026-10-09 所有者在 `2758d18` 的 release、正常 `target` 上亲手做完步骤。安装版的显示和两种点击通过；便携版能显示，但运行中点击和退出后点击失败。因此整项仍不通过，#7 不关闭。产品规格已写明：便携版通知只显示提醒，点击不定位。
-
-### 环境
-
-| 字段 | 值 |
-| --- | --- |
-| 日期 | 2026-10-08 的自动检查；2026-10-09 激活修复的自动检查，以及同日所有者的人工步骤 |
-| commit | 人工步骤跑在 `2758d1849ff4bd72ab1e1e7a5600c84376c481aa`，release，正常 `target`。该提交只补了记录里的哈希，程序与 `fa20baa2cf82952c4c0641bffe0e7431a90d42a3` 相同。spike 源码 rebase 之后是 `b598419`（rebase 前 `07888db93f9b90a8dee0a303783b57a5be3fbddb`）。2026-10-08 的自动检查跑在 rebase 前的那棵源码上 |
-| Slint 精确版本 | 1.18.1。本 spike 不链接 Slint |
-| 渲染器 | 不适用 |
-| 机器 | 13th Gen Intel Core i5-13420H |
-| Windows build | Windows 11 家庭中文版 64 位，DisplayVersion 26H2，10.0.26300.9550（CurrentBuild 26300，UBR 9550）。注册表 ProductName 仍写着 Windows 10 Home China |
-| GPU 与驱动 | Intel UHD Graphics，驱动 32.0.101.6733（2025-04-02）；另有 Virtual Display Driver 11.30.4.434（2024-12-24）、GameViewer Virtual Display Adapter 15.6.5.199（2026-02-28） |
-| 构建配置 | `cargo test` 为 debug。2026-10-08 的自动检查、未注册时的 `show` 回退为 release：`target\release\toast.exe`。2026-10-09 修复后的自动 `activation-check` 用了另一个 `CARGO_TARGET_DIR`。同日人工步骤用的是 `2758d18` 的 release、正常 `target` |
-
-标识只属于这个 spike：AUMID `Lanwork.Spike.Toast`，CLSID `{DEC1C43B-2AAC-400F-A0B1-C17A05F2B409}`，显示名「Lanwork 通知验证」。快捷方式是 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Lanwork Toast Spike.lnk`。日志是 `%TEMP%\lanwork-spike-toast.log`。只写 HKCU，不写 HKLM，不用管理员。
-
-### 自动观察
-
-2026-10-08 在上述 release 程序上运行 `cargo run -p toast --release -- self-check`，进程退出码 0。随后 `status` 为「未注册」，快捷方式文件不存在，`HKCU\Software\Classes\AppUserModelId\Lanwork.Spike.Toast` 和 `HKCU\Software\Classes\CLSID\{DEC1C43B-2AAC-400F-A0B1-C17A05F2B409}` 都不存在。`clear-history` 再执行一次，打印「已清除该 AUMID 的通知历史」。这些都不是屏幕上看到通知。
-
-| 观察 | 结果 |
-| --- | --- |
-| `SHQueryUserNotificationState` | 5（`QUNS_ACCEPTS_NOTIFICATIONS`）。这不是 Windows 11「请勿打扰」的测试，也没有改请勿打扰 |
-| 清理后的判定 | 未注册 |
-| 未注册时直接调用 `Show`（只在 self-check 里探测，不是 `show` 命令的路径） | `Show[0] = S_OK`，约 400ms 后 `GetHistoryWithId` 条数 = 1。没有看屏幕 |
-| 未注册时 `Shell_NotifyIcon` ADD / MODIFY / DELETE | 三次都返回 TRUE。徽标只做了往返，没有停留，没有看托盘 |
-| 安装版读回 | 判定为安装版。DisplayName、CustomActivator、LocalServer32（带引号的当前 exe）、快捷方式 AUMID 和快捷方式 CLSID 都与写入一致 |
-| 安装版单次 `Show`，无 Tag | `S_OK`，历史条数 = 1 |
-| 安装版同一 id 连续 3 次，无 Tag | 三次 `S_OK`，历史条数 = 3 |
-| 安装版同一 id 连续 3 次，Tag=`todo-001`，Group=`lanwork-spike` | 三次 `S_OK`，历史条数 = 1 |
-| 安装版 `unregister` 之后 | 未注册 |
-| 便携版读回 | 判定为便携版。有 DisplayName。没有 CustomActivator、LocalServer32、快捷方式 |
-| 便携版单次 `Show`，无 Tag | `S_OK`，历史条数 = 1 |
-| 便携版同一 id 连续 3 次，无 Tag | 三次 `S_OK`，历史条数 = 3 |
-| 便携版同一 id 连续 3 次，带上述 Tag/Group | 三次 `S_OK`，历史条数 = 1 |
-| 便携版 `unregister` 之后 | 未注册 |
-| 未注册时运行 `show todo-001` | 退出码 0。打印「注册缺失，不调用 ToastNotificationManager.Show，只显示托盘徽标」，约 15 秒后打印「托盘徽标已移除」。没有看托盘 |
-
-历史条数是 `GetHistoryWithId` 的返回，不是通知中心里肉眼看到的叠放。`S_OK` 也不等于通知出现在屏幕上。
-
-### 2026-10-09 人工点击时暴露的 spike 缺陷
-
-所有者在安装版注册下开着 `serve`，`show todo-001` 的通知能显示。点击之后面板没有出现。`%TEMP%\lanwork-spike-toast.log` 没有 `COM Activate` 行。DcomLaunch 另外拉起了 `toast.exe -Embedding`。那个进程也只记了注册和「模拟面板启动」，没有 `Activate`。两个 `LanworkToastSpikePanel` 的 `IsWindowVisible` 都是 false，窗口样式是 `0x04CF0000`，没有 `WS_VISIBLE`。`status` 读快捷方式时报 `CoCreateInstance: 尚未调用 CoInitialize (0x800401F0)`。这些是 spike 自己的缺陷。下面的通过条件表没有因此改成通过。
-
-根因有两处。类工厂和回调用了 `#[implement]` 的默认 agile，也就是 `IAgileObject` 加自由线程封送。通知平台在另一个进程里 `CoCreateInstance`。自由线程封送的数据包是进程内指针，跨进程解封送失败，所以正在运行的 `serve` 进不了 `CreateInstance` / `Activate`。SCM 再按 `LocalServer32` 启动 `-Embedding`，新进程是同一套工厂，`Activate` 还是到不了。`-Embedding` 确实进了 `serve`。AUMID、CLSID 和快捷方式里的 `ToastActivatorCLSID` 当时是一致的。另外，注册只用了 `REGCLS_MULTIPLEUSE`，发生在窗口和消息循环之前；STA 上的调用要等消息泵。面板只调用了一次 `ShowWindow`。控制台程序和 COM 拉起的本地服务器经常带 `STARTF_USESHOWWINDOW` 且 `wShowWindow = SW_HIDE`，第一次 `ShowWindow` 会改用这个值，窗口就一直没有 `WS_VISIBLE`。`status` 则是在没有 `CoInitializeEx` 的线程上 `CoCreateInstance`。
-
-修复之后，激活器不再 agile。`CoRegisterClassObject` 使用 `REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED`，窗口显示后 `CoResumeClassObjects`，再进入消息循环。`Activate` 里先写 `COM Activate launch=...`，再 `ShowWindow` 两次、`SetWindowPos(SWP_SHOWWINDOW)` 和 `SetForegroundWindow`。面板标题和状态含「已定位 todo-00N」。`status` 读快捷方式前初始化 COM；线程上已经有套间时不再多调用一次 `CoUninitialize`。
-
-### 激活修复的自动观察
-
-2026-10-09 在独立构建目录的 release `toast.exe` 上运行 `activation-check`，退出码 0。当时所有者的 `toast.exe` 仍在运行（`serve` 和 `-Embedding`），所以这条自检没有向 SCM 注册产品 CLSID，也没有改 HKCU。它注册的是只活在该进程里的探测 CLSID `B7E3A1C2-4D55-4E18-9A60-2F6C8D0E11A7`。
-
-同一程序再用 `STARTF_USESHOWWINDOW`、`wShowWindow = 0`（`SW_HIDE`）启动一次，退出码仍是 0。日志里第一次 `ShowWindow` 之前窗口是隐藏的（两次 `ShowWindow` 的返回值都是 0），调用之后 `IsWindowVisible=true`，样式为 `0x14CF0000`。
-
-| 观察 | 结果 |
-| --- | --- |
-| 进程内 `CreateInstance` + `Activate("todo-001")` | 日志有 `COM Activate launch=todo-001`。标题含「已定位 todo-001」，状态是「已定位 todo-001　买牛奶」。`IsWindowVisible=true`。这不是点击通知 |
-| 另一个进程 `CoCreateInstance` 探测 CLSID，再 `Activate("todo-003")` | 日志有 `COM Activate launch=todo-003`。标题含「已定位 todo-003」，状态是「已定位 todo-003　交电费」。`IsWindowVisible=true`。产品 CLSID 这次没有注册，因为已有 `toast.exe` |
-| `SW_HIDE` 启动后的窗口 | `activation-check` 退出码 0，创建后 `IsWindowVisible=true` |
-| `status` | 退出码 0。日志有 `CoInitializeEx STA hr=0x00000000`，没有 `0x800401F0`。快捷方式的 AUMID 和 CLSID 能读回。判定是「部分注册」：`LocalServer32` 仍指向所有者正在运行的那个 exe，当前程序在另一个构建目录，路径对不上。没有改注册表 |
-
-这次没有跑完整的 `self-check`，因为它会注销并重写 HKCU。所有者机器上的安装版注册保持原样。
-
-### 通过条件
-
-2026-10-09，所有者，`2758d18`，release，正常 `target`。安装版先 `register installed`，`status` 为「安装版」，`activation-check` 退出码 0。便携版是 `unregister` 之后 `register portable`，`status` 为「便携版」，没有 CustomActivator、LocalServer32、快捷方式。做完后已 `unregister`，`status` 为「未注册」。
-
-| 条件 | 结果 | 所有者观察 |
-| --- | --- | --- |
-| 安装版：通知能显示 | 通过 | 所有者看到通知 |
-| 安装版：进程运行中点击，面板定位到该条，并收到待办 id | 通过 | `serve` 运行中点击 `todo-001`。面板到前台，标题含「已定位 todo-001」，该行选中。日志 `02:40:12.576 COM Activate launch=todo-001` |
-| 安装版：进程已退出后点击，重新打开并定位到该条，并收到待办 id | 通过 | 点击 `todo-002`。日志 `02:40:46.356` 的 `serve` 参数含 `-Embedding`，`02:40:46.450 COM Activate launch=todo-002`。所有者看到拉起并定位 |
-| 便携版：通知能显示 | 通过 | 有横幅 |
-| 便携版：进程运行中点击，面板定位到该条，并收到待办 id | 失败 | 面板没有定位，没有选中。日志没有任何 `COM Activate` |
-| 便携版：进程已退出后点击，重新打开并定位到该条，并收到待办 id | 失败 | 点击 `todo-002` 没有拉起进程 |
-| 同一待办多次提醒时，系统是否把通知叠放 | 已观察 | 安装版：无 Tag 的 `--repeat 3` 在通知中心是 3 条；`--tag todo-001` 是 1 条。便携版：无 Tag 3 条；带 Tag 1 条 |
-| 请勿打扰打开时，通知如何表现 | 已观察 | 请勿打扰开启时，安装版 `show todo-003`：不弹横幅，通知中心里有这条 |
-| 缺失注册时不崩溃，并退回托盘逾期徽标 | 通过 | `show todo-001` 的日志是「注册缺失，不调用 ToastNotificationManager.Show，只显示托盘徽标」，约 15 秒后「托盘徽标已移除，进程正常退出」。截图里托盘有蓝底、写着「1」的小图标。文字「逾期 1」是否在提示里，没有确认 |
-| 托盘徽标代替到期通知 | 失败（不能代替） | 不把徽标算成通知通过 |
-
-模拟面板在单元测试里会按 id 选中对应行：`todo-003` 选中「交电费」，未知 id 不选中，空参数保持等待。这只说明函数行为。安装版点击时，所有者看到了对应行被选中。便携版运行中点击没有选中。正式待办页的定位不在本记录里，属于 #25。
-
-便携版运行中点击和退出后点击都失败。产品规格已写明：便携版通知只显示提醒，点击不定位。
-
-### 重测时要先卸掉旧的本地服务器
-
-2026-10-09 第一次按新程序重编译时，一个旧的 `toast.exe -Embedding` 被 DcomLaunch 反复拉起，占住 exe，链接报 `os error 5`。先 `unregister`，再结束那个进程，然后才能编译。不要留着旧的 `-Embedding` 再 `register`。换过构建目录后也要重新 `register`，否则 `LocalServer32` 仍指向旧 exe。
-
-上面的人工步骤已经在 `2758d18` 做过，结果见「通过条件」。若再做一遍，命令仍用 release。`activation-check` 不能代替亲眼看到的显示、点击、叠放、请勿打扰和托盘图标。
-
-1. `cargo build -p toast --release`
-2. 安装版显示：`cargo run -p toast --release -- register installed`，然后 `status`，确认判定是「安装版」。再 `cargo run -p toast --release -- show todo-001`。看通知中心或右下角有没有「待办到期」，正文含 `todo-001` 和「买牛奶」。把看到的写进「安装版：通知能显示」。控制台里的 `S_OK` 不算。
-3. 安装版、进程还在时点击：另开一个终端，`cargo run -p toast --release -- serve`，让模拟面板保持打开。再 `cargo run -p toast --release -- show todo-003`。点击那条通知。要同时看到：面板可见并到前台；标题含「已定位 todo-003」；列表选中「todo-003 交电费」；`%TEMP%\lanwork-spike-toast.log` 有 `COM Activate launch=todo-003`。只收到这串字、列表没有选中该行，定位不通过。不要再出现第二个没有 `Activate` 日志的 `-Embedding` 进程。
-4. 安装版、进程退出后点击：关掉模拟面板，确认 `serve` 已经退出。上一条通知会被点击消掉，所以再 `cargo run -p toast --release -- show todo-002`。点击它。应重新出现面板，并选中「todo-002 写周报」，终端有 `launch=todo-002`。冷启动时先有控制台窗口，这是 spike 用了控制台子系统，单独记一笔，不因此改判定。
-5. 便携版不要沿用安装版的结果。先 `cargo run -p toast --release -- unregister`，再 `register portable`，`status` 必须是「便携版」，且没有快捷方式、CustomActivator、LocalServer32。然后按第 2、3、4 步各做一次，分别填便携版的显示、运行中点击、退出后点击。退出后点击如果拉不起进程，就记失败，不要补快捷方式再试。
-6. 叠放：在安装版注册下执行 `cargo run -p toast --release -- show todo-001 --repeat 3`，看通知中心是三条还是被收成一条。再执行 `show todo-001 --repeat 3 --tag todo-001`，再看一次。便携版再各做一遍。历史条数已经写在自动观察里，这里只填眼睛看到的。
-7. 请勿打扰：打开「设置 → 系统 → 通知」，打开「请勿打扰」。在安装版注册下 `show todo-001`。写下通知有没有出现、有没有进通知中心。然后关掉请勿打扰。不要改 Focus Assist 的注册表。
-8. 缺失注册的托盘：`unregister` 之后 `show todo-001`。确认进程退出码是 0，没有弹出到期通知，托盘上出现蓝底、写着「1」的小图标，大约 15 秒后消失。文字「逾期 1」是否在提示里，没有确认。
-
-第 2 到第 8 步已在 2026-10-09 做完。实际点的是哪条、通知中心里有几条、请勿打扰和托盘各看到什么，以「通过条件」表为准。表里没有写成通过的，不要补成通过。
-
-### 清理
-
-自动检查结束时，这台机器上的 spike 注册已经去掉。若通知中心还留着「Lanwork 自动检查」或「待办到期」，在通知中心里清掉，或运行 `cargo run -p toast --release -- clear-history`。
-
-2026-10-09 所有者做完步骤后已经 `unregister`，`status` 为「未注册」。这会删除上面的快捷方式、AUMID 键和 CLSID 键，并尝试清除该 AUMID 的通知历史。不删除其他程序的通知。卸载产品时的清理属于 #31。安装程序现在会删产品自己的快捷方式、HKCU 键和 Run 值，见「发布」。上面的通过条件不因此改成通过。
+安装版显示与点击定位验证通过，便携版按规格只提醒不定位，主程序完整集成待办到期通知待 Windows 验收。原始测试记录见 commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。
 
 ## 发布
 
@@ -162,30 +57,30 @@
 
 ## v0.2.0 之后
 
-下面三项排在 v0.2.0 之后。规格已写。收纳网页引用有代码，未在 Windows 上验收。技术验证「网址拖放」已通过，见上表。浏览器扩展仍没有代码。
+下面三项排在 v0.2.0 之后。规格已写。收纳网页引用有代码，未在 Windows 上验收。技术验证「网址拖放」已通过。浏览器扩展仍没有代码。
 
 | 项 | 规格 | 代码 |
 | --- | --- | --- |
 | 外部 AI（本机 MCP） | [external-ai.md](external-ai.md) | 无 |
 | 扩展页与插件 | [extensions.md](extensions.md) | 无 |
-| 收纳网页引用 | [product.md](product.md)「收纳」 | 有代码，未在 Windows 上验收。2026-10-13 写入规格。一条含网址、标题和网站图标，只存引用，不关闭、不移动浏览器标签。打开用默认浏览器重新打开。全部收纳里同一网址只保留一条：协议和主机名小写，去掉路径末尾的一个斜杠。搜索结果里会出现，类型「网页」，排在便签之后、文件之前。第一版接受拖入的地址栏锁图标或页面链接。接受的格式是 `CF_HTML`、纯文本 `CF_UNICODETEXT`、`UniformResourceLocatorW`、`text/x-moz-url`。标题取 `FileGroupDescriptorW` 文件名去掉末尾 `.url`；页面链接的标题是链接文字，与该文件名相同。收纳悬浮窗同样接受。一键浏览器扩展更晚，先做 Chrome。网站图标在拖入保存后以及列出或打开该条时后台获取，失败则图标位留空，缓存可重建且不进导出和备份，仍未在 Windows 上验收。其余待定见产品规格。依赖技术验证「网址拖放」。验证程序在 `spikes/urldrop`。技术验证「网址拖放」已通过。`text/uri-list` 没有出现。有代码，未在 Windows 上验收。浏览器扩展仍没有代码 |
+| 收纳网页引用 | [product.md](product.md)「收纳」 | 有代码，未在 Windows 上验收。一条含网址、标题和网站图标，只存引用，不关闭、不移动浏览器标签。打开用默认浏览器重新打开。全部收纳里同一网址只保留一条。第一版接受拖入地址栏锁图标或页面链接（支持 `CF_HTML`、`CF_UNICODETEXT`、`UniformResourceLocatorW`、`text/x-moz-url`），收纳悬浮窗同样接受。网站图标后台获取，失败留空，缓存不进导出和备份。一键浏览器扩展更晚，先做 Chrome，尚无代码。 |
 
 ## 界面
 
 | 界面 | 规格位置 | 代码 |
 | --- | --- | --- |
 | 程序外壳 | [architecture.md](architecture.md)「程序外壳」 | 有。单实例、托盘、全局热键、主题、开机启动，以及隐藏的搜索条和面板。面板见下一行；设置页有开机启动、热角、搜索条热键和「隐藏的应用」，见设置那一行。热角已接入，关闭时停止轮询，搜索条热键仍注册。没有 Windows 验收 |
-| 搜索条、搜索（搜索条内） | [product.md](product.md)「搜索条」「搜索」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。应用结果右键菜单（以其他用户身份运行、以管理员身份运行、打开文件所在文件夹、打开目标文件夹、隐藏）和设置页「隐藏的应用」已有代码，未在 Windows 上验收；待办结果按 Enter 会打开面板并定位，便签结果 Enter 打开面板并定位、Ctrl+Enter 悬浮（均未在 Windows 上验收）。2026-10-10 用户在 DESKTOP-7C3P6OG 上运行 PR #77 头 `873c5cc` 的 release：外观、应用去重、商店应用图标、文件和文件夹的路径行、匹配加粗、Alt+数字、网页搜索确认没问题；关闭「透明效果」后呼出为纯色、没有黑框，切换系统深浅色后颜色跟随。未测：节电模式、没有 OpenGL 时退回软件渲染。输入像网址时第一条是「打开网址」，没写协议补 `https://`；面板搜索框仍无，调度对面板输入已按同一规则给出这一条。可以拖动并记住位置（`config.json` 的 `searchBarOrigin`，旧配置没有该字段时仍用默认位置）；从哪里拖、按绝对坐标还是按当前屏幕记、屏幕变化或不在任何显示器内、是否提供恢复默认、是否受 DPI 影响，仍待定，临时做法见 [architecture.md](architecture.md)「搜索条」。结果列表最大高度按窗口实际 y 收到所在显示器工作区底边之上 24px，并与约 9 行取较小值；靠近底边放不下时列表高度暂时为 0，仍待定。没有 Windows 上的拖动验收。收纳网页引用会出现在搜索里，类型「网页」，排在便签之后、文件之前；这一组排在 v0.2.0 之后，调度里已有这一组，未在 Windows 上验收 |
-| 面板、待办页 | [product.md](product.md)「面板」「待办」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。有：标题栏与四个标签、清单与收件箱、新建、改标题、排序（上移下移）、完成、取消完成、软删除、回收站（恢复、永久删除、剩余天数）、到期日、提醒、周期与重复截止日、设为当前、打开来源、托盘与搜索条打开并定位、收纳标记与「打开关联收纳」。有热角（50ms 轮询，四角与关闭、多显示器、全屏抑制的判定已接入），没有 Windows 验收。没有：面板搜索框、处理模式、到期通知点击落点（#25）。待办页有「悬浮」按钮，窗口见下一行。没有 Windows 上的验收记录 |
-| 待办悬浮窗 | [product.md](product.md)「待办」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过；窗口外观沿用便签悬浮窗，写了也不改变这两项的记录。有：待办页「悬浮」按钮（回收站视图里也有）、全程序一个窗口、列出全部清单里未进回收站的待办（含已完成）、勾选走 `complete_item`、取消勾选走 `uncomplete_item`（含重复待办的下一次；已改过或已完成的下一次不删除，仍待定）、不能新建也不能改标题、逾期整行文字用现有 critical 色、空列表「没有待办」、始终在最上层、没有钉住按钮、位置大小贴边和叠页记在 `todo-float.json` 并进入导出备份白名单、不贴边时按整块屏幕重叠选显示器再收进该块工作区（拖动松手、再打开、改大小、内容撑大）、可以和便签收纳叠在同一叠、不在叠里时重启不自动打开。没有 Windows 验收，也没有内存和句柄测量。回收站是否列出、清单分段和行序、红色色值、默认和最小尺寸、拖动中是否禁止离开工作区、午夜重算、托盘热键和搜索入口，仍待定，当前做法见 [architecture.md](architecture.md)「待办悬浮窗」 |
-| 便签页、便签悬浮窗 | [product.md](product.md)「便签」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。有：新建、编辑、停止编辑 1 秒自动保存、输入法组合期间不保存、关闭或退出前保存失败时重试或放弃、两处同时改后选保留哪版、标签与置顶、删除进回收站并恢复或永久删除、悬浮窗（同篇只聚焦、位置大小写进便签文件并随导出备份、重启后恢复、拖动、改大小、再打开和内容撑大时整扇留在所在显示器工作区）、悬浮窗始终在最上层（没有钉住按钮；旧文件的 `floatPinned` 能读、不再写回）、贴边收成把手（`floatDock`，外侧左/右/上，共用边不贴，点把手展开、再点或失焦收回，拖离取消贴边；拖出屏幕先收进工作区，再只按越出的一侧判断贴边，边和收起状态随导出备份）、托盘「新建便签」、搜索条便签结果的面板定位与悬浮。待定：滑动、收起后拖动、独占全屏等。把手厚 3、长 40 逻辑像素，收起后窗口就是这块把手，半透明灰，见 [architecture.md](architecture.md)「悬浮窗始终在最上层，贴边收成把手」，没在 Windows 上看过。没有：快速收集提交后的悬浮重试（`open_saved` 已写，搜索条未接入）。叠页的产品规格从 2026-10-13 起包括待办悬浮窗；代码里的页包括待办悬浮窗（`StackPage::Todo`）。没有 Windows 上的验收记录，也没有悬浮窗的内存和句柄测量 |
-| 收纳页 | [product.md](product.md)「收纳」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。有：分组新建、重命名、上移下移、确认后删除；拖入文件和文件夹（OLE，只接受复制和快捷方式）、重复拖入由服务去重；条目的图标、名称、完整路径、「路径不存在」；Enter、双击和 Ctrl+Enter；拖出到资源管理器（只允许复制和快捷方式，Esc 取消）；移除引用；关联待办的搜索框（一个分组可关联多条待办，解除针对单条）；待办页的「打开关联收纳」和收纳标记；分组悬浮窗（每分组一个、再次悬浮只取得焦点、失焦不关闭、位置和大小存进分组数据、拖动改大小和内容撑大时留在工作区、始终在最上层、贴边收成把手（可选字段 `floatDock`，旧的 `floatPinned` 能读不再写回）、旧数据兼容、每个窗口单独登记和释放放下目标、拖入拖出和打开与面板一致；悬浮窗里可折叠的「关联待办」：默认收起，勾选完成走现有完成逻辑，点标题打开面板并定位待办；悬浮窗里的「移除引用」按钮；悬浮窗各块的布局有软件渲染的检查，在 CI 里跑，不替代 Windows 上的目视检查）。贴边的待定点同便签悬浮窗，见 [architecture.md](architecture.md)「悬浮窗始终在最上层，贴边收成把手」。叠页规格现包括待办悬浮窗，代码里的页包括待办悬浮窗（`StackPage::Todo`）。待定：悬浮入口按钮位置、默认大小位置、分组删除时悬浮窗怎么办、退出重开是否恢复悬浮窗；多条关联的显示、标记是否显示数量、关联待办展开状态是否记住、已完成或回收站里的关联待办在悬浮窗里怎么显示、排序、悬浮窗里能否取消完成、悬浮窗里移除引用除按钮外的触发方式和确认、「关联待办」标题行是否显示条数；关联待办时可选的待办范围和匹配方式、「打开所在目录」对文件夹条目的含义、拖出只拖一条，见 [architecture.md](architecture.md)「收纳页」。没有 Windows 上的验收记录，没有句柄数和内存的测量（悬浮窗反复打开关闭、拖入拖出的句柄数也没有测）；纯函数、分组悬浮位置存取和放下目标的单元测试在 CI 里跑，资源管理器互拖没有自动化。网页引用有代码，未在 Windows 上验收。网站图标后台获取，失败留空，缓存不进导出，仍未在 Windows 上验收。面板和收纳悬浮窗的放下目标接受文件、文件夹，以及「网页引用」里的网址格式。进入时只 `QueryGetData`。放下时先读网址格式；读到网址时不读取 `FileContents`，也不把虚拟 `.url` 存成路径。`FileGroupDescriptorW` 里有以 `.url` 结尾的文件名、但解析不出网址时拒绝，不读 `CF_HDROP`。验证程序在 `spikes/urldrop`。技术验证「网址拖放」已通过。`text/uri-list` 没有出现。有代码，未在 Windows 上验收。浏览器扩展仍没有代码 |
-| 设置（开机启动、热角、搜索条热键） | [product.md](product.md)「设置」 | 有代码，未验收，是 #28 的一部分。依赖的「背景」「渲染器」验证未通过。有：开机启动开关（先写 `config.json`，再写或删 `HKCU\...\Run` 的 `Lanwork`）、热角五选一（写盘后调用 `hotcorner::apply`）、搜索条热键录入（先注册、再写盘、再卸旧；非法、被占用、与面板热键相同时保留旧热键并显示错误；录入期间卸掉已注册的热键，结束时逐条注册回去；录入只有一个出口，失焦包括刚显示的宽限期内；注册不上的热键在面板打开时仍显示错误；换组合用新 id，换键后旧组合不再生效）、写盘失败时控件回到原值并显示错误。核心逻辑有单元测试，设置页的布局和点击有软件渲染的检查。有：「隐藏的应用」列表和每条的「恢复」，写入 user-apps.json。有检查更新：后台和「检查更新」按钮、有新版本时的托盘小点和发行说明、安装版「更新」（下载、SHA-256、静默安装、重新启动）、便携版「打开发布页」。没有：面板热键、安静时段、主题、网页搜索引擎、处理模式天数、番茄钟、数据目录、备份、导出、导入、回收站、「应用」页，以及 v0.2.0 之后的「外部 AI」。没有单独的「关于与更新」页。没有 Windows 上的验收记录，更新未验收；手测步骤见 PR 说明 |
-| 快速收集（搜索条内）、面板搜索 | [product.md](product.md) 对应各节 | 无 |
+| 搜索条、搜索（搜索条内） | [product.md](product.md)「搜索条」「搜索」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。应用结果右键菜单（以其他用户身份运行、以管理员身份运行、打开文件所在文件夹、打开目标文件夹、隐藏）及 Ctrl+Enter / Ctrl+Shift+Enter 管理员运行已完成（#21、#102），设置页「隐藏的应用」已有代码，未在 Windows 上验收；待办结果按 Enter 会打开面板并定位，便签结果 Enter 打开面板并定位、Ctrl+Enter 悬浮（均未在 Windows 上验收）。2026-10-10 用户在 DESKTOP-7C3P6OG 上运行 PR #77 头 `873c5cc` 的 release：外观、应用去重、商店应用图标、文件和文件夹的路径行、匹配加粗、Alt+数字、网页搜索确认没问题；关闭「透明效果」后呼出为纯色、没有黑框，切换系统深浅色后颜色跟随。未测：节电模式、没有 OpenGL 时退回软件渲染。输入像网址时第一条是「打开网址」，没写协议补 `https://`。可以拖动并记住位置（`config.json` 的 `searchBarOrigin`，旧配置没有该字段时仍用默认位置）；从哪里拖、按绝对坐标还是按当前屏幕记、屏幕变化或不在任何显示器内、是否提供恢复默认、是否受 DPI 影响，仍待定，临时做法见 [architecture.md](architecture.md)「搜索条」。结果列表最大高度按窗口实际 y 收到所在显示器工作区底边之上 24px，并与约 9 行取较小值；靠近底边放不下时列表高度暂时为 0，仍待定。没有 Windows 上的拖动验收。收纳网页引用会出现在搜索里，类型「网页」，排在便签之后、文件之前；这一组排在 v0.2.0 之后，调度里已有这一组，未在 Windows 上验收 |
+| 面板、待办页 | [product.md](product.md)「面板」「待办」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。有：标题栏与四个标签、清单与收件箱、新建、改标题、排序（上移下移）、完成、取消完成、软删除、回收站（恢复、永久删除、剩余天数）、到期日、提醒、周期与重复截止日、设为当前、打开来源、托盘与搜索条打开并定位、收纳标记与「打开关联收纳」。有热角（50ms 轮询，四角与关闭、多显示器、全屏抑制的判定已接入，拖动窗口经过角不触发已实现），没有 Windows 验收。没有：处理模式、到期通知点击落点（#25）。待办页有「悬浮」按钮，窗口见下一行。没有 Windows 上的验收记录 |
+| 待办悬浮窗 | [product.md](product.md)「待办」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过；窗口外观沿用便签悬浮窗。行为已定稿：默认 320×360、最小 200×120，全程序单窗口，居中显示，无独立托盘或热键；展示全部清单中未软删除的待办条目（含已完成，不显示回收站条目）；勾选走 `complete_item`、取消勾选走 `uncomplete_item`；仅显示勾选框与标题，逾期标红，空列表显示「没有待办」；始终在最上层、无钉住按钮，支持翻页；位置大小贴边和叠页记在 `todo-float.json` 并进入导出备份白名单；不贴边时整块收进工作区；可与便签收纳悬浮窗叠在同一叠；不在叠里时重启不自动打开。待 Windows 验收与性能测量。 |
+| 便签页、便签悬浮窗 | [product.md](product.md)「便签」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。有：新建、编辑、停止编辑 1 秒自动保存、输入法组合期间不保存、关闭或退出前保存失败时重试或放弃、两处同时改后选保留哪版、标签与置顶、删除进回收站并恢复或永久删除、悬浮窗（同篇只聚焦、位置大小写进便签文件并随导出备份、重启后恢复、拖动、改大小、再打开和内容撑大时整扇留在所在显示器工作区）、悬浮窗始终在最上层（没有钉住按钮；旧文件的 `floatPinned` 能读、不再写回）、贴边收成把手（`floatDock`，外侧左/右/上，共用边不贴，点把手展开、再点或失焦收回，拖离取消贴边；拖出屏幕先收进工作区，再只按越出的一侧判断贴边，边和收起状态随导出备份）、托盘「新建便签」、搜索条便签结果的面板定位与悬浮。待定：滑动、收起后拖动、独占全屏等。把手厚 3、长 40 逻辑像素，收起后窗口就是这块把手，半透明灰，见 [architecture.md](architecture.md)「悬浮窗始终在最上层，贴边收成把手」，没在 Windows 上看过。没有：快速收集提交后的悬浮重试（`open_saved` 已写，搜索条未接入）。叠页的产品规格包含待办悬浮窗；代码里的页包括待办悬浮窗（`StackPage::Todo`）。没有 Windows 上的验收记录，也没有悬浮窗的内存和句柄测量 |
+| 收纳页 | [product.md](product.md)「收纳」 | 有代码，未验收。依赖的「背景」「渲染器」验证未通过。有：分组新建、重命名、排序、确认删除；拖入文件和文件夹（原生 OLE，仅复制/快捷方式，去重）；条目图标、名称、完整路径、「路径不存在」；Enter、双击和 Ctrl+Enter；拖出到资源管理器（仅复制/快捷方式，Esc 取消）；移除引用；分组关联多条待办，解除针对单条；待办页「打开关联收纳」与收纳标记；分组悬浮窗（每分组一个、位置大小持久化、留在工作区、始终最上层、贴边把手 `floatDock`、放下目标登记释放与面板一致；折叠关联待办，勾选走完成逻辑，点标题打开面板定位待办；移除引用按钮；布局软件渲染检查在 CI 运行）。叠页规格包含待办悬浮窗（`StackPage::Todo`）。网页引用有代码未验收，支持锁图标和页面链接拖入，图标后台获取（失败留空，不进备份）。浏览器扩展尚无代码。没有 Windows 上的验收记录与句柄/内存测量。 |
+| 设置（开机启动、热角、搜索条热键） | [product.md](product.md)「设置」 | 有代码，未验收，是 #28 的一部分。依赖的「背景」「渲染器」验证未通过。有：开机启动开关（先写 `config.json`，再写或删 `HKCU\...\Run` 的 `Lanwork`）、热角五选一（写盘后调用 `hotcorner::apply`）、搜索条热键录入（先注册、再写盘、再卸旧；非法、被占用时保留旧热键并显示错误；录入期间卸掉已注册的热键，结束时逐条注册回去；录入只有一个出口，失焦包括刚显示的宽限期内；注册不上的热键在面板打开时仍显示错误；换组合用新 id，换键后旧组合不再生效）、写盘失败时控件回到原值并显示错误。核心逻辑有单元测试，设置页的布局和点击有软件渲染的检查。有：「隐藏的应用」列表和每条的「恢复」，写入 user-apps.json。有检查更新：后台和「检查更新」按钮、有新版本时的托盘小点和发行说明、安装版「更新」（下载、SHA-256、静默安装、重新启动）、便携版「打开发布页」。没有：安静时段、主题、网页搜索引擎、处理模式天数、番茄钟、数据目录、备份、导出、导入、「应用」页，以及 v0.2.0 之后的「外部 AI」。（注：面板热键与设置页回收站入口已放弃。）没有单独的「关于与更新」页。没有 Windows 上的验收记录，更新未验收；手测步骤见 PR 说明 |
+| 快速收集（搜索条内） | [product.md](product.md)「快速收集」 | 无。便签快速收集（`/note`，#37）仍计划中；待办快速收集（`+`，#22、#36）已放弃，核心已合入的前缀与日期解析代码保留；面板搜索框已放弃。 |
 | 番茄钟 | [product.md](product.md)「番茄钟」 | 无。计时规则已写入。窗口等扩展页，排在 v0.2.0 之后，见 [extensions.md](extensions.md) |
 | 外部 AI（本机 MCP） | [external-ai.md](external-ai.md) | 无。排在 v0.2.0 之后 |
 | 扩展页与插件 | [extensions.md](extensions.md) | 无。排在 v0.2.0 之后。面板上的「扩展」标签。番茄钟是第一个官方插件 |
-| 收纳网页引用 | [product.md](product.md)「收纳」 | 有代码，未在 Windows 上验收。排在 v0.2.0 之后。2026-10-13 写入规格。面板收纳页和收纳悬浮窗接受拖入的锁图标和页面链接。拖入或列出后后台取网站图标，失败时图标位留空，缓存不进导出和备份，仍未在 Windows 上验收。搜索里有「网页」组，排在便签之后、文件之前。一键浏览器扩展更晚，先做 Chrome，还没有代码 |
+| 收纳网页引用 | [product.md](product.md)「收纳」 | 有代码，未在 Windows 上验收。排在 v0.2.0 之后。2026-10-13 写入规格。面板收纳页和收纳悬浮窗接受拖入的锁图标和页面链接。后台获取网站图标，失败留空，缓存不进导出和备份。搜索结果有「网页」组，排在便签之后、文件之前。一键浏览器扩展更晚，先做 Chrome，还没有代码 |
 
 不存在第二份产品范围。新增界面时先改产品规格，再改本表。
 
@@ -195,91 +90,16 @@
 | --- | --- |
 | 匹配引擎 | 有。`crates/core` 的 `search`：拼音表、预计算、命中类型和分数，以及产品规格里的组内排序和 20 条分组配额。使用频率只作为排序输入，不在这里保存。从搜索结果打开一项时次数加 1，已写入产品规格 |
 | 便签服务 | 有。`lanwork_core::notes`：模型、保存、标签、置顶、`revision` 冲突、软删除、恢复和永久删除。进入回收站满 30 天的便签不再出现在 `deleted` 里，也不能恢复。打开服务时清除，外壳也可调用 `NoteCommands::purge_expired`。单篇删不掉时记日志并跳过，不让打开失败。服务不建定时器。停止编辑 1 秒后保存、悬浮窗位置和冲突后的选择是界面行为，已在便签页和悬浮窗实现，见「界面」。测试 `one_mib_body_roundtrip_records_write_time` 打印 `note_write_1mib_ms`，只记录 1 MiB 正文的写盘耗时，不是性能测量验收 |
-| 待办服务 | 有。`crates/core` 的 `todos`：清单、收件箱、周期、软删除与恢复、当前标记、处理模式、跨清单移动。永久删除只在回收站、满 30 天自动清除（删除前写入 `todo-purge-pending.json`）、原清单已删除时回到收件箱、每月 31 日在小月落到月末后下一次仍按原来的日子、重复截止日当天不再生成、取消完成（下一次仍是当时生成的才删除；已改过或已完成时不删除，仍待定），服务已按这些规则实现。29 日或 30 日在目标月不存在时仍不猜测。待办悬浮窗的 `todo-float.json` 已有读写，进入导出和备份白名单；`counts` 不为它加一项，仍待定 |
-| 收纳服务 | 有。`lanwork_core::shelves`：分组、路径引用、去重、待办关联、存在性检查。服务不移动、不复制、不删除用户文件。关联待办的选择方式已写入产品规格。一个分组可关联多条待办，旧文件的单条字段读入成列表；已有分组但未指定目标、关联到尚不存在的待办 id，仍待定。永久删除只解除这一条。永久删除前写入 `todo-purge-pending.json`，收纳订阅后解除记录里已经不在清单中的关联；订阅前丢掉的 `Purged` 和写盘后中断都靠这份记录补上。读取时把残留 id 视为无关联仍未做，避免把尚不存在的待办 id 一起定掉。存在性检查每条路径的上限是 2 秒。网页引用和网站图标缓存有代码，未在 Windows 上验收，排在 v0.2.0 之后，见产品规格「收纳」。失败留空，缓存不进导出。验证程序在 `spikes/urldrop`。技术验证「网址拖放」已通过。`text/uri-list` 没有出现。有代码，未在 Windows 上验收。浏览器扩展仍没有代码 |
+| 待办服务 | 有。`crates/core` 的 `todos`：清单、收件箱、周期、软删除与恢复、当前标记、处理模式、跨清单移动。永久删除只在回收站、满 30 天自动清除（删除前写入 `todo-purge-pending.json`）、原清单已删除时回到收件箱、每月 31 日在小月落到月末后下一次仍按原来的日子、重复截止日当天不再生成、取消完成（下一次仍是当时生成的才删除；已改过或已完成时不删除，仍待定），服务已按这些规则实现。29 日或 30 日在目标月不存在时仍不猜测。待办悬浮窗的 `todo-float.json` 已有读写，进入导出和备份白名单 |
+| 收纳服务 | 有。`lanwork_core::shelves`：分组、路径引用、去重、待办关联、存在性检查。服务不移动、不复制、不删除用户文件。关联待办的选择方式已写入产品规格。一个分组可关联多条待办，旧文件的单条字段读入成列表；已有分组但未指定目标、关联到尚不存在的待办 id，仍待定。永久删除只解除这一条。永久删除前写入 `todo-purge-pending.json`，收纳订阅后解除记录里已经不在清单中的关联；订阅前丢掉的 `Purged` 和写盘后中断都靠这份记录补上。读取时把残留 id 视为无关联仍未做，避免把尚不存在的待办 id 一起定掉。存在性检查每条路径的上限是 2 秒。网页引用和网站图标缓存有代码，未在 Windows 上验收，排在 v0.2.0 之后，见产品规格「收纳」。失败留空，缓存不进导出。技术验证「网址拖放」已通过，`text/uri-list` 没有出现。有代码，未在 Windows 上验收。浏览器扩展仍没有代码 |
 | 应用索引 | 有。`crates/core` 的 `apps`：开始菜单、App Paths、PATH、商店应用、便携应用、别名、隐藏、游戏链接、去重、缓存和启动。同一启动目标只保留一条，显示名用用户填的名称。搜索条右键菜单和「以管理员身份运行」「以其他用户身份运行」「打开文件所在文件夹」「打开目标文件夹」「隐藏」已实现。Ctrl+Enter 和 Ctrl+Shift+Enter 以管理员身份运行。设置页列出隐藏项并可以恢复。便携应用、别名和手动刷新的界面尚未实现 |
 | 文件索引 | 有。`lanwork_core::files`：随包 Everything SDK 1.5 与 1.4 的动态加载、就绪/未就绪/未运行、Windows Search 文件名查询、可用/不可用，以及查询前的切换。两者都不可用时说明是「文件索引不可用」。界面尚未调用。许可文件列入程序目录清单。安装程序按这份清单拷进程序目录，见「发布」。界面尚未调用 |
-| 查询调度 | 有。`lanwork_core::dispatch`：待办与便签内存索引、一个待处理请求和序号、本地结果先返回、60ms 后才请求文件、分组与 20 条、进程内使用次数、图标 LRU。搜索条已调用，面板搜索框尚未调用；面板输入若提交到调度，和搜索条一样在像网址时给出「打开网址」。搜索条在渲染后填终点，设 `LANWORK_LATENCY_OUT` 时写出 JSONL。没有按测量协议采样 |
+| 查询调度 | 有。`lanwork_core::dispatch`：待办与便签内存索引、一个待处理请求和序号、本地结果先返回、60ms 后才请求文件、分组与 20 条、进程内使用次数、图标 LRU。搜索条已调用。搜索条在渲染后填终点，设 `LANWORK_LATENCY_OUT` 时写出 JSONL。没有按测量协议采样 |
 | 配置 | 有。`lanwork_core::config`：读写 `config.json`。无法解析的 JSON 由存储层隔离，外壳用默认值且不写回。JSON 能解析但字段不合法时不隔离、不覆盖。不认识的 `schemaVersion` 返回错误，进程退出。`dataDir` 不参与目录解析。`quietHours` 只接受空。文件缺字段时的值见 architecture.md「数据」；主题、开机启动和安静时段的缺省不是产品规则。旧文件里的 `githubRefreshIntervalMs`、`staleDays`、`sourceSync`、`autoCompleteOnClose` 读取时忽略，不报错，不隔离；写回时不再写出 |
 | 备份与导入 | 有。`lanwork_core::backup` 与外壳启动：导出、手动备份、每天第一次启动由外壳调用自动备份、合计最多 7 份、导入概览、确认后先备份再替换、导入结束后重载已打开的服务内存再发变更、`import.pending` 由外壳注册的钩子恢复。恢复后记日志「导入未完成」，界面尚未显示这句。`user-apps.json` 进入导出和备份。导出和备份都不含 `github/watchlist.json`、`github/cache` 和数据目录里的 `cache/web-icons/`。导入不删除这份网站图标缓存。旧包里仍有 `github/watchlist.json` 或 `github/cache` 时导入不失败，也不把它们写进数据目录，也不删除目录里已经有的同名文件。设置页尚未调用导出和导入 |
 | 外部 AI（本机 MCP） | 无。规格见 [external-ai.md](external-ai.md)。排在 v0.2.0 之后 |
-| 程序外壳 | 有。`lanwork_core::shell` 与 `crates/app`。热角判定在 `shell::hotcorner`，50ms 轮询在 `crates/app` 的 `hotcorner`（设置页写完 `hotCorner` 后调用 `hotcorner::apply`）；没有 Windows 验收。托盘菜单是「打开面板」「设置」「新建便签」「退出」。逾期数量为 0 时图标上不画数字。退出先保存便签编辑区，仍没写盘时留在原地等重试或放弃。「打开面板」「设置」和面板热键显示面板；「新建便签」创建一篇并在便签页选中；第二个实例的通知不打开窗口。启动时注册导入恢复钩子，再 `boot`，然后按本地日期自动备份。`import_recovered` 为真时记日志「导入未完成」，界面尚未显示。运行中修改热键先注册，成功后再写 `config.json`，再卸掉旧热键。注册失败时文件和当前注册都保持旧热键。一个角色换组合时用新 id 注册，旧 id 在写盘之后才卸（`RegisterHotKey` 在同一 id 上再注册会叠加，不会替换）。本进程内互换组合时先卸掉冲突的注册 |
+| 程序外壳 | 有。`lanwork_core::shell` 与 `crates/app`。热角判定在 `shell::hotcorner`，50ms 轮询在 `crates/app` 的 `hotcorner`（设置页写完 `hotCorner` 后调用 `hotcorner::apply`）；按住左键拖动窗口经过角不触发已在 `lanwork.exe` 实现（#100）；全屏抑制复测（针对 `lanwork.exe`）及 5 分钟移动/静止 CPU 采样待 Windows 验收。托盘菜单是「打开面板」「设置」「新建便签」「退出」。逾期数量为 0 时图标上不画数字。退出先保存便签编辑区，仍没写盘时留在原地等重试或放弃。「打开面板」「设置」显示面板；「新建便签」创建一篇并在便签页选中；第二个实例的通知不打开窗口。启动时注册导入恢复钩子，再 `boot`，然后按本地日期自动备份。`import_recovered` 为真时记日志「导入未完成」，界面尚未显示。运行中修改热键先注册，成功后再写 `config.json`，再卸掉旧热键。注册失败时文件和当前注册都保持旧热键。一个角色换组合时用新 id 注册，旧 id 在写盘之后才卸（`RegisterHotKey` 在同一 id 上再注册会叠加，不会替换）。本进程内互换组合时先卸掉冲突的注册 |
 
 ## 外部拖放
 
-结论：通过条件表的七条都是通过，该项按该表通过。2026-10-09 在 `24b7624` 的 `--ole` 上亲手测过。同日 10:56（UTC+8）在 `3311ecc` 的 dev 构建上重测条件 5，拖入通过。同日 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。`--slint` 拖放仍是失败，没有路径，这一条不在通过条件表的七条里。按 [#33](https://github.com/wynxing/Lanwork/issues/33)，以通过条件表为准。产品用 OLE。这份记录不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
-
-- 日期：2026-10-08 首次自动化；2026-10-09 手测 `24b7624`，并修改长路径拖入的读取；同日 10:56（UTC+8）在 `3311ecc` 上重测长路径拖入；同日 14:10–14:24（UTC+8）在 DESKTOP-7C3P6OG 上测条件 7
-- 手测构建：`24b7624eb090d6f655c3ef144594d5a4206d61ad`，`cargo run -p dnd -- --ole`。条件 5 的重测是 `3311eccf503ca97df870be859753e14dcfa1dd95`，同样是 `cargo run -p dnd -- --ole`（dev）。条件 7 是 main 合入后的 `spikes/dnd`，debug 构建，工作树 `E:\My_project\Lanwork-wt\issue-5`，与 [PR #49](https://github.com/wynxing/Lanwork/pull/49) 头 `fa011146986a5a00fbfe8ec0c478c7b61193ebf7` 同一份代码，命令 `dnd.exe --ole`
-- commit：`96355a285b6c948df12fe0ac210d359e7fbacb8b`。长路径读取修改之后，`cargo run -p dnd -- --self-test` 在这棵树上退出码 0。Shell `GetData(CF_HDROP)` 对 269 单元路径仍是 `0x8007007A`，随后用外壳项显示名读回同一路径
-- Slint：1.18.1（workspace 依赖 `=1.18.1`）。验证程序额外打开 feature `raw-window-handle-06`。默认 features 含 `backend-winit`、`renderer-femtovg`、`renderer-software`，不代表产品已选定渲染器
-- 渲染器：`GraphicsAPI::NativeOpenGL`（FemtoVG 的 OpenGL 路径被选中）。窗口缩放 1.5
-- 机器：DESKTOP-7C3P6OG，XIAOMI REDMI Book 14 2025 (FHD+)
-- Windows：标题为 Windows 11 家庭中文版。`RtlGetVersion` 返回 10.0.26300，status=0。注册表 `DisplayVersion=26H2`，`CurrentBuild=26300`，`UBR=9550`。`ProductName` 仍是 Windows 10 Home China
-- GPU 与驱动：PCI 设备 Intel(R) UHD Graphics，驱动 32.0.101.6733，日期 2025-04-02。同机还有两块虚拟显示：Virtual Display Driver 11.30.4.434（2024-12-24），GameViewer Virtual Display Adapter 15.6.5.199（2026-02-28）。没有判断哪一块在合成这个窗口
-- 构建：debug。命令 `cargo run -p dnd -- --self-test`，退出码 0。Rust 1.99.0（b940084d7 2026-09-28），host `x86_64-pc-windows-msvc`
-
-### 通过条件
-
-2026-10-09，构建 `24b7624`，`--ole`。只写这次亲眼看到的。条件 5 的当前结果是同日 10:56（UTC+8）在 `3311ecc` 上重测的。条件 7 的当前结果是同日 14:10–14:24（UTC+8）在与 PR #49 头 `fa011146986a5a00fbfe8ec0c478c7b61193ebf7` 同一份代码上测的，次数是用户估计。
-
-| 条件 | 结果 |
-| --- | --- |
-| 拖入的多个路径全部拿到 | 通过。同时拖入 `shortcut.lnk`、`folder`、`readme.txt`，`drop effect=1 paths=` 三个都在。 |
-| 拖出到资源管理器产生副本或快捷方式 | 通过。左键直接拖是复制（`effect=copy`，原文件在，`folder` 下新建 `readme.txt`）。按住 Alt 是快捷方式（`effect=link`，生成「readme.txt - 快捷方式.lnk」）。右键拖不能开始拖出，验证程序只认左键，没有出现右键菜单；这是观察，不算失败。资源管理器拖动时没有文字提示，只有光标。 |
-| 同盘拖出不移动原文件 | 通过。按住 Shift 出现禁止光标，`effect=none`，什么都没复制，原文件仍在。 |
-| 拖入 .lnk 时保留快捷方式本身的路径 | 通过。`paths` 里是 `shortcut.lnk` 本身。 |
-| 超过 260 字符的长路径也能拿到 | 通过。2026-10-09 10:56（UTC+8），构建 `3311ecc`，`cargo run -p dnd -- --ole`（dev）。从资源管理器把 269 字符路径下的 `long.txt` 拖进红色矩形，控制台输出 `drop effect=1 paths=C:\Users\wynn\AppData\Local\Temp\lanwork-dnd-spike\long\dddd…\long.txt`。路径完整，没有再出现 `0x8007007A`。这次读取走的是 `GetData(CF_HDROP)` 返回 `0x8007007A` 之后的 `SHCreateShellItemArrayFromDataObject` 退路。此前在 `24b7624` 上拖出列表里的 `long.txt` 成功（`ole-drag-start index=3`，`effect=copy`，目标出现 `long.txt`），拖入报 `drop read failed: GetData CF_HDROP: 传递给系统调用的数据区域太小。 (0x8007007A)`。 |
-| 拖出过程中按 Esc 取消，原文件不变、没有残留 | 通过。目标无残留，原文件在。 |
-| 反复拖放 100 次，句柄数不持续增加 | 通过。2026-10-09 14:10–14:24（UTC+8），DESKTOP-7C3P6OG，main 合入后的 `spikes/dnd`（debug，工作树 `E:\My_project\Lanwork-wt\issue-5`，与 PR #49 头 `fa011146986a5a00fbfe8ec0c478c7b61193ebf7` 同一份代码），`dnd.exe --ole`。用户把 `readme.txt` 从资源管理器拖进红色矩形，再从列表拖回文件夹，约 50 来回（约 100 次拖放，用户没有精确计数）。启动后、未拖动前 `HandleCount` 为 446；约 100 次后为 515；再约 10 来回后为 516。工作集约 132MB，没有变。446→515 是首次拖放加载组件的一次性增长，与此前 133→523 后稳定一致。后续约 20 次只增加 1，判定无按次泄漏。次数是用户估计。此前约 30 次、523→523 的那次未满 100 次，不作为这次的计数。 |
-
-另有一条不在上面七条里：从资源管理器把 `readme.txt` 拖到「Slint 放下」。失败。没有任何反应，记录和 `paths` 都没有路径。与 winit 不把外部放下交给 `DropArea` 的源码预期一致。
-
-文件夹拖出到桌面，里面有 `inside.txt`，正常。这不是单独的通过条件。
-
-### 2026-10-09 手测发现验证程序拖错文件
-
-旧版验证程序先从列表拖出嵌套的 `long.txt` 之后，再按住 `folder` 那一行拖到样本目录的 `folder`，拷出来的是 `long.txt`。本地 `%TEMP%\lanwork-dnd-spike\folder\long.txt` 在 08:27 被创建，4 字节。窗口「记录」也不再出现新行。进程仍在，窗口仍响应。
-
-根因：`DoDragDrop` 的模态循环吃掉鼠标抬起，Slint 没收到 release。第 4 行（`long.txt`，下标 3）的 `TouchArea` 一直处于 pressed 并抓着鼠标，下一次在任何行按下都被派给这一行。拖出结束时也没有清掉这份抓取。窗口「记录」以前只由定时器拷贝放下日志，拖出只写控制台；文本从顶部排，新行落在 140px 下面被裁掉，所以看起来停了。
-
-已修：拖出成功、取消或出错之后都派发 `PointerReleased` 和 `PointerExited`。`ole-drag-start` 带行号和路径。拖入和拖出都写进窗口记录，只保留最后 12 行并贴在底部。修之前的手测不要填进通过条件。
-
-自测覆盖的是同一条清理：`dispatch_event` 先在第 4 行按下并移动，再在第 2 行（`folder`，下标 1）按下并移动，中间不另发抬起。第二次必须是 `index=1`，路径以 `\folder` 结尾。这条自测不调用 `DoDragDrop`，不能代替下面的资源管理器手测。
-
-### 人工步骤
-
-2026-10-09 在 `24b7624` 上看到的：
-
-0. 通过。拖出的是被拖的那一行。反复删除再拖，多次都正常。
-1. 通过。`registration-how=RevokeDragDrop then RegisterDragDrop`，`our-pointer=prop=0x269c617fe38`。
-2. 通过。见条件 1。同时拖入的是 `shortcut.lnk`、`folder`、`readme.txt`，不是步骤里写的 `readme.txt` 和 `folder` 这一对。
-3. 通过。见条件 2、3。左键是复制，Alt 是快捷方式，Shift 是禁止。没有做步骤里写的「再拖一次到另一个文件夹」以外的第二种目标；快捷方式是按住 Alt 做出来的。
-4. 通过。见条件 4。
-5. `24b7624` 上失败：拖出成功，拖入报 `0x8007007A`。2026-10-09 10:56（UTC+8）在 `3311ecc` 上重测通过。见条件 5。
-6. 通过。见条件 6。
-7. 通过。2026-10-09 14:10–14:24（UTC+8），见条件 7。次数是用户估计。
-8. 失败。`--slint` 下从资源管理器把 `readme.txt` 拖到「Slint 放下」，没有任何反应。
-
-条件 5 已按 `3311ecc` 上 10:56（UTC+8）的拖入改成通过。条件 7 已按同日 14:10–14:24（UTC+8）的句柄记录改成通过，次数是用户估计。步骤 8 仍是失败。通过条件表的七条都是通过，该项按该表通过。产品用 OLE。这份记录不关闭 [#5](https://github.com/wynxing/Lanwork/issues/5)。
-
-### 自动化已经看到的（不是上面七条的通过）
-
-`cargo run -p dnd -- --self-test` 退出码 0。
-
-- 调用 `OleInitialize` 之前，以及 `--probe-no-ole` 在 `MainWindow::new` 之后、进入事件循环之前：`CoGetApartmentType` 为 `0x800401F0`（尚未 `CoInitialize`）。
-- 进入 winit 事件循环后，以及本进程调用 `OleInitialize` 之后：`APTTYPE(3)` 即 `APTTYPE_MAINSTA`，qualifier 0。这是主 STA，不是 MTA。
-- 未替换目标时，`RegisterDragDrop` 返回 already-registered。winit 0.30.13 的 `create_window_data` 在 `drag_and_drop` 为真时 `OleInitialize` 并注册 `FileDropHandler`。
-- 替换后：`registration-how=RevokeDragDrop then RegisterDragDrop`，`our-pointer` 与 `prop` 同为 `0x20b49c4aab8`，再次注册仍是 already-registered。这个地址每次进程不同，几次自测里两边都相等。
-- `SM_CXDRAG=4`，`SM_CYDRAG=4`。判定是物理像素位移严格大于这两个值。Slint 窗口内阈值是另一套：`DISTANCE_THRESHOLD` 为 8 逻辑像素。
-- Shell `IDataObject` 往返：`readme.txt`、`folder`、`shortcut.lnk` 三个路径原样返回，快捷方式没有被解析成目标。
-- Shell `IDataObject` 对 269 个 UTF-16 单元的 `long.txt` 调用 `GetData(CF_HDROP)` 仍失败：`0x8007007A`。失败后 `GetDisplayName(SIGDN_FILESYSPATH)` 读回同一路径，`shell-roundtrip-long wide=269 same=true`。快捷方式经同一外壳项接口读回的是 `.lnk` 自己。这不是资源管理器拖入；资源管理器拖入见条件 5。
-- 自己组的 `CF_HDROP` 能读回该长路径和 `shortcut.lnk`，长路径未被截断。`DragQueryFileW` 先取长度再分配。
-- 连续 100 次创建 Shell `IDataObject` 并读回 `CF_HDROP`：这次 `handles=305` 前后相同，`gdi=0`，`user=2`。这不是资源管理器拖放 100 次。
-- `IDropSource::QueryContinueDrag` 在强制取消时返回 `0x40101`（`DRAGDROP_S_CANCEL`）。没有调用 `DoDragDrop`。
-- 窗口内 `dispatch_event`：从「Slint 拖出」拖到「Slint 放下」得到 `got=true`、`action=Copy`、文本为 `readme.txt`。目标改要移动后 `got=false`、`action=None`。这不是拖到资源管理器。
-- 同一窗口里 `dispatch_event` 先拖列表第 4 行再拖第 2 行，中间不发送抬起：`ole-drag-start index=3` 的路径是 `long.txt`，接着 `index=1` 的路径是 `...\folder`。窗口记录里同时有 `index=3` 和 `index=1`。这条不调用 `DoDragDrop`。
-
-### 和 #27 的选择
-
-收纳的外部拖放用原生 OLE。窗口内拖放可用，但 winit 不实现 `start_drag`，窗口句柄上的放下目标也是 winit 的。`24b7624` 的手测里，复制、快捷方式、同盘不移动和 Esc 都看到了。`3311ecc` 上长路径拖入通过，走 `SHCreateShellItemArrayFromDataObject`。2026-10-09 14:10–14:24（UTC+8）条件 7 通过，次数是用户估计。`--slint` 放下没有路径。通过条件表七条都通过，产品用 OLE。`crates/app` 里不写收纳界面。
+通过条件表七项均已通过，采用原生 OLE 实现，无按次句柄泄漏，主程序收纳外部拖放待 Windows 验收。原始测试记录见 commit `a6298a1ff882a99fcf9fa4962eb188e32fecc4f6`。
