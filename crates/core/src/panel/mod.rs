@@ -61,11 +61,11 @@ pub use shelf_page::{
 };
 pub use shelf_select::{
     DOUBLE_CLICK, GROUP_ROW_PLAIN, GROUP_ROW_WITH_TODO, GroupMods, GroupPick, GroupSelect,
-    ItemMods, ItemSelect, ListViewport, ShelfItemId, clear_group_checks, clear_items, click_item,
-    context_item, drag_items, enter_group_select, group_mods, group_row_height,
+    ItemMods, ItemSelect, LeftWindow, ListViewport, ShelfItemId, clear_group_checks, clear_items,
+    click_item, context_item, drag_items, enter_group_select, group_mods, group_row_height,
     group_select_after_delete, hit_row, is_double_click, item_mods, items_after_remove,
-    outside_window, pick_group_row, retain_group_select, retain_items, select_all_groups,
-    select_all_items,
+    left_window, outside_window, pick_group_row, release_moves, retain_group_select, retain_items,
+    select_all_groups, select_all_items,
 };
 pub use todo_page::{
     FloatRow, InputError, ListEntry, RECURRENCE_CHOICES, Row, TodoView, default_view, float_rows,

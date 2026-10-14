@@ -356,6 +356,53 @@ pub fn outside_window(x: f32, y: f32, width: f32, height: f32) -> bool {
     width <= 0.0 || height <= 0.0 || x < 0.0 || y < 0.0 || x >= width || y >= height
 }
 
+/// 指针离开窗口之后，还要不要拖出、分组高亮还指着谁。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftWindow {
+    /// 这次离开要开始外部拖出。已经在拖出时保持为真，不再准备路径。
+    pub ole: bool,
+    /// 离开之后没有窗口内的放下目标。
+    pub drop_index: Option<usize>,
+    /// 可以拖出的路径。网页引用不在这里，已知不存在的路径也不在。
+    pub export: Vec<String>,
+}
+
+/// 指针离开窗口。离开前停在哪个分组都不算松开目标。
+/// 只有还存在的路径引用才能拖出。
+#[must_use]
+pub fn left_window(
+    already_ole: bool,
+    _hovered: Option<usize>,
+    paths: &[String],
+    missing: impl Fn(&str) -> bool,
+) -> LeftWindow {
+    let drop_index = None;
+    if already_ole {
+        return LeftWindow {
+            ole: true,
+            drop_index,
+            export: Vec::new(),
+        };
+    }
+    let export: Vec<String> = paths
+        .iter()
+        .filter(|path| !missing(path))
+        .cloned()
+        .collect();
+    LeftWindow {
+        ole: !export.is_empty(),
+        drop_index,
+        export,
+    }
+}
+
+/// 只有还在窗口里、并且松在某个分组上，才移动引用。
+/// 已经交给外部拖出，或离开时清掉了放下目标，这次松开都不移动。
+#[must_use]
+pub fn release_moves(ole: bool, drop_index: Option<usize>) -> bool {
+    !ole && drop_index.is_some()
+}
+
 fn toggle_item(state: &ItemSelect, visible: &[ShelfItemId], id: ShelfItemId) -> ItemSelect {
     let mut ids = state.ids.clone();
     if let Some(pos) = ids.iter().position(|existing| existing == &id) {
@@ -651,5 +698,59 @@ mod tests {
         assert_eq!(hit_row(view, &heights, 4.0, 90.0), None);
         assert!(outside_window(-1.0, 10.0, 100.0, 100.0));
         assert!(!outside_window(10.0, 10.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn leaving_without_an_external_drag_does_not_move_onto_the_last_group() {
+        let web_only = left_window(false, Some(1), &[], |_| false);
+        assert_eq!(
+            web_only,
+            LeftWindow {
+                ole: false,
+                drop_index: None,
+                export: vec![],
+            }
+        );
+        assert!(!release_moves(web_only.ole, web_only.drop_index));
+
+        let all_missing = left_window(false, Some(2), &["gone".to_owned()], |_| true);
+        assert_eq!(
+            all_missing,
+            LeftWindow {
+                ole: false,
+                drop_index: None,
+                export: vec![],
+            }
+        );
+        assert!(!release_moves(all_missing.ole, all_missing.drop_index));
+
+        let exported = left_window(
+            false,
+            Some(0),
+            &["c:/a".to_owned(), "gone".to_owned()],
+            |path| path == "gone",
+        );
+        assert_eq!(
+            exported,
+            LeftWindow {
+                ole: true,
+                drop_index: None,
+                export: vec!["c:/a".to_owned()],
+            }
+        );
+        assert!(!release_moves(exported.ole, exported.drop_index));
+
+        let already = left_window(true, Some(3), &["c:/a".to_owned()], |_| false);
+        assert_eq!(
+            already,
+            LeftWindow {
+                ole: true,
+                drop_index: None,
+                export: vec![],
+            }
+        );
+        assert!(!release_moves(true, Some(3)));
+        assert!(release_moves(false, Some(1)));
+        assert!(!release_moves(false, None));
     }
 }

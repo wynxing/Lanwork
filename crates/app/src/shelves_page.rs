@@ -16,9 +16,10 @@ use lanwork_core::panel::{
     GroupPick, GroupRow, GroupSelect, ItemMods, ItemSelect, ListViewport, ShelfItemId, ShelfLine,
     TodoChoice, clear_group_checks, clear_items, click_item, context_item, drag_items,
     enter_group_select, first_group_for_todo, group_mods, group_row_height, group_rows,
-    group_select_after_delete, hit_row, is_double_click, item_mods, linked_todo_ids, linked_todos,
-    outside_window, pick_group_row, pick_selection, reordered_group_ids, retain_group_select,
-    retain_items, select_all_groups, select_all_items, shelf_lines, todo_choices,
+    group_select_after_delete, hit_row, is_double_click, item_mods, left_window, linked_todo_ids,
+    linked_todos, outside_window, pick_group_row, pick_selection, release_moves,
+    reordered_group_ids, retain_group_select, retain_items, select_all_groups, select_all_items,
+    shelf_lines, todo_choices,
 };
 use lanwork_core::shelves::{IncomingRef, IncomingWeb, Shelf, ShelfCommands};
 use lanwork_core::storage::Store;
@@ -796,27 +797,28 @@ impl ShelvesPage {
     }
 
     fn begin_ole(&mut self, ui: &Panel, inline: &InlineDrag) {
-        let Some((origin, stored)) = self
+        let Some((origin, stored, already)) = self
             .internal
             .as_ref()
-            .and_then(|drag| (!drag.ole).then(|| (drag.origin, drag.paths.clone())))
+            .map(|drag| (drag.origin, drag.paths.clone(), drag.ole))
         else {
             return;
         };
-        let paths: Vec<String> = stored
-            .into_iter()
-            .filter(|path| !self.view.is_missing(path))
-            .collect();
-        if paths.is_empty() {
+        let update = left_window(already, self.drop_index, &stored, |path| {
+            self.view.is_missing(path)
+        });
+        // 离开窗口就不再算「松在某个分组上」，无论这次能不能拖出。
+        self.drop_index = update.drop_index;
+        ui.global::<ShelvesPageData>()
+            .set_drop_group(update.drop_index.map(to_i32).unwrap_or(-1));
+        if already || update.export.is_empty() {
             return;
         }
         if let Some(drag) = self.internal.as_mut() {
-            drag.ole = true;
+            drag.ole = update.ole;
         }
-        self.drop_index = None;
-        let data = ui.global::<ShelvesPageData>();
-        data.set_drop_group(-1);
         ui.set_error(SharedString::new());
+        let paths = update.export;
         if !inline.offer(paths.clone(), origin) {
             schedule_drag(
                 paths,
@@ -839,13 +841,14 @@ impl ShelvesPage {
             self.drop_index = None;
             return;
         };
+        if !release_moves(drag.ole, self.drop_index) {
+            self.drop_index = None;
+            return;
+        }
         let target = self
             .drop_index
             .take()
             .and_then(|index| self.list.get(index).map(|shelf| shelf.id.clone()));
-        if drag.ole {
-            return;
-        }
         let Some(target) = target else {
             return;
         };
