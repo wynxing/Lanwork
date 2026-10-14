@@ -414,7 +414,7 @@ Everything 未运行或未就绪时，退回 Windows Search 索引。查询只�
 
 Windows Search 的 spike 当前做法是进程内 ADO `ADODB.Connection`，提供程序 `Search.CollatorDSO.1`，SQL 含 `System.FileName LIKE`，`TOP` 不超过 50。匹配方式（子串、前缀或整名，以及查询里的 `*`、`?` 和 `LIKE` 的 `%`、`_` 是否同义）待定；产品规格只写到按名称。`ISearchQueryHelper::GenerateSQLFromUserQuery` 的默认语句是 `CONTAINS(*)`，会返回正文命中，不作为产品查询。`ISearchManager` 只用来对照 SQL 和列出索引根。这次做法只说明技术验证里测通的调用，不表示「性能测量」的 P95 已经达到。
 
-文件索引服务在 `lanwork_core::files`，薄命令是 `FileCommands`。界面尚未调用。查询队列、60ms 等待、过期序号和分组合并不在这里；`query` 只把调用方传入的序号原样带回。
+文件索引服务在 `lanwork_core::files`，薄命令是 `FileCommands`。搜索条不直接调用它：外壳打开后交给 `Dispatch`，`poll` 在本地结果写出并且距这次输入已满 60ms 时调用 `query`。查询队列、60ms 等待、过期序号和分组合并不在这里；`query` 只把调用方传入的序号原样带回。
 
 每次查询前先检查 Everything，再决定要不要问 Windows Search。状态只有就绪、未就绪、未运行。Windows Search 只有可用、不可用。1.5 的 DLL 能连上但数据库还在加载时是未就绪，不再改问 1.4。1.5 未运行时才探测 1.4。1.5 先连未命名实例，管道不存在再连 `1.5a`。已经连上的客户端在下次查询前只调用 `IsDBLoaded`。探测失败按未运行，日志写服务端版本；读不到时写「未知」，不把 `GetLastError` 的 0 改写成管道不存在。DLL 缺失记一条日志，Everything 按未运行。两个 DLL 都按文件名放在程序目录：`Everything3_x64.dll`、`Everything64.dll`。开发构建在程序目录找不到时，再找仓库 `third_party/everything/`。发布构建不回退到编译机路径。不为查询启动进程，也不复制索引。
 
@@ -430,7 +430,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 查询调度的代码在 `lanwork_core::dispatch`，类型是 `Dispatch`。搜索条已调用它。`TodoCommands::boot` 成功并且 `NoteCommands::open` 在导入恢复之后完成，才调用 `Dispatch::build`。`Store::build_index` 在启动未完成时不会建索引。索引读的是这两份服务的内存：未完成且不在回收站的待办标题，以及未软删除便签的标题、标签和正文。之后只在 `EntityChanged` 的种类是待办或便签时，从同一份内存重建对应索引。查询不读盘。交给 `Dispatch` 的必须是正在写入的那一份命令；克隆仍是同一份内存。待办在提交批次之前写入内存。便签在写盘或删文件成功之后、发布变更之前更新内存。订阅者读到消息时，这两份内存已是新值。保存或永久删除便签的回调里不要再调用便签写入，写入锁还被这次操作持有。
 
-`submit` 的时钟读数是结果延迟的起点。搜索条先经 `classify_prefix`。空输入和收集前缀不进入查询队列，并使当前序号失效。组合中的预编辑不要调用 `submit`。序号从 1 递增。本地分组写好之后，并且距这次 `submit` 已满 60ms、期间没有更新的输入，才调用文件来源。文件查询返回时序号已经变了就不合并。不可用时结果上的说明是「文件索引不可用」，已有的应用、待办和便签行保留。文件服务最多交回 50 条，显示用 `allocate_display` 收到最多 20 条。
+`submit` 的时钟读数是结果延迟的起点。搜索条先经 `classify_prefix`。空输入和收集前缀不进入查询队列，并使当前序号失效。组合中的预编辑不要调用 `submit`。序号从 1 递增。本地分组写好之后，并且距这次 `submit` 已满 60ms、期间没有更新的输入，才调用文件来源。文件查询返回时序号已经变了就不合并。不可用时结果上的说明是「文件索引不可用」，已有的应用、待办、便签和网页行保留。文件服务最多交回 50 条，显示用 `allocate_display` 收到最多 20 条。
 
 像网址的判断在 `lanwork_core::search::open_website`，见「打开网址」。待办来源校验仍用 `is_http_source_url`，不拿来决定这一条。应用、待办和便签的组内顺序用 `rank_hits`。`record_open` 把对应键的次数加 1，只放在本进程内存里，下一次查询才参与排序。`LatencyRecord::to_json_line` 的字段与 `tools/sample` 的延迟输入一致。终点由调用方用 `mark_rendered` 填上同序号、同一来源的 `end_ns`。被取代的记录单独标出；已经填了终点的记录不再标为被取代。热召回不在这一层。没有按「性能测量」采样时，这些记录不表示目标已经达到。
 
