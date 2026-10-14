@@ -20,6 +20,10 @@ mod settings_layout_tests;
 #[cfg(windows)]
 mod bar_win;
 #[cfg(windows)]
+mod favicon_http;
+#[cfg(windows)]
+mod favicon_wic;
+#[cfg(windows)]
 mod float_dock;
 #[cfg(windows)]
 mod float_frame;
@@ -64,6 +68,8 @@ mod todo_float;
 mod update;
 #[cfg(windows)]
 mod update_http;
+#[cfg(windows)]
+mod web_icons;
 #[cfg(windows)]
 mod winutil;
 

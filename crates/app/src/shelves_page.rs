@@ -3,13 +3,14 @@
 //! 窗口在 `panel`，版式在 `ui/shelvespage.slint`，OLE 在 `shelf_dnd`，规则在 `lanwork_core::shelves`
 //! 和 `lanwork_core::panel`。这里把服务的结果排成界面要的行，并把用户的动作交给服务。
 //! 路径引用不打开、不复制、不移动、不删除原文件。网页引用只保存网址和标题，不关闭或移动浏览器标签。
+//! 网站图标在保存之后后台获取，失败时图标位留空，不挡住保存和打开。
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use lanwork_core::dispatch::IconCache;
+use lanwork_core::dispatch::{IconCache, RgbaImage};
 use lanwork_core::panel::{
     GroupRow, ShelfLine, TodoChoice, first_group_for_todo, group_rows, linked_todo_ids,
     linked_todos, pick_selection, reordered_group_ids, shelf_lines, todo_choices,
@@ -26,6 +27,7 @@ use crate::shelf_refs::{
     prepare_drop, push_links, release_grab, schedule_drag, skipped_message, spawn_launch,
     spawn_open_url, spawn_probe, to_i32,
 };
+use crate::web_icons::{self, WebIcons};
 use crate::{Panel, ShelfGroupRow, ShelfTodoRow, ShelvesPageData};
 
 /// 放下那一刻的目标分组。OLE 回调在界面线程上，但可能正落在面板的借用里，所以不经过 `with_shelves`
@@ -48,6 +50,7 @@ pub(crate) struct ShelvesPage {
     shelves: Option<ShelfCommands>,
     todos: TodoCommands,
     icon_cache: Arc<Mutex<IconCache>>,
+    web_icons: Arc<WebIcons>,
     store: Store,
     groups_model: Rc<VecModel<ShelfGroupRow>>,
     choices_model: Rc<VecModel<ShelfTodoRow>>,
@@ -73,6 +76,7 @@ impl ShelvesPage {
             shelves,
             todos,
             icon_cache,
+            web_icons: web_icons::shared(),
             store,
             groups_model: Rc::default(),
             choices_model: Rc::default(),
@@ -245,14 +249,29 @@ impl ShelvesPage {
         let Some(plan) = self.view.refresh(&lines, force, &data) else {
             return;
         };
-        let spawned = spawn_probe(shelves, Arc::clone(&self.icon_cache), plan, move |result| {
-            let _ = slint::invoke_from_event_loop(move || {
-                with_shelves(move |page, ui| page.receive(ui, &group_id, result));
+        let webs = plan.web_urls().to_vec();
+        if plan.needs_files() {
+            let spawned = spawn_probe(shelves, Arc::clone(&self.icon_cache), plan, move |result| {
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_shelves(move |page, ui| page.receive(ui, &group_id, result));
+                });
             });
-        });
-        if let Err(err) = spawned {
+            if let Err(err) = spawned {
+                self.store
+                    .log_warn(&format!("收纳页没有启动路径检查线程：{err}"));
+            }
+        }
+        self.start_web_icons(&webs);
+    }
+
+    fn start_web_icons(&self, urls: &[String]) {
+        let pending = self.web_icons.claim(urls);
+        if pending.is_empty() {
+            return;
+        }
+        if let Err(err) = web_icons::fetch(Arc::clone(&self.web_icons), pending) {
             self.store
-                .log_warn(&format!("收纳页没有启动路径检查线程：{err}"));
+                .log_warn(&format!("网站图标的后台任务没有启动：{err}"));
         }
     }
 
@@ -376,6 +395,12 @@ impl ShelvesPage {
         };
         if self.view.selected_is_web() {
             ui.set_error(SharedString::new());
+            if !self.view.has_icon(&key)
+                && let Err(err) = web_icons::retry(Arc::clone(&self.web_icons), &key)
+            {
+                self.store
+                    .log_warn(&format!("网站图标的后台任务没有启动：{err}"));
+            }
             self.spawn_open_url(ui, key);
             return;
         }
@@ -613,6 +638,17 @@ impl ShelvesPage {
             Err(message) => self.fail(ui, &message),
         }
     }
+}
+
+/// 后台取到的网站图标。收纳页和悬浮窗都会收到；当前分组没有这条时只先记着。
+pub(crate) fn receive_web_icons(icons: Vec<(String, RgbaImage)>) {
+    if icons.is_empty() {
+        return;
+    }
+    with_shelves(move |page, ui| {
+        page.view.receive_web(&icons);
+        page.push_refs(ui);
+    });
 }
 
 /// OLE 放下目标读到路径或网址之后调用。文件夹标记在后台线程里查，网址直接回到界面线程写入。

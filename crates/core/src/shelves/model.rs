@@ -50,6 +50,7 @@ pub struct ShelfRef {
 }
 
 /// 一条网页引用。`url` 是拖入时的原文（去掉首尾空白），比较用 [`super::weblink::normalize_web_url`]。
+/// 网站图标不在这个结构里，也不写进分组文件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebRef {
     pub url: String,

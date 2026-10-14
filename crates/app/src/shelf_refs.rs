@@ -2,7 +2,8 @@
 //!
 //! 两处各有自己的窗口和 `ShelvesPageData` 全局（全局在每个窗口里各一份），这里只持有状态，
 //! 不决定把结果交给哪个窗口。路径引用不打开、不复制、不移动、不删除原文件。网页引用只保存网址，
-//! 不读取虚拟 `.url` 的内容，也不关闭或移动浏览器标签。网页行不拖出。
+//! 不读取虚拟 `.url` 的内容，也不关闭或移动浏览器标签。网页行不拖出。网站图标与文件条目共用图标位，
+//! 没有取到时该位留空。
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -29,11 +30,22 @@ struct Press {
     y: f32,
 }
 
-/// 一次后台检查：哪些路径要查是否存在，哪些要取图标。
+/// 一次后台检查：哪些路径要查是否存在，哪些文件要取图标，哪些网址要取网站图标。
 pub(crate) struct ProbePlan {
     epoch: u64,
     to_check: Vec<String>,
     to_icon: Vec<String>,
+    to_web: Vec<String>,
+}
+
+impl ProbePlan {
+    pub(crate) fn needs_files(&self) -> bool {
+        !self.to_check.is_empty() || !self.to_icon.is_empty()
+    }
+
+    pub(crate) fn web_urls(&self) -> &[String] {
+        &self.to_web
+    }
 }
 
 /// 后台检查的结果。
@@ -59,6 +71,7 @@ pub(crate) struct RefsView {
     model: Rc<VecModel<ShelfRefRow>>,
     exists: HashMap<String, bool>,
     icons: HashMap<String, slint::Image>,
+    web_icons: HashMap<String, slint::Image>,
     epoch: u64,
     first: usize,
     count: usize,
@@ -74,6 +87,7 @@ impl RefsView {
             model: Rc::default(),
             exists: HashMap::new(),
             icons: HashMap::new(),
+            web_icons: HashMap::new(),
             epoch: 0,
             first: 0,
             count: 0,
@@ -102,6 +116,7 @@ impl RefsView {
         self.press = None;
         self.exists.clear();
         self.icons.clear();
+        self.web_icons.clear();
     }
 
     pub(crate) fn set_visible(&mut self, first: i32, count: i32) {
@@ -145,14 +160,18 @@ impl RefsView {
         self.selected.as_deref() == Some(line.key.as_str()) && self.selected_web == line.web
     }
 
+    pub(crate) fn has_icon(&self, key: &str) -> bool {
+        self.icons.contains_key(key) || self.web_icons.contains_key(key)
+    }
+
     /// 条目行跟着分组和已知的存在、图标状态重排。行数不变时逐行更新，列表的滚动位置不动。
-    /// 网页行不取图标，也不标「路径不存在」。
+    /// 网页行不标「路径不存在」。没有网站图标时图标位留空。
     pub(crate) fn push(&self, lines: &[ShelfLine], data: &ShelvesPageData<'_>) {
         let rows: Vec<ShelfRefRow> = lines
             .iter()
             .map(|line| {
                 let icon = if line.web {
-                    None
+                    self.web_icons.get(&line.key)
                 } else {
                     self.icons.get(&line.key)
                 };
@@ -179,45 +198,63 @@ impl RefsView {
         data.set_selected_path(self.selected.clone().unwrap_or_default().into());
     }
 
-    /// 只给可见的路径行查是否存在和取图标。网页行跳过。`force` 为真时丢掉已知的存在状态重新查。
+    /// 只给可见的路径行查是否存在和取文件图标。可见的网页行在缓存之外时去取网站图标。
+    /// `force` 为真时丢掉已知的存在状态重新查。网站图标不因 `force` 丢掉。
     pub(crate) fn refresh(
         &mut self,
         lines: &[ShelfLine],
         force: bool,
         data: &ShelvesPageData<'_>,
     ) -> Option<ProbePlan> {
-        let visible: Vec<&ShelfLine> = lines
+        let visible_paths: Vec<&ShelfLine> = lines
             .iter()
             .skip(self.first)
             .take(self.count.max(1))
             .filter(|line| !line.web)
             .collect();
+        let visible_web: Vec<&ShelfLine> = lines
+            .iter()
+            .skip(self.first)
+            .take(self.count.max(1))
+            .filter(|line| line.web)
+            .collect();
         if force {
             self.epoch = self.epoch.wrapping_add(1);
-            for line in &visible {
+            for line in &visible_paths {
                 self.exists.remove(&line.key);
             }
         }
-        let to_check: Vec<String> = visible
+        let to_check: Vec<String> = visible_paths
             .iter()
             .filter(|line| !self.exists.contains_key(&line.key))
             .map(|line| line.key.clone())
             .collect();
-        let to_icon: Vec<String> = visible
+        let to_icon: Vec<String> = visible_paths
             .iter()
             .filter(|line| !self.icons.contains_key(&line.key))
             .map(|line| line.key.clone())
             .collect();
-        let keep: HashSet<&str> = visible.iter().map(|line| line.key.as_str()).collect();
-        let before = self.icons.len();
-        self.icons.retain(|path, _| keep.contains(path.as_str()));
-        if self.icons.len() != before {
+        let to_web: Vec<String> = visible_web
+            .iter()
+            .filter(|line| !self.web_icons.contains_key(&line.key))
+            .map(|line| line.key.clone())
+            .collect();
+        let keep_paths: HashSet<&str> =
+            visible_paths.iter().map(|line| line.key.as_str()).collect();
+        let keep_web: HashSet<&str> = visible_web.iter().map(|line| line.key.as_str()).collect();
+        let before = self.icons.len() + self.web_icons.len();
+        self.icons
+            .retain(|path, _| keep_paths.contains(path.as_str()));
+        self.web_icons
+            .retain(|url, _| keep_web.contains(url.as_str()));
+        if self.icons.len() + self.web_icons.len() != before {
             self.push(lines, data);
         }
-        (!to_check.is_empty() || !to_icon.is_empty()).then_some(ProbePlan {
+        (!to_check.is_empty() || !to_icon.is_empty() || !to_web.is_empty()).then_some(ProbePlan {
             epoch: self.epoch,
             to_check,
             to_icon,
+            to_web,
         })
     }
 
@@ -232,6 +269,12 @@ impl RefsView {
         }
         for (path, image) in &result.icons {
             self.icons.insert(path.clone(), to_image(image));
+        }
+    }
+
+    pub(crate) fn receive_web(&mut self, icons: &[(String, RgbaImage)]) {
+        for (url, image) in icons {
+            self.web_icons.insert(url.clone(), to_image(image));
         }
     }
 
