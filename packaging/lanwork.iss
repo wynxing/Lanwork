@@ -2,7 +2,7 @@
 ; 不请求管理员，不安装 WebView2，不安装 Windows App Runtime。
 ; 卸载不删除数据目录，也不删除 %LOCALAPPDATA%\Lanwork 下的引导文件和缓存。
 
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.0"
 
 [Setup]
 AppId={{539894DD-478A-43E4-874C-054665F0B0BA}
