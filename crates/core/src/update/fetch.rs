@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use super::version::Version;
 
-/// GitHub 上 Lanwork 的最新 Release。
-pub const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/wynxing/Lanwork/releases/latest";
+/// 最新正式版上的 `latest.json`。不经过 `api.github.com`。
+pub const LATEST_MANIFEST_URL: &str =
+    "https://github.com/wynxing/Lanwork/releases/latest/download/latest.json";
 
 const DOWNLOAD_PREFIX: &str = "/wynxing/Lanwork/releases/download/v";
 
@@ -15,7 +16,7 @@ const CDN_HOSTS: [&str; 2] = [
     "objects.githubusercontent.com",
 ];
 
-/// `latest.json` 和 Release API 正文的上限。
+/// `latest.json` 正文的上限。
 pub const MAX_METADATA_BYTES: u64 = 2 * 1024 * 1024;
 
 /// 安装包上限。超过就不继续下载。
@@ -33,13 +34,31 @@ pub const STARTUP_DELAY: Duration = Duration::from_secs(1);
 /// 进程一直开着时，两次自动检查的间隔。
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// 日志里 HTTP 原因最多保留这么多个标量值。
+const REASON_CHARS: usize = 160;
+
 /// 读取失败。文字里没有地址。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportError {
     Network,
     TooLarge,
     Disk,
-    Http(u16),
+    /// 用 [`TransportError::http`] 生成。`reason` 里已经去掉网址。
+    Http {
+        status: u16,
+        reason: String,
+    },
+}
+
+impl TransportError {
+    /// HTTP 失败。记下状态码，并从正文抽出一句原因。网址不进入原因。
+    #[must_use]
+    pub fn http(status: u16, body: &[u8]) -> Self {
+        Self::Http {
+            status,
+            reason: brief_http_reason(status, body),
+        }
+    }
 }
 
 impl fmt::Display for TransportError {
@@ -48,9 +67,21 @@ impl fmt::Display for TransportError {
             Self::Network => write!(f, "网络"),
             Self::TooLarge => write!(f, "过大"),
             Self::Disk => write!(f, "写入临时文件失败"),
-            Self::Http(code) => write!(f, "http {code}"),
+            Self::Http { status, reason } => write!(f, "http {status}，{reason}"),
         }
     }
+}
+
+/// 每个请求都带上的头。`User-Agent` 不能空：GitHub 的 REST API 对空头回 403。
+///
+/// `accept` 里有控制字符时返回 `None`，调用方不要发这个请求。
+#[must_use]
+pub fn request_headers(accept: &str) -> Option<String> {
+    let agent = format!("Lanwork/{}", super::version::current_version());
+    if !header_value_ok(accept) || !header_value_ok(&agent) {
+        return None;
+    }
+    Some(format!("User-Agent: {agent}\r\nAccept: {accept}\r\n"))
 }
 
 /// 读取一个 HTTPS 正文。
@@ -114,25 +145,31 @@ pub fn pinned_latest_json_url(version: Version) -> String {
     format!("https://github.com/wynxing/Lanwork/releases/download/v{version}/latest.json")
 }
 
-/// 第一跳可以请求的地址。只有 Release API，以及上面两个钉死的下载地址。
+/// 第一跳可以请求的地址。只有最新正式版的 `latest.json`，以及两个钉死的版本路径。
 ///
-/// 不接受查询串、片段、`..` 和任何别的路径。CDN 主机不能当第一跳。
+/// 不接受查询串、片段、`..` 和任何别的路径。CDN 主机不能当第一跳。不请求 `api.github.com`。
 #[must_use]
 pub fn url_allowed(url: &str) -> bool {
-    if url == LATEST_RELEASE_URL {
-        return true;
-    }
+    url == LATEST_MANIFEST_URL || pinned_asset_url(url)
+}
+
+/// 重定向之后可以继续请求的地址。
+///
+/// `releases/latest/download/latest.json` 的下一跳是钉死的 `latest.json` 版本路径，再下一跳才是
+/// CDN。安装包第一跳的下一跳直接是 CDN。路径里的 `..`、反斜杠和百分号编码后再变成 `..` 的都拒绝。
+#[must_use]
+pub fn redirect_allowed(url: &str) -> bool {
+    cdn_redirect(url) || pinned_asset_url(url)
+}
+
+fn pinned_asset_url(url: &str) -> bool {
     let Some(version) = pinned_download_version(url) else {
         return false;
     };
     url == pinned_installer_url(version) || url == pinned_latest_json_url(version)
 }
 
-/// 重定向之后可以继续请求的地址。只有两个 CDN 主机。
-///
-/// 路径里的 `..`、反斜杠和百分号编码后再变成 `..` 的都拒绝。
-#[must_use]
-pub fn redirect_allowed(url: &str) -> bool {
+fn cdn_redirect(url: &str) -> bool {
     let Some(parsed) = parse_https_url(url) else {
         return false;
     };
@@ -263,6 +300,120 @@ fn from_hex(byte: u8) -> Option<u8> {
     }
 }
 
+fn header_value_ok(value: &str) -> bool {
+    !value.is_empty() && !value.chars().any(|ch| ch.is_control())
+}
+
+fn brief_http_reason(status: u16, body: &[u8]) -> String {
+    let text: String = String::from_utf8_lossy(body).chars().take(4096).collect();
+    let extracted = json_message(&text).unwrap_or(text);
+    let cleaned = tidy_reason(&strip_urls(&strip_markup(&extracted)));
+    if cleaned.chars().any(|ch| ch.is_alphanumeric()) {
+        truncate_reason(&cleaned)
+    } else {
+        fallback_reason(status).to_owned()
+    }
+}
+
+fn json_message(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let message = value.get("message")?.as_str()?.trim();
+    (!message.is_empty()).then(|| message.to_owned())
+}
+
+fn strip_markup(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn strip_urls(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    loop {
+        let http = rest.find("http://");
+        let https = rest.find("https://");
+        let start = match (http, https) {
+            (Some(left), Some(right)) => left.min(right),
+            (Some(left), None) => left,
+            (None, Some(right)) => right,
+            (None, None) => {
+                out.push_str(rest);
+                break;
+            }
+        };
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let end = after
+            .char_indices()
+            .find(|(_, ch)| {
+                ch.is_whitespace() || matches!(*ch, '<' | '>' | '"' | '\'' | ')' | ']' | '}')
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(after.len());
+        if end == 0 {
+            out.push_str(&after[..after.chars().next().map(char::len_utf8).unwrap_or(1)]);
+            rest = &after[after.chars().next().map(char::len_utf8).unwrap_or(1)..];
+            continue;
+        }
+        rest = &after[end..];
+    }
+    out
+}
+
+fn tidy_reason(text: &str) -> String {
+    let text = collapse_ws(&text.replace("()", ""));
+    text.replace(" .", ".").replace(" ,", ",").trim().to_owned()
+}
+
+fn collapse_ws(text: &str) -> String {
+    let mut out = String::new();
+    let mut pending = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() || ch.is_control() {
+            pending = !out.is_empty();
+            continue;
+        }
+        if pending {
+            out.push(' ');
+            pending = false;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn truncate_reason(text: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in text.chars().enumerate() {
+        if index >= REASON_CHARS {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn fallback_reason(status: u16) -> &'static str {
+    match status {
+        401 | 403 => "拒绝访问",
+        404 => "没有这个文件",
+        408 => "超时",
+        429 => "请求过多",
+        500..=599 => "服务器错误",
+        _ => "请求失败",
+    }
+}
+
 fn host_ok(host: &str) -> bool {
     !host.is_empty()
         && host.len() <= 253
@@ -292,9 +443,25 @@ mod tests {
             latest,
             "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/latest.json"
         );
-        assert!(url_allowed(LATEST_RELEASE_URL));
+        assert_eq!(
+            LATEST_MANIFEST_URL,
+            "https://github.com/wynxing/Lanwork/releases/latest/download/latest.json"
+        );
+        assert!(url_allowed(LATEST_MANIFEST_URL));
         assert!(url_allowed(&installer));
         assert!(url_allowed(&latest));
+        assert!(redirect_allowed(&latest));
+        assert!(redirect_allowed(&installer));
+        assert!(!redirect_allowed(LATEST_MANIFEST_URL));
+        assert!(!redirect_allowed(
+            "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/latest.json?x=1"
+        ));
+        assert!(!redirect_allowed(
+            "https://api.github.com/repos/wynxing/Lanwork/releases/latest"
+        ));
+        assert!(!url_allowed(
+            "https://api.github.com/repos/wynxing/Lanwork/releases/latest"
+        ));
         assert!(release_page_allowed(
             "https://github.com/wynxing/Lanwork/releases/tag/v0.3.0"
         ));
@@ -306,7 +473,6 @@ mod tests {
         assert!(!url_allowed(objects));
         assert!(redirect_allowed(cdn));
         assert!(redirect_allowed(objects));
-        assert!(!redirect_allowed(&installer));
         for url in [
             "http://github.com/wynxing/Lanwork/releases/download/v0.3.0/Lanwork-Setup-0.3.0.exe",
             "https://github.com/other/Lanwork/releases/download/v0.3.0/Lanwork-Setup-0.3.0.exe",
@@ -315,8 +481,12 @@ mod tests {
             "https://user:pass@github.com/wynxing/Lanwork/releases/download/v0.3.0/Lanwork-Setup-0.3.0.exe",
             "https://github.com:444/wynxing/Lanwork/releases/download/v0.3.0/Lanwork-Setup-0.3.0.exe",
             "https://example.com/Lanwork-Setup-0.3.0.exe",
+            "https://api.github.com/repos/wynxing/Lanwork/releases/latest",
             "https://api.github.com/repos/wynxing/Lanwork/releases/latest/extra",
             "https://api.github.com/repos/other/Lanwork/releases/latest",
+            "https://github.com/wynxing/Lanwork/releases/latest/download/latest.json/extra",
+            "https://github.com/wynxing/Lanwork/releases/latest/download/other.json",
+            "https://github.com/wynxing/Lanwork/releases/latest/download/latest.json?x=1",
             "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/other.exe",
             "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/Lanwork-Setup-0.3.0.exe/extra",
             "https://github.com/wynxing/Lanwork/releases/download/v0.3.0/../Lanwork-Setup-0.3.0.exe",
@@ -364,6 +534,62 @@ mod tests {
         assert_eq!(resolve_redirect(current, "http://github.com/a"), None);
         assert_eq!(resolve_redirect(current, "setup.exe"), None);
         assert_eq!(resolve_redirect(current, "https://evil.com/a b"), None);
+    }
+
+    #[test]
+    fn requests_name_the_app_and_keep_a_user_agent() {
+        let headers = request_headers("*/*").expect("headers");
+        let version = super::super::version::current_version();
+        assert_eq!(
+            headers,
+            format!("User-Agent: Lanwork/{version}\r\nAccept: */*\r\n")
+        );
+        assert!(request_headers("application/json").is_some());
+        assert!(request_headers("").is_none());
+        assert!(request_headers("bad\r\nX-Injected: 1").is_none());
+    }
+
+    #[test]
+    fn http_failure_records_status_and_a_short_reason_without_a_url() {
+        let missing_agent = b"Request forbidden by administrative rules. Please make sure your request has a User-Agent header (https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#user-agent-required). Check https://developer.github.com for other possible causes.";
+        let missing = TransportError::http(403, missing_agent);
+        let text = missing.to_string();
+        assert!(text.starts_with("http 403，"), "{text}");
+        assert!(text.contains("User-Agent"), "{text}");
+        assert!(!text.contains("http://"), "{text}");
+        assert!(!text.contains("https://"), "{text}");
+
+        let rate = br#"{"message":"API rate limit exceeded for 203.0.113.4. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}"#;
+        let limited = TransportError::http(403, rate).to_string();
+        assert!(
+            limited.contains("http 403，API rate limit exceeded"),
+            "{limited}"
+        );
+        assert!(!limited.contains("https://"), "{limited}");
+        assert!(!limited.contains("documentation_url"), "{limited}");
+
+        assert_eq!(
+            TransportError::http(403, b"").to_string(),
+            "http 403，拒绝访问"
+        );
+        assert_eq!(
+            TransportError::http(404, b"   ").to_string(),
+            "http 404，没有这个文件"
+        );
+        assert_eq!(
+            TransportError::http(429, b"<html></html>").to_string(),
+            "http 429，请求过多"
+        );
+        assert_eq!(
+            TransportError::http(503, b"<html><body>unavailable</body></html>").to_string(),
+            "http 503，unavailable"
+        );
+        let only_url = TransportError::http(403, b"https://evil.example/secret");
+        assert_eq!(only_url.to_string(), "http 403，拒绝访问");
+        let long = format!("字{}", "测".repeat(REASON_CHARS));
+        let truncated = TransportError::http(400, long.as_bytes()).to_string();
+        assert!(truncated.ends_with('…'), "{truncated}");
+        assert!(!truncated.contains("https://"));
     }
 
     #[test]
