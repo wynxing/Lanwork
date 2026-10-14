@@ -1,8 +1,8 @@
-// 便签悬浮窗。只有正文：上沿一条可拖动的细条，右侧是关闭，下面是正文。没有说明文字。
+// 便签悬浮窗。上沿一条可拖动的细条，右侧是关闭，下面一行来源，再下面是正文。没有说明文字。
 // 窗口始终在最上层。贴边收起时只留下一个小把手，窗口其余部分透明。风格与面板一致。
 
 import { Palette } from "std-widgets.slint";
-import { EdgeHandle, Ink } from "widgets.slint";
+import { EdgeHandle, FloatSource, Ink } from "widgets.slint";
 import { NoteEditor } from "noteeditor.slint";
 
 export component NoteFloat inherits Window {
@@ -37,6 +37,8 @@ export component NoteFloat inherits Window {
     // 一叠的页数和当前下标。1 页时和原来的悬浮窗一样。
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
+    // 「便签 · 名称」。收起时不显示。
+    in property <string> source;
     in-out property <string> body <=> editor.body;
     out property <string> preedit: editor.preedit;
 
@@ -72,6 +74,10 @@ export component NoteFloat inherits Window {
     out property <length> strip-height: edge-strip.height;
     out property <length> grip-width: edge-strip.grip-width;
     out property <length> grip-height: edge-strip.grip-height;
+    out property <length> source-y: source-row.absolute-position.y;
+    out property <length> source-h: source-row.height;
+    out property <bool> source-open: source-row.visible;
+    out property <length> body-y: editor.absolute-position.y;
 
     background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
@@ -162,6 +168,15 @@ export component NoteFloat inherits Window {
         }
     }
 
+    source-row := FloatSource {
+        x: 0px;
+        y: 28px;
+        width: parent.width;
+        visible: !root.collapsed;
+        source: root.source;
+        ink: c.tertiary;
+    }
+
     // 展开并且贴边时，靠边正中的同一块把手再点一次就收回。不盖住关闭按钮。
     edge-strip := EdgeHandle {
         x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
@@ -177,9 +192,9 @@ export component NoteFloat inherits Window {
     editor := NoteEditor {
         visible: !root.collapsed;
         x: 10px;
-        y: 28px;
+        y: 28px + source-row.height;
         width: parent.width - 20px;
-        height: parent.height - 28px - 8px;
+        height: parent.height - 28px - source-row.height - 8px;
         c: root.c;
         problem: root.problem;
         problem-text: root.problem-text;

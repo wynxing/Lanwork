@@ -17,10 +17,11 @@ mod theme;
 
 pub use bar::{
     AltRoute, AppMenuAction, AppMenuItem, BAR_WIDTH, BASE_DPI, Backdrop, BackdropInput,
-    BarPlacement, DARK_SOLID_RGB, EnterChord, EscapeAction, GROUP_GAP, LIGHT_SOLID_RGB, LIST_PAD,
-    MIN_BACKDROP_BUILD, MonitorArea, NO_RESULTS, ROW_HEIGHT, RowAction, SHORTCUT_COUNT, WorkArea,
-    alt_route, app_menu, app_menu_command, bar_origin, choose_backdrop, escape_action, group_label,
-    location_always_shown, match_span, max_results_height, monitor_at, move_selection, path_target,
+    BarPlacement, DARK_SOLID_RGB, EnterChord, EscapeAction, FloatBackdrop, GROUP_GAP,
+    LIGHT_SOLID_RGB, LIST_PAD, MIN_BACKDROP_BUILD, MonitorArea, NO_RESULTS, ROW_HEIGHT, RowAction,
+    SHORTCUT_COUNT, WorkArea, alt_route, app_menu, app_menu_command, bar_origin, choose_backdrop,
+    escape_action, float_backdrop, group_label, location_always_shown, match_span,
+    max_results_height, monitor_at, move_selection, path_target, persistent_acrylic_abgr,
     place_bar, pointed_row, reselect, row_action, row_offsets, shortcut_rows, shortcut_target,
     solid_rgb, status_line, text_after_hide, to_logical, to_physical,
 };

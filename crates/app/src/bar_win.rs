@@ -2,12 +2,14 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
+use std::mem::{size_of, size_of_val};
 
 use lanwork_core::shell::{
-    Backdrop, BackdropInput, NudgeWait, WorkArea, choose_backdrop, nudge_wait, tick_after,
+    Backdrop, BackdropInput, FloatBackdrop, NudgeWait, WorkArea, choose_backdrop, float_backdrop,
+    nudge_wait, persistent_acrylic_abgr, tick_after,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DWM_SYSTEMBACKDROP_TYPE, DWMNCRP_DISABLED,
     DWMNCRP_USEWINDOWSTYLE, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR,
@@ -20,6 +22,7 @@ use windows::Win32::Graphics::Gdi::{
     CreateRectRgn, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
     MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
 };
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::UI::Accessibility::SetWinEventHook;
@@ -35,10 +38,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IsIconic,
     IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WINEVENT_OUTOFCONTEXT, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
-    WM_MOUSEACTIVATE, WM_NCDESTROY, WM_STYLECHANGING, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX,
-    WS_MINIMIZEBOX, WS_SYSMENU,
+    SetWindowPos, ShowWindow, WINEVENT_OUTOFCONTEXT, WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE,
+    WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_STYLECHANGING,
+    WM_THEMECHANGED, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
+use windows::core::{BOOL, PCSTR, s, w};
 
 use crate::registry::read_transparency_enabled;
 
@@ -268,7 +272,16 @@ unsafe extern "system" fn reject_activate(
         }
     }
     // SAFETY: 参数原样交给子类链的下一层。
-    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+    // winit 创建窗口时默认是 `DWMSBT_AUTO`。页点失活后系统可能给这块透明窗口铺上不透明材料。
+    const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
+    if matches!(
+        message,
+        WM_ACTIVATE | WM_ACTIVATEAPP | WM_SHOWWINDOW | WM_THEMECHANGED | WM_DWMCOMPOSITIONCHANGED
+    ) {
+        apply_clear_plate(hwnd);
+    }
+    result
 }
 
 pub(crate) fn clear_blur_hold(key: isize) {
@@ -642,6 +655,9 @@ pub(crate) fn current_backdrop() -> Backdrop {
 }
 
 /// 圆角、暗色标题区和背景类型。返回实际可用的背景：亚克力属性没有设上时是纯色。
+///
+/// 搜索条和面板用这个。亚克力是 `DWMSBT_TRANSIENTWINDOW`，窗口失活时系统会把它收成不透明。
+/// 这两个窗口失焦就收起，看不见那一下。悬浮窗用 [`apply_float_backdrop`]。
 pub(crate) fn apply_dwm(hwnd: HWND, wanted: Backdrop, dark: bool) -> Backdrop {
     let corner = DWMWCP_ROUND;
     let _ = set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner);
@@ -666,11 +682,145 @@ pub(crate) fn apply_dwm(hwnd: HWND, wanted: Backdrop, dark: bool) -> Backdrop {
     Backdrop::Solid
 }
 
+/// 展开的悬浮窗。要亚克力时不用 `DWMSBT_TRANSIENTWINDOW`：那种背景亚克力在窗口失活时会被系统换成不透明，
+/// 再设一次同一种类型也取消不了。这里改用强调策略里的亚克力，有焦点和没有焦点是同一层。
+/// 纯色时先关掉这层，再走和搜索条相同的纯色回退。
+pub(crate) fn apply_float_backdrop(hwnd: HWND, wanted: Backdrop, dark: bool) -> Backdrop {
+    match float_backdrop(wanted, false) {
+        FloatBackdrop::Solid => {
+            let _ = set_accent(hwnd, accent_off());
+            apply_dwm(hwnd, Backdrop::Solid, dark)
+        }
+        FloatBackdrop::PersistentAcrylic => {
+            // 先按纯色把系统背景类型设成 `DWMSBT_NONE`。留着 transient 的话，失活策略仍会盖上一块不透明。
+            let _ = apply_dwm(hwnd, Backdrop::Solid, dark);
+            if set_accent(hwnd, accent_acrylic(dark)) {
+                Backdrop::Acrylic
+            } else {
+                apply_dwm(hwnd, Backdrop::Acrylic, dark)
+            }
+        }
+    }
+}
+
+/// `SetWindowCompositionAttribute` 的 `WCA_ACCENT_POLICY`。这个入口不在公开头文件里。
+const WCA_ACCENT_POLICY: u32 = 19;
+const ACCENT_DISABLED: u32 = 0;
+const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+/// Windows 11 22H2 起，这个标志让强调策略走较新的亚克力配方，但仍走强调策略，不走会在失活时关掉的系统背景。
+const ACCENT_FLAG_MODERN_ACRYLIC: u32 = 2;
+
+#[repr(C)]
+struct AccentPolicy {
+    state: u32,
+    flags: u32,
+    color: u32,
+    animation_id: u32,
+}
+
+#[repr(C)]
+struct CompositionData {
+    attribute: u32,
+    data: *mut c_void,
+    size: usize,
+}
+
+type CompositionFn = unsafe extern "system" fn(HWND, *mut CompositionData) -> BOOL;
+
+fn accent_off() -> AccentPolicy {
+    AccentPolicy {
+        state: ACCENT_DISABLED,
+        flags: 0,
+        color: 0,
+        animation_id: 0,
+    }
+}
+
+fn accent_acrylic(dark: bool) -> AccentPolicy {
+    AccentPolicy {
+        state: ACCENT_ENABLE_ACRYLICBLURBEHIND,
+        flags: ACCENT_FLAG_MODERN_ACRYLIC,
+        color: persistent_acrylic_abgr(dark),
+        animation_id: 0,
+    }
+}
+
+fn set_accent(hwnd: HWND, mut policy: AccentPolicy) -> bool {
+    let Some(func) = composition_fn(s!("SetWindowCompositionAttribute")) else {
+        return false;
+    };
+    let mut data = CompositionData {
+        attribute: WCA_ACCENT_POLICY,
+        data: std::ptr::from_mut(&mut policy).cast(),
+        size: size_of::<AccentPolicy>(),
+    };
+    // SAFETY: hwnd 是本进程的窗口。data 指向局部的策略，调用返回前一直有效。
+    unsafe { func(hwnd, &mut data) }.as_bool()
+}
+
+fn composition_fn(name: PCSTR) -> Option<CompositionFn> {
+    let module = user32()?;
+    // SAFETY: user32 在本进程里。名字是以 0 结尾的常量。
+    let proc = unsafe { GetProcAddress(module, name) }?;
+    if size_of::<CompositionFn>() != size_of_val(&proc) {
+        return None;
+    }
+    // SAFETY: 两边都是同等大小的系统调用约定函数指针，只从非空的 GetProcAddress 结果拷贝。
+    Some(unsafe { std::mem::transmute_copy(&proc) })
+}
+
+fn user32() -> Option<HMODULE> {
+    // SAFETY: 只取已经加载的 user32，不增加引用计数。
+    unsafe { GetModuleHandleW(w!("user32.dll")) }.ok()
+}
+
+#[cfg(test)]
+pub(crate) fn read_accent_state(hwnd: HWND) -> Option<u32> {
+    let func = composition_fn(s!("GetWindowCompositionAttribute"))?;
+    let mut policy = accent_off();
+    let mut data = CompositionData {
+        attribute: WCA_ACCENT_POLICY,
+        data: std::ptr::from_mut(&mut policy).cast(),
+        size: size_of::<AccentPolicy>(),
+    };
+    // SAFETY: hwnd 是本进程的探测窗口。data 指向局部策略，调用返回前有效。
+    let ok = unsafe { func(hwnd, &mut data) }.as_bool();
+    ok.then_some(policy.state)
+}
+
+#[cfg(test)]
+pub(crate) fn accent_is_persistent_acrylic(state: u32) -> bool {
+    state == ACCENT_ENABLE_ACRYLICBLURBEHIND
+}
+
+/// 叠页的彩色圆点。不画来源行，也不铺亚克力。
+///
+/// winit 创建时把系统背景设成 `DWMSBT_AUTO`。窗口一直不激活，失活策略仍可能给客户区一块不透明材料。
+/// 这里关掉系统背景和强调策略，再打开空区域的逐像素透明，圆点以外继续透出后面的画面。
+pub(crate) fn apply_clear_plate(hwnd: HWND) {
+    thread_local! {
+        static DEPTH: Cell<u32> = const { Cell::new(0) };
+    }
+    if DEPTH.with(Cell::get) > 0 {
+        return;
+    }
+    DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    let _ = set_accent(hwnd, accent_off());
+    if windows_build().is_some_and(|build| build >= lanwork_core::shell::MIN_BACKDROP_BUILD) {
+        let none: DWM_SYSTEMBACKDROP_TYPE = DWMSBT_NONE;
+        let _ = set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &none);
+    }
+    enable_per_pixel_alpha(hwnd);
+    DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+}
+
 /// 收起后的窗口只画把手。关掉圆角、边框、非客户区阴影和亚克力，再打开逐像素 alpha。
 ///
 /// 系统背景类型设成 `DWMSBT_NONE` 会把 winit 创建窗口时打开的透明清掉，所以模糊区域放在最后。
 /// 调用方在还原、重新显示、主题、DPI 和再次置顶之后都要再调一次。
 pub(crate) fn apply_collapsed_frame(hwnd: HWND, dark: bool) {
+    // 展开时设过的强调策略亚克力会盖住把手的逐像素透明。收起先关掉。
+    let _ = set_accent(hwnd, accent_off());
     let corner = DWMWCP_DONOTROUND;
     let _ = set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner);
     let dark_value: u32 = u32::from(dark);

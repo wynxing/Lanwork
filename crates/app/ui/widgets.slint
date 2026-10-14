@@ -350,3 +350,25 @@ export component EdgeHandle inherits Rectangle {
         }
     }
 }
+
+// 悬浮窗内容最上方的来源行。拖动条下面单独一行，比正文淡、字更小。放不下时末尾省略号。
+// 不接收拖动。高 20 逻辑像素。
+export component FloatSource inherits Rectangle {
+    in property <string> source;
+    in property <color> ink;
+
+    height: 20px;
+    clip: true;
+
+    Text {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.source;
+        color: root.ink;
+        font-size: 12px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}

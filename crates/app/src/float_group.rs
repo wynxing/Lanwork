@@ -1115,6 +1115,8 @@ impl Live {
         if !crate::bar_win::watch_topmost(hwnd) {
             self.store.log_warn("叠页页签没有算进前台置顶");
         }
+        // 页点不是内容窗，不画来源行。清掉 winit 默认的系统背景，失焦后也不铺不透明的底。
+        crate::bar_win::apply_clear_plate(hwnd);
         if let Some(tab) = self.tabs.get_mut(stack_id) {
             tab.key = Some(crate::bar_win::hwnd_key(hwnd));
         }

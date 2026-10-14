@@ -14,6 +14,7 @@ use std::time::Duration;
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::{
     DropEffect, FLOAT_HEIGHT, FLOAT_WIDTH, Flip, PxBox, StackPage, float_default_origin,
+    note_source,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
@@ -335,6 +336,7 @@ impl Floats {
         }
         let ui = NoteFloat::new().map_err(|err| format!("悬浮窗没有创建：{err}"))?;
         ui.set_body(note.body.as_str().into());
+        ui.set_source(note_source(&note.title, &note.body).into());
         ui.set_dark(self.dark);
         ui.set_solid_color(rgb(solid_rgb(self.dark)));
         wire(&ui, note_id);
@@ -436,6 +438,7 @@ fn wire(ui: &NoteFloat, note_id: &str) {
                 window
                     .editor
                     .edit(|session, now| session.set_body(&text, now), tick(&id));
+                window.sync_source();
             });
         }
     });
@@ -631,11 +634,14 @@ impl FloatWindow {
         self.session.replace(expanded_of(saved), saved.dock);
         let visible = self.session.visible();
         self.place(visible);
+        self.sync_source();
         self.sync_chrome();
         let _ = self.ui.show();
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
+        // 叠页把藏着的这一页重新显示时，show 可能把系统背景设回默认。显示之后再写一次。
+        self.refresh_backdrop(self.ui.get_dark());
         if !self.session.chrome().collapsed {
             if pages > 1 {
                 self.ui.invoke_focus_stack_keys();
@@ -808,6 +814,14 @@ impl FloatWindow {
         if self.editor.session.adopt_if_clean(&latest) {
             self.ui.set_body(latest.body.as_str().into());
         }
+        self.sync_source();
+    }
+
+    /// 来源行跟着当前草稿。标题还在时用标题；标题空了就用正文第一行。
+    fn sync_source(&self) {
+        let draft = self.editor.session.draft();
+        self.ui
+            .set_source(note_source(&draft.title, &draft.body).into());
     }
 
     fn refresh_backdrop(&mut self, dark: bool) {
@@ -825,11 +839,13 @@ impl FloatWindow {
     }
 
     /// 显示在最前。已经收起时不展开。展开时把焦点给正文。位置和大小不动。
-    fn raise(&self) {
+    fn raise(&mut self) {
+        self.sync_source();
         let _ = self.ui.show();
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
+        self.refresh_backdrop(self.ui.get_dark());
         if !self.session.chrome().collapsed {
             self.ui.invoke_focus_body();
         }
@@ -885,6 +901,7 @@ impl FloatWindow {
         self.editor.session.discard();
         self.ui
             .set_body(self.editor.session.draft().body.as_str().into());
+        self.sync_source();
         self.proceed();
     }
 
@@ -901,6 +918,7 @@ impl FloatWindow {
         match self.editor.session.keep_saved(ctx.notes) {
             Some(latest) => {
                 self.ui.set_body(latest.body.as_str().into());
+                self.sync_source();
                 self.proceed();
             }
             None => self.push_problem(),
