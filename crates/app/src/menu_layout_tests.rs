@@ -36,6 +36,7 @@ fn sample_row() -> BarRow {
         location_always: false,
         icon: slint::Image::default(),
         has_icon: false,
+        draw_glyph: true,
         glyph: 0,
         y: ROW_Y,
         group_start: false,
