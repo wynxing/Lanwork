@@ -9,7 +9,7 @@ use lanwork_core::shell::{
     nudge_wait, persistent_acrylic_abgr, tick_after,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Foundation::{BOOL, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DWM_SYSTEMBACKDROP_TYPE, DWMNCRP_DISABLED,
     DWMNCRP_USEWINDOWSTYLE, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR,
@@ -42,7 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_STYLECHANGING,
     WM_THEMECHANGED, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
-use windows::core::{PCSTR, s, w};
+use windows::core::{BOOL, PCSTR, s, w};
 
 use crate::registry::read_transparency_enabled;
 
