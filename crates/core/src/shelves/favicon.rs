@@ -1,27 +1,18 @@
-//! 网页引用的网站图标：挑选地址、磁盘缓存、以及可替换的获取和解码。
+//! 网页引用的网站图标：挑选地址，以及可替换的获取和解码。
 //!
-//! 不访问网络，也不调用 Win32。分组文件不写图标字节。获取失败时调用方仍保留已经保存的引用。
-
-use std::path::{Path, PathBuf};
-
-use sha2::{Digest, Sha256};
+//! 不访问网络，也不调用 Win32。磁盘缓存在 [`crate::web_icons`]，不在这里删除文件。
+//! 分组文件不写图标字节。获取失败时调用方仍保留已经保存的引用。
 
 use crate::dispatch::RgbaImage;
-use crate::storage::{self, atomic_write};
+use crate::web_icons::{WEB_ICON_MAX_EDGE, WebIconCache};
 
 use super::weblink::normalize_web_url;
-
-/// 数据目录下的相对路径。可整份删除后重建，不进入导出和备份。
-pub const WEB_ICON_CACHE_DIR: &str = "cache/web-icons";
 
 /// 一次 HTTP 正文的上限。页面和图标共用。
 pub const WEB_ICON_BYTES_LIMIT: usize = 1024 * 1024;
 
 /// 只在正文的这一段里找 `<link>`。
 pub const WEB_ICON_HTML_SCAN: usize = 512 * 1024;
-
-/// 放进缓存和界面的边长上限。
-pub const WEB_ICON_MAX_EDGE: u32 = 256;
 
 /// 超过这个边长的原图不再解码。
 pub const WEB_ICON_SOURCE_EDGE: u32 = 4096;
@@ -31,9 +22,6 @@ pub const WEB_ICON_MAX_REDIRECTS: u32 = 5;
 
 /// 页面里声明的图标最多取这么多条，之后再加 `/favicon.ico`。
 const MAX_DECLARED: usize = 8;
-
-const MAGIC: &[u8] = b"LWFI";
-const CACHE_VERSION: u32 = 1;
 
 /// 一次取回的正文。`final_url` 是重定向之后的地址，用来解析相对链接。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,59 +83,6 @@ impl IconUrl {
 
     fn path_only(&self) -> &str {
         self.path_and_query.split('?').next().unwrap_or("/")
-    }
-}
-
-/// 数据目录里的网站图标缓存。文件可以删，删了会再取。
-#[derive(Debug, Clone)]
-pub struct WebIconCache {
-    dir: PathBuf,
-}
-
-impl WebIconCache {
-    #[must_use]
-    pub fn new(data_dir: &Path) -> Self {
-        Self {
-            dir: data_dir.join(WEB_ICON_CACHE_DIR),
-        }
-    }
-
-    #[must_use]
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    #[must_use]
-    pub fn load(&self, normalized_key: &str) -> Option<RgbaImage> {
-        let path = self.path_for(normalized_key)?;
-        let bytes = storage::fs_read(&path).ok()?;
-        match decode_cache(&bytes) {
-            Some(image) => Some(image),
-            None => {
-                // 只删这份缓存。用户拖入的文件不经过这里。
-                let _ = storage::fs_remove_file(&path);
-                None
-            }
-        }
-    }
-
-    /// 写盘失败时返回 false。调用方仍可以先把图显示出来。
-    pub fn store(&self, normalized_key: &str, image: &RgbaImage) -> bool {
-        let Some(path) = self.path_for(normalized_key) else {
-            return false;
-        };
-        let Some(bytes) = encode_cache(image) else {
-            return false;
-        };
-        if storage::fs_create_dir_all(&self.dir).is_err() {
-            return false;
-        }
-        atomic_write(&path, &bytes).is_ok()
-    }
-
-    fn path_for(&self, normalized_key: &str) -> Option<PathBuf> {
-        let name = cache_file_name(normalized_key)?;
-        Some(self.dir.join(name))
     }
 }
 
@@ -437,50 +372,6 @@ fn accept(
         return None;
     }
     Some(image)
-}
-
-fn cache_file_name(normalized_key: &str) -> Option<String> {
-    if normalized_key.is_empty() || normalized_key.len() > 16_384 {
-        return None;
-    }
-    let digest = Sha256::digest(normalized_key.as_bytes());
-    let mut name = String::with_capacity(68);
-    for byte in digest {
-        name.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
-        name.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
-    }
-    name.push_str(".bin");
-    Some(name)
-}
-
-fn encode_cache(image: &RgbaImage) -> Option<Vec<u8>> {
-    if image.width > WEB_ICON_MAX_EDGE || image.height > WEB_ICON_MAX_EDGE {
-        return None;
-    }
-    let mut out = Vec::with_capacity(16 + image.pixels.len());
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&CACHE_VERSION.to_le_bytes());
-    out.extend_from_slice(&image.width.to_le_bytes());
-    out.extend_from_slice(&image.height.to_le_bytes());
-    out.extend_from_slice(&image.pixels);
-    Some(out)
-}
-
-fn decode_cache(bytes: &[u8]) -> Option<RgbaImage> {
-    if bytes.len() < 16 || !bytes.starts_with(MAGIC) {
-        return None;
-    }
-    let version = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
-    if version != CACHE_VERSION {
-        return None;
-    }
-    let width = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
-    let height = u32::from_le_bytes(bytes[12..16].try_into().ok()?);
-    if width == 0 || height == 0 || width > WEB_ICON_MAX_EDGE || height > WEB_ICON_MAX_EDGE {
-        return None;
-    }
-    let pixels = bytes[16..].to_vec();
-    RgbaImage::new(width, height, pixels)
 }
 
 fn strip_scheme<'a>(raw: &'a str, scheme: &str) -> Option<&'a str> {
@@ -1055,12 +946,9 @@ mod tests {
         assert_eq!(std::fs::read(&shelf_path).unwrap(), before);
         assert!(
             cache
-                .dir()
-                .join(cache_file_name(icon_cache_key(page_url).unwrap().as_str()).unwrap())
+                .path_for(icon_cache_key(page_url).unwrap().as_str())
+                .unwrap()
                 .is_file()
-                || cache
-                    .load(icon_cache_key(page_url).unwrap().as_str())
-                    .is_some()
         );
 
         source.calls.clear();

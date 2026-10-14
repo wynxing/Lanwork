@@ -12,13 +12,13 @@ mod service;
 mod weblink;
 
 pub use crate::notes::{FloatDock, FloatGeometry, FloatStackSlot};
+pub use crate::web_icons::{WEB_ICON_CACHE_DIR, WEB_ICON_MAX_EDGE, WebIconCache};
 pub use command::ShelfCommands;
 pub use error::ShelfError;
 pub use favicon::{
-    Fetched, IconDecoder, IconSource, IconUrl, WEB_ICON_BYTES_LIMIT, WEB_ICON_CACHE_DIR,
-    WEB_ICON_HTML_SCAN, WEB_ICON_MAX_EDGE, WEB_ICON_MAX_REDIRECTS, WEB_ICON_SOURCE_EDGE,
-    WebIconCache, fit_icon_edge, icon_cache_key, icon_candidates, load_web_icon, parse_icon_url,
-    resolve_icon_redirect,
+    Fetched, IconDecoder, IconSource, IconUrl, WEB_ICON_BYTES_LIMIT, WEB_ICON_HTML_SCAN,
+    WEB_ICON_MAX_REDIRECTS, WEB_ICON_SOURCE_EDGE, fit_icon_edge, icon_cache_key, icon_candidates,
+    load_web_icon, parse_icon_url, resolve_icon_redirect,
 };
 pub use model::{
     AddRefsOutcome, DEFAULT_GROUP_NAME, EXISTS_TIMEOUT, IncomingRef, IncomingWeb, Shelf, ShelfRef,
