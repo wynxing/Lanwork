@@ -1,5 +1,6 @@
-//! 设置页的布局和点击检查。用软件渲染的窗口把 `Panel` 的设置标签摆出来，点三个控件，
+//! 设置页的布局和点击检查。用软件渲染的窗口把 `Panel` 的设置标签摆出来，点控件，
 //! 确认它们各自发出请求，并且控件只显示 Rust 推来的值，不自己翻转。
+//! 坐标与 `settingspage.slint` 开头的注释一致。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -21,10 +22,9 @@ impl Platform for Headless {
 
 const WIDTH: u32 = 760;
 const HEIGHT: u32 = 560;
-const TITLE: f32 = 48.0;
-const ROW: f32 = 48.0;
-const PAD_TOP: f32 = 8.0;
-const CONTROL_X: f32 = 24.0 + 140.0;
+const PAGE_Y: f32 = 49.0;
+const NAV_X: f32 = 40.0;
+const CONTROL_X: f32 = 132.0 + 16.0 + 120.0;
 
 fn open(dark: bool) -> (Panel, Rc<MinimalSoftwareWindow>) {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
@@ -34,12 +34,16 @@ fn open(dark: bool) -> (Panel, Rc<MinimalSoftwareWindow>) {
     ui.set_dark(dark);
     ui.set_tab(3);
     let data = ui.global::<SettingsPageData>();
-    let titles: Vec<slint::SharedString> = ["右上", "左上", "左下", "右下", "关闭"]
-        .into_iter()
-        .map(Into::into)
-        .collect();
-    data.set_corner_titles(ModelRc::new(VecModel::from(titles)));
+    let titles = |items: &[&str]| {
+        let titles: Vec<slint::SharedString> = items.iter().copied().map(Into::into).collect();
+        ModelRc::new(VecModel::from(titles))
+    };
+    data.set_corner_titles(titles(&["右上", "左上", "左下", "右下", "关闭"]));
+    data.set_theme_titles(titles(&["明", "暗", "跟随系统"]));
+    data.set_engine_titles(titles(&["Google", "必应", "百度"]));
     data.set_hotkey("Ctrl+Alt+M".into());
+    data.set_snooze_days("3".into());
+    data.set_data_dir(r"C:\Users\me\Documents\Lanwork".into());
     ui.show().expect("show");
     slint::platform::update_timers_and_animations();
     (ui, window)
@@ -59,8 +63,16 @@ fn click(ui: &Panel, x: f32, y: f32) {
     });
 }
 
+fn section_center(index: f32) -> f32 {
+    PAGE_Y + 8.0 + 40.0 * index + 18.0
+}
+
 fn row_center(index: f32) -> f32 {
-    TITLE + 1.0 + PAD_TOP + ROW * index + ROW / 2.0
+    PAGE_Y + 8.0 + 48.0 * index + 24.0
+}
+
+fn open_section(ui: &Panel, index: f32) {
+    click(ui, NAV_X, section_center(index));
 }
 
 #[test]
@@ -70,6 +82,8 @@ fn each_control_asks_for_its_own_change_and_does_not_flip_by_itself() {
     let startup = Rc::new(RefCell::new(Vec::new()));
     let corners = Rc::new(RefCell::new(Vec::new()));
     let recordings = Rc::new(Cell::new(0));
+    let themes = Rc::new(RefCell::new(Vec::new()));
+    let engines = Rc::new(RefCell::new(Vec::new()));
     {
         let startup = Rc::clone(&startup);
         data.on_set_launch_at_startup(move |value| startup.borrow_mut().push(value));
@@ -77,6 +91,10 @@ fn each_control_asks_for_its_own_change_and_does_not_flip_by_itself() {
         data.on_choose_corner(move |index| corners.borrow_mut().push(index));
         let recordings = Rc::clone(&recordings);
         data.on_toggle_recording(move || recordings.set(recordings.get() + 1));
+        let themes = Rc::clone(&themes);
+        data.on_choose_theme(move |index| themes.borrow_mut().push(index));
+        let engines = Rc::clone(&engines);
+        data.on_choose_engine(move |index| engines.borrow_mut().push(index));
     }
 
     click(&ui, CONTROL_X + 20.0, row_center(0.0));
@@ -98,10 +116,57 @@ fn each_control_asks_for_its_own_change_and_does_not_flip_by_itself() {
 
     click(&ui, CONTROL_X + 90.0, row_center(2.0));
     assert_eq!(recordings.get(), 1);
+
+    // 「明」大约 33 逻辑像素宽，点第二项「暗」。
+    click(&ui, CONTROL_X + 33.0 + 16.0, row_center(3.0));
+    assert_eq!(*themes.borrow(), [1]);
+    assert_eq!(data.get_theme(), 0, "主题不自己换");
+
+    // 「Google」大约 62 逻辑像素宽，点第二项「必应」。
+    click(&ui, CONTROL_X + 62.0 + 16.0, row_center(4.0));
+    assert_eq!(*engines.borrow(), [1]);
+    assert_eq!(data.get_engine(), 0, "搜索引擎不自己换");
 }
 
 #[test]
-fn the_update_button_asks_to_check_without_moving_the_rows_above() {
+fn quiet_hours_and_the_other_sections_keep_their_own_controls() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    let quiet = Rc::new(RefCell::new(Vec::new()));
+    let startup = Rc::new(RefCell::new(Vec::new()));
+    let sections = Rc::new(RefCell::new(Vec::new()));
+    {
+        let quiet = Rc::clone(&quiet);
+        data.on_set_quiet(move |value| quiet.borrow_mut().push(value));
+        let startup = Rc::clone(&startup);
+        data.on_set_launch_at_startup(move |value| startup.borrow_mut().push(value));
+        let sections = Rc::clone(&sections);
+        data.on_choose_section(move |index| sections.borrow_mut().push(index));
+    }
+
+    open_section(&ui, 1.0);
+    assert_eq!(*sections.borrow(), [1]);
+    click(&ui, CONTROL_X + 20.0, row_center(0.0));
+    click(&ui, CONTROL_X + 20.0, row_center(0.0));
+    assert_eq!(*quiet.borrow(), [true, true]);
+    assert!(!data.get_quiet_on(), "安静时段不自己打开");
+    assert!(startup.borrow().is_empty(), "待办页点不到开机启动");
+
+    data.set_quiet_on(true);
+    data.set_quiet_start("22:00".into());
+    data.set_quiet_end("08:00".into());
+    slint::platform::update_timers_and_animations();
+    click(&ui, CONTROL_X + 20.0, row_center(0.0));
+    assert_eq!(quiet.borrow().last(), Some(&false));
+
+    open_section(&ui, 2.0);
+    click(&ui, CONTROL_X + 20.0, row_center(0.0));
+    assert_eq!(quiet.borrow().len(), 3, "数据页没有安静时段开关");
+    assert!(startup.borrow().is_empty());
+}
+
+#[test]
+fn the_update_button_sits_on_the_other_section() {
     let (ui, _window) = open(false);
     let data = ui.global::<SettingsPageData>();
     let clicks = Rc::new(Cell::new(0));
@@ -110,9 +175,11 @@ fn the_update_button_asks_to_check_without_moving_the_rows_above() {
         data.on_update_clicked(move || clicks.set(clicks.get() + 1));
     }
     assert_eq!(data.get_update_button().as_str(), "检查更新");
-    // 标题 48 + 分隔线 1 + 上边距 8 + 三行 144 + 按钮 y 52 + 半高 15。
-    // 隐藏的应用在这个固定高度的更新块下面，不改变按钮位置。
-    let y = TITLE + 1.0 + PAD_TOP + ROW * 3.0 + 52.0 + 15.0;
+    // 右栏上边距 8 + 按钮 y 52 + 半高 15。
+    let y = PAGE_Y + 8.0 + 52.0 + 15.0;
+    click(&ui, CONTROL_X + 16.0, y);
+    assert_eq!(clicks.get(), 0, "常规页没有检查更新");
+    open_section(&ui, 3.0);
     click(&ui, CONTROL_X + 16.0, y);
     assert_eq!(clicks.get(), 1, "检查更新按钮能点到");
     data.set_update_enabled(false);
@@ -133,8 +200,9 @@ fn restore_asks_for_the_hidden_app_under_the_pointer() {
         let restored = Rc::clone(&restored);
         data.on_restore_hidden(move |index| restored.borrow_mut().push(index));
     }
-    // 三行、说明收起时的更新块 88、节标题 40，然后第一条右侧的「恢复」。
-    let y = TITLE + 1.0 + PAD_TOP + ROW * 3.0 + 88.0 + 40.0 + 22.0;
-    click(&ui, WIDTH as f32 - 24.0 - 16.0, y);
+    open_section(&ui, 3.0);
+    // 上边距 8、更新块 88、节标题 40，然后第一条右侧的「恢复」。
+    let y = PAGE_Y + 8.0 + 88.0 + 40.0 + 22.0;
+    click(&ui, WIDTH as f32 - 16.0 - 24.0, y);
     assert_eq!(*restored.borrow(), [0]);
 }

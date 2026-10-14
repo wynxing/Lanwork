@@ -1,10 +1,13 @@
-//! 面板设置页的决定：热角的选项和顺序、各行显示的值，以及「先写 `config.json`，成功后才生效」的顺序。
+//! 面板设置页的决定：各选项的顺序、各行显示的值，以及「先写 `config.json`，成功后才生效」的顺序。
 //!
-//! 不调用窗口、注册表和热键 API，这些在 `crates/app`。这一版只有三项：开机启动、热角、搜索条热键。
+//! 不调用窗口、注册表和热键 API，这些在 `crates/app`。
 //! 热键的注册、写盘和回退走 [`crate::shell::save_search_hotkey`]，不在这里重复。
 //! 界面文字只有名称、状态和错误，不写说明（产品规格「全局规则」第 1 条）。
 
-use crate::config::{Config, ConfigCommands, ConfigError, HotCorner};
+use crate::config::{
+    Config, ConfigCommands, ConfigError, HotCorner, QuietHours, Theme, format_clock,
+};
+use crate::search::WebSearchEngine;
 
 /// 热角选项，顺序与产品规格「面板」一致：右上（默认）、左上、左下、右下、关闭。
 pub const HOT_CORNER_CHOICES: [HotCorner; 5] = [
@@ -46,21 +49,106 @@ pub fn hot_corner_at(index: i32) -> Option<HotCorner> {
         .and_then(|index| HOT_CORNER_CHOICES.get(index).copied())
 }
 
-/// 设置页要显示的值，全部来自配置。
+/// 主题选项，顺序与产品规格一致：明、暗、跟随系统。
+pub const THEME_CHOICES: [Theme; 3] = [Theme::Light, Theme::Dark, Theme::System];
+
+#[must_use]
+pub fn theme_title(theme: Theme) -> &'static str {
+    match theme {
+        Theme::Light => "明",
+        Theme::Dark => "暗",
+        Theme::System => "跟随系统",
+    }
+}
+
+#[must_use]
+pub fn theme_titles() -> [&'static str; 3] {
+    THEME_CHOICES.map(theme_title)
+}
+
+#[must_use]
+pub fn theme_index(theme: Theme) -> usize {
+    THEME_CHOICES
+        .iter()
+        .position(|choice| *choice == theme)
+        .unwrap_or(2)
+}
+
+#[must_use]
+pub fn theme_at(index: i32) -> Option<Theme> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| THEME_CHOICES.get(index).copied())
+}
+
+/// 网页搜索引擎选项：Google、必应、百度。默认 Google。
+pub const WEB_ENGINE_CHOICES: [WebSearchEngine; 3] = [
+    WebSearchEngine::Google,
+    WebSearchEngine::Bing,
+    WebSearchEngine::Baidu,
+];
+
+#[must_use]
+pub fn web_engine_titles() -> [&'static str; 3] {
+    WEB_ENGINE_CHOICES.map(WebSearchEngine::display_name)
+}
+
+#[must_use]
+pub fn web_engine_index(engine: WebSearchEngine) -> usize {
+    WEB_ENGINE_CHOICES
+        .iter()
+        .position(|choice| *choice == engine)
+        .unwrap_or(0)
+}
+
+#[must_use]
+pub fn web_engine_at(index: i32) -> Option<WebSearchEngine> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| WEB_ENGINE_CHOICES.get(index).copied())
+}
+
+/// 设置页要显示的值，全部来自配置。安静时段关掉时，起止是空字符串。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsRows {
     pub launch_at_startup: bool,
     pub hot_corner: usize,
     pub search_hotkey: String,
+    pub theme: usize,
+    pub web_search_engine: usize,
+    pub quiet_on: bool,
+    pub quiet_start: String,
+    pub quiet_end: String,
+    pub snooze_days: String,
 }
 
 #[must_use]
 pub fn settings_rows(config: &Config) -> SettingsRows {
+    let (quiet_start, quiet_end) = match config.quiet_hours {
+        Some(hours) => (format_clock(hours.start), format_clock(hours.end)),
+        None => (String::new(), String::new()),
+    };
     SettingsRows {
         launch_at_startup: config.launch_at_startup,
         hot_corner: hot_corner_index(config.hot_corner),
         search_hotkey: config.search_hotkey.clone(),
+        theme: theme_index(config.theme),
+        web_search_engine: web_engine_index(config.web_search_engine),
+        quiet_on: config.quiet_hours.is_some(),
+        quiet_start,
+        quiet_end,
+        snooze_days: config.process_snooze_days.to_string(),
     }
+}
+
+/// 「稍后」天数输入。只接受 1 至 2 位数字，范围仍由配置校验。
+#[must_use]
+pub fn parse_snooze_days(text: &str) -> Option<u32> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > 2 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// 开机启动写进配置之后的结果。
@@ -99,6 +187,41 @@ pub fn change_hot_corner(
     Ok(saved.hot_corner)
 }
 
+/// 主题：先写 `config.json`，写成了才调用 `apply` 换界面颜色。写盘失败时不调用 `apply`。
+pub fn change_theme(
+    commands: &ConfigCommands,
+    theme: Theme,
+    apply: impl FnOnce(Theme),
+) -> Result<Theme, ConfigError> {
+    let saved = commands.set_theme(theme)?;
+    apply(saved.theme);
+    Ok(saved.theme)
+}
+
+/// 网页搜索引擎：先写 `config.json`，写成了才调用 `apply`。写盘失败时不调用 `apply`。
+pub fn change_web_search_engine(
+    commands: &ConfigCommands,
+    engine: WebSearchEngine,
+    apply: impl FnOnce(WebSearchEngine),
+) -> Result<WebSearchEngine, ConfigError> {
+    let saved = commands.set_web_search_engine(engine)?;
+    apply(saved.web_search_engine);
+    Ok(saved.web_search_engine)
+}
+
+/// 安静时段：先写 `config.json`。`None` 是关掉。写盘失败时配置保持原值。
+pub fn change_quiet_hours(
+    commands: &ConfigCommands,
+    hours: Option<QuietHours>,
+) -> Result<Option<QuietHours>, ConfigError> {
+    Ok(commands.set_quiet_hours(hours)?.quiet_hours)
+}
+
+/// 「稍后」天数：先写 `config.json`。超出 1 至 30 时不写盘。
+pub fn change_snooze_days(commands: &ConfigCommands, days: u32) -> Result<u32, ConfigError> {
+    Ok(commands.set_process_snooze_days(days)?.process_snooze_days)
+}
+
 /// 注册表写不成时显示的错误。
 #[must_use]
 pub fn startup_error_text(reason: &str) -> String {
@@ -112,7 +235,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-    use crate::config::Theme;
+    use crate::config::{Theme, default_quiet_hours, is_quiet_now, parse_clock};
+    use crate::search::WebSearchEngine;
     use crate::storage::{DocumentId, Store, StorePaths};
 
     struct TempDir(PathBuf);
@@ -176,8 +300,20 @@ mod tests {
                 launch_at_startup: false,
                 hot_corner: 0,
                 search_hotkey: "Ctrl+Alt+M".into(),
+                theme: 2,
+                web_search_engine: 0,
+                quiet_on: false,
+                quiet_start: String::new(),
+                quiet_end: String::new(),
+                snooze_days: "3".into(),
             }
         );
+        assert_eq!(theme_titles(), ["明", "暗", "跟随系统"]);
+        assert_eq!(web_engine_titles(), ["Google", "必应", "百度"]);
+        assert_eq!(theme_at(2), Some(Theme::System));
+        assert_eq!(theme_at(3), None);
+        assert_eq!(web_engine_at(1), Some(WebSearchEngine::Bing));
+        assert_eq!(web_engine_at(-1), None);
         let rows = settings_rows(&Config {
             launch_at_startup: true,
             hot_corner: HotCorner::Off,
@@ -187,6 +323,63 @@ mod tests {
         assert_eq!(rows.hot_corner, 4);
         assert!(rows.launch_at_startup);
         assert_eq!(rows.search_hotkey, "Ctrl+Alt+K");
+        assert!(!rows.quiet_on);
+        assert_eq!(rows.snooze_days, "3");
+    }
+
+    #[test]
+    fn theme_engine_quiet_hours_and_snooze_apply_only_after_the_write() {
+        let (_temp, store, commands) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let applied = Cell::new(None);
+        let theme = change_theme(&commands, Theme::Dark, |theme| {
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["theme"], "dark");
+            applied.set(Some(theme));
+        })
+        .unwrap();
+        assert_eq!(theme, Theme::Dark);
+        assert_eq!(applied.get(), Some(Theme::Dark));
+
+        let engine = change_web_search_engine(&commands, WebSearchEngine::Baidu, |engine| {
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["webSearchEngine"], "baidu");
+            assert_eq!(engine, WebSearchEngine::Baidu);
+        })
+        .unwrap();
+        assert_eq!(engine, WebSearchEngine::Baidu);
+
+        let hours = change_quiet_hours(&commands, Some(default_quiet_hours())).unwrap();
+        assert!(is_quiet_now(hours, parse_clock("23:00").unwrap()));
+        assert_eq!(
+            ConfigCommands::open(store.clone())
+                .unwrap()
+                .current()
+                .quiet_hours,
+            Some(default_quiet_hours())
+        );
+        assert!(change_quiet_hours(&commands, None).unwrap().is_none());
+
+        assert_eq!(change_snooze_days(&commands, 1).unwrap(), 1);
+        assert_eq!(change_snooze_days(&commands, 30).unwrap(), 30);
+        assert!(change_snooze_days(&commands, 0).is_err());
+        assert!(change_snooze_days(&commands, 31).is_err());
+        assert_eq!(commands.current().process_snooze_days, 30);
+        assert_eq!(parse_snooze_days(" 03 "), Some(3));
+        assert_eq!(parse_snooze_days("3a"), None);
+        assert_eq!(parse_snooze_days(""), None);
+
+        let rows = settings_rows(&commands.current());
+        assert!(!rows.quiet_on);
+        assert_eq!(rows.quiet_start, "");
+        assert_eq!(rows.snooze_days, "30");
+        assert_eq!(rows.theme, theme_index(Theme::Dark));
+        assert_eq!(
+            rows.web_search_engine,
+            web_engine_index(WebSearchEngine::Baidu)
+        );
     }
 
     #[test]
@@ -266,6 +459,15 @@ mod tests {
         assert!(matches!(err, ConfigError::Store(_)), "{err}");
         let err =
             change_hot_corner(&commands, HotCorner::BottomLeft, |_| touched.set(true)).unwrap_err();
+        assert!(matches!(err, ConfigError::Store(_)), "{err}");
+        let err = change_theme(&commands, Theme::Light, |_| touched.set(true)).unwrap_err();
+        assert!(matches!(err, ConfigError::Store(_)), "{err}");
+        let err = change_web_search_engine(&commands, WebSearchEngine::Bing, |_| touched.set(true))
+            .unwrap_err();
+        assert!(matches!(err, ConfigError::Store(_)), "{err}");
+        let err = change_quiet_hours(&commands, Some(default_quiet_hours())).unwrap_err();
+        assert!(matches!(err, ConfigError::Store(_)), "{err}");
+        let err = change_snooze_days(&commands, 9).unwrap_err();
         assert!(matches!(err, ConfigError::Store(_)), "{err}");
 
         assert!(!touched.get());

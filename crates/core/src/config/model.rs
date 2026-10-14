@@ -4,11 +4,11 @@
 //! 新字段可选并有默认值。缺少 `schemaVersion` 时按 1 读取。
 //!
 //! 规格没有写默认值的项用下面的缺省，并在架构文档里标明。它们不是产品规则。
-//! 安静时段只接受缺省的空值。数据目录字段只是记录，不参与目录解析。
+//! 安静时段见 [`super::quiet`]。数据目录字段只是记录，不参与目录解析。
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
+use super::quiet::QuietHours;
 use crate::search::WebSearchEngine;
 use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 use crate::todos::{DEFAULT_DEFER_DAYS, MAX_DEFER_DAYS, MIN_DEFER_DAYS};
@@ -34,7 +34,7 @@ pub const DEFAULT_LONG_BREAK_MINUTES: u32 = 15;
 const WORK_RANGE: &str = "工作时长只接受 1 至 120 分钟";
 const BREAK_RANGE: &str = "休息时长只接受 1 至 60 分钟";
 const LONG_BREAK_RANGE: &str = "长休息时长只接受 1 至 60 分钟";
-const SNOOZE_RANGE: &str = "处理模式顺延天数只接受 1 至 30";
+pub const SNOOZE_DAYS_ERROR: &str = "处理模式顺延天数只接受 1 至 30";
 
 fn default_snooze_days() -> u32 {
     DEFAULT_DEFER_DAYS
@@ -103,9 +103,13 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub panel_hotkey: Option<String>,
-    /// 产品规格没有写起止格式。只能是空。
-    #[serde(rename = "quietHours", default)]
-    pub quiet_hours: Option<Value>,
+    /// 每天固定的一段。不写表示没有安静时段。见 [`super::quiet`]。
+    #[serde(
+        rename = "quietHours",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub quiet_hours: Option<QuietHours>,
     #[serde(default)]
     pub theme: Theme,
     #[serde(rename = "launchAtStartup", default)]
@@ -179,10 +183,11 @@ pub fn normalize(mut config: Config) -> Result<Config, ConfigError> {
     }
     config.schema_version = SCHEMA_VERSION;
     config.data_dir = config.data_dir.trim().to_owned();
-    if matches!(config.quiet_hours, Some(value) if !value.is_null()) {
-        return Err(ConfigError::QuietHoursUnspecified);
+    if let Some(hours) = config.quiet_hours
+        && hours.start.minute_of_day() == hours.end.minute_of_day()
+    {
+        return Err(ConfigError::QuietHoursSame);
     }
-    config.quiet_hours = None;
 
     let search = search_text(&config.search_hotkey)?;
     let panel = match config.panel_hotkey.as_deref() {
@@ -200,7 +205,7 @@ pub fn normalize(mut config: Config) -> Result<Config, ConfigError> {
         config.process_snooze_days,
         MIN_DEFER_DAYS,
         MAX_DEFER_DAYS,
-        SNOOZE_RANGE,
+        SNOOZE_DAYS_ERROR,
     )?;
     check_range(
         config.pomodoro_work_minutes,

@@ -38,9 +38,11 @@ pub use note_page::{
 };
 
 pub use settings_page::{
-    HOT_CORNER_CHOICES, SettingsRows, StartupChange, change_hot_corner, change_launch_at_startup,
-    hot_corner_at, hot_corner_index, hot_corner_title, hot_corner_titles, settings_rows,
-    startup_error_text,
+    HOT_CORNER_CHOICES, SettingsRows, StartupChange, THEME_CHOICES, WEB_ENGINE_CHOICES,
+    change_hot_corner, change_launch_at_startup, change_quiet_hours, change_snooze_days,
+    change_theme, change_web_search_engine, hot_corner_at, hot_corner_index, hot_corner_title,
+    hot_corner_titles, parse_snooze_days, settings_rows, startup_error_text, theme_at, theme_index,
+    theme_title, theme_titles, web_engine_at, web_engine_index, web_engine_titles,
 };
 pub use shelf_dnd::{
     DragContinue, DropZone, EFFECT_COPY, EFFECT_LINK, EFFECT_MOVE, EFFECT_NONE, OUTGOING_EFFECTS,

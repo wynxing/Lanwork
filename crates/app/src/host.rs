@@ -436,7 +436,7 @@ fn tray_image(overdue: u32, update: bool) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-fn refresh_theme(config: &ConfigCommands, store: &Store) {
+pub(crate) fn refresh_theme(config: &ConfigCommands, store: &Store) {
     let system = read_system_theme();
     if config.current().theme == Theme::System && system == SystemLight::Unknown {
         static LOGGED: AtomicBool = AtomicBool::new(false);
