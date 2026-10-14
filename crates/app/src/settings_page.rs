@@ -1,4 +1,7 @@
-//! 面板的设置页：开机启动、热角、搜索条热键、关于与更新，以及隐藏的应用。
+//! 面板的设置页。左边四个分类，右边是当前分类。
+//! 常规：开机启动、热角、搜索条热键、主题、网页搜索引擎。
+//! 待办：安静时段、「稍后」天数。数据：当前数据目录，以及备份、导出、导入的名称。
+//! 其他：关于与更新、隐藏的应用。
 //!
 //! 决定在 `lanwork_core::panel` 和 `lanwork_core::shell`：先写 `config.json`，成功后才写注册表、
 //! 换热角；热键先注册新的、再写盘、再卸旧的。这里只把结果推给界面，并在失败时用配置里的原值重推，
@@ -7,15 +10,19 @@
 //! 「录入中」只有一个出口 [`SettingsPage::end_recording`]：录到组合、Esc、再点一次、失焦、收起、
 //! 切标签、关闭和进程退出都走它，它把卸掉的热键注册回去。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
-use lanwork_core::config::ConfigCommands;
+use lanwork_core::config::{
+    CLOCK_FORMAT_ERROR, ConfigCommands, QuietHours, SNOOZE_DAYS_ERROR, default_quiet_hours,
+    parse_clock,
+};
 use lanwork_core::dispatch::Dispatch;
 use lanwork_core::panel::{
-    change_hot_corner, change_launch_at_startup, hot_corner_at, hot_corner_titles, settings_rows,
-    startup_error_text,
+    change_hot_corner, change_launch_at_startup, change_quiet_hours, change_snooze_days,
+    change_theme, change_web_search_engine, hot_corner_at, hot_corner_titles, parse_snooze_days,
+    settings_rows, startup_error_text, theme_at, theme_titles, web_engine_at, web_engine_titles,
 };
 use lanwork_core::shell::{EndReason, HotkeyRecording, HotkeyRole, Recorded};
 use lanwork_core::storage::Store;
@@ -49,18 +56,38 @@ pub(crate) struct SettingsPage {
     capture_ready: bool,
     apps: Option<Arc<Dispatch>>,
     hidden_keys: RefCell<Vec<String>>,
+    field_reset: Cell<i32>,
 }
 
 impl SettingsPage {
     pub(crate) fn new(ui: &Panel, services: SettingsServices, store: Store) -> Self {
         let titles: Vec<SharedString> = hot_corner_titles().into_iter().map(Into::into).collect();
+        let themes: Vec<SharedString> = theme_titles().into_iter().map(Into::into).collect();
+        let engines: Vec<SharedString> = web_engine_titles().into_iter().map(Into::into).collect();
         let data = ui.global::<SettingsPageData>();
         data.set_corner_titles(ModelRc::from(std::rc::Rc::new(VecModel::from(titles))));
+        data.set_theme_titles(ModelRc::from(std::rc::Rc::new(VecModel::from(themes))));
+        data.set_engine_titles(ModelRc::from(std::rc::Rc::new(VecModel::from(engines))));
         data.on_set_launch_at_startup(|enabled| {
             with_settings(move |page, ui| page.set_launch_at_startup(ui, enabled));
         });
         data.on_choose_corner(|index| with_settings(move |page, ui| page.choose_corner(ui, index)));
         data.on_toggle_recording(|| with_settings(SettingsPage::toggle_recording));
+        data.on_choose_theme(|index| with_settings(move |page, ui| page.choose_theme(ui, index)));
+        data.on_choose_engine(|index| with_settings(move |page, ui| page.choose_engine(ui, index)));
+        data.on_set_quiet(|enabled| with_settings(move |page, ui| page.set_quiet(ui, enabled)));
+        data.on_commit_quiet_start(|text| {
+            with_settings(move |page, ui| page.commit_quiet_start(ui, &text));
+        });
+        data.on_commit_quiet_end(|text| {
+            with_settings(move |page, ui| page.commit_quiet_end(ui, &text));
+        });
+        data.on_commit_snooze(|text| {
+            with_settings(move |page, ui| page.commit_snooze(ui, &text));
+        });
+        data.on_choose_section(|index| {
+            with_settings(move |page, ui| page.choose_section(ui, index));
+        });
         data.on_update_clicked(crate::update::on_clicked);
         crate::update::push_into(ui);
         data.on_restore_hidden(|index| {
@@ -80,6 +107,7 @@ impl SettingsPage {
             capture_ready: false,
             apps,
             hidden_keys: RefCell::new(Vec::new()),
+            field_reset: Cell::new(0),
         };
         page.push(ui);
         page
@@ -106,8 +134,8 @@ impl SettingsPage {
         self.recording.hotkey_error()
     }
 
-    /// 处理模式「稍后」的天数。读内存里的配置；文件没写这个字段时是 3。
-    /// 超出 1 至 30 时也用 3。设置页还没有改这个值的控件。
+    /// 处理模式「稍后」的天数。读内存里的 `processSnoozeDays`，与设置页「稍后」写入的是同一字段。
+    /// 文件没写这个字段时是 3。超出 1 至 30 时也用 3。
     pub(crate) fn process_snooze_days(&self) -> u32 {
         let days = self.commands.current().process_snooze_days;
         if (MIN_DEFER_DAYS..=MAX_DEFER_DAYS).contains(&days) {
@@ -146,6 +174,16 @@ impl SettingsPage {
         data.set_corner(i32::try_from(rows.hot_corner).unwrap_or(0));
         data.set_hotkey(rows.search_hotkey.into());
         data.set_recording(self.recording.is_active());
+        data.set_theme(i32::try_from(rows.theme).unwrap_or(2));
+        data.set_engine(i32::try_from(rows.web_search_engine).unwrap_or(0));
+        data.set_quiet_on(rows.quiet_on);
+        data.set_quiet_start(rows.quiet_start.into());
+        data.set_quiet_end(rows.quiet_end.into());
+        data.set_snooze_days(rows.snooze_days.into());
+        data.set_data_dir(self.store.data_dir().display().to_string().into());
+        let reset = self.field_reset.get().wrapping_add(1);
+        self.field_reset.set(reset);
+        data.set_field_reset(reset);
         self.push_hidden(ui);
     }
 
@@ -233,6 +271,108 @@ impl SettingsPage {
             .map(|_| ())
             .map_err(|err| err.to_string());
         self.finish(ui, result);
+    }
+
+    fn choose_theme(&mut self, ui: &Panel, index: i32) {
+        self.cancel_recording(ui);
+        let Some(theme) = theme_at(index) else {
+            self.push(ui);
+            return;
+        };
+        let result = change_theme(&self.commands, theme, |_| {
+            crate::host::refresh_theme(&self.commands, &self.store);
+        })
+        .map(|_| ())
+        .map_err(|err| err.to_string());
+        self.finish(ui, result);
+    }
+
+    fn choose_engine(&mut self, ui: &Panel, index: i32) {
+        self.cancel_recording(ui);
+        let Some(engine) = web_engine_at(index) else {
+            self.push(ui);
+            return;
+        };
+        let apps = self.apps.clone();
+        let result = change_web_search_engine(&self.commands, engine, |engine| {
+            if let Some(apps) = &apps {
+                apps.set_web_search_engine(engine);
+            }
+            crate::searchbar::requery();
+        })
+        .map(|_| ())
+        .map_err(|err| err.to_string());
+        self.finish(ui, result);
+    }
+
+    fn set_quiet(&mut self, ui: &Panel, enabled: bool) {
+        self.cancel_recording(ui);
+        let hours = if enabled {
+            Some(
+                self.commands
+                    .current()
+                    .quiet_hours
+                    .unwrap_or_else(default_quiet_hours),
+            )
+        } else {
+            None
+        };
+        self.finish(ui, self.write_quiet(hours));
+    }
+
+    fn commit_quiet_start(&mut self, ui: &Panel, text: &str) {
+        self.cancel_recording(ui);
+        let Some(start) = parse_clock(text) else {
+            self.finish(ui, Err(CLOCK_FORMAT_ERROR.to_owned()));
+            return;
+        };
+        let end = self
+            .commands
+            .current()
+            .quiet_hours
+            .map(|hours| hours.end)
+            .unwrap_or_else(|| default_quiet_hours().end);
+        self.finish(ui, self.write_quiet(Some(QuietHours { start, end })));
+    }
+
+    fn commit_quiet_end(&mut self, ui: &Panel, text: &str) {
+        self.cancel_recording(ui);
+        let Some(end) = parse_clock(text) else {
+            self.finish(ui, Err(CLOCK_FORMAT_ERROR.to_owned()));
+            return;
+        };
+        let start = self
+            .commands
+            .current()
+            .quiet_hours
+            .map(|hours| hours.start)
+            .unwrap_or_else(|| default_quiet_hours().start);
+        self.finish(ui, self.write_quiet(Some(QuietHours { start, end })));
+    }
+
+    fn write_quiet(&self, hours: Option<QuietHours>) -> Result<(), String> {
+        change_quiet_hours(&self.commands, hours)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    fn commit_snooze(&mut self, ui: &Panel, text: &str) {
+        self.cancel_recording(ui);
+        let Some(days) = parse_snooze_days(text) else {
+            self.finish(ui, Err(SNOOZE_DAYS_ERROR.to_owned()));
+            return;
+        };
+        let result = change_snooze_days(&self.commands, days)
+            .map(|_| ())
+            .map_err(|err| err.to_string());
+        self.finish(ui, result);
+    }
+
+    /// 离开「常规」时放弃正在录入的热键。分类本身不写入配置。
+    fn choose_section(&mut self, ui: &Panel, index: i32) {
+        if index != 0 {
+            self.cancel_recording(ui);
+        }
     }
 
     /// 点热键框：开始录入；录入中再点一次放弃。

@@ -3,7 +3,7 @@
 
 import { ListView, Palette } from "std-widgets.slint";
 import { Btn, Check, Chip, Field, Ink, Segments } from "widgets.slint";
-import { NotesPage } from "notespage.slint";
+import { NotesPage, NotesPageData } from "notespage.slint";
 import { SettingsPage } from "settingspage.slint";
 import { ShelvesPage } from "shelvespage.slint";
 
@@ -236,7 +236,7 @@ export component Panel inherits Window {
         list.content-y = 0px;
     }
 
-    scope := FocusScope {
+        scope := FocusScope {
         key-pressed(event) => {
             if root.swallow-held-escape(event.text, event.repeat) {
                 return accept;
@@ -251,7 +251,11 @@ export component Panel inherits Window {
                 return reject;
             }
             if event.text == Key.Escape {
-                root.escape();
+                if root.tab == 1 && NotesPageData.selecting {
+                    NotesPageData.set-selecting(false);
+                } else {
+                    root.escape();
+                }
                 return accept;
             }
             reject

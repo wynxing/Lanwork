@@ -1,5 +1,5 @@
 //! 面板里不调用窗口 API 的决定：标签、定位目标、窗口尺寸与位置，待办页的列表、行和输入解析，
-//! 便签页的列表、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，以及收纳页的分组、引用和拖放判定。
+//! 便签页的列表、多选、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，以及收纳页的分组、引用和拖放判定。
 //!
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
@@ -8,6 +8,7 @@ mod float_source;
 mod float_stack;
 mod note_edit;
 mod note_page;
+mod note_select;
 mod settings_page;
 mod shelf_dnd;
 mod shelf_page;
@@ -37,11 +38,17 @@ pub use note_page::{
     float_default_origin, list_rows, locate_note, logical_work_limits, release_float,
     restore_float, settle_float, tag_names, trash_rows,
 };
+pub use note_select::{
+    NoteMultiSelect, NoteRowMods, NoteRowPick, clear_note_checks, enter_note_select, note_row_mods,
+    note_select_after_delete, pick_note_row, retain_note_select, select_all_notes,
+};
 
 pub use settings_page::{
-    HOT_CORNER_CHOICES, SettingsRows, StartupChange, change_hot_corner, change_launch_at_startup,
-    hot_corner_at, hot_corner_index, hot_corner_title, hot_corner_titles, settings_rows,
-    startup_error_text,
+    HOT_CORNER_CHOICES, SettingsRows, StartupChange, THEME_CHOICES, WEB_ENGINE_CHOICES,
+    change_hot_corner, change_launch_at_startup, change_quiet_hours, change_snooze_days,
+    change_theme, change_web_search_engine, hot_corner_at, hot_corner_index, hot_corner_title,
+    hot_corner_titles, parse_snooze_days, settings_rows, startup_error_text, theme_at, theme_index,
+    theme_title, theme_titles, web_engine_at, web_engine_index, web_engine_titles,
 };
 pub use shelf_dnd::{
     DragContinue, DropZone, EFFECT_COPY, EFFECT_LINK, EFFECT_MOVE, EFFECT_NONE, OUTGOING_EFFECTS,
