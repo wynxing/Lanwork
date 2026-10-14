@@ -34,13 +34,74 @@ impl Drop for ComGuard {
 }
 
 /// 解开 PNG、ICO、JPEG、GIF、BMP。SVG 和坏数据返回 `None`。过大的图先缩到 256。
+///
+/// WIC 的 ICO 解码器不认里面嵌的 PNG。整份解不开时，把那段 PNG 抽出来再解。
 pub(crate) fn decode(bytes: &[u8], content_type: Option<&str>) -> Option<RgbaImage> {
     if bytes.is_empty() || bytes.len() > WEB_ICON_BYTES_LIMIT || looks_like_svg(bytes, content_type)
     {
         return None;
     }
     let _com = ComGuard::enter();
-    decode_wic(bytes)
+    decode_wic(bytes).or_else(|| decode_png_in_ico(bytes))
+}
+
+/// 目录项里以 PNG 开头的图像。多张时留边长更大的那张。
+fn decode_png_in_ico(bytes: &[u8]) -> Option<RgbaImage> {
+    if bytes.len() < 6 || bytes[0] != 0 || bytes[1] != 0 || bytes[2] != 1 || bytes[3] != 0 {
+        return None;
+    }
+    let count = usize::from(u16::from_le_bytes([bytes[4], bytes[5]])).min(64);
+    if count == 0 {
+        return None;
+    }
+    let mut best: Option<(u32, RgbaImage)> = None;
+    for index in 0..count {
+        let at = 6 + index * 16;
+        let Some(entry) = bytes.get(at..at + 16) else {
+            break;
+        };
+        let Ok(size) = usize::try_from(u32::from_le_bytes([
+            entry[8], entry[9], entry[10], entry[11],
+        ])) else {
+            continue;
+        };
+        let Ok(offset) = usize::try_from(u32::from_le_bytes([
+            entry[12], entry[13], entry[14], entry[15],
+        ])) else {
+            continue;
+        };
+        let Some(end) = offset.checked_add(size) else {
+            continue;
+        };
+        let Some(payload) = bytes.get(offset..end) else {
+            continue;
+        };
+        if !payload.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            continue;
+        }
+        let Some(image) = decode_wic(payload) else {
+            continue;
+        };
+        let width = if entry[0] == 0 {
+            256
+        } else {
+            u32::from(entry[0])
+        };
+        let height = if entry[1] == 0 {
+            256
+        } else {
+            u32::from(entry[1])
+        };
+        let area = width.saturating_mul(height);
+        let replace = match &best {
+            Some((prev, _)) => area > *prev,
+            None => true,
+        };
+        if replace {
+            best = Some((area, image));
+        }
+    }
+    best.map(|(_, image)| image)
 }
 
 fn looks_like_svg(bytes: &[u8], content_type: Option<&str>) -> bool {
