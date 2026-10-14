@@ -396,9 +396,10 @@ impl ShelvesPage {
         if self.view.selected_is_web() {
             ui.set_error(SharedString::new());
             if !self.view.has_icon(&key)
-                && let Some(url) = self.web_icons.claim_again(&key)
+                && let Err(err) = web_icons::retry(Arc::clone(&self.web_icons), &key)
             {
-                self.start_web_icons(std::slice::from_ref(&url));
+                self.store
+                    .log_warn(&format!("网站图标的后台任务没有启动：{err}"));
             }
             self.spawn_open_url(ui, key);
             return;

@@ -530,8 +530,8 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 网站图标的获取、失败留空和缓存不进导出已经写在上面。下面这些上限和接口是实现选择：
 
 - HTML 只扫描正文前 512 KiB。单次正文上限 1 MiB。解码后边长不超过 256；原图任一边超过 4096 则不用这张。WIC 先缩小再交给界面。重定向最多 5 次，只跟随 `http` 和 `https`。超时是解析 8 秒、连接 8 秒、发送 10 秒、接收 10 秒。不关闭证书校验，不带 Cookie。页面声明的候选最多 8 条，然后再加 `/favicon.ico`。`data:image` 的 base64 小图直接解码，不另发请求。缓存文件以 `LWFI` 和版本 1 开头，后面是宽、高和 RGBA。读到坏文件就删掉，当作没有缓存。请求前把路径里的 `.` 和 `..` 折起来，路径末尾的 `/` 保留。协议和主机名小写，默认端口不写进地址。
-- 纯逻辑在 `lanwork_core::shelves::favicon`，用可替换的取正文和解码，自己不访问网络。HTTP 在 `crates/app` 的 `favicon_http`，用已有的 WinHTTP。解码在 `favicon_wic`，用 Windows Imaging Component。整份 ICO 解不开、里面嵌着 PNG 时，先抽出那段 PNG 再解。`crates/core` 不依赖 Slint，也不调用 Win32 窗口 API。壳层文件图标仍是进程内的 `IconCache`。网站图标不走那份缓存。
-- 收纳页和收纳悬浮窗共用进程内的进行中集合和失败集合。一张图取到后，两边已经打开的列表都更新。
+- 纯逻辑在 `lanwork_core::shelves::favicon`，用可替换的取正文和解码，自己不访问网络。HTTP 在 `crates/app` 的 `favicon_http`，用已有的 WinHTTP。解码在 `favicon_wic`，用 Windows Imaging Component。PNG 形式的 ICO 目录项色面数和位深是 0。写成 1 和 32 时先改成 0 再解。整份仍解不开、里面嵌着 PNG 时，抽出那段 PNG 再解。`crates/core` 不依赖 Slint，也不调用 Win32 窗口 API。壳层文件图标仍是进程内的 `IconCache`。网站图标不走那份缓存。
+- 收纳页和收纳悬浮窗共用进程内的进行中集合和失败集合。列表失败的地址记在失败集合里，滚动和重读不再排进请求。打开该条时从失败集合去掉并记成进行中，然后直接取这一条，不再经过列表的认领；取完从进行中去掉。正在取的不重复排。一张图取到后，两边已经打开的列表都更新。
 
 ## 更新
 
