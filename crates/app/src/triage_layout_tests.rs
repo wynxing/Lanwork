@@ -59,6 +59,16 @@ fn press(ui: &Panel, text: &str) {
         .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
 }
 
+fn press_repeat(ui: &Panel, text: &str) {
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressRepeated { text: text.into() });
+}
+
+fn release(ui: &Panel, text: &str) {
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+}
+
 #[test]
 fn process_button_sits_at_the_top_of_the_inbox_list() {
     let ui = open();
@@ -162,6 +172,41 @@ fn move_picker_uses_arrows_enter_and_escape_without_the_digit_keys() {
         "点第一行确认，实际 {:?}",
         picks.borrow()
     );
+}
+
+#[test]
+fn held_escape_returns_to_the_list_without_hiding_the_panel() {
+    let ui = open();
+    let escapes = Rc::new(RefCell::new(0));
+    {
+        let escapes = Rc::clone(&escapes);
+        ui.on_escape(move || *escapes.borrow_mut() += 1);
+    }
+    let weak = ui.as_weak();
+    ui.on_triage_key(move |code, _modified| {
+        if code == KEY_ESCAPE
+            && let Some(ui) = weak.upgrade()
+        {
+            ui.set_triage_open(false);
+            ui.invoke_focus_root();
+        }
+        true
+    });
+    ui.set_triage_open(true);
+    ui.set_triage_show_card(true);
+    ui.invoke_focus_triage();
+
+    press(&ui, "\u{001b}");
+    assert!(!ui.get_triage_open(), "第一次 Esc 退出处理模式");
+    assert_eq!(*escapes.borrow(), 0);
+
+    press_repeat(&ui, "\u{001b}");
+    press_repeat(&ui, "\u{001b}");
+    assert_eq!(*escapes.borrow(), 0, "按住 Esc 的重复不收起面板");
+
+    release(&ui, "\u{001b}");
+    press(&ui, "\u{001b}");
+    assert_eq!(*escapes.borrow(), 1, "松开后再按 Esc 才收起面板");
 }
 
 #[test]

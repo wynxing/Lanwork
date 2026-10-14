@@ -158,6 +158,26 @@ export component Panel inherits Window {
         triage-input.focus();
     }
 
+    // 按住 Esc 退出处理模式后，同一次按住的重复不要再收起面板。松开，或出现一次不是重复的按下，就清掉。
+    property <bool> swallow-esc-repeat: false;
+
+    function swallow-held-escape(text: string, repeat: bool) -> bool {
+        if !root.swallow-esc-repeat || text != Key.Escape {
+            return false;
+        }
+        if repeat {
+            return true;
+        }
+        root.swallow-esc-repeat = false;
+        return false;
+    }
+
+    function arm-held-escape(text: string) {
+        if text == Key.Escape && !root.triage-open {
+            root.swallow-esc-repeat = true;
+        }
+    }
+
     // 组合输入期间不把 1 至 5 交给处理模式。preedit 非空时返回假，按键交还输入法。
     function triage-code(text: string) -> int {
         if text == "1" { return 1; }
@@ -173,6 +193,9 @@ export component Panel inherits Window {
     }
 
     function triage-handle(text: string, control: bool, alt: bool, shift: bool, meta: bool, repeat: bool) -> bool {
+        if root.swallow-held-escape(text, repeat) {
+            return true;
+        }
         if !root.triage-open || triage-input.preedit-text != "" {
             return false;
         }
@@ -182,7 +205,11 @@ export component Panel inherits Window {
         if triage-code(text) == 0 {
             return false;
         }
-        root.triage-key(triage-code(text), control || alt || shift || meta)
+        if !root.triage-key(triage-code(text), control || alt || shift || meta) {
+            return false;
+        }
+        root.arm-held-escape(text);
+        return true;
     }
 
     public function clear-new-item() {
@@ -211,6 +238,9 @@ export component Panel inherits Window {
 
     scope := FocusScope {
         key-pressed(event) => {
+            if root.swallow-held-escape(event.text, event.repeat) {
+                return accept;
+            }
             if root.triage-open {
                 if triage-input.preedit-text != "" {
                     return reject;
@@ -223,6 +253,13 @@ export component Panel inherits Window {
             if event.text == Key.Escape {
                 root.escape();
                 return accept;
+            }
+            reject
+        }
+
+        key-released(event) => {
+            if event.text == Key.Escape {
+                root.swallow-esc-repeat = false;
             }
             reject
         }
@@ -888,6 +925,13 @@ export component Panel inherits Window {
                         key-pressed(event) => {
                             if root.triage-handle(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta, event.repeat) {
                                 return accept;
+                            }
+                            reject
+                        }
+
+                        key-released(event) => {
+                            if event.text == Key.Escape {
+                                root.swallow-esc-repeat = false;
                             }
                             reject
                         }
