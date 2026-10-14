@@ -12,6 +12,8 @@ export struct NoteListRow {
     tags: string,
     // 回收站里：还剩几天被清除。
     note: string,
+    // 多选里这一行是否勾上。回收站不用。
+    checked: bool,
 }
 
 export struct TagFilter {
@@ -25,6 +27,27 @@ export global NotesPageData {
     in property <int> selected: -1;
     // 正在看回收站。
     in property <bool> trash;
+    // 便签列表的多选。回收站不用。
+    in property <bool> selecting;
+    in property <int> selected-count;
+    in property <bool> confirm-delete;
+    // 相对便签页的几何，布局测试读取。由页面在排版变化时写入。
+    in-out property <length> choose-x;
+    in-out property <length> choose-y;
+    in-out property <length> choose-w;
+    in-out property <length> choose-h;
+    in-out property <length> list-y;
+    in-out property <length> list-h;
+    in-out property <length> bar-y;
+    in-out property <length> bar-h;
+    in-out property <length> new-y;
+    in-out property <length> delete-x;
+    in-out property <length> delete-y;
+    in-out property <length> delete-w;
+    in-out property <length> delete-h;
+    in-out property <string> count-label;
+    // 加一就重写上面的几何。布局测试在显示之后调用。
+    in-out property <int> geometry-refresh;
     in property <int> list-count;
     in property <int> trash-count;
     // 选中的便签已经载入编辑区。
@@ -48,7 +71,15 @@ export global NotesPageData {
     callback show-list();
     callback show-trash();
     callback new-note();
-    callback select-note(int);
+    // 点一行。后两个参数是 Ctrl、Shift。多选与否由 Rust 决定。
+    callback row-clicked(int, bool, bool);
+    callback set-selecting(bool);
+    callback select-all();
+    callback clear-checks();
+    callback ask-delete();
+    callback cancel-delete();
+    callback delete-selected();
+    callback float-selected();
     callback toggle-filter(string);
     callback title-edited(string);
     callback body-edited(string);
@@ -73,6 +104,26 @@ export component NotesPage inherits Rectangle {
     property <length> rail-width: 232px;
     property <length> row-height: 52px;
     property <bool> rows-empty: NotesPageData.rows.length == 0;
+    property <bool> choose-open: !NotesPageData.trash && (NotesPageData.rows.length > 0 || NotesPageData.selecting);
+    property <bool> multi: NotesPageData.selecting && !NotesPageData.trash;
+    property <length> geometry-tick: select-row.y + select-btn.y + select-btn.width + select-btn.height + list-host.y + list-host.height + action-bar.y + action-bar.height + new-note.y + delete-btn.x + delete-btn.y + delete-btn.width + delete-btn.height + delete-row.x + delete-row.y + action-bar.x + select-row.x + select-btn.x + NotesPageData.selected-count * 1px + NotesPageData.geometry-refresh * 1px + (NotesPageData.selecting ? 1px : 0px) + (NotesPageData.trash ? 1px : 0px) + (NotesPageData.confirm-delete ? 1px : 0px);
+
+    changed geometry-tick => {
+        NotesPageData.choose-x = select-row.x + select-btn.x;
+        NotesPageData.choose-y = select-row.y + select-btn.y;
+        NotesPageData.choose-w = select-btn.width;
+        NotesPageData.choose-h = root.choose-open ? select-btn.height : 0px;
+        NotesPageData.list-y = list-host.y;
+        NotesPageData.list-h = list-host.height;
+        NotesPageData.bar-y = action-bar.y;
+        NotesPageData.bar-h = root.multi ? action-bar.height : 0px;
+        NotesPageData.new-y = new-note.y;
+        NotesPageData.delete-x = action-bar.x + delete-row.x + delete-btn.x;
+        NotesPageData.delete-y = action-bar.y + delete-row.y + delete-btn.y;
+        NotesPageData.delete-w = delete-btn.width;
+        NotesPageData.delete-h = delete-btn.height;
+        NotesPageData.count-label = "已选 " + NotesPageData.selected-count + " 条";
+    }
 
     // 左侧：便签与回收站两个视图、标签筛选、列表、新建。
     Rectangle {
@@ -152,7 +203,20 @@ export component NotesPage inherits Rectangle {
                 }
             }
 
-            Rectangle {
+            select-row := Rectangle {
+                visible: choose-open;
+                height: 30px;
+
+                select-btn := Btn {
+                    text: NotesPageData.selecting ? "完成" : "选择";
+                    c: root.c;
+                    clicked => {
+                        NotesPageData.set-selecting(!NotesPageData.selecting);
+                    }
+                }
+            }
+
+            list-host := Rectangle {
                 vertical-stretch: 1;
 
                 if rows-empty: Text {
@@ -167,14 +231,15 @@ export component NotesPage inherits Rectangle {
                     visible: !rows-empty;
 
                     for row[index] in NotesPageData.rows: Rectangle {
-                        property <bool> is-selected: index == NotesPageData.selected;
+                        property <bool> is-selected: !root.multi && index == NotesPageData.selected;
+                        property <bool> is-checked: root.multi && row.checked;
 
                         height: row-height;
 
                         Rectangle {
                             width: parent.width;
                             border-radius: 6px;
-                            background: is-selected ? c.selection : row-touch.has-hover ? c.hover : transparent;
+                            background: is-selected || is-checked ? c.selection : row-touch.has-hover ? c.hover : transparent;
                         }
 
                         if is-selected: Rectangle {
@@ -186,14 +251,30 @@ export component NotesPage inherits Rectangle {
                             background: c.accent;
                         }
 
-                        row-touch := TouchArea {
-                            clicked => {
-                                NotesPageData.select-note(index);
+                        if root.multi: Rectangle {
+                            x: 8px;
+                            y: (parent.height - 16px) / 2;
+                            width: 16px;
+                            height: 16px;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: row.checked ? c.accent : c.tertiary;
+                            background: row.checked ? c.accent : transparent;
+
+                            if row.checked: Path {
+                                width: 16px;
+                                height: 16px;
+                                viewbox-width: 16;
+                                viewbox-height: 16;
+                                fill: transparent;
+                                stroke: #ffffff;
+                                stroke-width: 1.6px;
+                                commands: "M3.5 8.2l2.8 2.8 6.2-6.4";
                             }
                         }
 
                         VerticalLayout {
-                            padding-left: 12px;
+                            padding-left: root.multi ? 30px : 12px;
                             padding-right: 8px;
                             padding-top: 7px;
                             padding-bottom: 7px;
@@ -229,15 +310,125 @@ export component NotesPage inherits Rectangle {
                                 overflow: elide;
                             }
                         }
+
+                        row-touch := TouchArea {
+                            pointer-event(event) => {
+                                if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                                    NotesPageData.row-clicked(index, event.modifiers.control, event.modifiers.shift);
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            if !NotesPageData.trash: Btn {
-                text: "新建便签";
-                c: root.c;
-                clicked => {
-                    NotesPageData.new-note();
+            action-bar := Rectangle {
+                visible: root.multi;
+
+                Rectangle {
+                    y: 0px;
+                    width: parent.width;
+                    height: 1px;
+                    background: c.divider;
+                }
+
+                VerticalLayout {
+                    padding-top: 8px;
+                    spacing: 6px;
+
+                    Text {
+                        height: 18px;
+                        text: "已选 " + NotesPageData.selected-count + " 条";
+                        color: c.secondary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                    HorizontalLayout {
+                        visible: !NotesPageData.confirm-delete;
+                        height: 30px;
+                        spacing: 4px;
+
+                        Btn {
+                            text: "全选";
+                            c: root.c;
+                            enabled: NotesPageData.selected-count < NotesPageData.rows.length;
+                            clicked => {
+                                NotesPageData.select-all();
+                            }
+                        }
+
+                        Btn {
+                            text: "取消全选";
+                            c: root.c;
+                            enabled: NotesPageData.selected-count > 0;
+                            clicked => {
+                                NotesPageData.clear-checks();
+                            }
+                        }
+                    }
+
+                    delete-row := HorizontalLayout {
+                        visible: !NotesPageData.confirm-delete;
+                        height: 30px;
+                        spacing: 4px;
+
+                        Btn {
+                            text: "浮出";
+                            c: root.c;
+                            enabled: NotesPageData.selected-count > 0;
+                            clicked => {
+                                NotesPageData.float-selected();
+                            }
+                        }
+
+                        delete-btn := Btn {
+                            text: "删除";
+                            c: root.c;
+                            danger: true;
+                            enabled: NotesPageData.selected-count > 0;
+                            clicked => {
+                                NotesPageData.ask-delete();
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        visible: NotesPageData.confirm-delete;
+                        height: 30px;
+                        spacing: 4px;
+
+                        Btn {
+                            text: "确认删除";
+                            c: root.c;
+                            danger: true;
+                            enabled: NotesPageData.selected-count > 0;
+                            clicked => {
+                                NotesPageData.delete-selected();
+                            }
+                        }
+
+                        Btn {
+                            text: "取消";
+                            c: root.c;
+                            clicked => {
+                                NotesPageData.cancel-delete();
+                            }
+                        }
+                    }
+                }
+            }
+
+            new-note := Rectangle {
+                visible: !NotesPageData.trash;
+                height: 30px;
+
+                Btn {
+                    text: "新建便签";
+                    c: root.c;
+                    clicked => {
+                        NotesPageData.new-note();
+                    }
                 }
             }
         }
@@ -275,7 +466,11 @@ export component NotesPage inherits Rectangle {
                         editor.focus-body();
                     }
                     escape => {
-                        root.escape();
+                        if NotesPageData.selecting {
+                            NotesPageData.set-selecting(false);
+                        } else {
+                            root.escape();
+                        }
                     }
                 }
 
@@ -388,7 +583,11 @@ export component NotesPage inherits Rectangle {
                         NotesPageData.add-tag(text);
                     }
                     escape => {
-                        root.escape();
+                        if NotesPageData.selecting {
+                            NotesPageData.set-selecting(false);
+                        } else {
+                            root.escape();
+                        }
                     }
                 }
             }
@@ -397,6 +596,7 @@ export component NotesPage inherits Rectangle {
                 vertical-stretch: 1;
                 c: root.c;
                 editable: !NotesPageData.trash;
+                handle-escape: NotesPageData.selecting;
                 problem: NotesPageData.problem;
                 problem-text: NotesPageData.problem-text;
                 closing: NotesPageData.closing;
@@ -407,6 +607,9 @@ export component NotesPage inherits Rectangle {
                 }
                 body-edited(text) => {
                     NotesPageData.body-edited(text);
+                }
+                escape => {
+                    NotesPageData.set-selecting(false);
                 }
                 retry => {
                     NotesPageData.retry();
