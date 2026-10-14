@@ -634,11 +634,14 @@ impl FloatWindow {
         self.session.replace(expanded_of(saved), saved.dock);
         let visible = self.session.visible();
         self.place(visible);
+        self.sync_source();
         self.sync_chrome();
         let _ = self.ui.show();
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
+        // 叠页把藏着的这一页重新显示时，show 可能把系统背景设回默认。显示之后再写一次。
+        self.refresh_backdrop(self.ui.get_dark());
         if !self.session.chrome().collapsed {
             if pages > 1 {
                 self.ui.invoke_focus_stack_keys();
@@ -836,11 +839,13 @@ impl FloatWindow {
     }
 
     /// 显示在最前。已经收起时不展开。展开时把焦点给正文。位置和大小不动。
-    fn raise(&self) {
+    fn raise(&mut self) {
+        self.sync_source();
         let _ = self.ui.show();
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
+        self.refresh_backdrop(self.ui.get_dark());
         if !self.session.chrome().collapsed {
             self.ui.invoke_focus_body();
         }

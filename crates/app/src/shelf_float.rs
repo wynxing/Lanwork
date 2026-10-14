@@ -752,6 +752,8 @@ impl FloatWindow {
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
+        // 叠页把藏着的这一页重新显示时，show 可能把系统背景设回默认。显示之后再写一次。
+        self.refresh_backdrop(self.ui.get_dark());
         if !self.session.chrome().collapsed {
             self.ui.invoke_focus_float();
         }
@@ -925,11 +927,12 @@ impl FloatWindow {
     }
 
     /// 显示在最前。位置和大小不动。
-    fn raise(&self) {
+    fn raise(&mut self) {
         let _ = self.ui.show();
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
+        self.refresh_backdrop(self.ui.get_dark());
     }
 
     fn push(&self) {

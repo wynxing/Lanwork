@@ -928,6 +928,31 @@ mod tests {
     }
 
     #[test]
+    fn dot_row_drops_the_system_backdrop_so_it_stays_clear() {
+        if !composition_enabled() {
+            eprintln!("DWM 组合没开，跳过页点透明");
+            return;
+        }
+        let window = create_probe().expect("探测窗口");
+        let hwnd = window.0;
+        let _ = bar_win::apply_float_backdrop(hwnd, lanwork_core::shell::Backdrop::Acrylic, false);
+        bar_win::apply_clear_plate(hwnd);
+        pump(hwnd);
+        let frame = read_frame(hwnd);
+        assert_eq!(
+            frame.backdrop,
+            Some(DWMSBT_NONE.0 as u32),
+            "页点不能留着会在失焦时变成不透明的系统背景，实际 {frame:?}"
+        );
+        if let Some(state) = bar_win::read_accent_state(hwnd) {
+            assert!(
+                !bar_win::accent_is_persistent_acrylic(state),
+                "页点不应铺亚克力，读回 {state}"
+            );
+        }
+    }
+
+    #[test]
     fn show_desktop_minimize_does_not_leave_a_collapsed_window_iconic() {
         if !composition_enabled() {
             eprintln!("DWM 组合没开，跳过最小化探测");

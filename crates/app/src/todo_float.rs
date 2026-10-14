@@ -558,11 +558,14 @@ impl FloatWindow {
         self.session.replace(expanded_of(saved), saved.dock);
         let visible = self.session.visible();
         self.place(visible);
+        self.ui.set_source(todo_source().into());
         self.sync_chrome();
         let _ = self.ui.show();
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
+        // 叠页把藏着的这一页重新显示时，show 可能把系统背景设回默认。显示之后再写一次。
+        self.refresh_backdrop(self.ui.get_dark());
         if !self.session.chrome().collapsed {
             self.ui.invoke_focus_float();
         }
@@ -729,11 +732,13 @@ impl FloatWindow {
         }
     }
 
-    fn raise(&self) {
+    fn raise(&mut self) {
+        self.ui.set_source(todo_source().into());
         let _ = self.ui.show();
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
+        self.refresh_backdrop(self.ui.get_dark());
     }
 
     fn fail(&self, message: &str) {

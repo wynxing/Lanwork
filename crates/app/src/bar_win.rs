@@ -38,9 +38,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IsIconic,
     IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WINEVENT_OUTOFCONTEXT, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
-    WM_MOUSEACTIVATE, WM_NCDESTROY, WM_STYLECHANGING, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX,
-    WS_MINIMIZEBOX, WS_SYSMENU,
+    SetWindowPos, ShowWindow, WINEVENT_OUTOFCONTEXT, WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE,
+    WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_STYLECHANGING,
+    WM_THEMECHANGED, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
 use windows::core::{PCSTR, s, w};
 
@@ -272,7 +272,16 @@ unsafe extern "system" fn reject_activate(
         }
     }
     // SAFETY: 参数原样交给子类链的下一层。
-    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+    // winit 创建窗口时默认是 `DWMSBT_AUTO`。页点失活后系统可能给这块透明窗口铺上不透明材料。
+    const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
+    if matches!(
+        message,
+        WM_ACTIVATE | WM_ACTIVATEAPP | WM_SHOWWINDOW | WM_THEMECHANGED | WM_DWMCOMPOSITIONCHANGED
+    ) {
+        apply_clear_plate(hwnd);
+    }
+    result
 }
 
 pub(crate) fn clear_blur_hold(key: isize) {
@@ -782,6 +791,27 @@ pub(crate) fn read_accent_state(hwnd: HWND) -> Option<u32> {
 #[cfg(test)]
 pub(crate) fn accent_is_persistent_acrylic(state: u32) -> bool {
     state == ACCENT_ENABLE_ACRYLICBLURBEHIND
+}
+
+/// 叠页的彩色圆点。不画来源行，也不铺亚克力。
+///
+/// winit 创建时把系统背景设成 `DWMSBT_AUTO`。窗口一直不激活，失活策略仍可能给客户区一块不透明材料。
+/// 这里关掉系统背景和强调策略，再打开空区域的逐像素透明，圆点以外继续透出后面的画面。
+pub(crate) fn apply_clear_plate(hwnd: HWND) {
+    thread_local! {
+        static DEPTH: Cell<u32> = const { Cell::new(0) };
+    }
+    if DEPTH.with(Cell::get) > 0 {
+        return;
+    }
+    DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    let _ = set_accent(hwnd, accent_off());
+    if windows_build().is_some_and(|build| build >= lanwork_core::shell::MIN_BACKDROP_BUILD) {
+        let none: DWM_SYSTEMBACKDROP_TYPE = DWMSBT_NONE;
+        let _ = set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &none);
+    }
+    enable_per_pixel_alpha(hwnd);
+    DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
 }
 
 /// 收起后的窗口只画把手。关掉圆角、边框、非客户区阴影和亚克力，再打开逐像素 alpha。

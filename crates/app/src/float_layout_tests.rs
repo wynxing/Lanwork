@@ -534,6 +534,27 @@ fn source_line_is_a_single_quiet_row_and_each_page_keeps_its_own() {
     slint::platform::update_timers_and_animations();
     assert!(!note.get_source_open(), "收起的把手不显示来源行");
 
+    for (name, source) in [
+        ("notefloat.slint", include_str!("../ui/notefloat.slint")),
+        ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
+        ("todofloat.slint", include_str!("../ui/todofloat.slint")),
+    ] {
+        assert!(
+            source.contains("source-row := FloatSource"),
+            "{name} 没有来源行"
+        );
+        assert!(source.contains("y: 28px;"), "{name} 的来源行应在拖动条下面");
+        assert!(source.contains("visible: !"), "{name} 收起时应藏起来源行");
+    }
+    let group = include_str!("float_group.rs");
+    assert!(group.contains("note_float::present"));
+    assert!(group.contains("shelf_float::present"));
+    assert!(group.contains("todo_float::present"));
+    assert!(
+        group.contains("apply_clear_plate"),
+        "叠页页点应清掉会在失焦时变不透明的系统背景"
+    );
+
     let widgets = include_str!("../ui/widgets.slint");
     let source = widgets
         .split("export component FloatSource")
