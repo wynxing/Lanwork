@@ -28,6 +28,29 @@ pub(crate) fn shared() -> Arc<WebIcons> {
     Arc::clone(SHARED.get().expect("网站图标缓存还没有安装"))
 }
 
+/// 缓存里已有的网站图标。搜索条还没等到安装，或缓存里没有时，返回 `None`。
+pub(crate) fn cached(url: &str) -> Option<RgbaImage> {
+    let key = icon_cache_key(url)?;
+    SHARED.get()?.cache.load(&key)
+}
+
+/// 可见的网页引用还没有图标时再取。已经在取或这次运行失败过的地址不再排。
+pub(crate) fn ensure(urls: Vec<String>) {
+    let Some(icons) = SHARED.get() else {
+        return;
+    };
+    let pending = icons.claim(&urls);
+    if pending.is_empty() {
+        return;
+    }
+    if fetch(Arc::clone(icons), pending.clone()).is_err() {
+        // claim 已经把这些地址记成进行中。线程没起来就按这次失败结算，避免一直占着。
+        for url in pending {
+            icons.settle(&url, false);
+        }
+    }
+}
+
 pub(crate) struct WebIcons {
     cache: WebIconCache,
     state: Mutex<State>,
@@ -186,9 +209,11 @@ fn finish_attempt(
 }
 
 fn deliver(icons: Vec<(String, RgbaImage)>) {
+    let search = icons.clone();
     let again = icons.clone();
     crate::shelves_page::receive_web_icons(icons);
     crate::shelf_float::receive_web_icons(again);
+    crate::searchbar::receive_web_icons(search);
 }
 
 fn lock(mutex: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
