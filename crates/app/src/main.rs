@@ -16,6 +16,8 @@ mod float_layout_tests;
 mod menu_layout_tests;
 #[cfg(test)]
 mod settings_layout_tests;
+#[cfg(test)]
+mod triage_layout_tests;
 
 #[cfg(windows)]
 mod bar_win;
