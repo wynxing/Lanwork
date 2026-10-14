@@ -110,6 +110,31 @@ impl ShelfCommands {
         self.service.add_web_refs(group_id, incoming)
     }
 
+    /// 把引用从一组挪到另一组。规则见 [`ShelfService::move_refs`]。
+    pub fn move_refs(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        paths: &[String],
+        urls: &[String],
+    ) -> Result<super::model::MoveRefsOutcome, ShelfError> {
+        self.service.check_group_id(from_id)?;
+        self.service.check_group_id(to_id)?;
+        for path in paths {
+            if path.is_empty() {
+                return Err(ShelfError::InvalidPath {
+                    path: path.to_owned(),
+                });
+            }
+        }
+        for url in urls {
+            if url.is_empty() {
+                return Err(ShelfError::InvalidUrl { url: url.clone() });
+            }
+        }
+        self.service.move_refs(from_id, to_id, paths, urls)
+    }
+
     /// 从分组去掉一条网页引用。
     pub fn remove_web_ref(&self, id: &str, url: &str) -> Result<Shelf, ShelfError> {
         self.service.check_group_id(id)?;

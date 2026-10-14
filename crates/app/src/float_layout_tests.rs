@@ -57,6 +57,7 @@ fn lay_out(window: &Rc<MinimalSoftwareWindow>, open: bool, count: usize, selecte
         icon: slint::Image::default(),
         has_icon: false,
         missing: false,
+        selected: false,
     }])));
     data.set_selected_ref(if selected { 0 } else { -1 });
     ui.show().expect("show");

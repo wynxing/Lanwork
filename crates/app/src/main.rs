@@ -19,6 +19,8 @@ mod notes_layout_tests;
 #[cfg(test)]
 mod settings_layout_tests;
 #[cfg(test)]
+mod shelves_layout_tests;
+#[cfg(test)]
 mod triage_layout_tests;
 
 #[cfg(windows)]

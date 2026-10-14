@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use lanwork_core::apps::{LaunchTarget, launch};
 use lanwork_core::dispatch::{IconCache, IconKey, RgbaImage};
-use lanwork_core::panel::{LinkedTodo, ShelfLine, passed_drag_threshold};
+use lanwork_core::panel::{ItemSelect, LinkedTodo, ShelfLine, passed_drag_threshold};
 use lanwork_core::shell::path_target;
 use lanwork_core::shelves::{IncomingRef, ShelfCommands};
 use slint::platform::{PointerEventButton, WindowEvent};
@@ -26,8 +26,12 @@ use crate::{ShelfLinkRow, ShelfRefRow, ShelvesPageData};
 /// 按下条目行时记下的位置，指针移出阈值之后才开始拖出。
 struct Press {
     path: String,
+    web: bool,
+    index: usize,
     x: f32,
     y: f32,
+    /// 面板收纳页：越过阈值后先在窗口里拖，松手落到别的分组上才移动引用。
+    manage: bool,
 }
 
 /// 一次后台检查：哪些路径要查是否存在，哪些文件要取图标，哪些网址要取网站图标。
@@ -60,9 +64,14 @@ pub(crate) enum Moved {
     Nothing,
     /// 超过阈值但已知路径不存在。
     Missing,
-    /// 超过阈值，开始拖出这一条。`origin` 是按下的位置。
+    /// 超过阈值，开始拖出这一条。`origin` 是按下的位置。悬浮窗走这一支。
     Start {
         path: String,
+        origin: (f32, f32),
+    },
+    /// 面板：超过阈值，先在窗口里拖。按下的是哪一行由 `index` 给出。
+    Arm {
+        index: usize,
         origin: (f32, f32),
     },
 }
@@ -78,6 +87,8 @@ pub(crate) struct RefsView {
     selected: Option<String>,
     /// 选中的是网页引用。路径和网址字符串碰巧相同也不能当成同一条。
     selected_web: bool,
+    /// 面板多选。`None` 时只按上面的单条锚点画选中，悬浮窗走这一支。
+    marks: Option<Vec<(String, bool)>>,
     press: Option<Press>,
 }
 
@@ -93,6 +104,7 @@ impl RefsView {
             count: 0,
             selected: None,
             selected_web: false,
+            marks: None,
             press: None,
         }
     }
@@ -113,6 +125,7 @@ impl RefsView {
     pub(crate) fn clear(&mut self) {
         self.selected = None;
         self.selected_web = false;
+        self.marks = None;
         self.press = None;
         self.exists.clear();
         self.icons.clear();
@@ -160,6 +173,34 @@ impl RefsView {
         self.selected.as_deref() == Some(line.key.as_str()) && self.selected_web == line.web
     }
 
+    fn row_selected(&self, line: &ShelfLine) -> bool {
+        match &self.marks {
+            Some(marks) => marks
+                .iter()
+                .any(|(key, web)| line.web == *web && line.key == *key),
+            None => self.same_line(line),
+        }
+    }
+
+    /// 面板：锚点决定路径行和左侧色条，`marks` 决定哪些行有选中底色。
+    pub(crate) fn apply_items(&mut self, lines: &[ShelfLine], items: &ItemSelect) {
+        self.marks = Some(
+            items
+                .ids
+                .iter()
+                .map(|id| (id.key.clone(), id.web))
+                .collect(),
+        );
+        match items.anchor.as_ref().and_then(|id| {
+            lines
+                .iter()
+                .position(|line| line.web == id.web && line.key == id.key)
+        }) {
+            Some(index) => self.select(lines, to_i32(index)),
+            None => self.deselect(),
+        }
+    }
+
     pub(crate) fn has_icon(&self, key: &str) -> bool {
         self.icons.contains_key(key) || self.web_icons.contains_key(key)
     }
@@ -180,6 +221,7 @@ impl RefsView {
                     icon: icon.cloned().unwrap_or_default(),
                     has_icon: icon.is_some(),
                     missing: !line.web && self.is_missing(&line.key),
+                    selected: self.row_selected(line),
                 }
             })
             .collect();
@@ -279,13 +321,28 @@ impl RefsView {
     }
 
     pub(crate) fn press(&mut self, lines: &[ShelfLine], index: i32, x: f32, y: f32) {
+        self.press_at(lines, index, x, y, false);
+    }
+
+    /// `manage` 为真时网页引用也能按下，用来拖到别的分组。拖出到资源管理器仍然不要网页。
+    pub(crate) fn press_at(
+        &mut self,
+        lines: &[ShelfLine],
+        index: i32,
+        x: f32,
+        y: f32,
+        manage: bool,
+    ) {
         let line = usize::try_from(index)
             .ok()
             .and_then(|index| lines.get(index));
-        self.press = line.filter(|line| !line.web).map(|line| Press {
+        self.press = line.filter(|line| manage || !line.web).map(|line| Press {
             path: line.key.clone(),
+            web: line.web,
+            index: usize::try_from(index).unwrap_or(0),
             x,
             y,
+            manage,
         });
     }
 
@@ -305,6 +362,12 @@ impl RefsView {
         let Some(press) = self.press.take() else {
             return Moved::Nothing;
         };
+        if press.manage {
+            return Moved::Arm {
+                index: press.index,
+                origin: (press.x, press.y),
+            };
+        }
         if self.is_missing(&press.path) {
             return Moved::Missing;
         }
@@ -368,7 +431,7 @@ pub(crate) fn spawn_probe(
 /// 如果回调本身就落在别的借用里（动作被推迟），`offer` 返回 false，退回 [`schedule_drag`]。
 pub(crate) struct InlineDrag {
     open: Cell<bool>,
-    start: RefCell<Option<(String, (f32, f32))>>,
+    start: RefCell<Option<(Vec<String>, (f32, f32))>>,
 }
 
 impl InlineDrag {
@@ -380,16 +443,16 @@ impl InlineDrag {
     }
 
     /// 动作在回调里同步执行时接收要拖的路径。动作被推迟之后返回 false。
-    pub(crate) fn offer(&self, path: String, origin: (f32, f32)) -> bool {
-        if !self.open.get() {
+    pub(crate) fn offer(&self, paths: Vec<String>, origin: (f32, f32)) -> bool {
+        if !self.open.get() || paths.is_empty() {
             return false;
         }
-        *self.start.borrow_mut() = Some((path, origin));
+        *self.start.borrow_mut() = Some((paths, origin));
         true
     }
 
     /// 借用结束后取走同步接收到的路径，之后的 `offer` 都返回 false。
-    pub(crate) fn take(&self) -> Option<(String, (f32, f32))> {
+    pub(crate) fn take(&self) -> Option<(Vec<String>, (f32, f32))> {
         self.open.set(false);
         self.start.borrow_mut().take()
     }
@@ -398,22 +461,23 @@ impl InlineDrag {
 /// 立刻进入 OLE 的拖出循环。调用者不能持有窗口的借用：循环期间窗口消息照常派发。
 /// `before` 在进入循环前调用，`after` 在循环结束后调用。
 pub(crate) fn drag_now(
-    path: String,
+    paths: Vec<String>,
     before: impl FnOnce(),
     after: impl FnOnce(Result<DragOutcome, String>),
 ) {
     before();
-    let outcome = drag_out(&[PathBuf::from(path)]);
+    let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let outcome = drag_out(&paths);
     after(outcome);
 }
 
 /// 动作被推迟（回调落在别的借用里）时的退路：下一轮事件循环再拖出。
 pub(crate) fn schedule_drag(
-    path: String,
+    paths: Vec<String>,
     before: impl FnOnce() + 'static,
     after: impl FnOnce(Result<DragOutcome, String>) + 'static,
 ) {
-    slint::Timer::single_shot(Duration::ZERO, move || drag_now(path, before, after));
+    slint::Timer::single_shot(Duration::ZERO, move || drag_now(paths, before, after));
 }
 
 /// 模态循环吃掉了鼠标抬起，行上的 `TouchArea` 还抓着鼠标。补发抬起和离开，抓取才会释放。
@@ -554,10 +618,13 @@ mod tests {
     #[test]
     fn an_inline_drag_is_handed_over_once_and_a_deferred_action_is_refused() {
         let inline = InlineDrag::new();
-        assert!(inline.offer("C:\\a.txt".into(), (1.0, 2.0)));
-        assert_eq!(inline.take(), Some(("C:\\a.txt".to_owned(), (1.0, 2.0))));
+        assert!(inline.offer(vec!["C:\\a.txt".into()], (1.0, 2.0)));
+        assert_eq!(
+            inline.take(),
+            Some((vec!["C:\\a.txt".to_owned()], (1.0, 2.0)))
+        );
         assert_eq!(inline.take(), None);
-        assert!(!inline.offer("C:\\b.txt".into(), (0.0, 0.0)));
+        assert!(!inline.offer(vec!["C:\\b.txt".into()], (0.0, 0.0)));
         assert_eq!(inline.take(), None);
     }
 

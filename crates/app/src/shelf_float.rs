@@ -545,10 +545,10 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
             let inline = InlineDrag::new();
             let offered = Rc::clone(&inline);
             with_window(&id, move |window, _| window.ref_move(x, y, &offered));
-            if let Some((path, origin)) = inline.take() {
+            if let Some((paths, origin)) = inline.take() {
                 let id = id.clone();
                 drag_now(
-                    path,
+                    paths,
                     || {},
                     move |outcome| {
                         with_window(&id, move |window, _| window.drag_finished(outcome, origin));
@@ -1166,14 +1166,14 @@ impl FloatWindow {
     /// 开始拖出；动作被推迟时退回下一轮事件循环。
     fn ref_move(&mut self, x: f32, y: f32, inline: &InlineDrag) {
         match self.view.moved(self.ui.window().scale_factor(), x, y) {
-            Moved::Nothing => {}
+            Moved::Nothing | Moved::Arm { .. } => {}
             Moved::Missing => self.fail("路径不存在"),
             Moved::Start { path, origin } => {
                 self.clear_error();
-                if !inline.offer(path.clone(), origin) {
+                if !inline.offer(vec![path.clone()], origin) {
                     let id = self.group_id.clone();
                     schedule_drag(
-                        path,
+                        vec![path],
                         || {},
                         move |outcome| {
                             with_window(&id, move |window, _| {

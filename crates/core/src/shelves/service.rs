@@ -374,6 +374,94 @@ impl ShelfService {
         Ok(shelf)
     }
 
+    /// 把路径引用和网页引用从一组挪到另一组。
+    ///
+    /// 同一分组，或这次没有给出引用时，不写盘。一条都对不上时返回 [`ShelfError::RefNotFound`]，也不写盘。
+    /// 路径在目标分组里已经有一条时，只从源分组去掉，
+    /// 不留下第二条。网页引用在全部分组里仍只留一条：从源分组拿走，加到目标分组末尾。
+    /// 两组在同一次写入里保存。不移动、不复制、不删除用户文件，也不关闭或移动浏览器标签。
+    pub fn move_refs(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        paths: &[String],
+        urls: &[String],
+    ) -> Result<super::model::MoveRefsOutcome, ShelfError> {
+        self.check_group_id(from_id)?;
+        self.check_group_id(to_id)?;
+        let path_keys = path_keys_of(paths)?;
+        let url_keys = url_keys_of(urls)?;
+        if from_id == to_id || (path_keys.is_empty() && url_keys.is_empty()) {
+            let shelf = self.get(from_id)?;
+            return Ok(super::model::MoveRefsOutcome {
+                target: shelf.clone(),
+                source: shelf,
+                moved: 0,
+            });
+        }
+        let _write = lock_mutex(&self.inner.write);
+        self.ensure_usable()?;
+        let mut source = self.group(from_id)?;
+        let mut target = self.group(to_id)?;
+        let mut moved = 0usize;
+        let mut taken_paths = Vec::new();
+        source.refs.retain(|item| {
+            if path_keys.iter().any(|key| key == &item.path_key()) {
+                taken_paths.push(item.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for item in taken_paths {
+            let key = item.path_key();
+            if !target
+                .refs
+                .iter()
+                .any(|existing| existing.path_key() == key)
+            {
+                target.refs.push(item);
+            }
+            moved += 1;
+        }
+        let mut taken_web = Vec::new();
+        source.web_refs.retain(|item| {
+            let matched = super::weblink::normalize_web_url(&item.url)
+                .is_some_and(|normalized| url_keys.iter().any(|key| key == &normalized.key));
+            if matched {
+                taken_web.push(item.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for item in taken_web {
+            let key = super::weblink::normalize_web_url(&item.url).map(|normalized| normalized.key);
+            let already = key.as_ref().is_some_and(|key| {
+                target.web_refs.iter().any(|existing| {
+                    super::weblink::normalize_web_url(&existing.url)
+                        .is_some_and(|normalized| normalized.key == *key)
+                })
+            });
+            if !already {
+                target.web_refs.push(item);
+            }
+            moved += 1;
+        }
+        if moved == 0 {
+            return Err(ShelfError::RefNotFound {
+                id: from_id.to_owned(),
+                path: paths.first().or(urls.first()).cloned().unwrap_or_default(),
+            });
+        }
+        self.persist(&[source.clone(), target.clone()])?;
+        Ok(super::model::MoveRefsOutcome {
+            source,
+            target,
+            moved,
+        })
+    }
+
     /// 再关联一条待办，排在已有关联之后。已经关联这一条时不写盘。
     ///
     /// 只校验待办 id 的格式。该 id 是否已有待办，产品规格没有写，这里不检查。
@@ -882,6 +970,29 @@ fn prepare_web(incoming: &[super::model::IncomingWeb]) -> Result<Vec<PreparedWeb
         });
     }
     Ok(prepared)
+}
+
+fn path_keys_of(paths: &[String]) -> Result<Vec<String>, ShelfError> {
+    let mut keys = Vec::new();
+    for path in paths {
+        let normalized = normalize_path(path)?;
+        if !keys.iter().any(|key| key == &normalized.key) {
+            keys.push(normalized.key);
+        }
+    }
+    Ok(keys)
+}
+
+fn url_keys_of(urls: &[String]) -> Result<Vec<String>, ShelfError> {
+    let mut keys = Vec::new();
+    for url in urls {
+        let normalized = super::weblink::normalize_web_url(url)
+            .ok_or_else(|| ShelfError::InvalidUrl { url: url.clone() })?;
+        if !keys.iter().any(|key| key == &normalized.key) {
+            keys.push(normalized.key);
+        }
+    }
+    Ok(keys)
 }
 
 fn web_keys(groups: &[Shelf]) -> std::collections::BTreeSet<String> {

@@ -10,6 +10,8 @@ export struct ShelfGroupRow {
     count: int,
     // 关联待办的标题，多条用「、」连起来。没有可显示的标题时为空。
     todo: string,
+    // 分组多选里这一行是否勾上。
+    checked: bool,
 }
 
 export struct ShelfRefRow {
@@ -17,6 +19,14 @@ export struct ShelfRefRow {
     icon: image,
     has-icon: bool,
     missing: bool,
+    // 当前分组里这一条是否在选择中。悬浮窗不用。
+    selected: bool,
+}
+
+export struct ShelfMenuRow {
+    label: string,
+    enabled: bool,
+    danger: bool,
 }
 
 // 选中分组关联的一条待办。
@@ -83,6 +93,66 @@ export global ShelvesPageData {
     callback ref-move(int, length, length);
     callback ref-release();
     callback visible-changed(int, int);
+    // 分组多选。点「选择」或 Ctrl/Shift 点击进入。
+    in property <bool> selecting: false;
+    in property <int> group-selected-count: 0;
+    in property <bool> confirm-groups: false;
+    // 当前分组里选中的条目数。0 时不显示底部动作。
+    in property <int> ref-count: 0;
+    in property <bool> confirm-refs: false;
+    // 选择里至少有一条路径引用时，可以打开所在目录。
+    in property <bool> can-open-folder: true;
+    // 条目拖动已经越过阈值。松开时不再当作点击。
+    in-out property <bool> ref-dragging: false;
+    // 拖到左侧分组上时那一行。-1 表示没有放下目标。
+    in property <int> drop-group: -1;
+    in property <bool> menu-open: false;
+    in property <length> menu-x: 0px;
+    in property <length> menu-y: 0px;
+    in property <[ShelfMenuRow]> menu-rows;
+    // 相对窗口的几何，布局测试和分组命中测试读取。
+    in-out property <length> choose-x;
+    in-out property <length> choose-y;
+    in-out property <length> choose-w;
+    in-out property <length> choose-h;
+    in-out property <length> list-y;
+    in-out property <length> list-h;
+    in-out property <length> bar-y;
+    in-out property <length> bar-h;
+    in-out property <length> new-y;
+    in-out property <length> delete-x;
+    in-out property <length> delete-y;
+    in-out property <length> delete-w;
+    in-out property <length> delete-h;
+    in-out property <length> groups-x;
+    in-out property <length> groups-y;
+    in-out property <length> groups-w;
+    in-out property <length> groups-h;
+    in-out property <length> groups-content-y;
+    in-out property <length> refs-x;
+    in-out property <length> refs-y;
+    in-out property <length> refs-w;
+    in-out property <length> refs-h;
+    in-out property <length> page-x;
+    in-out property <length> page-y;
+    in-out property <string> count-label;
+    in-out property <int> geometry-refresh;
+
+    callback set-group-selecting(bool);
+    callback group-clicked(int, bool, bool);
+    callback select-all-groups();
+    callback clear-group-checks();
+    callback ask-delete-groups();
+    callback cancel-delete-groups();
+    callback delete-groups();
+    callback float-groups();
+    callback ref-click(int, bool, bool);
+    callback ref-menu(int, length, length);
+    callback menu-activate(int);
+    callback close-menu();
+    callback select-all-refs();
+    callback clear-refs();
+    callback cancel-remove-refs();
 }
 
 // 关联待办的搜索框：输入关键字筛选，点击一条即关联。
@@ -185,6 +255,8 @@ component TodoPicker inherits Rectangle {
 // 选中分组的条目列表，面板的收纳页和收纳悬浮窗共用。可见行的起止在这里算，因为列表只在选中分组时存在。
 export component RefsList inherits Rectangle {
     in property <Ink> c;
+    // 面板收纳页为真：单击多选，右键菜单，松开在行外不算点击。悬浮窗保持原来的单击选中。
+    in property <bool> manage: false;
     // 点击条目行后让页面拿焦点，这样 Enter 和 Ctrl+Enter 才有效。
     callback focus-requested();
 
@@ -212,7 +284,8 @@ export component RefsList inherits Rectangle {
         visible: ShelvesPageData.refs.length > 0;
 
         for item[index] in ShelvesPageData.refs: Rectangle {
-            property <bool> is-selected: index == ShelvesPageData.selected-ref;
+            property <bool> is-anchor: index == ShelvesPageData.selected-ref;
+            property <bool> is-selected: root.manage ? item.selected : is-anchor;
 
             height: row-height;
 
@@ -222,7 +295,7 @@ export component RefsList inherits Rectangle {
                 background: is-selected ? c.selection : ref-touch.has-hover ? c.hover : transparent;
             }
 
-            if is-selected: Rectangle {
+            if is-anchor: Rectangle {
                 x: 0px;
                 y: (parent.height - 16px) / 2;
                 width: 3px;
@@ -233,12 +306,16 @@ export component RefsList inherits Rectangle {
 
             ref-touch := TouchArea {
                 clicked => {
-                    root.focus-requested();
-                    ShelvesPageData.select-ref(index);
+                    if !root.manage {
+                        root.focus-requested();
+                        ShelvesPageData.select-ref(index);
+                    }
                 }
                 double-clicked => {
-                    ShelvesPageData.select-ref(index);
-                    ShelvesPageData.open-ref();
+                    if !root.manage {
+                        ShelvesPageData.select-ref(index);
+                        ShelvesPageData.open-ref();
+                    }
                 }
                 pointer-event(event) => {
                     if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
@@ -246,6 +323,14 @@ export component RefsList inherits Rectangle {
                     }
                     if event.kind == PointerEventKind.move && self.pressed {
                         ShelvesPageData.ref-move(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                    if root.manage && event.button == PointerEventButton.right && event.kind == PointerEventKind.up && self.mouse-x >= 0px && self.mouse-y >= 0px && self.mouse-x < self.width && self.mouse-y < self.height {
+                        root.focus-requested();
+                        ShelvesPageData.ref-menu(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                    if root.manage && event.button == PointerEventButton.left && event.kind == PointerEventKind.up && !ShelvesPageData.ref-dragging && self.mouse-x >= 0px && self.mouse-y >= 0px && self.mouse-x < self.width && self.mouse-y < self.height {
+                        root.focus-requested();
+                        ShelvesPageData.ref-click(index, event.modifiers.control, event.modifiers.shift);
                     }
                     if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
                         ShelvesPageData.ref-release();
@@ -295,10 +380,87 @@ export component ShelvesPage inherits Rectangle {
     callback escape();
 
     property <length> rail-width: 232px;
+    property <bool> groups-empty: ShelvesPageData.groups.length == 0;
+    property <bool> choose-open: ShelvesPageData.groups.length > 0 || ShelvesPageData.selecting;
+    property <bool> multi: ShelvesPageData.selecting;
+    property <length> menu-item-h: 32px;
+    property <length> menu-pad: 4px;
+    property <length> menu-width: 196px;
+    property <length> menu-block: menu-pad * 2 + ShelvesPageData.menu-rows.length * menu-item-h;
+    property <bool> menu-shown: ShelvesPageData.menu-open && ShelvesPageData.menu-rows.length > 0;
+    property <length> menu-draw-x: min(max(8px, ShelvesPageData.menu-x), max(8px, self.width - menu-width - 8px));
+    property <length> menu-draw-y: ShelvesPageData.menu-y + menu-block + 8px > self.height && ShelvesPageData.menu-y > menu-block ? max(8px, ShelvesPageData.menu-y - menu-block) : min(ShelvesPageData.menu-y, max(8px, self.height - menu-block - 8px));
+    property <int> menu-hover: -1;
+    property <length> geometry-tick: select-row.y + select-btn.y + select-btn.width + select-btn.height + list-host.y + list-host.height + action-bar.y + action-bar.height + new-group.y + delete-btn.x + delete-btn.y + delete-btn.width + delete-btn.height + group-list.y + group-list.height + group-list.content-y + ShelvesPageData.selected-group * 1px + ShelvesPageData.group-selected-count * 1px + ShelvesPageData.ref-count * 1px + ShelvesPageData.geometry-refresh * 1px + (ShelvesPageData.selecting ? 1px : 0px) + (ShelvesPageData.confirm-groups ? 1px : 0px) + (ShelvesPageData.confirm-refs ? 1px : 0px) + (ShelvesPageData.menu-open ? 1px : 0px);
+
+    changed geometry-tick => {
+        ShelvesPageData.choose-x = select-btn.absolute-position.x;
+        ShelvesPageData.choose-y = select-btn.absolute-position.y;
+        ShelvesPageData.choose-w = select-btn.width;
+        ShelvesPageData.choose-h = root.choose-open ? select-btn.height : 0px;
+        ShelvesPageData.list-y = list-host.absolute-position.y;
+        ShelvesPageData.list-h = list-host.height;
+        ShelvesPageData.bar-y = action-bar.absolute-position.y;
+        ShelvesPageData.bar-h = root.multi ? action-bar.height : 0px;
+        ShelvesPageData.new-y = new-group.absolute-position.y;
+        ShelvesPageData.delete-x = delete-btn.absolute-position.x;
+        ShelvesPageData.delete-y = delete-btn.absolute-position.y;
+        ShelvesPageData.delete-w = delete-btn.width;
+        ShelvesPageData.delete-h = root.multi && !ShelvesPageData.confirm-groups ? delete-btn.height : 0px;
+        ShelvesPageData.groups-x = group-list.absolute-position.x;
+        ShelvesPageData.groups-y = group-list.absolute-position.y;
+        ShelvesPageData.groups-w = group-list.width;
+        ShelvesPageData.groups-h = group-list.height;
+        ShelvesPageData.groups-content-y = group-list.content-y;
+        if ShelvesPageData.selected-group < 0 {
+            ShelvesPageData.refs-x = 0px;
+            ShelvesPageData.refs-y = 0px;
+            ShelvesPageData.refs-w = 0px;
+            ShelvesPageData.refs-h = 0px;
+        }
+        ShelvesPageData.page-x = root.absolute-position.x;
+        ShelvesPageData.page-y = root.absolute-position.y;
+        ShelvesPageData.count-label = "已选 " + ShelvesPageData.group-selected-count + " 个";
+    }
+
+    function dismiss-or-escape() {
+        if ShelvesPageData.menu-open {
+            ShelvesPageData.close-menu();
+        } else if ShelvesPageData.confirm-refs {
+            ShelvesPageData.cancel-remove-refs();
+        } else if ShelvesPageData.confirm-groups {
+            ShelvesPageData.cancel-delete-groups();
+        } else if ShelvesPageData.ref-count > 0 {
+            ShelvesPageData.clear-refs();
+        } else if ShelvesPageData.selecting {
+            ShelvesPageData.set-group-selecting(false);
+        } else {
+            root.escape();
+        }
+    }
 
     page-scope := FocusScope {
         key-pressed(event) => {
-            if ShelvesPageData.selected-ref >= 0 && event.text == Key.Return {
+            if event.text == Key.Escape {
+                root.dismiss-or-escape();
+                return accept;
+            }
+            if ShelvesPageData.menu-open {
+                return reject;
+            }
+            if event.text == Key.Delete && ShelvesPageData.ref-count > 0 {
+                ShelvesPageData.remove-ref();
+                return accept;
+            }
+            if event.modifiers.control && (event.text == "a" || event.text == "A" || event.text == "\u{0001}") {
+                if ShelvesPageData.selecting {
+                    ShelvesPageData.select-all-groups();
+                } else {
+                    ShelvesPageData.select-all-refs();
+                }
+                return accept;
+            }
+            if ShelvesPageData.ref-count > 0 && event.text == Key.Return {
                 if event.modifiers.control {
                     ShelvesPageData.open-ref-folder();
                 } else {
@@ -309,7 +471,7 @@ export component ShelvesPage inherits Rectangle {
             reject
         }
 
-        // 左侧：分组列表和新建。
+        // 左侧：分组列表和新建。多选时底部是「已选 N 个」。
         Rectangle {
             x: 0px;
             width: rail-width;
@@ -319,10 +481,24 @@ export component ShelvesPage inherits Rectangle {
                 padding: 8px;
                 spacing: 6px;
 
-                Rectangle {
+                select-row := Rectangle {
+                    visible: choose-open;
+                    height: 30px;
+
+                    select-btn := Btn {
+                        text: ShelvesPageData.selecting ? "完成" : "选择";
+                        c: root.c;
+                        clicked => {
+                            page-scope.focus();
+                            ShelvesPageData.set-group-selecting(!ShelvesPageData.selecting);
+                        }
+                    }
+                }
+
+                list-host := Rectangle {
                     vertical-stretch: 1;
 
-                    if ShelvesPageData.groups.length == 0: Text {
+                    if groups-empty: Text {
                         x: 8px;
                         y: 6px;
                         text: "没有分组";
@@ -330,21 +506,23 @@ export component ShelvesPage inherits Rectangle {
                         font-size: 14px;
                     }
 
-                    ListView {
-                        visible: ShelvesPageData.groups.length > 0;
+                    group-list := ListView {
+                        visible: !groups-empty;
 
                         for group[index] in ShelvesPageData.groups: Rectangle {
-                            property <bool> is-selected: index == ShelvesPageData.selected-group;
+                            property <bool> is-open: index == ShelvesPageData.selected-group;
+                            property <bool> is-drop: index == ShelvesPageData.drop-group;
+                            property <bool> is-checked: root.multi && group.checked;
 
                             height: group.todo != "" ? 56px : 40px;
 
                             Rectangle {
                                 width: parent.width;
                                 border-radius: 6px;
-                                background: is-selected ? c.selection : group-touch.has-hover ? c.hover : transparent;
+                                background: is-drop || is-checked || (!root.multi && is-open) ? c.selection : group-touch.has-hover ? c.hover : transparent;
                             }
 
-                            if is-selected: Rectangle {
+                            if is-open && !root.multi: Rectangle {
                                 x: 0px;
                                 y: (parent.height - 16px) / 2;
                                 width: 3px;
@@ -353,15 +531,39 @@ export component ShelvesPage inherits Rectangle {
                                 background: c.accent;
                             }
 
+                            if root.multi: Rectangle {
+                                x: 8px;
+                                y: (parent.height - 16px) / 2;
+                                width: 16px;
+                                height: 16px;
+                                border-radius: 3px;
+                                border-width: 1px;
+                                border-color: group.checked ? c.accent : c.tertiary;
+                                background: group.checked ? c.accent : transparent;
+
+                                if group.checked: Path {
+                                    width: 16px;
+                                    height: 16px;
+                                    viewbox-width: 16;
+                                    viewbox-height: 16;
+                                    fill: transparent;
+                                    stroke: #ffffff;
+                                    stroke-width: 1.6px;
+                                    commands: "M3.5 8.2l2.8 2.8 6.2-6.4";
+                                }
+                            }
+
                             group-touch := TouchArea {
-                                clicked => {
-                                    page-scope.focus();
-                                    ShelvesPageData.select-group(index);
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.up && self.mouse-x >= 0px && self.mouse-y >= 0px && self.mouse-x < self.width && self.mouse-y < self.height {
+                                        page-scope.focus();
+                                        ShelvesPageData.group-clicked(index, event.modifiers.control, event.modifiers.shift);
+                                    }
                                 }
                             }
 
                             VerticalLayout {
-                                padding-left: 12px;
+                                padding-left: root.multi ? 30px : 12px;
                                 padding-right: 8px;
                                 padding-top: 6px;
                                 padding-bottom: 6px;
@@ -376,7 +578,7 @@ export component ShelvesPage inherits Rectangle {
                                         text: group.name;
                                         color: c.ink;
                                         font-size: 14px;
-                                        font-weight: is-selected ? 600 : 400;
+                                        font-weight: is-open && !root.multi ? 600 : 400;
                                         vertical-alignment: center;
                                         overflow: elide;
                                     }
@@ -400,6 +602,103 @@ export component ShelvesPage inherits Rectangle {
                     }
                 }
 
+                action-bar := Rectangle {
+                    visible: root.multi;
+
+                    Rectangle {
+                        y: 0px;
+                        width: parent.width;
+                        height: 1px;
+                        background: c.divider;
+                    }
+
+                    VerticalLayout {
+                        padding-top: 8px;
+                        spacing: 6px;
+
+                        Text {
+                            height: 18px;
+                            text: "已选 " + ShelvesPageData.group-selected-count + " 个";
+                            color: c.secondary;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+
+                        HorizontalLayout {
+                            visible: !ShelvesPageData.confirm-groups;
+                            height: 30px;
+                            spacing: 4px;
+
+                            Btn {
+                                text: "全选";
+                                c: root.c;
+                                enabled: ShelvesPageData.group-selected-count < ShelvesPageData.groups.length;
+                                clicked => {
+                                    ShelvesPageData.select-all-groups();
+                                }
+                            }
+
+                            Btn {
+                                text: "取消全选";
+                                c: root.c;
+                                enabled: ShelvesPageData.group-selected-count > 0;
+                                clicked => {
+                                    ShelvesPageData.clear-group-checks();
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            visible: !ShelvesPageData.confirm-groups;
+                            height: 30px;
+                            spacing: 4px;
+
+                            Btn {
+                                text: "悬浮";
+                                c: root.c;
+                                enabled: ShelvesPageData.group-selected-count > 0;
+                                clicked => {
+                                    ShelvesPageData.float-groups();
+                                }
+                            }
+
+                            delete-btn := Btn {
+                                text: "删除";
+                                c: root.c;
+                                danger: true;
+                                enabled: ShelvesPageData.group-selected-count > 0;
+                                clicked => {
+                                    ShelvesPageData.ask-delete-groups();
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            visible: ShelvesPageData.confirm-groups;
+                            height: 30px;
+                            spacing: 4px;
+
+                            Btn {
+                                text: "确认删除";
+                                c: root.c;
+                                danger: true;
+                                enabled: ShelvesPageData.group-selected-count > 0;
+                                clicked => {
+                                    ShelvesPageData.delete-groups();
+                                }
+                            }
+
+                            Btn {
+                                text: "取消";
+                                c: root.c;
+                                clicked => {
+                                    ShelvesPageData.cancel-delete-groups();
+                                }
+                            }
+                        }
+                    }
+                }
+
                 new-group := Field {
                     name: "新建分组";
                     c: root.c;
@@ -408,7 +707,7 @@ export component ShelvesPage inherits Rectangle {
                         self.clear();
                     }
                     escape => {
-                        root.escape();
+                        root.dismiss-or-escape();
                     }
                 }
             }
@@ -443,7 +742,7 @@ export component ShelvesPage inherits Rectangle {
                             ShelvesPageData.rename-group(text);
                         }
                         escape => {
-                            root.escape();
+                            root.dismiss-or-escape();
                         }
                     }
 
@@ -549,8 +848,16 @@ export component ShelvesPage inherits Rectangle {
                     }
                 }
 
-                Rectangle {
+                refs-host := Rectangle {
                     vertical-stretch: 1;
+                    property <length> geom-tick: self.y + self.width + self.height + ShelvesPageData.geometry-refresh * 1px + ShelvesPageData.refs.length * 1px;
+
+                    changed geom-tick => {
+                        ShelvesPageData.refs-x = self.absolute-position.x;
+                        ShelvesPageData.refs-y = self.absolute-position.y;
+                        ShelvesPageData.refs-w = self.width;
+                        ShelvesPageData.refs-h = self.height;
+                    }
 
                     if ShelvesPageData.refs.length == 0: Text {
                         x: 4px;
@@ -564,24 +871,25 @@ export component ShelvesPage inherits Rectangle {
                         width: parent.width;
                         height: parent.height;
                         c: root.c;
+                        manage: true;
                         focus-requested => {
                             page-scope.focus();
                         }
                     }
                 }
 
-                if ShelvesPageData.selected-ref >= 0: Rectangle {
+                if ShelvesPageData.ref-count > 0: Rectangle {
                     height: 1px;
                     background: c.divider;
                 }
 
-                if ShelvesPageData.selected-ref >= 0: HorizontalLayout {
+                if ShelvesPageData.ref-count > 0 && !ShelvesPageData.confirm-refs: HorizontalLayout {
                     height: 30px;
                     spacing: 8px;
 
                     Text {
                         horizontal-stretch: 1;
-                        text: ShelvesPageData.selected-path;
+                        text: ShelvesPageData.ref-count > 1 ? "已选 " + ShelvesPageData.ref-count + " 条" : ShelvesPageData.selected-path;
                         color: c.secondary;
                         font-size: 13px;
                         vertical-alignment: center;
@@ -599,6 +907,7 @@ export component ShelvesPage inherits Rectangle {
                     Btn {
                         text: "打开所在目录";
                         c: root.c;
+                        enabled: ShelvesPageData.can-open-folder;
                         clicked => {
                             ShelvesPageData.open-ref-folder();
                         }
@@ -613,6 +922,37 @@ export component ShelvesPage inherits Rectangle {
                         }
                     }
                 }
+
+                if ShelvesPageData.confirm-refs: HorizontalLayout {
+                    height: 30px;
+                    spacing: 8px;
+
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "移除这 " + ShelvesPageData.ref-count + " 条引用";
+                        color: c.secondary;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    Btn {
+                        text: "确认移除";
+                        c: root.c;
+                        danger: true;
+                        clicked => {
+                            ShelvesPageData.remove-ref();
+                        }
+                    }
+
+                    Btn {
+                        text: "取消";
+                        c: root.c;
+                        clicked => {
+                            ShelvesPageData.cancel-remove-refs();
+                        }
+                    }
+                }
             }
 
             if ShelvesPageData.picker-open: TodoPicker {
@@ -621,6 +961,66 @@ export component ShelvesPage inherits Rectangle {
                 height: parent.height;
                 c: root.c;
                 dark: root.dark;
+            }
+        }
+
+        if menu-shown: TouchArea {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.move {
+                    root.menu-hover = -1;
+                }
+                if event.kind == PointerEventKind.down {
+                    ShelvesPageData.close-menu();
+                }
+            }
+        }
+
+        if menu-shown: Rectangle {
+            x: menu-draw-x;
+            y: menu-draw-y;
+            width: menu-width;
+            height: menu-block;
+            border-radius: 8px;
+            background: root.dark ? #2b2b2b : #fafafa;
+            border-width: 1px;
+            border-color: c.divider;
+
+            TouchArea { }
+
+            for item[index] in ShelvesPageData.menu-rows: Rectangle {
+                x: menu-pad;
+                y: menu-pad + index * menu-item-h;
+                width: parent.width - menu-pad * 2;
+                height: menu-item-h;
+                border-radius: 6px;
+                background: item.enabled && root.menu-hover == index ? c.selection : transparent;
+
+                Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text: item.label;
+                    color: !item.enabled ? c.tertiary : item.danger ? c.critical : c.ink;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                TouchArea {
+                    enabled: item.enabled;
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.move {
+                            root.menu-hover = index;
+                        }
+                    }
+                    clicked => {
+                        ShelvesPageData.menu-activate(index);
+                    }
+                }
             }
         }
     }

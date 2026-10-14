@@ -5,7 +5,7 @@ import { ListView, Palette } from "std-widgets.slint";
 import { Btn, Check, Chip, Field, Ink, Segments } from "widgets.slint";
 import { NotesPage, NotesPageData } from "notespage.slint";
 import { SettingsPage } from "settingspage.slint";
-import { ShelvesPage } from "shelvespage.slint";
+import { ShelvesPage, ShelvesPageData } from "shelvespage.slint";
 
 export struct PanelRow {
     title: string,
@@ -253,6 +253,18 @@ export component Panel inherits Window {
             if event.text == Key.Escape {
                 if root.tab == 1 && NotesPageData.selecting {
                     NotesPageData.set-selecting(false);
+                } else if root.tab == 2 && (ShelvesPageData.menu-open || ShelvesPageData.confirm-refs || ShelvesPageData.confirm-groups || ShelvesPageData.ref-count > 0 || ShelvesPageData.selecting) {
+                    if ShelvesPageData.menu-open {
+                        ShelvesPageData.close-menu();
+                    } else if ShelvesPageData.confirm-refs {
+                        ShelvesPageData.cancel-remove-refs();
+                    } else if ShelvesPageData.confirm-groups {
+                        ShelvesPageData.cancel-delete-groups();
+                    } else if ShelvesPageData.ref-count > 0 {
+                        ShelvesPageData.clear-refs();
+                    } else {
+                        ShelvesPageData.set-group-selecting(false);
+                    }
                 } else {
                     root.escape();
                 }

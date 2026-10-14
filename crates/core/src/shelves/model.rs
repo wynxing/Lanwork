@@ -81,6 +81,14 @@ pub struct AddRefsOutcome {
     pub added: usize,
 }
 
+/// `move_refs` 的结果。同一分组或没有任何匹配时不写盘，`moved` 为 0。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveRefsOutcome {
+    pub source: Shelf,
+    pub target: Shelf,
+    pub moved: usize,
+}
+
 /// 名称去掉首尾空白。只有空白时没有可保存的名称。
 pub(crate) fn normalize_name(name: &str) -> Option<String> {
     let trimmed = name.trim();
