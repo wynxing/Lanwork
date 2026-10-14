@@ -245,17 +245,26 @@ pub fn group_label(group: SearchGroup) -> &'static str {
         SearchGroup::Application => "应用",
         SearchGroup::Todo => "待办",
         SearchGroup::Note => "便签",
-        SearchGroup::Web => "网页",
+        SearchGroup::Shelf => "收纳",
         SearchGroup::File => "文件",
         SearchGroup::Folder => "文件夹",
         SearchGroup::WebSearch => "网页搜索",
     }
 }
 
-/// 文件和文件夹在名称下方总是显示路径。其它结果选中后才显示。
+/// 没有壳层图标或网站图标时，是否画类型图形。收纳里的网页引用留空，不画地球。
+#[must_use]
+pub fn draws_type_glyph(detail: &RowDetail) -> bool {
+    !matches!(detail, RowDetail::Web { .. })
+}
+
+/// 文件和文件夹在名称下方总是显示路径。收纳在名称下方总是显示所属分组。其它结果选中后才显示。
 #[must_use]
 pub fn location_always_shown(group: SearchGroup) -> bool {
-    matches!(group, SearchGroup::File | SearchGroup::Folder)
+    matches!(
+        group,
+        SearchGroup::File | SearchGroup::Folder | SearchGroup::Shelf
+    )
 }
 
 /// 名称里与输入相同的第一段，返回字节范围。逐字符比较，不区分大小写；
@@ -691,18 +700,24 @@ mod tests {
     }
 
     #[test]
-    fn only_files_and_folders_always_show_the_path() {
+    fn files_folders_and_shelf_always_show_the_second_line() {
         assert!(location_always_shown(SearchGroup::File));
         assert!(location_always_shown(SearchGroup::Folder));
+        assert!(location_always_shown(SearchGroup::Shelf));
         for group in [
             SearchGroup::Browser,
             SearchGroup::Application,
             SearchGroup::Todo,
             SearchGroup::Note,
-            SearchGroup::Web,
         ] {
             assert!(!location_always_shown(group));
         }
+        assert!(!draws_type_glyph(&RowDetail::Web {
+            url: "https://example.com".to_owned(),
+        }));
+        assert!(draws_type_glyph(&RowDetail::File {
+            path: r"C:\a.txt".to_owned(),
+        }));
     }
 
     #[test]
@@ -713,12 +728,12 @@ mod tests {
                 SearchGroup::Application,
                 SearchGroup::Todo,
                 SearchGroup::Note,
-                SearchGroup::Web,
+                SearchGroup::Shelf,
                 SearchGroup::File,
                 SearchGroup::Folder,
             ]
             .map(group_label),
-            ["浏览器", "应用", "待办", "便签", "网页", "文件", "文件夹"]
+            ["浏览器", "应用", "待办", "便签", "收纳", "文件", "文件夹"]
         );
     }
 

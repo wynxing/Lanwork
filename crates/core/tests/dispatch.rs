@@ -19,7 +19,7 @@ use lanwork_core::files::{
 };
 use lanwork_core::notes::{EMPTY_TITLE_DISPLAY, NoteCommands, NoteInput};
 use lanwork_core::search::{HitKind, WebSearchEngine};
-use lanwork_core::shelves::{IncomingWeb, ShelfCommands};
+use lanwork_core::shelves::{IncomingRef, IncomingWeb, ShelfCommands};
 use lanwork_core::storage::{DocumentId, Store, StorePaths};
 use lanwork_core::todos::{NewTodo, TodoCommands};
 
@@ -1236,12 +1236,12 @@ fn shelf_web_refs_appear_after_notes_and_before_files() {
     );
     dispatch.build().unwrap();
     let view = dispatch.submit(Surface::SearchBar, "cursor").unwrap();
-    assert_eq!(groups(&view), vec![SearchGroup::Note, SearchGroup::Web]);
+    assert_eq!(groups(&view), vec![SearchGroup::Note, SearchGroup::Shelf]);
     let web = results(&view)
-        .find(|row| row.group == SearchGroup::Web)
+        .find(|row| row.group == SearchGroup::Shelf)
         .unwrap();
     assert_eq!(web.label, "Cursor Status");
-    assert_eq!(web.location, "https://example.com/cursor-only");
+    assert_eq!(web.location, "收纳 \u{00B7} 收纳");
     assert!(matches!(
         &web.detail,
         RowDetail::Web { url } if url == "https://example.com/cursor-only"
@@ -1255,13 +1255,97 @@ fn shelf_web_refs_appear_after_notes_and_before_files() {
     let merged = dispatch.poll().unwrap();
     assert_eq!(
         groups(&merged.view),
-        vec![SearchGroup::Note, SearchGroup::Web, SearchGroup::File]
+        vec![SearchGroup::Note, SearchGroup::Shelf, SearchGroup::File]
     );
 
     let by_url = dispatch.submit(Surface::Panel, "cursor-only").unwrap();
-    assert_eq!(groups(&by_url), vec![SearchGroup::Web]);
+    assert_eq!(groups(&by_url), vec![SearchGroup::Shelf]);
     dispatch.record_open(&web.usage);
     assert_eq!(dispatch.usage_count(&web.usage), 1);
+}
+
+#[test]
+fn shelf_file_is_not_repeated_in_the_file_group() {
+    let (_temp, store) = open_store();
+    let services = booted(&store);
+    let shelves = ShelfCommands::open(store.clone()).unwrap();
+    let group = shelves.create_group("单片机").unwrap();
+    let path = r"C:\docs\cursor.txt";
+    shelves
+        .add_refs(
+            Some(&group.id),
+            &[IncomingRef {
+                path: path.to_owned(),
+                folder: false,
+            }],
+        )
+        .unwrap();
+    shelves
+        .add_refs(
+            Some(&group.id),
+            &[
+                IncomingRef {
+                    path: r"C:\docs\微信".to_owned(),
+                    folder: false,
+                },
+                IncomingRef {
+                    path: r"C:\docs\board".to_owned(),
+                    folder: true,
+                },
+            ],
+        )
+        .unwrap();
+    let (files, _) = script(file_result(
+        FileSource::Everything,
+        vec![
+            file_hit("cursor.txt", FileKind::File),
+            file_hit("cursor-extra.txt", FileKind::File),
+        ],
+    ));
+    let (dispatch, now) = dispatch(
+        store,
+        Services {
+            todos: services.todos,
+            notes: services.notes,
+            shelves: Some(shelves),
+        },
+        NoApps,
+        files,
+        MissingIcons,
+    );
+    dispatch.build().unwrap();
+    dispatch.submit(Surface::SearchBar, "cursor").unwrap();
+    now.store(FILE_QUERY_DELAY_MS * 1_000_000, Ordering::SeqCst);
+    let merged = dispatch.poll().unwrap();
+    let shelf: Vec<_> = results(&merged.view)
+        .filter(|row| row.group == SearchGroup::Shelf)
+        .collect();
+    assert_eq!(shelf.len(), 1);
+    assert_eq!(shelf[0].label, "cursor.txt");
+    assert_eq!(shelf[0].location, "收纳 \u{00B7} 单片机");
+    assert!(matches!(
+        &shelf[0].detail,
+        RowDetail::File { path } if path == r"C:\docs\cursor.txt"
+    ));
+    let files: Vec<_> = results(&merged.view)
+        .filter(|row| row.group == SearchGroup::File)
+        .map(|row| row.label.as_str())
+        .collect();
+    assert_eq!(files, vec!["cursor-extra.txt"]);
+
+    let named = dispatch.submit(Surface::SearchBar, "weixin").unwrap();
+    let by_reading = results(&named)
+        .find(|row| row.group == SearchGroup::Shelf)
+        .unwrap();
+    assert_eq!(by_reading.label, "微信");
+    assert_eq!(by_reading.kind, Some(HitKind::Pinyin));
+
+    let folder = dispatch.submit(Surface::SearchBar, "board").unwrap();
+    let shelf_folder = results(&folder)
+        .find(|row| row.group == SearchGroup::Shelf)
+        .unwrap();
+    assert!(matches!(shelf_folder.detail, RowDetail::Folder { .. }));
+    assert_eq!(shelf_folder.location, "收纳 \u{00B7} 单片机");
 }
 
 fn write_todo(store: &Store, id: &str, body: &str) {

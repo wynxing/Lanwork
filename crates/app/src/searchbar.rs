@@ -22,10 +22,10 @@ use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
     AltRoute, AppMenuAction, BAR_WIDTH, Backdrop, EnterChord, EscapeAction, MonitorArea,
-    ROW_HEIGHT, RowAction, WorkArea, alt_route, app_menu, app_menu_command, escape_action,
-    group_label, location_always_shown, match_span, max_results_height, monitor_at, move_selection,
-    path_target, place_bar, pointed_row, reselect, row_action, row_offsets, shortcut_rows,
-    shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
+    ROW_HEIGHT, RowAction, WorkArea, alt_route, app_menu, app_menu_command, draws_type_glyph,
+    escape_action, group_label, location_always_shown, match_span, max_results_height, monitor_at,
+    move_selection, path_target, place_bar, pointed_row, reselect, row_action, row_offsets,
+    shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
@@ -155,6 +155,7 @@ pub(crate) fn install(
         file_unavailable: None,
         error: None,
         icons: HashMap::new(),
+        web_icons: HashMap::new(),
         visible: false,
         dark: false,
         hwnd_ready: false,
@@ -222,6 +223,7 @@ struct Bar {
     file_unavailable: Option<&'static str>,
     error: Option<String>,
     icons: HashMap<IconKey, slint::Image>,
+    web_icons: HashMap<String, slint::Image>,
     visible: bool,
     dark: bool,
     hwnd_ready: bool,
@@ -572,6 +574,7 @@ impl Bar {
     }
 
     fn push_rows(&mut self) {
+        self.prepare_web_icons();
         let groups: Vec<SearchGroup> = self.results.iter().map(|row| row.group).collect();
         let (offsets, height) = row_offsets(&groups);
         let rows: Vec<BarRow> = self
@@ -580,7 +583,12 @@ impl Bar {
             .zip(offsets.iter().copied())
             .enumerate()
             .map(|(index, (row, y))| {
-                let icon = row.icon.as_ref().and_then(|key| self.icons.get(key));
+                let shell = row.icon.as_ref().and_then(|key| self.icons.get(key));
+                let web = match &row.detail {
+                    RowDetail::Web { url } => self.web_icons.get(url),
+                    _ => None,
+                };
+                let icon = shell.or(web);
                 let (head, matched, tail) = match match_span(&row.label, &self.view_text) {
                     Some((start, end)) => (
                         &row.label[..start],
@@ -598,6 +606,7 @@ impl Bar {
                     location_always: location_always_shown(row.group),
                     icon: icon.cloned().unwrap_or_default(),
                     has_icon: icon.is_some(),
+                    draw_glyph: draws_type_glyph(&row.detail),
                     glyph: glyph(&row.detail),
                     y: px(y),
                     group_start: index > 0 && groups[index - 1] != row.group,
@@ -619,6 +628,34 @@ impl Bar {
         self.offsets = offsets;
         self.content_height = height;
         self.push_shortcuts();
+    }
+
+    /// 收纳网页引用用网站图标缓存。有缓存就显示；没有则后台再取。失败时图标位留空。
+    fn prepare_web_icons(&mut self) {
+        let urls: Vec<String> = self
+            .results
+            .iter()
+            .filter_map(|row| match &row.detail {
+                RowDetail::Web { url } => Some(url.clone()),
+                _ => None,
+            })
+            .collect();
+        self.web_icons
+            .retain(|url, _| urls.iter().any(|item| item == url));
+        let mut missing = Vec::new();
+        for url in &urls {
+            if self.web_icons.contains_key(url) {
+                continue;
+            }
+            if let Some(image) = crate::web_icons::cached(url) {
+                self.web_icons.insert(url.clone(), to_image(&image));
+            } else {
+                missing.push(url.clone());
+            }
+        }
+        if !missing.is_empty() {
+            crate::web_icons::ensure(missing);
+        }
     }
 
     fn shortcut_range(&self) -> std::ops::Range<usize> {
@@ -1122,6 +1159,19 @@ fn move_loop(key: isize, entering: bool, _x: i32, _y: i32, _width: u32, _height:
             }
         });
     }
+}
+
+/// 网站图标取到之后画到对应的收纳网页行上。搜索条还没装好时不做任何事。
+pub(crate) fn receive_web_icons(icons: Vec<(String, RgbaImage)>) {
+    if icons.is_empty() {
+        return;
+    }
+    with_bar(move |bar| {
+        for (url, image) in icons {
+            bar.web_icons.insert(url, to_image(&image));
+        }
+        bar.push_rows();
+    });
 }
 
 fn post(view: Option<QueryView>, icons: Vec<(IconKey, RgbaImage)>) {
