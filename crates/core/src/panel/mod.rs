@@ -4,6 +4,7 @@
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
 mod float_snap;
+mod float_source;
 mod float_stack;
 mod note_edit;
 mod note_page;
@@ -18,6 +19,7 @@ pub use float_snap::{
     dock_applies, dpi_at, edge_label, lerp_box, moved_enough, outer_edges, snap_on_release,
     snap_slop, transition, visible_box,
 };
+pub use float_source::{note_source, shelf_source, todo_source};
 pub use float_stack::{
     DOCK_MERGE_GAP_LOGICAL, DOT_DIAMETER_LOGICAL, DOT_GAP_LOGICAL, DOT_ROW_LOGICAL_HEIGHT,
     DetachOutcome, DragOrigin, DropEffect, DropInput, FilteredPages, Flip, HANDLE_DOT_CAP,

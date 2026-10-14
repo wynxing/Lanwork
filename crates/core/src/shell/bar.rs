@@ -37,6 +37,38 @@ pub enum Backdrop {
     Solid,
 }
 
+/// 展开的悬浮窗在 [`Backdrop::Acrylic`] 时实际用的材料。
+///
+/// `DWMSBT_TRANSIENTWINDOW` 是背景亚克力。窗口变成非活动时，桌面窗口管理器按策略把它换成不透明纯色。
+/// 再设一次同一种类型取消不了。悬浮窗失焦后仍留在屏幕上，所以不用这一种。
+/// 搜索条和面板失焦就收起，仍用那一种。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatBackdrop {
+    /// 纯色。不画系统亚克力，也不画失焦后仍在的强调策略亚克力。
+    Solid,
+    /// 强调策略里的亚克力。有焦点和没有焦点是同一层。
+    PersistentAcrylic,
+}
+
+/// 收起，或这次本来就要纯色时，悬浮窗用纯色。否则用失焦后仍在的亚克力。
+#[must_use]
+pub fn float_backdrop(wanted: Backdrop, collapsed: bool) -> FloatBackdrop {
+    if !collapsed && wanted == Backdrop::Acrylic {
+        FloatBackdrop::PersistentAcrylic
+    } else {
+        FloatBackdrop::Solid
+    }
+}
+
+/// 强调策略亚克力的着色，ABGR。
+///
+/// 高位是透明度。剩下的三字节与纯色回退相同（浅 `#F3F3F3`、暗 `#202020`），只是更透。
+/// 产品规格没有写这个比例，这是实现选择。
+#[must_use]
+pub fn persistent_acrylic_abgr(dark: bool) -> u32 {
+    if dark { 0x4820_2020 } else { 0x48F3_F3F3 }
+}
+
 /// 透明效果关闭、节电模式、build 低于 22621 或读不到 build 时用纯色。
 /// DWM 调用失败由调用方再退回纯色。
 #[must_use]
@@ -790,6 +822,28 @@ mod tests {
         }
         assert_eq!(solid_rgb(false), 0xF3F3F3);
         assert_eq!(solid_rgb(true), 0x202020);
+    }
+
+    #[test]
+    fn float_backdrop_stays_acrylic_only_while_expanded_and_wanted() {
+        assert_eq!(
+            float_backdrop(Backdrop::Acrylic, false),
+            FloatBackdrop::PersistentAcrylic
+        );
+        assert_eq!(
+            float_backdrop(Backdrop::Acrylic, true),
+            FloatBackdrop::Solid,
+            "收起的把手不用磨砂"
+        );
+        assert_eq!(float_backdrop(Backdrop::Solid, false), FloatBackdrop::Solid);
+        assert_eq!(float_backdrop(Backdrop::Solid, true), FloatBackdrop::Solid);
+        assert_eq!(persistent_acrylic_abgr(false), 0x48F3_F3F3);
+        assert_eq!(persistent_acrylic_abgr(true), 0x4820_2020);
+        assert_eq!(
+            persistent_acrylic_abgr(false) & 0x00FF_FFFF,
+            solid_rgb(false)
+        );
+        assert_eq!(persistent_acrylic_abgr(true) & 0x00FF_FFFF, solid_rgb(true));
     }
 
     #[test]

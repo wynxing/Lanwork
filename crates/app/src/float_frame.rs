@@ -197,7 +197,7 @@ fn apply_current_inner(hwnd: HWND) -> lanwork_core::shell::Backdrop {
         bar_win::apply_collapsed_frame(hwnd, dark);
         lanwork_core::shell::Backdrop::Solid
     } else {
-        bar_win::apply_dwm(hwnd, bar_win::current_backdrop(), dark)
+        bar_win::apply_float_backdrop(hwnd, bar_win::current_backdrop(), dark)
     };
     // 区域放在 DWM 和扩展样式之后。扩展客户区会让客户区原点相对窗口原点挪开，
     // 裁剪要用挪开之后的窗口坐标。裁剪不依赖透明有没有设上。
@@ -860,6 +860,70 @@ mod tests {
         assert!(!read_frame(hwnd).tool_window);
         sync(hwnd, true, false);
         assert!(read_frame(hwnd).tool_window);
+        assert_grip_region(hwnd);
+    }
+
+    #[test]
+    fn expanded_float_uses_accent_acrylic_instead_of_the_transient_backdrop() {
+        if !composition_enabled() {
+            eprintln!("DWM 组合没开，跳过失焦亚克力");
+            return;
+        }
+        let window = create_probe().expect("探测窗口");
+        let hwnd = window.0;
+        let got =
+            bar_win::apply_float_backdrop(hwnd, lanwork_core::shell::Backdrop::Acrylic, false);
+        pump(hwnd);
+        let frame = read_frame(hwnd);
+        assert_eq!(
+            got,
+            lanwork_core::shell::Backdrop::Acrylic,
+            "亚克力应设上，实际 {frame:?}"
+        );
+        assert_eq!(
+            frame.backdrop,
+            Some(DWMSBT_NONE.0 as u32),
+            "transient 背景会在失焦时变成不透明，展开的悬浮窗不能留着它，实际 {frame:?}"
+        );
+        assert_eq!(frame.corner, Some(DWMWCP_ROUND.0), "{frame:?}");
+        if let Some(state) = bar_win::read_accent_state(hwnd) {
+            assert!(
+                bar_win::accent_is_persistent_acrylic(state),
+                "读回应是失焦后仍在的亚克力，实际 {state}"
+            );
+        }
+
+        let solid = bar_win::apply_float_backdrop(hwnd, lanwork_core::shell::Backdrop::Solid, true);
+        pump(hwnd);
+        assert_eq!(solid, lanwork_core::shell::Backdrop::Solid);
+        let solid_frame = read_frame(hwnd);
+        assert_eq!(
+            solid_frame.backdrop,
+            Some(DWMSBT_NONE.0 as u32),
+            "纯色回退仍是没有系统背景，实际 {solid_frame:?}"
+        );
+        if let Some(state) = bar_win::read_accent_state(hwnd) {
+            assert!(
+                !bar_win::accent_is_persistent_acrylic(state),
+                "纯色回退应关掉亚克力，读回 {state}"
+            );
+        }
+
+        sync(hwnd, true, false);
+        pump(hwnd);
+        let collapsed = read_frame(hwnd);
+        assert_eq!(collapsed.corner, Some(DWMWCP_DONOTROUND.0), "{collapsed:?}");
+        assert_eq!(
+            collapsed.backdrop,
+            Some(DWMSBT_NONE.0 as u32),
+            "{collapsed:?}"
+        );
+        if let Some(state) = bar_win::read_accent_state(hwnd) {
+            assert!(
+                !bar_win::accent_is_persistent_acrylic(state),
+                "收起的把手不应留着亚克力，读回 {state}"
+            );
+        }
         assert_grip_region(hwnd);
     }
 

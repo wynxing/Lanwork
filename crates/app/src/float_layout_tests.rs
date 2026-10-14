@@ -30,6 +30,7 @@ impl Platform for Headless {
 
 const WINDOW_HEIGHT: u32 = 360;
 const TITLE_STRIP: f32 = 28.0;
+const SOURCE_ROW: f32 = 20.0;
 const HEAD: f32 = 28.0;
 const ROW: f32 = 30.0;
 const MAX_ROWS: usize = 4;
@@ -67,7 +68,18 @@ fn lay_out(window: &Rc<MinimalSoftwareWindow>, open: bool, count: usize, selecte
     let (refs_y, refs_h) = (ui.get_refs_area_y(), ui.get_refs_area_height());
     let action_y = ui.get_action_y();
 
-    assert_eq!(head_y, TITLE_STRIP, "{label}: 标题行紧挨着窗口上沿的拖动条");
+    assert_eq!(
+        ui.get_source_y(),
+        TITLE_STRIP,
+        "{label}: 来源行紧挨着拖动条"
+    );
+    assert_eq!(ui.get_source_h(), SOURCE_ROW, "{label}");
+    assert!(ui.get_source_open(), "{label}: 展开时显示来源行");
+    assert_eq!(
+        head_y,
+        TITLE_STRIP + SOURCE_ROW,
+        "{label}: 「关联待办」紧挨着来源行"
+    );
     assert_eq!(head_h, HEAD, "{label}");
     assert_eq!(body_y, head_y + head_h, "{label}: 关联列表紧接在标题行下面");
     let rows = if open { count.clamp(1, MAX_ROWS) } else { 0 };
@@ -486,6 +498,52 @@ fn assert_short_gray_handle<C: ComponentHandle>(
 }
 
 #[test]
+fn source_line_is_a_single_quiet_row_and_each_page_keeps_its_own() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
+    window.set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
+    let long = "收纳 · 这是一个长到放不进悬浮窗的分组名，界面应在行尾显示省略号而不是换行";
+
+    let note = NoteFloat::new().expect("note");
+    note.set_source(long.into());
+    note.show().expect("show");
+    slint::platform::update_timers_and_animations();
+    assert_eq!(note.get_source().as_str(), long, "名称不在数据里截断");
+    assert_eq!(note.get_source_y(), TITLE_STRIP);
+    assert_eq!(note.get_source_h(), SOURCE_ROW);
+    assert_eq!(note.get_body_y(), TITLE_STRIP + SOURCE_ROW);
+    assert_eq!(note.get_close_y(), 0.0);
+    assert!(note.get_source_y() >= note.get_close_y() + CLOSE_SIZE);
+
+    let shelf = ShelfFloat::new().expect("shelf");
+    shelf.set_source("收纳 · 单片机".into());
+    shelf.show().expect("show");
+    slint::platform::update_timers_and_animations();
+    assert_eq!(shelf.get_source().as_str(), "收纳 · 单片机");
+    assert_eq!(shelf.get_source_y(), TITLE_STRIP);
+    assert_eq!(shelf.get_links_head_y(), TITLE_STRIP + SOURCE_ROW);
+
+    let todo = TodoFloat::new().expect("todo");
+    todo.show().expect("show");
+    slint::platform::update_timers_and_animations();
+    assert_eq!(todo.get_source().as_str(), "待办");
+    assert_ne!(note.get_source().as_str(), shelf.get_source().as_str());
+    assert_ne!(shelf.get_source().as_str(), todo.get_source().as_str());
+
+    note.set_collapsed(true);
+    slint::platform::update_timers_and_animations();
+    assert!(!note.get_source_open(), "收起的把手不显示来源行");
+
+    let widgets = include_str!("../ui/widgets.slint");
+    let source = widgets
+        .split("export component FloatSource")
+        .nth(1)
+        .expect("FloatSource");
+    assert!(source.contains("overflow: elide;"), "来源行过长应省略");
+    assert!(source.contains("font-size: 12px;"));
+}
+
+#[test]
 fn both_float_windows_are_always_on_top_and_have_no_pin_button() {
     for (name, source) in [
         ("notefloat.slint", include_str!("../ui/notefloat.slint")),
@@ -513,7 +571,14 @@ fn todo_float_empty_list_sits_under_the_drag_strip() {
     ui.show().expect("show");
     slint::platform::update_timers_and_animations();
     assert!(ui.get_shows_empty(), "没有行时显示空状态");
-    assert_eq!(ui.get_content_y(), TITLE_STRIP, "列表从拖动条下面开始");
+    assert_eq!(ui.get_source(), "待办");
+    assert_eq!(ui.get_source_y(), TITLE_STRIP, "来源行紧挨着拖动条");
+    assert_eq!(ui.get_source_h(), SOURCE_ROW);
+    assert_eq!(
+        ui.get_content_y(),
+        TITLE_STRIP + SOURCE_ROW,
+        "列表从来源行下面开始"
+    );
     assert_eq!(ui.get_row_h(), 36.0);
 }
 

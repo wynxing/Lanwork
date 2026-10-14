@@ -21,7 +21,7 @@ use std::time::Duration;
 use lanwork_core::dispatch::{IconCache, RgbaImage};
 use lanwork_core::panel::{
     DropEffect, DropZone, FLOAT_HEIGHT, FLOAT_WIDTH, Flip, LinkedTodo, PanelTarget, PxBox,
-    ShelfLine, StackPage, float_default_origin, linked_todos, shelf_lines,
+    ShelfLine, StackPage, float_default_origin, linked_todos, shelf_lines, shelf_source,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::shelves::{IncomingRef, IncomingWeb, ShelfCommands, ShelfError};
@@ -372,6 +372,7 @@ impl Floats {
         }
         let shelf = self.shelves.get(group_id).map_err(|err| err.to_string())?;
         let ui = ShelfFloat::new().map_err(|err| format!("悬浮窗没有创建：{err}"))?;
+        ui.set_source(shelf_source(Some(shelf.name.as_str())).into());
         ui.set_dark(self.dark);
         ui.set_solid_color(rgb(solid_rgb(self.dark)));
         wire(&ui, group_id);
@@ -948,11 +949,14 @@ impl FloatWindow {
     fn reload(&mut self, ctx: &Ctx<'_>, force: bool) {
         match ctx.shelves.get(&self.group_id) {
             Ok(shelf) => {
+                self.ui
+                    .set_source(shelf_source(Some(shelf.name.as_str())).into());
                 self.lines = shelf_lines(&shelf);
                 self.todo_ids = shelf.todo_ids;
                 self.clear_error();
             }
             Err(ShelfError::NotFound { .. }) => {
+                self.ui.set_source(shelf_source(None).into());
                 self.lines = Vec::new();
                 self.todo_ids = Vec::new();
                 self.view.clear();

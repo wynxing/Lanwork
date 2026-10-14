@@ -1,9 +1,9 @@
-// 待办悬浮窗。全程序只有一个：上沿一条可拖动的细条，右侧是关闭，下面是待办列表。
+// 待办悬浮窗。全程序只有一个：上沿一条可拖动的细条，右侧是关闭，下面一行来源，再下面是待办列表。
 // 可以勾选完成和取消完成。不能新建，也不能改标题。窗口始终在最上层。
 // 贴边收起时只留下一个小把手，窗口其余部分透明。风格与便签悬浮窗一致。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Check, EdgeHandle, Ink } from "widgets.slint";
+import { Check, EdgeHandle, FloatSource, Ink } from "widgets.slint";
 
 export struct TodoFloatRow {
     title: string,
@@ -39,6 +39,8 @@ export component TodoFloat inherits Window {
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
     in property <[TodoFloatRow]> rows;
+    // 这个窗口没有单独的名称，来源行就是「待办」。
+    in property <string> source: "待办";
 
     callback close-clicked();
     callback drag-window();
@@ -60,8 +62,11 @@ export component TodoFloat inherits Window {
     };
     property <length> error-h: !collapsed && error != "" ? 24px : 0px;
 
-    // 布局检查用。列表从拖动条和错误行下面开始，每一行 36px。
-    out property <length> content-y: collapsed ? 0px : 28px + error-h;
+    // 布局检查用。列表从来源行和错误行下面开始，每一行 36px。
+    out property <length> content-y: collapsed ? 0px : 28px + source-row.height + error-h;
+    out property <length> source-y: source-row.absolute-position.y;
+    out property <length> source-h: source-row.height;
+    out property <bool> source-open: source-row.visible;
     out property <length> row-h: 36px;
     out property <bool> shows-empty: !collapsed && rows.length == 0;
     out property <length> close-x: close-box.absolute-position.x;
@@ -153,6 +158,15 @@ export component TodoFloat inherits Window {
             }
         }
 
+        source-row := FloatSource {
+            x: 0px;
+            y: 28px;
+            width: parent.width;
+            visible: !collapsed;
+            source: root.source;
+            ink: c.tertiary;
+        }
+
         edge-strip := EdgeHandle {
             x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
             y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
@@ -166,7 +180,7 @@ export component TodoFloat inherits Window {
 
         if !collapsed && error != "": Text {
             x: 12px;
-            y: 28px;
+            y: 28px + source-row.height;
             width: parent.width - 24px;
             height: 24px;
             text: error;

@@ -1,8 +1,8 @@
-// 收纳分组的悬浮窗。只显示该分组的条目：上沿一条可拖动的细条，右侧是关闭，下面是条目列表。
+// 收纳分组的悬浮窗。上沿一条可拖动的细条，右侧是关闭，下面一行来源，再下面是「关联待办」和条目。
 // 窗口始终在最上层。贴边收起时只留下一个小把手，窗口其余部分透明。条目列表和面板的收纳页是同一个组件。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Check, EdgeHandle, Ink } from "widgets.slint";
+import { Btn, Check, EdgeHandle, FloatSource, Ink } from "widgets.slint";
 import { RefsList, ShelvesPageData } from "shelvespage.slint";
 
 export component ShelfFloat inherits Window {
@@ -33,6 +33,8 @@ export component ShelfFloat inherits Window {
     in property <string> dock-edge;
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
+    // 「收纳 · 分组名」。分组不在时是「收纳」。收起时不显示。
+    in property <string> source;
 
     callback close-clicked();
     callback drag-window();
@@ -73,6 +75,9 @@ export component ShelfFloat inherits Window {
     out property <length> strip-height: edge-strip.height;
     out property <length> grip-width: edge-strip.grip-width;
     out property <length> grip-height: edge-strip.grip-height;
+    out property <length> source-y: source-row.absolute-position.y;
+    out property <length> source-h: source-row.height;
+    out property <bool> source-open: source-row.visible;
 
     background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
@@ -162,6 +167,15 @@ export component ShelfFloat inherits Window {
             }
         }
 
+        source-row := FloatSource {
+            x: 0px;
+            y: 28px;
+            width: parent.width;
+            visible: !root.collapsed;
+            source: root.source;
+            ink: c.tertiary;
+        }
+
         edge-strip := EdgeHandle {
             x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
             y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
@@ -176,7 +190,7 @@ export component ShelfFloat inherits Window {
         Rectangle {
             visible: !root.collapsed;
             x: 10px;
-            y: 28px;
+            y: 28px + source-row.height;
             width: parent.width - 20px;
             height: links-height;
             clip: true;
@@ -294,9 +308,9 @@ export component ShelfFloat inherits Window {
         refs-area := Rectangle {
             visible: !root.collapsed;
             x: 10px;
-            y: 28px + links-height;
+            y: 28px + source-row.height + links-height;
             width: parent.width - 20px;
-            height: parent.height - 28px - links-height - 8px - error-height - action-height;
+            height: parent.height - 28px - source-row.height - links-height - 8px - error-height - action-height;
 
             if ShelvesPageData.refs.length == 0: Text {
                 x: 4px;

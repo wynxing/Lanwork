@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use lanwork_core::panel::{
     DropEffect, FLOAT_HEIGHT, FLOAT_WIDTH, Flip, FloatRow, PxBox, StackPage, float_default_origin,
-    float_rows,
+    float_rows, todo_source,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
@@ -315,6 +315,7 @@ impl Floats {
             self.reap();
         }
         let ui = TodoFloat::new().map_err(|err| format!("悬浮窗没有创建：{err}"))?;
+        ui.set_source(todo_source().into());
         ui.set_dark(self.dark);
         ui.set_solid_color(rgb(solid_rgb(self.dark)));
         wire(&ui);
