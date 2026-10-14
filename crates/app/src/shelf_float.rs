@@ -7,7 +7,8 @@
 //! 写不成时，本进程里还记着这个值。窗口失焦不关闭，贴边展开时失焦会收回成细条；面板自己的失焦收起不受影响。
 //!
 //! 条目列表逻辑在 `shelf_refs`，和面板的收纳页共用。每个窗口单独登记 OLE 放下目标（`shelf_dnd`），
-//! 关闭时先撤销登记再隐藏。窗口上方有一个可折叠的「关联待办」，默认收起：列出分组关联的待办，
+//! 关闭时先撤销登记再隐藏。网站图标与面板共用同一份缓存和后台任务，失败时图标位留空。
+//! 窗口上方有一个可折叠的「关联待办」，默认收起：列出分组关联的待办，
 //! 可以勾选完成（`TodoCommands::complete_item`），点标题打开面板并定位。版式在 `ui/shelffloat.slint`。
 
 use std::cell::RefCell;
@@ -17,7 +18,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lanwork_core::dispatch::IconCache;
+use lanwork_core::dispatch::{IconCache, RgbaImage};
 use lanwork_core::panel::{
     DropEffect, DropZone, FLOAT_HEIGHT, FLOAT_WIDTH, Flip, LinkedTodo, PanelTarget, PxBox,
     ShelfLine, StackPage, float_default_origin, linked_todos, shelf_lines,
@@ -36,6 +37,7 @@ use crate::shelf_refs::{
     push_links, release_grab, schedule_drag, skipped_message, spawn_launch, spawn_open_url,
     spawn_probe,
 };
+use crate::web_icons::{self, WebIcons};
 use crate::{ShelfFloat, ShelvesPageData, bar_win};
 
 struct FloatWindow {
@@ -74,6 +76,7 @@ struct Floats {
     shelves: ShelfCommands,
     todos: TodoCommands,
     icons: Arc<Mutex<IconCache>>,
+    web_icons: Arc<WebIcons>,
     store: Store,
     dark: bool,
     windows: HashMap<String, FloatWindow>,
@@ -98,6 +101,7 @@ pub(crate) fn install(
             shelves,
             todos,
             icons,
+            web_icons: web_icons::shared(),
             store,
             dark: false,
             windows: HashMap::new(),
@@ -125,6 +129,7 @@ struct Ctx<'a> {
     shelves: &'a ShelfCommands,
     todos: &'a TodoCommands,
     icons: &'a Arc<Mutex<IconCache>>,
+    web_icons: &'a Arc<WebIcons>,
     store: &'a Store,
     dark: bool,
 }
@@ -243,6 +248,19 @@ fn notify_opened(group_id: &str) {
     });
 }
 
+/// 后台取到的网站图标。当前窗口没有这条时先记着，换分组时再丢掉。
+pub(crate) fn receive_web_icons(icons: Vec<(String, RgbaImage)>) {
+    if icons.is_empty() {
+        return;
+    }
+    with_floats(move |floats| {
+        for window in floats.windows.values_mut().filter(|window| !window.closed) {
+            window.view.receive_web(&icons);
+            window.push();
+        }
+    });
+}
+
 /// 收纳有变更消息时调用：已经打开的悬浮窗重读自己的分组。
 pub(crate) fn on_changed() {
     with_floats(|floats| {
@@ -250,6 +268,7 @@ pub(crate) fn on_changed() {
             shelves: &floats.shelves,
             todos: &floats.todos,
             icons: &floats.icons,
+            web_icons: &floats.web_icons,
             store: &floats.store,
             dark: floats.dark,
         };
@@ -296,6 +315,7 @@ impl Floats {
                 shelves: &self.shelves,
                 todos: &self.todos,
                 icons: &self.icons,
+                web_icons: &self.web_icons,
                 store: &self.store,
                 dark: self.dark,
             };
@@ -508,7 +528,7 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
     });
     data.on_open_ref({
         let id = id.clone();
-        move || with_window(&id, |window, _| window.open_ref())
+        move || with_window(&id, |window, ctx| window.open_ref(ctx))
     });
     data.on_open_ref_folder({
         let id = id.clone();
@@ -999,20 +1019,35 @@ impl FloatWindow {
         let Some(plan) = self.view.refresh(&self.lines, force, &data) else {
             return;
         };
-        let id = self.group_id.clone();
-        let spawned = spawn_probe(
-            ctx.shelves.clone(),
-            Arc::clone(ctx.icons),
-            plan,
-            move |result| {
-                let _ = slint::invoke_from_event_loop(move || {
-                    with_window(&id, move |window, _| window.receive(result));
-                });
-            },
-        );
-        if let Err(err) = spawned {
+        let webs = plan.web_urls().to_vec();
+        if plan.needs_files() {
+            let id = self.group_id.clone();
+            let spawned = spawn_probe(
+                ctx.shelves.clone(),
+                Arc::clone(ctx.icons),
+                plan,
+                move |result| {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        with_window(&id, move |window, _| window.receive(result));
+                    });
+                },
+            );
+            if let Err(err) = spawned {
+                ctx.store
+                    .log_warn(&format!("收纳悬浮窗没有启动路径检查线程：{err}"));
+            }
+        }
+        self.start_web_icons(ctx, &webs);
+    }
+
+    fn start_web_icons(&self, ctx: &Ctx<'_>, urls: &[String]) {
+        let pending = ctx.web_icons.claim(urls);
+        if pending.is_empty() {
+            return;
+        }
+        if let Err(err) = web_icons::fetch(Arc::clone(ctx.web_icons), pending) {
             ctx.store
-                .log_warn(&format!("收纳悬浮窗没有启动路径检查线程：{err}"));
+                .log_warn(&format!("网站图标的后台任务没有启动：{err}"));
         }
     }
 
@@ -1030,12 +1065,18 @@ impl FloatWindow {
     }
 
     /// Enter、双击或「打开」：路径用 Windows Shell 打开，网页引用用默认浏览器打开保存的网址。
-    fn open_ref(&mut self) {
+    /// 还没有网站图标时再取一次，不挡住打开。
+    fn open_ref(&mut self, ctx: &Ctx<'_>) {
         let Some(key) = self.view.selected().map(str::to_owned) else {
             return;
         };
         if self.view.selected_is_web() {
             self.clear_error();
+            if !self.view.has_icon(&key)
+                && let Some(url) = ctx.web_icons.claim_again(&key)
+            {
+                self.start_web_icons(ctx, std::slice::from_ref(&url));
+            }
             self.spawn_open_url(key);
             return;
         }

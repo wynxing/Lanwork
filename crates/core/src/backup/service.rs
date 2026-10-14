@@ -34,7 +34,7 @@ impl BackupService {
         &self.store
     }
 
-    /// 写出一份导出包。不含 `github/watchlist.json` 和 `github/cache`。
+    /// 写出一份导出包。不含 `github/watchlist.json`、`github/cache` 和 `cache/web-icons`。
     pub fn export(&self, dest: &Path, now_ms: i64) -> Result<PackageOverview, BackupError> {
         let (files, overview) = self.store.with_write_lock(|| self.snapshot(now_ms))?;
         write_bytes(dest, &zipstore::write_stored(&files)?)?;
@@ -478,5 +478,40 @@ mod tests {
         .unwrap();
         assert!(left.contains("left-alone"));
         assert!(store.read_import_pending().unwrap().is_none());
+    }
+
+    #[test]
+    fn export_omits_web_icon_cache_and_import_keeps_it() {
+        let (temp, store) = store();
+        std::fs::create_dir_all(store.data_dir().join("shelves")).unwrap();
+        std::fs::write(
+            store.data_dir().join("shelves").join("g.json"),
+            br#"{"schemaVersion":1,"name":"shelf"}"#,
+        )
+        .unwrap();
+        let icon = store
+            .data_dir()
+            .join("cache")
+            .join("web-icons")
+            .join("abc.bin");
+        std::fs::create_dir_all(icon.parent().unwrap()).unwrap();
+        std::fs::write(&icon, b"LWFI-keep").unwrap();
+
+        let package = temp.path().join("pkg.zip");
+        BackupService::open(store.clone())
+            .export(&package, 3)
+            .unwrap();
+        let files = read_zip(&package).unwrap();
+        assert!(files.iter().any(|file| file.name == "shelves/g.json"));
+        assert!(
+            files
+                .iter()
+                .all(|file| !file.name.replace('\\', "/").starts_with("cache/"))
+        );
+
+        BackupService::open(store.clone())
+            .import(&package, 4)
+            .unwrap();
+        assert_eq!(std::fs::read(&icon).unwrap(), b"LWFI-keep");
     }
 }
