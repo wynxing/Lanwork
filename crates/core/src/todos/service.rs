@@ -107,6 +107,7 @@ impl crate::storage::MemoryReload for Service {
     fn reload_memory(&self) -> Result<(), String> {
         // 清单还没载入时也丢掉悬浮窗缓存。导入可能已经删掉 `todo-float.json`。
         super::float_file::forget(&self.float_cache);
+        super::remind_sent::forget(&self.sent_cache);
         let loaded = lock_mutex(&self.state).loaded;
         if !loaded {
             return Ok(());
@@ -124,6 +125,8 @@ pub(crate) struct Service {
     notices: NoticeBus,
     /// `todo-float.json` 的读取缓存。不和清单的操作锁套在一起。
     pub(crate) float_cache: Mutex<super::float_file::Cache>,
+    /// `reminder-sent.json` 的读取缓存。不和清单的操作锁套在一起。
+    pub(crate) sent_cache: Mutex<super::remind_sent::Cache>,
     #[cfg(test)]
     fault: Mutex<WriteFault>,
 }
@@ -142,6 +145,7 @@ impl Service {
                 senders: Mutex::new(Vec::new()),
             },
             float_cache: Mutex::new(super::float_file::Cache::new()),
+            sent_cache: Mutex::new(super::remind_sent::Cache::new()),
             #[cfg(test)]
             fault: Mutex::new(WriteFault::none()),
         });

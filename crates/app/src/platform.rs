@@ -27,9 +27,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, MSG,
-    MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT,
-    RegisterClassW, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WM_HOTKEY, WM_QUIT,
-    WM_SETTINGCHANGE, WM_USER, WNDCLASSW, WS_OVERLAPPED,
+    MsgWaitForMultipleObjects, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PM_REMOVE,
+    PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassW, TranslateMessage,
+    UnregisterClassW, WINDOW_EX_STYLE, WM_HOTKEY, WM_POWERBROADCAST, WM_QUIT, WM_SETTINGCHANGE,
+    WM_TIMECHANGE, WM_USER, WNDCLASSW, WS_OVERLAPPED,
 };
 use windows::core::PCWSTR;
 
@@ -38,6 +39,7 @@ use crate::winutil::{from_wide, pcwstr, wide};
 
 const WM_JOB: u32 = WM_USER + 1;
 const WM_STOP: u32 = WM_USER + 2;
+const WM_RESUME_ACTIVATOR: u32 = WM_USER + 3;
 const CLASS_NAME: &str = "Lanwork.Shell";
 
 /// 在平台线程上执行的一次热键操作。`RegisterHotKey` 属于创建窗口的线程，所以只能在那里调用。
@@ -89,13 +91,13 @@ pub(crate) struct HotkeyControl {
 }
 
 impl Platform {
-    pub(crate) fn start(primary: Primary) -> Result<Self, String> {
+    pub(crate) fn start(primary: Primary, register_activator: bool) -> Result<Self, String> {
         let (ready_tx, ready_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("lanwork-shell".into())
-            .spawn(move || thread_main(primary, stop_thread, ready_tx))
+            .spawn(move || thread_main(primary, stop_thread, register_activator, ready_tx))
             .map_err(|err| format!("平台线程没有启动: {err}"))?;
         let hwnd = match ready_rx.recv() {
             Ok(Ok(hwnd)) => hwnd,
@@ -108,6 +110,7 @@ impl Platform {
                 return Err("平台线程已退出".to_owned());
             }
         };
+        SHELL_HWND.store(hwnd, Ordering::Release);
         Ok(Self {
             hwnd,
             stop,
@@ -281,7 +284,12 @@ impl HotkeyPort for WinPort {
     }
 }
 
-fn thread_main(primary: Primary, stop: Arc<AtomicBool>, ready: Sender<Result<isize, String>>) {
+fn thread_main(
+    primary: Primary,
+    stop: Arc<AtomicBool>,
+    register_activator: bool,
+    ready: Sender<Result<isize, String>>,
+) {
     let created = match create_window() {
         Ok(created) => created,
         Err(err) => {
@@ -295,6 +303,9 @@ fn thread_main(primary: Primary, stop: Arc<AtomicBool>, ready: Sender<Result<isi
             current: Vec::new(),
         });
     });
+    if register_activator && let Err(err) = crate::toast::register_activator() {
+        note_activator_error(err);
+    }
     if ready.send(Ok(created.hwnd.0 as isize)).is_err() {
         cleanup(&created);
         return;
@@ -375,6 +386,30 @@ fn create_window() -> Result<CreatedWindow, String> {
     })
 }
 
+fn note_activator_error(message: String) {
+    *lock(activator_error()) = Some(message);
+}
+
+fn activator_error() -> &'static Mutex<Option<String>> {
+    static ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    ERROR.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn take_activator_error() -> Option<String> {
+    lock(activator_error()).take()
+}
+
+/// 界面循环起来之后调用。只投递消息，不等待，避免和激活回调互相等。
+pub(crate) fn request_resume_activator() {
+    let hwnd = SHELL_HWND.load(Ordering::Acquire);
+    if hwnd == 0 {
+        return;
+    }
+    HotkeyControl { hwnd }.post(WM_RESUME_ACTIVATOR);
+}
+
+static SHELL_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
 fn cleanup(created: &CreatedWindow) {
     PORT.with(|slot| {
         if let Some(state) = slot.borrow_mut().as_mut() {
@@ -385,6 +420,8 @@ fn cleanup(created: &CreatedWindow) {
         }
         *slot.borrow_mut() = None;
     });
+    crate::toast::revoke_activator();
+    SHELL_HWND.store(0, Ordering::Release);
     // SAFETY: 窗口和类都是本线程创建的。
     unsafe {
         let _ = DestroyWindow(created.hwnd);
@@ -426,6 +463,21 @@ unsafe extern "system" fn wndproc(
             if is_immersive_color_set(lparam_text(lparam).as_deref()) {
                 signal_theme();
             }
+            LRESULT(0)
+        }
+        WM_POWERBROADCAST => {
+            let code = wparam.0;
+            if code == PBT_APMRESUMEAUTOMATIC as usize || code == PBT_APMRESUMESUSPEND as usize {
+                signal_clock();
+            }
+            LRESULT(1)
+        }
+        WM_TIMECHANGE => {
+            signal_clock();
+            LRESULT(0)
+        }
+        WM_RESUME_ACTIVATOR => {
+            crate::toast::resume_activator();
             LRESULT(0)
         }
         WM_JOB => {
@@ -479,6 +531,10 @@ fn signal_hotkey(id: i32) {
 
 fn signal_second_instance() {
     let _ = slint::invoke_from_event_loop(crate::host::on_second_instance);
+}
+
+fn signal_clock() {
+    let _ = slint::invoke_from_event_loop(crate::remind::on_external);
 }
 
 fn signal_theme() {

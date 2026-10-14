@@ -58,11 +58,11 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 
 发布版 `lanwork.exe` 的 PE 子系统是 2（`IMAGE_SUBSYSTEM_WINDOWS_GUI`）。`crates/app/src/main.rs` 在 Windows 且没有 `debug_assertions` 时写 `windows_subsystem = "windows"`。`cargo build --release` 默认关掉 `debug_assertions`，安装包和便携版里的就是这个 GUI 程序。双击或从开始菜单启动时 Windows 不分配控制台，关掉一个控制台窗口也不会结束进程。调试构建不写这个属性，仍是控制台子系统，`cargo run` 能看到标准错误。日志在数据目录的 `logs/app.log`，不写到控制台。存储已经打开时，启动失败调用 `Store::log_error`；panic 也写入同一份日志。存储还没打开、但数据目录已经能解析、且目录不是 MayDolist 时，启动失败直接写 `logs/app.log`。`eprintln` 只是调试控制台的副本，发布版没有控制台接收它。数据目录解析失败时还没有日志文件，发布版也不弹出控制台，没有对话框。
 
-启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条、面板宿主和托盘，再按 `hotCorner` 启动热角轮询，并安排检查更新。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。存储启动之后打开 `NoteCommands`、`AppIndex::open_from_process`（随后用 `load_user_catalog` 读 `user-apps.json` 交给 `set_user_catalog`）和 `FileCommands`，组成 `Dispatch` 并 `build`。这几步任一失败只写日志，进程继续，搜索条不安装，按热键不出现。同一时刻打开 `ShelfCommands` 并调用 `watch_todo_notices`，待办被永久删除时分组的关联由它解除；打不开时只写日志，收纳页显示错误。旧 `config.json` 里的 `githubRefreshIntervalMs`、`staleDays`、`sourceSync`、`autoCompleteOnClose` 读取时忽略，不报错，也不隔离文件；写回时不再写这些字段。
+启动顺序：先取得单实例，再解析数据目录并打开存储，然后完成存储启动、加载配置、按本地日期调用 `BackupCommands::backup_on_launch`、选择渲染器、注册热键、按配置写开机启动项，最后创建隐藏的搜索条、面板宿主和托盘，再按 `hotCorner` 启动热角轮询，安排检查更新，并安装到期提醒调度。安装版在平台线程用 `REGCLS_SUSPENDED` 注册通知激活，界面循环起来之后再 `CoResumeClassObjects`。这个窗口还收 `WM_POWERBROADCAST` 的恢复和 `WM_TIMECHANGE`，见「通知」。存储启动时外壳先注册 `BackupCommands` 的导入恢复钩子，再注册待办的加载和修复。存储启动之后打开 `NoteCommands`、`AppIndex::open_from_process`（随后用 `load_user_catalog` 读 `user-apps.json` 交给 `set_user_catalog`）和 `FileCommands`，组成 `Dispatch` 并 `build`。这几步任一失败只写日志，进程继续，搜索条不安装，按热键不出现。同一时刻打开 `ShelfCommands` 并调用 `watch_todo_notices`，待办被永久删除时分组的关联由它解除；打不开时只写日志，收纳页显示错误。旧 `config.json` 里的 `githubRefreshIntervalMs`、`staleDays`、`sourceSync`、`autoCompleteOnClose` 读取时忽略，不报错，也不隔离文件；写回时不再写这些字段。
 
 - **单实例。** 命名互斥量 `Local\Lanwork.SingleInstance.Mutex`，加上信号量 `Local\Lanwork.SingleInstance.Activate`（初值 0）。第一个进程拥有互斥量并等待信号量。后来的进程发现互斥量已存在，就对信号量加一，然后退出，退出码 0。信号量的计数会留到第一个进程来取，所以通知发生在等待之前也不会丢。第一个进程收到通知后不打开窗口。产品规格没有写这时要显示什么。
 - **应用图标。** 源文件是 `crates/app/assets/lanwork.svg`，按给出的字节原样放进仓库，不改花瓣，也不改颜色。同目录的 `lanwork-256.png` 是这张图的 256×256 渲染，同样原样提交。16、20、24、32、40、48、64 的 PNG，托盘底图 `lanwork-32.rgba`，以及含这八个尺寸的 `lanwork.ico`，由 `tools/render_app_icon.py` 从这张 256px 图做整数面积平均得到。脚本只用 Python 标准库，不重新解释 SVG。产物提交在仓库里。构建不运行这个脚本，也不需要 SVG 工具。Windows 目标上，`crates/app/build.rs` 用 `winresource` 把 `lanwork.ico` 编成资源 ID 1，链进 `lanwork.exe`，资源管理器和任务栏用它。同一份资源写入版本信息：字符串 `FileVersion` 和 `ProductVersion` 取 Cargo 包版本，当前是 `0.3.1`。数值 `FILEVERSION` 和 `PRODUCTVERSION` 是 Windows 要求的四段整数 `0.3.1.0`，对应这个 `0.3.1`，不是另一个版本。`ProductName` 和 `FileDescription` 写 `Lanwork`。非 Windows 目标不嵌入。搜索条、面板、便签悬浮窗和收纳悬浮窗的 Slint `Window` `icon` 用 `lanwork-256.png`。技术验证的「背景」和「渲染器」仍没有通过记录，给这些窗口设图标不改变那两项。
-- **托盘。** 菜单顺序是「打开面板」「设置」「新建便签」「退出」。提示文字只有「Lanwork」。图标是 32×32 的应用图标。逾期数量来自 `TodoCommands::overdue_count`，今天的日期用 `GetLocalTime`。数量为 0 时不画数字。数量不为 0 时在右下角盖一块徽章再画原来的 5×7 数字：白底、深色笔画、一圈深色边。一位和两位按 2 倍笔画，更长时按 1 倍。画不出图标的笔画裁掉，不改成「99+」。徽章的底色、边和放大倍数是实现选择，产品规格没有写徽章的样子。有新版本时另在右上角画一个小点，颜色和大小是实现选择，不盖住右下角的逾期徽章。重画逾期数量时小点留着。待办变更消息到达后在界面线程重画。读数量或日期失败时不画数字，并写日志。左键和右键都由 Slint 打开同一份菜单，没有另加左键动作。
+- **托盘。** 菜单顺序是「打开面板」「设置」「新建便签」「退出」。提示文字只有「Lanwork」。图标是 32×32 的应用图标。逾期数量来自 `TodoCommands::overdue_count`，今天的日期用 `GetLocalTime`。数量为 0 时不画数字。数量不为 0 时在右下角盖一块徽章再画原来的 5×7 数字：白底、深色笔画、一圈深色边。一位和两位按 2 倍笔画，更长时按 1 倍。画不出图标的笔画裁掉，不改成「99+」。徽章的底色、边和放大倍数是实现选择，产品规格没有写徽章的样子。有新版本时另在右上角画一个小点，颜色和大小是实现选择，不盖住右下角的逾期徽章。重画逾期数量时小点留着。待办变更消息到达后在界面线程重画。到期提醒每次计算时也重画，见「通知」。读数量或日期失败时不画数字，并写日志。左键和右键都由 Slint 打开同一份菜单，没有另加左键动作。
 - **打开面板、设置、新建便签。** 「打开面板」显示面板，标签保持收起前的选择。「设置」显示面板并切到设置标签，见「设置页」。「新建便签」创建一篇空便签，显示面板并切到便签页，选中它；没有便签服务时只显示错误。当前编辑区有没写盘的修改且保存失败时，先停在原来的便签上，等用户重试或放弃。
 - **退出。** 先保存面板便签页和所有悬浮窗里没写盘的修改，并记下仍打开的悬浮窗的位置和大小。`quit_decision(unsaved)` 在仍有没写盘的修改时返回 `QuitDecision::Stay`：不结束进程，显示出相关窗口，窗口上有「重试」和「放弃修改」；重试成功、放弃或选定冲突版本之后再继续退出：这些动作发生在窗口自己的回调里，面板和悬浮窗的表还被借用着，所以 `continue_quit` 只登记，下一轮事件循环才再次尝试（`lanwork_core::shell::resume_quit_later`）。全部写盘后，如果已经有核对过的安装包，先启动安装助手；助手起不来就不退出，设置页显示「安装失败」。否则隐藏托盘、退出事件循环。事件循环退出后，设置页若还在录入热键，先走录入的唯一出口（见「设置页」），然后卸下热键并释放互斥量。安装助手见「更新」。
 - **热键。** `RegisterHotKey` 带 `MOD_NOREPEAT`，注册在单独线程的一个不显示的顶层窗口上。这个窗口不带 `WS_VISIBLE`。不用 `HWND_MESSAGE`，否则收不到 `WM_SETTINGCHANGE`。单一热键注册，仅注册搜索条热键（原预留的面板热键已从规格中放弃，不再注册），id 只是某一次注册的句柄：`RegisterHotKey` 在同一窗口、同一 id 上再注册一次时，旧组合不会被替换，两个组合会同时有效（微软文档写明，只有 Windows Server 2003 才是替换），所以换组合时用一个新 id 注册，旧 id 在写盘成功之后才 `UnregisterHotKey`；`WM_HOTKEY` 到达时用 id 查当前注册表得到角色，查不到的 id（已卸掉的）不处理。字符串格式沿用原来的写法：修饰键 `Ctrl`、`Alt`、`Shift`、`Win`，加一个主键，比较和保存前收成 `Ctrl+Alt+Shift+Win+键`。大小写不区分，`+` 两侧空白会去掉。主键文本是 `A`–`Z`、`0`–`9`、`F1`–`F24`、`Space`、`Up`、`Down`、`Left`、`Right`、`Home`、`End`、`PageUp`、`PageDown`、`Insert`、`Delete`、标点 `;`、`=`、`,`、`-`、`.`、`/`、反引号、`[`、`\`、`]`、`'`、`Numpad0`–`Numpad9`、`NumpadMultiply`、`NumpadAdd`、`NumpadSubtract`、`NumpadDivide`。这些名字和 Win32 虚拟键码一一对应，能和原来的 `Ctrl+Alt+M`、`F1`、`Ctrl+0` 互转。`+` 是分隔符，小键盘加号写成 `NumpadAdd`，不写成 `+`。除 `F1`–`F24` 外必须至少有一个修饰键，单独的普通键是「热键无效」。`F1`–`F24` 可以没有修饰键。不在这张表里的键名也是「热键无效」。录入、保存和解析用同一套规则。不另设占用黑名单，注册失败仍是「热键已被占用」。`WM_HOTKEY` 只有修饰键和虚拟键码，没有扩展位。NumLock 关闭时，小键盘数字和对应的导航键是同一个虚拟键码，触发时分不开：存成 `Numpad4` 的热键不会响，存成 `Left` 的热键也会被小键盘 4 触发。小键盘 0–3、6–9 和 Insert、End、Down、PageDown、Right、Home、Up、PageUp 同样如此。小键盘 5 在 NumLock 关闭时是 `VK_CLEAR`，存成 `Numpad5` 的热键不会响。这是 `RegisterHotKey` 的限制。搜索条热键为空是「搜索条热键不能为空」。运行中修改热键只走先注册、成功后写入配置、再卸掉不再使用的旧热键。注册失败时磁盘和当前注册都保持旧热键。内容没变时不调用系统。写入配置时先更新内存，再发布变更。设置页录入搜索条热键时的做法见「设置页」。第一次启动就占用时，不改 `config.json`，写日志，进程继续，搜索条热键保持未注册。没注册上的热键记在设置页状态里（`HotkeyRecording`），面板错误条显示「搜索条热键已被占用」，面板打开时就显示，收起不清，之后注册上才清。搜索条热键显示或收起搜索条，见下面的「搜索条」。
@@ -100,7 +100,7 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 技术验证的「背景」和「渲染器」两项仍没有通过记录。面板的界面代码依赖这两项，写在通过之前；两项的记录不因此改变。窗口外观沿用搜索条的做法：`no-frame`，`bar_win` 里的子类去掉标题栏按钮，DWM 圆角与暗色，亚克力或纯色回退，主题变化时重新判断，任务栏不显示。
 
 - **已有。** 标题栏（产品名、四个标签、关闭）、待办页、便签页、收纳页、设置页（见「设置页」：开机启动、热角、搜索条热键、检查更新，以及「隐藏的应用」）。待办行和字段区有收纳标记和「打开关联收纳」。托盘「打开面板」「设置」、搜索条的待办结果和热角会打开面板。关闭按钮、失焦和 Esc 收起，不退出进程；收起后再打开，标签和所选清单保持。热角见下一节，没有 Windows 验收。
-- **还没有。** 处理模式，以及设置页里除开机启动、热角、搜索条热键、检查更新和「隐藏的应用」以外的项（面板搜索框、面板热键和设置页回收站入口已放弃）。到期通知点击定位属于 #25；入口 `panel::open_target(PanelTarget::Todo { .. })` 已留好，搜索条已经在用。待办页头部有「悬浮」，打开待办悬浮窗，见「待办悬浮窗」。
+- **还没有。** 处理模式，以及设置页里除开机启动、热角、搜索条热键、检查更新和「隐藏的应用」以外的项（面板搜索框、面板热键和设置页回收站入口已放弃）。安装版到期通知的点击走 `panel::open_from_notification`，再进 `panel::open_target(PanelTarget::Todo { .. })`。搜索条的待办结果也用这个入口。便携版不注册点击。见「通知」。待办页头部有「悬浮」，打开待办悬浮窗，见「待办悬浮窗」。
 - **定位。** `open_target` 先切到待办标签，读最新数据，找到条目后切到它所在的清单、选中并滚动到可见。找不到时停在待办标签并显示「找不到待办」。条目在回收站时切到回收站视图并选中。后者产品规格没有写。
 - **当前标记。** 任何状态下都能清除：未完成和已完成的条目在字段区有「设为当前」「清除当前」，回收站里带当前标记的条目在字段区有「清除当前」，行上始终显示「当前」。完成和软删除不自动清除当前标记，规格没有写，服务也不清；清除只通过 `clear_current`。
 - **待办页。** 左侧是清单（收件箱按服务给出的顺序，不另外提前）和「回收站」，右侧是新建框、「悬浮」、行列表和选中条目的字段区。「悬浮」打开待办悬浮窗，见「待办悬浮窗」。回收站视图里新建框和「删除清单」不显示，「悬浮」仍在。启动时和每次打开面板都调用 `ensure_inbox`，所以收件箱存在且不重复创建。行上的标记是当前、到期日（逾期时加「逾期」）、周期、来源。来源标记的文字是已保存的 `repo` 和 `number` 拼成的 `仓库#编号`。产品规格没有写标记怎么写，这是当前实现，不是新规则。已完成且不在回收站的行，在勾选旁边显示「取消完成」。点击它或再次点击勾选，都调用取消完成。回收站行显示还剩几天被清除，天数向上取整；30 天的清除由服务在启动时和 `purge_expired` 里做，面板不另建定时器。命令成功后重读服务并推给界面；失败时保留当前状态，在窗口底部显示错误，输入框里的文字不重置。
@@ -208,7 +208,7 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 - 仅从待办页头部的「悬浮」按钮打开，无独立托盘或快捷键。
 - 不列出回收站中的条目。不显示清单名，也不分段。行的顺序是清单在服务里的先后；每个清单里未完成在前、已完成在后，各自保持条目在清单里的先后。勾选或取消完成后重读，行按这个顺序重排。
 - 仅展示勾选框与标题（`FloatRow` 仅含 `id`、`title`、`completed`、`overdue`），标题以外的标记不显示。点标题没有动作。不能在窗口内排序、软删除、恢复、永久删除、设为当前、处理模式、打开来源、打开关联收纳。
-- 逾期条目整行文字标红，使用主题 critical 色值（亮色 `#c42b1c`，暗色 `#ff99a4`）。窗口开着时不建午夜定时器，逾期在待办变更重读或再次打开时重算。
+- 逾期条目整行文字标红，使用主题 critical 色值（亮色 `#c42b1c`，暗色 `#ff99a4`）。窗口开着时不建午夜定时器。逾期在待办变更重读、再次打开，或到期提醒调度计算时重算。没有这些事件时，过了午夜也不会自己变红。
 - 默认位置在光标所在显示器工作区居中。
 - 勾选框不拿键盘焦点，窗口有焦点且至少两页时由左右方向键翻页。
 - 贴边与叠页沿用悬浮窗通用机制。
@@ -217,9 +217,19 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 
 到期通知使用操作系统自带的 WinRT `ToastNotificationManager`，由 `windows` crate 调用。不使用 Windows App SDK 的 `AppNotificationManager`：后者要求随包或在机器上部署 Windows App Runtime，解包后的程序还要先调用引导程序。这份运行时不进入本项目。`ToastNotificationManager` 在 Windows 11 上由系统提供。微软目前把该 API 标为维护状态，并推荐 `AppNotificationManager`；若下面的验证失败，先改本节，再决定是否更换 API。
 
-技术验证程序原在 `spikes/toast`（安装版检查通过、便携版点击失败，整体未通过；代码已归档）。正式的提醒调度、安静时段和待办页定位仍不在这里实现。
+技术验证程序原在 `spikes/toast`（安装版检查通过、便携版点击失败，整体未通过；代码已归档）。这一项仍未通过。便携版点击不定位，不在这里修。主程序还没有 Windows 上的验收记录。托盘徽标不能代替通知通过。
 
-注册只写当前用户（HKCU），不写 HKLM，也不要求管理员权限。进程调用 `SetCurrentProcessExplicitAppUserModelID` 设置 AppUserModelID。通知 XML 的 `launch` 属性是待办 id。点击后，`INotificationActivationCallback::Activate` 的参数带回这个 id。仅拿到该参数还不算定位；定位是打开面板、切到待办并选中该条。验证程序用一个模拟列表面板演示这件事。注册缺失时不崩溃，改为只显示托盘逾期徽标。托盘徽标不能代替通知通过。
+调度在 `lanwork_core::todos` 的 `remind`，不读时钟。外壳在 `crates/app` 的 `remind` 和 `toast`。按下一次要醒的时刻设一个单次定时器，最长 24 小时，到点再算。不按秒轮询。等待已经是 0 时不再立刻重设，避免空转。平台窗口收到 `WM_POWERBROADCAST` 且 `wParam` 为 `PBT_APMRESUMEAUTOMATIC` 或 `PBT_APMRESUMESUSPEND`，以及 `WM_TIMECHANGE` 时，也重新计算。待办或配置变更同样重新计算。
+
+提醒时刻是到期日加上 `HH:MM`，精确到分钟。等于当前这一分钟、且这份键还没发过的，每条各发一条通知，`launch` 是待办 id，点击可以定位。早于当前分钟、还没发过的，收成一次补发。同一分钟的多条不算错过，各发一条。已完成、在回收站、没有到期日或没有提醒的不发。到期日或提醒时刻变了就是另一条。
+
+安静判断是 `in_quiet`。区间是半开的 `[开始, 结束)`。开始等于结束时没有时段。开始大于结束时跨过午夜：分钟大于等于开始，或小于结束。结束那一分钟不再安静。当前分钟落在时段里时不发通知，下一次醒来是时段结束；结束后，压住的提醒按错过合并。`configured_quiet_span` 在 #120 把起止写进设置之前恒为没有时段。调度每次都调用它。不读 `config.json` 的 `quietHours`。设置页不在这一版。
+
+发出去的键记在数据目录的 `reminder-sent.json`，见「数据」。这次发出失败的键只在本进程里压住，不写盘；待办变更、配置变更、睡眠唤醒或时间变化会清掉再试。`Show` 失败时记日志，不崩溃，托盘逾期数量照常重画。读不到本地时间时记日志，不发通知。
+
+通知 XML 是 `ToastGeneric`。一条时 `launch` 是待办 id，正文是标题。多条补发不写 `launch`：规格没有写合并后点哪一条，点这条通知不定位。每条标题各一个 `<text>`，操作中心展开后能看到各条。没有 `<action>`。标题和 id 做 XML 转义，控制字符去掉。显示名来自 AUMID 的 `DisplayName`，正文里不加另一行标题。这几条是当前实现，不是新产品规则。
+
+注册只写当前用户（HKCU），不写 HKLM，也不要求管理员权限。进程调用 `SetCurrentProcessExplicitAppUserModelID`，AUMID 是 `Lanwork`。点击后，`INotificationActivationCallback::Activate` 带回 `launch`。空白则不定位。有 id 时打开面板、切到待办并选中该条。该条已经不在时，面板显示「找不到待办」。注册或 `Show` 失败时不崩溃，只更新托盘逾期徽标。
 
 安装版同时做三件事：
 
@@ -227,13 +237,15 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 - 在 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 写入 `DisplayName` 和 `CustomActivator`（同一个 CLSID）。
 - 在 `HKCU\Software\Classes\CLSID\<CLSID>\LocalServer32` 写入本程序路径。进程运行时另外 `CoRegisterClassObject`，让点击落到已经打开的进程；进程已退出时由 `LocalServer32` 再启动。
 
-类工厂和 `INotificationActivationCallback` 放在 STA，并且不能实现 `IAgileObject`，也不能用自由线程封送。通知平台在另一个进程里 `CoCreateInstance`。自由线程封送的数据包是进程内指针，跨进程解封送失败后，SCM 会再按 `LocalServer32` 启动带 `-Embedding` 的进程，`Activate` 仍然到不了回调。`CoRegisterClassObject` 使用 `REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED`。窗口已经创建、线程准备进入消息循环之后调用 `CoResumeClassObjects`。`Activate` 由这个消息循环派发。回调里要 `ShowWindow` 并 `SetForegroundWindow`，面板上显示已定位的待办 id。
+类工厂和 `INotificationActivationCallback` 放在平台线程的 STA，不实现 `IAgileObject`，也不用自由线程封送。通知平台在另一个进程里 `CoCreateInstance`。自由线程封送的数据包是进程内指针，跨进程解封送失败后，SCM 会再按 `LocalServer32` 启动进程，`Activate` 仍然到不了回调。安装版在这个线程上 `CoInitializeEx(COINIT_APARTMENTTHREADED)`，再 `CoRegisterClassObject`，标志是 `REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED`。界面循环起来之后向这个窗口投递消息，再 `CoResumeClassObjects`。不等待这次调用，避免和 `Activate` 互相等。进程不写注册表，也不另解析 `-Embedding`：安装程序已经写了 `LocalServer32`，进程没在跑时由 SCM 启动 `lanwork.exe`，同一条注册路径接着跑。`Activate` 把 id 交给界面线程，调用 `panel::open_from_notification`。
 
-控制台子系统进程和 COM 拉起的本地服务器，启动信息里经常带 `SW_HIDE`。第一次 `ShowWindow` 会改用这个值。面板需要再调用一次 `ShowWindow(SW_SHOWNORMAL)`，并用 `SetWindowPos(SWP_SHOWWINDOW)` 确认 `IsWindowVisible`。读快捷方式属性之前要先 `CoInitializeEx`。
+COM 拉起的本地服务器，启动信息里经常带 `SW_HIDE`。第一次 `ShowWindow` 会改用这个值。这条打开再调用一次 `ShowWindow(SW_SHOWNORMAL)`，并用 `SetWindowPos(SWP_SHOWWINDOW)`。没拿到前台时不收起面板，否则「找不到待办」和选中行都看不见。其它打开面板的路径仍按原来的规则，没拿到前台就收起。
 
-便携版只写 `HKCU\Software\Classes\AppUserModelId\<AUMID>` 的 `DisplayName`，不创建快捷方式，不写 `CustomActivator`，不写 CLSID。便携版通知只显示提醒，点击不定位。2026-10-09 的记录里，便携版通知能显示；运行中点击没有定位，日志没有 `COM Activate`；退出后点击没有拉起进程。
+便携版在启动时写 `HKCU\Software\Classes\AppUserModelId\Lanwork` 的 `DisplayName`。不创建快捷方式，不写 `CustomActivator`，不写 CLSID，不注册类对象。便携版通知只显示提醒，点击不定位。2026-10-09 的记录里，便携版通知能显示；运行中点击没有定位，日志没有 `COM Activate`；退出后点击没有拉起进程。这次没有改那条路径。
 
-卸载要删掉上述快捷方式和 HKCU 键，以及 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值名 `Lanwork`，由安装程序实现。不删除数据目录。产品用的标识和 spike 不同：AUMID 是 `Lanwork`，激活 CLSID 是 `{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}`，显示名是 `Lanwork`。快捷方式是当前用户开始菜单程序目录里的 `Lanwork.lnk`。`LocalServer32` 的值是带引号的 `lanwork.exe` 路径，规则与开机启动的 `quoted_executable` 相同。进程侧的 `CoRegisterClassObject` 还不在 `lanwork.exe` 里，程序也不识别 `-Embedding`。发布版改成 GUI 子系统不改变这条路径：SCM 还不会来拉起 `lanwork.exe`。上面关于控制台子系统和 `SW_HIDE` 的说明源自早期验证程序的验证记录。通知这一项主程序尚未完成整体验收。验证程序自己的注销只清理它写过的 spike 标识，不清理产品用的标识。
+卸载要删掉上述快捷方式和 HKCU 键，以及 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值名 `Lanwork`，由安装程序实现。不删除数据目录。便携版运行不删安装版留下的键。AUMID 是 `Lanwork`，激活 CLSID 是 `{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}`，显示名是 `Lanwork`。快捷方式是当前用户开始菜单程序目录里的 `Lanwork.lnk`。`LocalServer32` 的值是带引号的 `lanwork.exe` 路径，规则与开机启动的 `quoted_executable` 相同。通知这一项仍未通过，主程序也没有 Windows 验收。验证程序自己的注销只清理它写过的 spike 标识，不清理产品用的标识。
+
+每次计算都按 `GetLocalTime` 的本地日期重画托盘逾期数量，并让已经打开的待办悬浮窗重读。逾期仍是未完成、不在回收站、到期日早于今天。数量为 0 时不画徽章。徽章的样子沿用「托盘」里已经写下的实现选择，这次不改。没有提醒、也没有时间变化或待办变更时，过了午夜不会自己重画。
 
 ## 数据
 
@@ -253,6 +265,7 @@ Slint 负责版式。待办规则、便签保存、收纳、搜索索引不写�
 Lanwork/
 ├── config.json
 ├── todo-float.json          待办悬浮窗的位置、贴边和叠页
+├── reminder-sent.json       已经发出的到期提醒，不进导出和备份
 ├── user-apps.json           便携应用、别名和隐藏名单
 ├── backups/
 ├── logs/app.log
@@ -280,6 +293,7 @@ Lanwork/
 - 取消完成把 `completed` 改回 false，不改 `order`。面板把未完成排在已完成之前，所以该条回到未完成条目里原来的顺序位置。这个先后本身不是产品规则。重复待办在完成并生成下一次时，把那一条的 id 和当时的标题、到期日、提醒、周期、来源写入本条的 `generatedNext`，并把那一条标成 `generatedUntouched`。完成前服务不记录这条关系，下一次只是插在后面的克隆。没有 `generatedNext` 的旧记录取消完成时不猜测要删哪一条。取消完成时，只有该条仍在同一清单里紧跟本条、`generatedUntouched` 仍为真、字段与 `generatedNext` 一致、`everCompleted` 为假、未完成、不在回收站、不是当前、并且没有 `movedAt` 和 `originListId`，才从清单里直接移除。这不是软删除，不写 `todo-purge-pending.json`，也不发 `Purged`。`everCompleted` 在标为完成时写下，取消完成不清，缺字段视为假。改标题、到期日、提醒、周期、来源、排序位置、当前标记、软删除、移动或完成都会清掉 `generatedUntouched`。下一次已被用户改过或已经完成（含完成后又取消完成）时不删除，只把本条标回未完成并清掉 `generatedNext`。这一支产品规格仍待定，不删除是保守处理，不是另一条产品规则。这样移除不通知收纳；下一次若已有关联，规格没有写，这里不解。写盘失败走同一套回滚：内存保持操作前，不发 `EntityChanged`。回收站里的条目服务拒绝取消完成，面板也不显示这个按钮，与回收站不可改一致。
 - 收纳服务在 `lanwork_core::shelves`。分组文件是 `shelves/<id>.json`，字段为名称、排序、关联待办 id 的列表 `todoIds`（按关联的先后，没有关联时不写这个字段），路径引用列表 `refs`，以及可选的网页引用列表 `webRefs`。旧文件的单条 `todoId` 读入时成为列表的第一项，之后写这个分组时只写 `todoIds`，不再写 `todoId`。每条路径引用保存绝对路径、显示名、是否文件夹和加入时间，不保存文件内容和图标。每条网页引用保存去掉首尾空白后的网址原文 `url`、去掉首尾空白后的标题 `title`（可以是空字符串）和 `addedAt`。没有图标字段，也不写页面正文。网站图标在数据目录的 `cache/web-icons/`，见「网页引用」。没有 `webRefs` 的旧文件读成空列表。路径规范化和存在性检查见「收纳」。网页引用的比较和挑选见「收纳」的「网页引用」。
 - 待办悬浮窗的位置在数据目录的 `todo-float.json`，不写在清单文件里。规格见「待办悬浮窗」。文件在时进入导出和备份白名单。`manifest.json` 的 `counts` 不为它加一项，仍待定。旧包没有这个路径时导入不失败。导入按白名单替换数据文件：包里没有 `todo-float.json` 时，本地这份文件会被删掉，与其他数据文件相同。已打开的服务在这次重载里丢掉这份缓存，随后写位置不会把导入前的叠页写回。
+- 已经发出的到期提醒在数据目录的 `reminder-sent.json`。`schemaVersion` 为 1。`sent` 的每一项有 `id`、`due`（`YYYY-MM-DD`）和 `remindAt`（`HH:MM`）。键对不上当前条目的到期日和提醒时刻时，下次记下会去掉，完成或进回收站之后也去掉，这样取消完成且时间没变时不会再发。不进导出和备份。导入按白名单替换时不删除它。不认识的 `schemaVersion` 不隔离、不写回，这次进程只在内存里记。无法解析时按单文件规则隔离，清单仍打开。写失败时内存仍记下，这次进程不反复发；下次启动可能再发一次。写这份文件不发布 `EntityChanged`。
 - 便签带递增的 `revision`。保存时带上加载时的 revision，与磁盘不一致则返回冲突错误，调用方保留正文。冲突之后的可见行为以产品规格为准。
 - 便签服务在 `lanwork_core::notes`。文件字段还有 `title`、`body`、`tags`、`pinned`、`createdAt`、`updatedAt`、`deletedAt`，以及可选的 `floatWindow`（`x`、`y`、`width`、`height`，物理像素，位置是虚拟屏幕坐标，贴边时仍是展开矩形）、可选的 `floatDock`（`edge`、`offset`、`collapsed`）和可选的 `floatStack`（`id`、`index`、`current`，见「叠页」）。旧文件里的 `floatPinned` 能读，不再写回，与列表里的 `pinned` 无关。旧文件没有 `floatWindow` 或 `floatDock` 照常加载；它们随便签文件进入导出、备份和导入。`set_float` 同时写这两项：不带 `revision`，不改 `revision` 和 `updatedAt`，所以编辑区手里的版本号不会因此过期，列表顺序也不变；回收站里的便签同样可以记。不认识的 `edge` 当成没有贴边。服务不判断记下的值是否还在某个显示器内。时间是 Unix 纪元起的 UTC 毫秒。`deletedAt` 缺省表示未软删除，文件仍留在 `notes/`。标签去掉首尾空白后按原文去重，筛选是去重后的整段相等。列表中置顶在前，其后按 `updatedAt` 从新到旧，再按 id。标题没有非空白字符时显示「无标题」，原文仍写入 `title`。删除写入 `deletedAt`，文件留在 `notes/`。永久删除只删除已经软删除的文件；删文件成功后、发布变更前从内存去掉。进入回收站满 30 天（30×86400000 毫秒）的便签，`deleted` 不再返回，`restore` 不恢复、也不写盘。打开服务时清除一次；外壳也可以调用 `NoteCommands::purge_expired`。服务不建定时器，调用间隔未在规格里写明。某一篇删不掉时记日志并跳过，打开服务仍成功，其余便签照常可用。服务不做覆盖。冲突后的版本选择、关闭和退出时的未保存正文由界面处理。
 - 导出包包含配置、待办、便签、收纳分组，以及 `user-apps.json`（便携应用、别名和隐藏名单）。v0.2.0 之后另含已安装插件的副本和启用状态，见 [extensions.md](extensions.md)，现在没有。不含 `github/watchlist.json`、`github/cache`、数据目录里的 `cache/web-icons/`、日志、备份目录、`import.pending`、token 和环境变量。备份同样不含 watchlist、`github/cache` 和网站图标缓存。导入按白名单替换时不删除 `cache/web-icons/`。服务在 `lanwork_core::backup`，薄命令是 `BackupCommands`。包是只含存储法（compression method 0）的 ZIP。根上的 `manifest.json` 有 `packageSchemaVersion`（当前为 1）、`exportedAt`（调用方传入的 UTC 毫秒）、`appVersion` 和 `counts`。新包的 `counts` 不再写 `watchlist` 和 `githubCaches`；旧清单里缺这两项时按 0 读。路径拒绝 `..` 和绝对路径。白名单是上面的数据文件；旧包里的 `github/watchlist.json` 和 `github/cache/<id>.json` 仍能通过校验，导入时忽略、不写入。每个 JSON 可解析；缺少 `schemaVersion` 按 1，高于 1 则整包拒绝。自动备份文件名是 `auto-年-月-日-毫秒.zip`，手动是 `manual-毫秒.zip`，导入前的备份是 `import-毫秒.zip`。`backups/auto-day.txt` 记下最近一次自动备份的公历日，不计入 7 份。同一天再次调用自动备份不再写新文件。自动和手动合计超过 7 份时按文件名里的毫秒删除最旧的，不删除 `import-` 和其他文件。手动备份不改 `auto-day.txt`。调用方传入公历日和毫秒，服务不读时钟，也不读环境变量。
@@ -303,7 +317,7 @@ Lanwork/
 
 配置模块是 `lanwork_core::config`。文件是 `config.json`，经存储层读写。字段用 camelCase，`schemaVersion` 当前为 1。缺少 `schemaVersion` 时按 1 读取。无法解析的 JSON 由存储层隔离，外壳改用默认值，不把默认值写回去。JSON 能解析但热键或范围不合法时不隔离、不覆盖，内存里用默认值。不认识的 `schemaVersion` 不隔离，调用方拒绝。
 
-`dataDir` 只是文件里的记录。启动目录仍按环境变量、引导文件、默认目录解析，不读这个字段。`quietHours` 只接受空。非空值返回「安静时段的格式尚未确定」，不写盘。起止格式产品规格没有写。
+`dataDir` 只是文件里的记录。启动目录仍按环境变量、引导文件、默认目录解析，不读这个字段。`quietHours` 只接受空。非空值返回「安静时段的格式尚未确定」，不写盘。起止格式产品规格没有写，设置页属于 #120。调度里的判断见「通知」，#120 之前不会读这个字段。
 
 `searchBarOrigin` 可选。没有这个字段表示没有记住搜索条位置，显示时用产品规格里的默认位置。有这个字段时是 `x`、`y` 两个整数；缺其中一个，或类型不对，整份配置按字段不合法处理（内存用默认配置，原文件保留）。这两个数的坐标系、屏幕变化和 DPI，产品规格没有写，见「搜索条」的待定项。校验不解释这两个数，负数保留。
 
@@ -553,7 +567,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 不使用 minisign。签名私钥不进仓库，发布脚本也没有可以签名的密钥。同一条发布工作流在安装包生成之后写入 `latest.json` 的 SHA-256。程序只从上面的地址下载并核对。这不是从旧安装目录做完的一次升级。没有那次记录，更新未验收。
 
-便携版不在运行中替换自身。安装程序不安装 WebView2，也不安装 Windows App Runtime。安装版的开始菜单快捷方式和通知激活器按「通知」注册。最低系统版本等产品规格写明之前不判断 Windows build。便携版启动时仍不写 `DisplayName`。进程侧的通知激活仍不在 `lanwork.exe` 里。
+便携版不在运行中替换自身。安装程序不安装 WebView2，也不安装 Windows App Runtime。安装版的开始菜单快捷方式和通知激活器按「通知」注册。最低系统版本等产品规格写明之前不判断 Windows build。便携版启动时写 `DisplayName`，不注册点击。安装版的进程侧激活在 `lanwork.exe`，见「通知」。通知这一项仍未通过。
 
 ### 安装程序与便携包
 
@@ -571,7 +585,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 程序目录里的文件：`lanwork.exe`、`PROGRAM_DIRECTORY_FILES` 的四个文件、`Unicode-LICENSE.txt`（`third_party/unihan/LICENSE.txt`）、`THIRD_PARTY_NOTICES.txt`。图标用 `crates/app/assets/lanwork.ico`。向导用 tag `is-6_7_3` 里非官方的简体中文消息 `Files/Languages/Unofficial/ChineseSimplified.isl`，副本是 `packaging/ChineseSimplified.isl`（20905 字节，LF）。编译器安装程序不拷贝 Unofficial 目录，所以脚本不写 `compiler:Languages\...`。翻译版权是 Copyright (c) 2019 - 2020 kirakira，MIT 许可正文在 `packaging/ChineseSimplified-LICENSE.txt`，上游是 <https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation>。Inno Setup 本体的版权是 Copyright (C) 1997-2026 Jordan Russell，部分版权 Copyright (C) 2000-2026 Martijn Laan。许可要求的条件原文在 `packaging/Inno-Setup-License.txt`（同一 tag 的 `license.txt`），条件不改。这两份许可写入安装目录和便携版里的 `THIRD_PARTY_NOTICES.txt`。欢迎页关掉。这些文字是安装器的实现选择，不是产品规格里的界面文案。「背景」和「渲染器」仍没有通过记录，打包不改变那两项。
 
-便携版是 zip，文件名 `Lanwork-<版本>-portable-x64.zip`，当前是 `Lanwork-0.3.1-portable-x64.zip`。内容与安装目录相同，不含安装程序，不含 `lanwork-shortcut.exe`，也不含 `unins000.exe`。程序用这个文件区分安装版和便携版，见「更新」。便携版启动时仍不写 `DisplayName`。那一步还没有代码。
+便携版是 zip，文件名 `Lanwork-<版本>-portable-x64.zip`，当前是 `Lanwork-0.3.1-portable-x64.zip`。内容与安装目录相同，不含安装程序，不含 `lanwork-shortcut.exe`，也不含 `unins000.exe`。程序用这个文件区分安装版和便携版，见「更新」。便携版启动时写 `DisplayName`，不注册点击激活。见「通知」。
 
 版本只有 Cargo workspace 的 `0.3.1`。安装包的 `AppVersion`、`VersionInfoProductVersion` 和 exe 资源里的 `FileVersion`、`ProductVersion` 字符串都是这个值。安装包文件版本资源的四段整数是 `0.3.1.0`。
 

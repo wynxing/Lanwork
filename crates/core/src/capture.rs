@@ -50,6 +50,12 @@ impl CivilDate {
         civil_from_days(sum)
     }
 
+    /// `later` 减去今天的天数。`later` 更早时为负。
+    #[must_use]
+    pub fn days_until(self, later: Self) -> Option<i64> {
+        Some(days_from_civil(later)? - days_from_civil(self)?)
+    }
+
     /// 星期一为 0，星期日为 6。
     fn weekday_monday0(self) -> u8 {
         let days = days_from_civil(self).expect("a constructed date has a day count");
