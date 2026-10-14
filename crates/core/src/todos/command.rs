@@ -113,6 +113,29 @@ impl TodoCommands {
         self.service.reminder_for(item_id, today, minute_of_day)
     }
 
+    /// 按调用方给出的当前分钟和安静时段，算出要发的提醒和下一次醒来的时刻。
+    pub fn reminder_plan(
+        &self,
+        now: ReminderInstant,
+        quiet: Option<super::remind::QuietSpan>,
+    ) -> Result<super::remind::ReminderPlan, TodoError> {
+        let lists = self.lists()?;
+        let sent = super::remind_sent::current(&self.service.store(), &self.service.sent_cache)?;
+        let items: Vec<_> = lists.into_iter().flat_map(|list| list.items).collect();
+        Ok(super::remind::plan(&items, now, &sent, quiet))
+    }
+
+    /// 记下已经发出的提醒。对不上当前到期日和提醒时刻的旧记录会去掉。
+    pub fn mark_reminders_sent(&self, keys: &[super::remind::SentKey]) -> Result<(), TodoError> {
+        let lists = self.lists()?;
+        super::remind_sent::mark(
+            &self.service.store(),
+            &self.service.sent_cache,
+            keys,
+            &lists,
+        )
+    }
+
     /// 收件箱里 id 排在 `after_id` 之后的下一条未完成、未软删除条目。
     pub fn next_inbox_incomplete_after(&self, after_id: &str) -> Result<Option<String>, TodoError> {
         self.service.next_inbox_incomplete_after(after_id)

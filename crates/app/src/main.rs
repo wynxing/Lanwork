@@ -55,6 +55,8 @@ mod platform;
 #[cfg(windows)]
 mod registry;
 #[cfg(windows)]
+mod remind;
+#[cfg(windows)]
 mod searchbar;
 #[cfg(windows)]
 mod settings_page;
@@ -66,6 +68,8 @@ mod shelf_float;
 mod shelf_refs;
 #[cfg(windows)]
 mod shelves_page;
+#[cfg(windows)]
+mod toast;
 #[cfg(windows)]
 mod todo_float;
 #[cfg(windows)]
@@ -94,6 +98,30 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn due_notifications_keep_the_installed_activator_and_skip_portable_click() {
+        let toast = include_str!("toast.rs");
+        let shortcut = include_str!("../../../tools/shortcut/src/lib.rs");
+        assert!(shortcut.contains("0xE8E9_EF84_55BA_4A0C_B4DC_9F9F_4A28_068D"));
+        assert!(toast.contains("0xE8E9_EF84_55BA_4A0C_B4DC_9F9F_4A28_068D"));
+        assert!(toast.contains("REGCLS_SUSPENDED"));
+        assert!(toast.contains("CoResumeClassObjects"));
+        assert!(!toast.contains("implement(IAgileObject)"));
+        assert!(!toast.contains("RegSetValue"));
+        assert!(!toast.contains("CustomActivator"));
+        let registry = include_str!("registry.rs");
+        assert!(registry.contains("write_portable_display_name"));
+        assert!(!registry.contains("CustomActivator"));
+        assert!(!registry.contains("LocalServer32"));
+        let platform = include_str!("platform.rs");
+        assert!(platform.contains("WM_POWERBROADCAST"));
+        assert!(platform.contains("WM_TIMECHANGE"));
+        assert!(platform.contains("PBT_APMRESUMEAUTOMATIC"));
+        let iss = include_str!("../../../packaging/lanwork.iss");
+        assert!(iss.contains("CustomActivator"));
+        assert!(iss.contains("{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}"));
+    }
+
     #[test]
     fn release_windows_build_requests_the_gui_subsystem() {
         let source = include_str!("main.rs");

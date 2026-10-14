@@ -407,7 +407,7 @@ pub fn recurrence_from_choice(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::todos::{SourceKind, TodoSource};
+    use crate::todos::{SourceKind, TodoSource, overdue_count};
 
     fn date(year: i32, month: u8, day: u8) -> CivilDate {
         CivilDate::try_from_ymd(year, month, day).unwrap()
@@ -459,6 +459,14 @@ mod tests {
         assert!(!shown[1].overdue, "已完成不标红");
         assert!(!shown[0].overdue, "到期日是今天不算逾期");
         assert!(shown[2].overdue);
+        let red = shown.iter().filter(|row| row.overdue).count() as u32;
+        assert_eq!(
+            red,
+            overdue_count(
+                lists.iter().flat_map(|list| list.items.iter()),
+                date(2026, 10, 10)
+            )
+        );
         assert!(
             !float_rows(&lists, None).iter().any(|row| row.overdue),
             "读不到今天的日期时不标红"

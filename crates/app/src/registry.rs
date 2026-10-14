@@ -37,6 +37,17 @@ pub(crate) fn read_transparency_enabled() -> bool {
     }
 }
 
+/// 便携版只补 `DisplayName`，让系统通知能显示名字。
+///
+/// 不写安装版的激活项。那些由安装程序负责。
+pub(crate) fn write_portable_display_name() -> Result<(), String> {
+    write_sz(
+        r"Software\Classes\AppUserModelId\Lanwork",
+        "DisplayName",
+        "Lanwork",
+    )
+}
+
 pub(crate) fn apply_startup(enabled: bool, executable: &Path) -> Result<(), String> {
     let existing = read_sz(RUN_KEY, RUN_VALUE)?;
     if !enabled {

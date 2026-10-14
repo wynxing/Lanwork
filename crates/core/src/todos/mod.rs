@@ -19,6 +19,8 @@ mod error;
 mod float_file;
 mod model;
 mod purge_record;
+mod remind;
+mod remind_sent;
 mod repair;
 mod schedule;
 mod service;
@@ -31,6 +33,11 @@ pub use model::{
     TodoList, TodoSource, is_http_source_url,
 };
 pub use purge_record::PURGE_PENDING_FILE;
+pub use remind::{
+    DueReminder, INBOX_LAUNCH, MAX_TIMER_MS, QuietSpan, ReminderPlan, SentKey, TOAST_HEADING,
+    ToastLaunch, in_quiet, plan, quiet_end, toast_launch, toast_xml, wait_millis,
+};
+pub use remind_sent::SENT_FILE;
 pub use schedule::{
     DEFAULT_DEFER_DAYS, DeferError, MAX_DEFER_DAYS, MIN_DEFER_DAYS, NextOccurrence,
     ReminderInstant, TRASH_RETENTION_MS, deferred_due, is_overdue, next_occurrence, next_reminder,

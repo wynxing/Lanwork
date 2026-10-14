@@ -202,6 +202,18 @@ impl ClockTime {
     pub fn minute_of_day(self) -> u16 {
         u16::from(self.hour) * 60 + u16::from(self.minute)
     }
+
+    /// `minute` 超过 1439 时返回 `None`。
+    #[must_use]
+    pub fn from_minute_of_day(minute: u16) -> Option<Self> {
+        if minute >= 24 * 60 {
+            return None;
+        }
+        Self::try_new(
+            u8::try_from(minute / 60).ok()?,
+            u8::try_from(minute % 60).ok()?,
+        )
+    }
 }
 
 /// 一条待办。

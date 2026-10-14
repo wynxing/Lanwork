@@ -152,6 +152,7 @@ pub(crate) fn install(
         focused: false,
         dark: false,
         hwnd_ready: false,
+        from_notification: false,
     };
     PANEL.with(|cell| *cell.borrow_mut() = Some(controller));
 }
@@ -175,6 +176,20 @@ pub(crate) fn show(tab: Option<PanelTab>) {
 /// 打开面板并定位到目标。搜索结果和到期通知都走这里。
 pub(crate) fn open_target(target: PanelTarget) {
     with_panel(move |panel| panel.open_target(&target));
+}
+
+/// 安装版到期通知的点击。单条定位到该待办；合并补发打开收件箱且不选中。
+///
+/// 找不到该条时面板上显示「找不到待办」。没拿到前台也不收起，否则错误和定位都看不见。便携版不走这里。
+pub(crate) fn open_from_notification(launch: &str) {
+    let launch = launch.to_owned();
+    with_panel(
+        move |panel| match lanwork_core::todos::toast_launch(&launch) {
+            Some(lanwork_core::todos::ToastLaunch::Item(id)) => panel.open_notification(&id),
+            Some(lanwork_core::todos::ToastLaunch::Inbox) => panel.open_notification_inbox(),
+            None => {}
+        },
+    );
 }
 
 /// 面板外的动作失败时，把原因显示在面板上。
@@ -343,6 +358,8 @@ pub(crate) struct Controller {
     focused: bool,
     dark: bool,
     hwnd_ready: bool,
+    /// 这次显示来自到期通知。前台失败时不收起，并再显示一次以盖过 `SW_HIDE`。
+    from_notification: bool,
 }
 
 impl Controller {
@@ -400,6 +417,27 @@ impl Controller {
         }
         self.prepare();
         self.present();
+    }
+
+    fn open_notification(&mut self, item_id: &str) {
+        self.from_notification = true;
+        self.open_target(&PanelTarget::Todo {
+            item_id: item_id.to_owned(),
+        });
+        self.from_notification = false;
+    }
+
+    /// 合并补发：待办标签、收件箱，不选中任何一条。
+    fn open_notification_inbox(&mut self) {
+        self.from_notification = true;
+        self.exit_triage();
+        self.tab = PanelTab::Todo;
+        self.prepare();
+        self.view = panel::default_view(&self.lists);
+        self.selected = None;
+        self.rebuild();
+        self.present();
+        self.from_notification = false;
     }
 
     fn open_target(&mut self, target: &PanelTarget) {
@@ -483,14 +521,24 @@ impl Controller {
         {
             bar_win::move_window(hwnd, origin.0, origin.1);
         }
+        if self.from_notification
+            && let Some(hwnd) = hwnd
+        {
+            bar_win::reveal_activated_window(hwnd);
+        }
         // 没拿到前台就收起。visible 已经是真，但失焦收起还要求曾经拿到焦点；
         // 焦点没到时会停在已显示，下一次热角再 show 也出不来。规格没写这种失败，待定。
+        // 到期通知是用户点开来的，前台失败时仍留着，否则定位和「找不到待办」都看不见。
         match hwnd.map(bar_win::bring_to_front) {
             Some(bar_win::ForegroundTake::Plain) => {}
             Some(bar_win::ForegroundTake::AfterInput) => {
                 self.store.log_info("面板在注入输入后到前台");
             }
             Some(bar_win::ForegroundTake::Failed) | None => {
+                if self.from_notification {
+                    self.store.log_warn("到期通知已打开面板，但没有到前台");
+                    return;
+                }
                 self.store.log_warn(if hwnd.is_none() {
                     "面板没有窗口句柄，已收起"
                 } else {

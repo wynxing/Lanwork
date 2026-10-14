@@ -25,6 +25,7 @@ use lanwork_core::storage::{
     BootHooks, EntityKind, Error as StorageError, Log, LogSettings, Store, resolve_from_process,
 };
 use lanwork_core::todos::TodoCommands;
+use lanwork_core::update::{Edition, edition_of};
 use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
@@ -130,7 +131,19 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     }
     backup_if_due(store);
     select_renderer()?;
-    let platform = Platform::start(primary)?;
+    let installed = match std::env::current_exe() {
+        Ok(path) => path
+            .parent()
+            .is_some_and(|dir| edition_of(dir) == Edition::Installed),
+        Err(_) => {
+            store.log_warn("读不到可执行文件路径，按便携版处理通知");
+            false
+        }
+    };
+    let platform = Platform::start(primary, installed)?;
+    if let Some(err) = crate::platform::take_activator_error() {
+        store.log_warn(&format!("通知激活没有注册：{err}"));
+    }
     let hotkeys = platform.control();
     let unregistered = register_configured_hotkeys(&hotkeys, &config, store);
     match std::env::current_exe() {
@@ -203,6 +216,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         store.log_warn(&format!("热角轮询没有启动：{err}"));
     }
     crate::update::start(store.clone());
+    crate::remind::install(todos.clone(), config.clone(), store.clone(), installed);
 
     // 搜索条收起时所有窗口都隐藏，事件循环不能因此结束。
     let run = slint::run_event_loop_until_quit().map_err(|err| err.to_string());
@@ -325,6 +339,10 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
     let events = store.subscribe();
     std::thread::spawn(move || {
         while let Ok(event) = events.recv() {
+            if event.kind == EntityKind::Config {
+                let _ = slint::invoke_from_event_loop(crate::remind::on_external);
+                continue;
+            }
             if event.kind == EntityKind::Note {
                 let id = event.id.clone();
                 let _ = slint::invoke_from_event_loop(move || {
@@ -351,6 +369,7 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
                     return;
                 };
                 refresh_badge(&tray, &todos, &store);
+                crate::remind::on_external();
                 panel::on_todos_changed();
                 shelf_float::on_todos_changed();
                 todo_float::on_todos_changed();
@@ -383,6 +402,13 @@ pub(crate) fn unix_now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+pub(crate) fn refresh_overdue(todos: &TodoCommands, store: &Store) {
+    let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
+    if let Some(tray) = tray {
+        refresh_badge(&tray, todos, store);
+    }
 }
 
 fn refresh_badge(tray: &Tray, todos: &TodoCommands, store: &Store) {

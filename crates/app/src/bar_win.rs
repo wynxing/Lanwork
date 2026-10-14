@@ -36,11 +36,12 @@ use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindow
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, GetAncestor,
     GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IsIconic,
-    IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WINEVENT_OUTOFCONTEXT, WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE,
-    WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_STYLECHANGING,
-    WM_THEMECHANGED, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+    IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WINEVENT_OUTOFCONTEXT,
+    WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY,
+    WM_SHOWWINDOW, WM_STYLECHANGING, WM_THEMECHANGED, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_SYSMENU,
 };
 use windows::core::{BOOL, PCSTR, s, w};
 
@@ -168,6 +169,28 @@ pub(crate) fn window_origin(hwnd: HWND) -> Option<(i32, i32)> {
     // SAFETY: hwnd 是本进程的窗口，输出指针指向局部变量。
     unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
     Some((rect.left, rect.top))
+}
+
+/// 通知激活拉起的进程第一次 `ShowWindow` 会吃掉启动信息里的 `SW_HIDE`。
+/// 再显示一次，并用 `SWP_SHOWWINDOW` 确认窗口可见。
+pub(crate) fn reveal_activated_window(hwnd: HWND) {
+    if hwnd.0.is_null() {
+        return;
+    }
+    // SAFETY: hwnd 是本进程的面板。两次 SW_SHOWNORMAL 覆盖启动时的 SW_HIDE。
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+        let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW,
+        );
+    }
 }
 
 pub(crate) fn move_window(hwnd: HWND, x: i32, y: i32) {

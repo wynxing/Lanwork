@@ -4,7 +4,7 @@
 //! 有值时是 `{"start":"HH:MM","end":"HH:MM"}`。小时可以只写一位，写回时补成两位。
 //! 开始与结束相同由 [`super::model::normalize`] 拒绝。
 //!
-//! [`is_quiet_now`] 判断当前是否在安静时段里。提醒调度尚未并入，这里不调用它。
+//! [`is_quiet_now`] 判断当前是否在安静时段里。半开区间只实现在 `todos::in_quiet`。
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -57,26 +57,16 @@ pub fn format_clock(time: ClockTime) -> String {
 
 /// 当前时刻是否落在安静时段里。
 ///
-/// `hours` 为空时返回假。开始与结束的分钟相同也返回假。
-/// 结束晚于开始时，从开始到结束之前算在里面。结束早于开始时跨过午夜：
-/// 从开始到 24:00，再加上 0:00 到结束之前。开始时刻算在里面，结束时刻不算。
-/// 端点算不算，产品规格没有写；这个半开区间不是产品规则。
+/// `hours` 为空时返回假。区间与 [`crate::todos::in_quiet`] 相同：半开，可跨午夜，
+/// 开始与结束的分钟相同不算在里面。端点算不算，产品规格没有写；这个半开区间不是产品规则。
 #[must_use]
 pub fn is_quiet_now(hours: Option<QuietHours>, now: ClockTime) -> bool {
-    let Some(hours) = hours else {
-        return false;
-    };
-    let start = hours.start.minute_of_day();
-    let end = hours.end.minute_of_day();
-    let now = now.minute_of_day();
-    if start == end {
-        return false;
-    }
-    if start < end {
-        now >= start && now < end
-    } else {
-        now >= start || now < end
-    }
+    hours.is_some_and(|hours| {
+        crate::todos::in_quiet(
+            now.minute_of_day(),
+            crate::todos::QuietSpan::from_clocks(hours.start, hours.end),
+        )
+    })
 }
 
 impl Serialize for QuietHours {
