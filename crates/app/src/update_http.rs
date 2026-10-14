@@ -1,21 +1,22 @@
-//! WinHTTP。第一跳只访问钉死的 https 地址，重定向只跟到允许的 CDN，自己跟重定向。
+//! WinHTTP。第一跳只访问钉死的 https 地址，重定向只跟到允许的版本路径和 CDN，自己跟重定向。
 //!
 //! 不关闭证书校验，也不打开自动解压。正文边读边交给调用方，超过上限就停。
+//! 每个请求都带 `User-Agent: Lanwork/<版本>`。GitHub 的 REST API 对空 User-Agent 回 403。
 
 use std::ptr::{self, NonNull};
 
 use lanwork_core::update::{
     GetBytes, MAX_REDIRECTS, TransportError, current_version, parse_https_url, redirect_allowed,
-    resolve_redirect, url_allowed,
+    request_headers, resolve_redirect, url_allowed,
 };
 use windows::Win32::Networking::WinHttp::{
-    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_DISABLE_REDIRECTS,
-    WINHTTP_FLAG_SECURE, WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_OPTION_REDIRECT_POLICY,
-    WINHTTP_OPTION_REDIRECT_POLICY_NEVER, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_FLAG_NUMBER,
-    WINHTTP_QUERY_LOCATION, WINHTTP_QUERY_STATUS_CODE, WinHttpAddRequestHeaders,
-    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders,
-    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption,
-    WinHttpSetTimeouts,
+    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_ADDREQ_FLAG_REPLACE,
+    WINHTTP_DISABLE_REDIRECTS, WINHTTP_FLAG_SECURE, WINHTTP_OPTION_DISABLE_FEATURE,
+    WINHTTP_OPTION_REDIRECT_POLICY, WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
+    WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_LOCATION,
+    WINHTTP_QUERY_STATUS_CODE, WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
+    WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
 };
 use windows::core::{HSTRING, PCWSTR};
 
@@ -24,21 +25,17 @@ const CONNECT_MS: i32 = 15_000;
 const SEND_MS: i32 = 30_000;
 const RECEIVE_MS: i32 = 60_000;
 const CHUNK: usize = 64 * 1024;
+const ERROR_BODY_CAP: usize = 2048;
 
 pub(crate) struct WinHttp;
 
 impl GetBytes for WinHttp {
     fn get(&self, url: &str, limit: u64) -> Result<Vec<u8>, TransportError> {
         let mut body = Vec::new();
-        pull(
-            url,
-            limit,
-            "application/vnd.github+json",
-            |chunk, _total| {
-                body.extend_from_slice(chunk);
-                Ok(())
-            },
-        )?;
+        pull(url, limit, "*/*", |chunk, _total| {
+            body.extend_from_slice(chunk);
+            Ok(())
+        })?;
         Ok(body)
     }
 }
@@ -74,7 +71,8 @@ pub(crate) fn pull(
             continue;
         }
         if !(200..300).contains(&status) {
-            return Err(TransportError::Http(status));
+            let body = error_prefix(opened.request.as_raw());
+            return Err(TransportError::http(status, &body));
         }
         let total = content_length(opened.request.as_raw())?;
         if let Some(total) = total
@@ -151,12 +149,12 @@ fn open_request(host: &str, port: u16, path: &str, accept: &str) -> Result<Opene
         )
     })?;
     disable_redirects(request.as_raw())?;
-    let header = accept_header(accept)?;
+    let header = request_header_wide(accept)?;
     map_win(unsafe {
         WinHttpAddRequestHeaders(
             request.as_raw(),
-            &header[..header.len() - 1],
-            WINHTTP_ADDREQ_FLAG_ADD,
+            &header,
+            WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE,
         )
     })?;
     map_win(unsafe { WinHttpSendRequest(request.as_raw(), None, None, 0, 0, 0) })?;
@@ -168,15 +166,9 @@ fn open_request(host: &str, port: u16, path: &str, accept: &str) -> Result<Opene
     })
 }
 
-fn accept_header(accept: &str) -> Result<Vec<u16>, TransportError> {
-    if accept
-        .chars()
-        .any(|ch| ch.is_control() || ch == '\r' || ch == '\n')
-    {
-        return Err(TransportError::Network);
-    }
-    let text = format!("Accept: {accept}\r\n");
-    Ok(text.encode_utf16().chain(std::iter::once(0)).collect())
+fn request_header_wide(accept: &str) -> Result<Vec<u16>, TransportError> {
+    let text = request_headers(accept).ok_or(TransportError::Network)?;
+    Ok(text.encode_utf16().collect())
 }
 
 fn disable_redirects(request: *mut std::ffi::c_void) -> Result<(), TransportError> {
@@ -267,6 +259,33 @@ fn header_text(request: *mut std::ffi::c_void, level: u32) -> Result<String, Tra
     Ok(String::from_utf16_lossy(&buffer[..count]))
 }
 
+fn error_prefix(request: *mut std::ffi::c_void) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; CHUNK.min(ERROR_BODY_CAP)];
+    let to_read = u32::try_from(buf.len()).unwrap_or(0);
+    if to_read == 0 {
+        return out;
+    }
+    while out.len() < ERROR_BODY_CAP {
+        let mut read = 0u32;
+        if unsafe { WinHttpReadData(request, buf.as_mut_ptr() as *mut _, to_read, &mut read) }
+            .is_err()
+        {
+            break;
+        }
+        if read == 0 {
+            break;
+        }
+        let count = usize::try_from(read).unwrap_or(0).min(buf.len());
+        let room = ERROR_BODY_CAP - out.len();
+        out.extend_from_slice(&buf[..count.min(room)]);
+        if count > room {
+            break;
+        }
+    }
+    out
+}
+
 fn read_body(
     request: *mut std::ffi::c_void,
     limit: u64,
@@ -297,4 +316,19 @@ fn read_body(
 
 fn map_win(result: windows::core::Result<()>) -> Result<(), TransportError> {
     result.map_err(|_| TransportError::Network)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wide_header_names_lanwork_and_has_no_trailing_nul() {
+        let header = request_header_wide("*/*").expect("headers");
+        let text = String::from_utf16(&header).expect("utf-16");
+        assert!(text.starts_with("User-Agent: Lanwork/"));
+        assert!(text.contains("\r\nAccept: */*\r\n"));
+        assert_ne!(header.last().copied(), Some(0));
+        assert!(!text.contains("User-Agent: \r"));
+    }
 }

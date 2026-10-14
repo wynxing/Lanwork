@@ -1,6 +1,6 @@
 # 在 windows-latest 上编译 release、安装包和便携版，并静默安装再卸载。
 # 不创建 GitHub Release，也不生成 minisign 签名。
-# 安装包生成之后写入 latest.json：版本、文件名、SHA-256。
+# 安装包生成之后写入 latest.json：版本、发行说明、文件名、SHA-256。
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -214,12 +214,30 @@ Assert-ProductVersion $setup $version "安装包"
 $hash = (Get-FileHash -Algorithm SHA256 -Path $setup).Hash.ToLowerInvariant()
 if ($hash -notmatch '^[0-9a-f]{64}$') { throw "安装包 SHA-256 不是 64 位小写十六进制" }
 $setupName = "Lanwork-Setup-$version.exe"
+$notesPath = Join-Path $root "packaging\release-notes.md"
+$notes = Get-Content -Raw $notesPath
+if ($notes -notlike "*__VERSION__*") { throw "Release 说明缺少版本占位" }
+$notes = $notes.Replace("__VERSION__", $version).Replace("__TAG__", "v$version")
+if ($notes -like "*__VERSION__*" -or $notes -like "*__TAG__*") { throw "Release 说明仍有占位" }
+if ($notes -notlike "*https://slint.dev*") { throw "Release 说明缺少 Slint 链接" }
+if ($notes -notlike "*MadeWithSlint*") { throw "Release 说明缺少 Slint 徽标" }
+if ($notes -like "*仅供自测*") { throw "Release 说明不能标成仅供自测" }
 $latestPath = Join-Path $out "latest.json"
-$latestJson = "{`"version`":`"$version`",`"installer`":{`"name`":`"$setupName`",`"sha256`":`"$hash`"}}`n"
+$payload = @{
+    version   = $version
+    notes     = $notes
+    installer = @{
+        name   = $setupName
+        sha256 = $hash
+    }
+}
+$latestJson = ($payload | ConvertTo-Json -Compress -Depth 5) + "`n"
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($latestPath, $latestJson, $utf8)
 $latest = Get-Content -Raw -Encoding utf8 $latestPath | ConvertFrom-Json
 if ($latest.version -ne $version) { throw "latest.json 的 version 不是 $version" }
+if ([string]::IsNullOrWhiteSpace([string]$latest.notes)) { throw "latest.json 缺少发行说明" }
+if ($latest.notes -notlike "*https://slint.dev*") { throw "latest.json 的发行说明缺少 Slint 链接" }
 if ($latest.installer.name -ne $setupName) { throw "latest.json 的安装包文件名不是 $setupName" }
 if ($latest.installer.sha256 -ne $hash) { throw "latest.json 的 sha256 对不上" }
 $again = (Get-FileHash -Algorithm SHA256 -Path $setup).Hash.ToLowerInvariant()
@@ -230,14 +248,6 @@ if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zip
 if ($zip -notlike "*portable*") { throw "便携版文件名不含 portable" }
 
-$notesPath = Join-Path $root "packaging\release-notes.md"
-$notes = Get-Content -Raw $notesPath
-if ($notes -notlike "*__VERSION__*") { throw "Release 说明缺少版本占位" }
-$notes = $notes.Replace("__VERSION__", $version).Replace("__TAG__", "v$version")
-if ($notes -like "*__VERSION__*" -or $notes -like "*__TAG__*") { throw "Release 说明仍有占位" }
-if ($notes -notlike "*https://slint.dev*") { throw "Release 说明缺少 Slint 链接" }
-if ($notes -notlike "*MadeWithSlint*") { throw "Release 说明缺少 Slint 徽标" }
-if ($notes -like "*仅供自测*") { throw "Release 说明不能标成仅供自测" }
 [System.IO.File]::WriteAllText((Join-Path $out "RELEASE.md"), $notes)
 Set-Content -Path (Join-Path $out "version.txt") -Value $version -Encoding ascii
 

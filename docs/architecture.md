@@ -537,21 +537,21 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 可见行为见产品规格「设置」。版本比较、`latest.json` 和界面状态在 `lanwork_core::update`。WinHTTP、托盘小点和退出后启动安装程序在 `crates/app/src/update.rs` 与 `update_http.rs`。
 
-启动约 1 秒后在后台查一次，进程一直开着时每隔 24 小时再查。设置页「检查更新」马上再查，不等这个间隔。查的是 `https://api.github.com/repos/wynxing/Lanwork/releases/latest`。只比较稳定的 `MAJOR.MINOR.PATCH`，标签可以带一个 `v`。预发布标签、多出来的一段和前导零都不算有更新。比较按数字，`0.9` 小于 `0.10`。
+启动约 1 秒后在后台查一次，进程一直开着时每隔 24 小时再查。设置页「检查更新」马上再查，不等这个间隔。查的是 `https://github.com/wynxing/Lanwork/releases/latest/download/latest.json`。这是最新正式版上的 `latest.json`，不请求 `api.github.com`。GitHub 会先转到同一标签的 `https://github.com/wynxing/Lanwork/releases/download/v<版本>/latest.json`，再转到 `release-assets.githubusercontent.com`。只比较稳定的 `MAJOR.MINOR.PATCH`，`version` 可以带一个 `v`。预发布、多出来的一段和前导零都不算有更新。比较按数字，`0.9` 小于 `0.10`。
 
-有更新时托盘图标右上角加一个小点，设置页显示新版本号和发行说明。不自动下载，也不自动安装。已经知道有更新时，后台这次检查失败只写日志，小点和「更新」留着。手动检查失败时设置页显示「检查更新失败」，已经知道的更新仍留着。查到当前版本或没有更新时清掉小点，状态是「已是最新版本」。
+有更新时托盘图标右上角加一个小点，设置页显示新版本号；`latest.json` 有 `notes` 时显示发行说明。不自动下载，也不自动安装。已经知道有更新时，后台这次检查失败只写日志，小点和「更新」留着。手动检查失败时设置页显示「检查更新失败」，已经知道的更新仍留着。查到当前版本或没有更新时清掉小点，状态是「已是最新版本」。
 
 安装版点「更新」才下载。便携版没有「更新」，按钮是「打开发布页」，用 `ShellExecuteW` 打开这个 Release 的 `https://github.com/wynxing/Lanwork/releases/...`。安装目录里有 `unins000.exe` 的是安装版。便携版的 zip 里没有这个文件。读不到可执行文件路径时按便携版，不下载安装包。
 
-安装包文件名必须是 `Lanwork-Setup-<版本>.exe`。安装包第一跳必须是 `https://github.com/wynxing/Lanwork/releases/download/v<版本>/Lanwork-Setup-<版本>.exe`。`latest.json` 第一跳必须是同一标签下的 `https://github.com/wynxing/Lanwork/releases/download/v<版本>/latest.json`。Release 资产里的 `browser_download_url` 只有和这两个地址完全一致时才采用，地址不写在 `latest.json` 里。`latest.json` 在同一个 Release 上，字段是 `version`、`installer.name`、`installer.sha256`（64 位十六进制）。资产上如果有 `digest`（`sha256:` 加十六进制），必须和 `latest.json` 一致，否则不提供「更新」，状态里带「校验信息不可用」，按钮改成「打开发布页」。没有 `latest.json`、哈希对不上、文件名不对或地址不是这两条，同样不静默安装。
+安装包文件名必须是 `Lanwork-Setup-<版本>.exe`。安装包第一跳必须是 `https://github.com/wynxing/Lanwork/releases/download/v<版本>/Lanwork-Setup-<版本>.exe`。检查更新的第一跳是 `https://github.com/wynxing/Lanwork/releases/latest/download/latest.json`；下一跳只接受同一标签的 `https://github.com/wynxing/Lanwork/releases/download/v<版本>/latest.json`。地址不从 `latest.json` 里读，文件里如果多了网址也忽略。字段是 `version`、`installer.name`、`installer.sha256`（64 位十六进制），可以有 `notes`。已经发布的 v0.3.0 没有 `notes`，程序把它当成没有发行说明，不当成检查失败。文件名不对或哈希不是 64 位十六进制时不静默安装，状态里带「校验信息不可用」，按钮改成「打开发布页」。发布页是 `https://github.com/wynxing/Lanwork/releases/tag/v<版本>`。没有这份文件，或下载下来的字节和 SHA-256 不一致，同样不静默安装。
 
 下载用 WinHTTP，分块写到临时目录，边写边算 SHA-256。不落到数据目录，也不落到缓存目录。不超过 200 MiB。临时文件在校验失败或下载失败时删掉。哈希一致才退出程序。退出仍走原来的便签保存：还有没写盘的修改时不退出，等用户处理完再继续。然后一个 PowerShell 助手等本进程结束（互斥量松开），运行安装包。参数只有 `/VERYSILENT`、`/SUPPRESSMSGBOXES`、`/NORESTART`、`/CLOSEAPPLICATIONS`。没有 `/DIR`，也没有数据目录。安装程序的退出码要检查。不是 0，或者安装程序没有启动时，把退出码写到 `%LOCALAPPDATA%\Lanwork\update-failed.txt`。这个文件不在数据目录里。下次启动读到它就记一条警告，设置页显示「安装失败」，然后删掉文件。自动检查如果仍有新版本，状态保持「安装失败」，「更新」可以再点。用户再点「检查更新」之后按当次结果更新状态。原来的 `lanwork.exe` 还在就再启动它。助手起不来时不退出，设置页显示「安装失败」，临时安装包删掉。
 
 静默安装发现互斥量还在会自己退出，所以必须等进程结束再启动安装包。`/CLOSEAPPLICATIONS` 仍传着。安装脚本 `RestartApplications=no`，避免安装程序再启动一次。
 
-第一跳只允许 https、端口 443，并且没有查询串、片段和 `..`：`https://api.github.com/repos/wynxing/Lanwork/releases/latest`，以及上面两条钉死的下载地址。别的路径不请求。`release-assets.githubusercontent.com` 和 `objects.githubusercontent.com` 只允许出现在重定向之后。重定向自己跟，最多 5 次。重定向里的 `..`、百分号编码的 `..` 和其他主机都拒绝。不关闭证书校验。元数据不超过 2 MiB。发行说明超过 8000 个 Unicode 标量值时截断并加省略号。这些上限、启动后等的 1 秒、小点的颜色和大小、说明用固定高度的换行文本而不是滚动，都是实现选择。
+第一跳只允许 https、端口 443，并且没有查询串、片段和 `..`：`https://github.com/wynxing/Lanwork/releases/latest/download/latest.json`，以及钉死的安装包路径和 `latest.json` 版本路径。别的路径不请求。版本路径也可以出现在 `releases/latest/download/latest.json` 的下一跳。`release-assets.githubusercontent.com` 和 `objects.githubusercontent.com` 只允许出现在重定向之后。重定向自己跟，最多 5 次。重定向里的 `..`、百分号编码的 `..` 和其他主机都拒绝。不关闭证书校验。每个请求都带 `User-Agent: Lanwork/<当前版本>` 和 `Accept`。`WinHttpOpen` 的代理名也是这串 `User-Agent`，请求头再用 `ADD` 加 `REPLACE` 写上同一值。元数据不超过 2 MiB。发行说明超过 8000 个 Unicode 标量值时截断并加省略号。这些上限、启动后等的 1 秒、小点的颜色和大小、说明用固定高度的换行文本而不是滚动，都是实现选择。
 
-网络失败时不安装。日志里写失败种类（网络、过大、写入临时文件失败、http 状态码），不写地址。
+网络失败时不安装。日志里写失败种类（网络、过大、写入临时文件失败、http 状态码和简要原因）。原因从响应正文抽出，去掉标记和网址，也不写请求地址。正文空着时按状态码写「拒绝访问」「没有这个文件」「请求过多」或「服务器错误」。
 
 不使用 minisign。签名私钥不进仓库，发布脚本也没有可以签名的密钥。同一条发布工作流在安装包生成之后写入 `latest.json` 的 SHA-256。程序只从上面的地址下载并核对。这不是从旧安装目录做完的一次升级。没有那次记录，更新未验收。
 
@@ -579,7 +579,7 @@ Windows Search 沿用上面的 ADO 语句，`TOP 50`。连接字符串能从 `IS
 
 打包脚本在编完 release 之后、以及静默安装之后，各读一次 `lanwork.exe` 的 PE 可选头。`Subsystem` 必须是 2。这是 `IMAGE_SUBSYSTEM_WINDOWS_GUI`。快捷方式工具 `lanwork-shortcut.exe` 仍是控制台程序，不留在安装目录，不查它的子系统。
 
-推送与 Cargo 版本一致的 `v*` tag 时，`.github/workflows/release.yml` 在 `windows-latest` 上编 release、打安装包和便携版、创建 GitHub Release，并上传这两个文件和 `latest.json`。`latest.json` 由 `packaging/build.ps1` 在安装包生成之后写入，内容是版本、`Lanwork-Setup-<版本>.exe` 和该文件的 SHA-256。说明里放 Slint 徽标和 <https://slint.dev> 的链接，并说明第三方许可。仓库已经公开，Release 按公开发布。不生成 minisign 签名。程序按「更新」下载并核对。未登录浏览器打开 Release 页、确认徽标和链接的记录还没有。
+推送与 Cargo 版本一致的 `v*` tag 时，`.github/workflows/release.yml` 在 `windows-latest` 上编 release、打安装包和便携版、创建 GitHub Release，并上传这两个文件和 `latest.json`。`latest.json` 由 `packaging/build.ps1` 在安装包生成之后写入，内容是版本、发行说明、`Lanwork-Setup-<版本>.exe` 和该文件的 SHA-256。发行说明用同一份发布说明。已经发出的 v0.3.0 文件没有发行说明。说明里放 Slint 徽标和 <https://slint.dev> 的链接，并说明第三方许可。仓库已经公开，Release 按公开发布。不生成 minisign 签名。程序按「更新」下载并核对。未登录浏览器打开 Release 页、确认徽标和链接的记录还没有。
 
 Pull request 的 CI 用同一套打包脚本试装：静默安装到带空格和中文的目录，再卸载，把安装包和便携版上传为 artifact，不创建 Release。这次静默安装不是 Windows 上的人工验收，也不是升级验收。
 
