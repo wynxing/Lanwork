@@ -1,5 +1,5 @@
 //! 面板里不调用窗口 API 的决定：标签、定位目标、窗口尺寸与位置，待办页的列表、行和输入解析，
-//! 便签页的列表、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，以及收纳页的分组、引用和拖放判定。
+//! 便签页的列表、多选、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，以及收纳页的分组、引用和拖放判定。
 //!
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
@@ -8,6 +8,7 @@ mod float_source;
 mod float_stack;
 mod note_edit;
 mod note_page;
+mod note_select;
 mod settings_page;
 mod shelf_dnd;
 mod shelf_page;
@@ -35,6 +36,10 @@ pub use note_page::{
     FLOAT_WIDTH, FloatPlacement, MonitorWork, NoteRow, NoteView, contain_float,
     float_default_origin, list_rows, locate_note, logical_work_limits, release_float,
     restore_float, settle_float, tag_names, trash_rows,
+};
+pub use note_select::{
+    NoteMultiSelect, NoteRowMods, NoteRowPick, clear_note_checks, enter_note_select, note_row_mods,
+    note_select_after_delete, pick_note_row, retain_note_select, select_all_notes,
 };
 
 pub use settings_page::{

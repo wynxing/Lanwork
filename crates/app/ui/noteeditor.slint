@@ -14,11 +14,14 @@ export component NoteEditor inherits Rectangle {
     in property <bool> closing;
     // 加一就把光标放进正文。新建便签之后用。
     in property <int> focus-ticket;
+    // 为真时 Esc 交给 escape，不留给外层。悬浮窗保持假。
+    in property <bool> handle-escape: false;
     in-out property <string> body <=> input.text;
     out property <string> preedit: input.preedit-text;
     out property <bool> text-focused: input.has-focus;
 
     callback body-edited(string);
+    callback escape();
     callback retry();
     callback discard();
     callback keep-mine();
@@ -53,6 +56,14 @@ export component NoteEditor inherits Rectangle {
 
             edited => {
                 root.body-edited(self.text);
+            }
+
+            key-pressed(event) => {
+                if root.handle-escape && self.preedit-text == "" && event.text == Key.Escape {
+                    root.escape();
+                    return accept;
+                }
+                reject
             }
 
             cursor-position-changed(position) => {
