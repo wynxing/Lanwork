@@ -26,6 +26,7 @@ use lanwork_core::panel::{
 };
 use lanwork_core::shell::{EndReason, HotkeyRecording, HotkeyRole, Recorded};
 use lanwork_core::storage::Store;
+use lanwork_core::todos::{DEFAULT_DEFER_DAYS, MAX_DEFER_DAYS, MIN_DEFER_DAYS};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::keycap;
@@ -131,6 +132,17 @@ impl SettingsPage {
     /// 面板错误条要显示的热键提示：配置里有、此刻没注册上的热键。没有时为空。
     pub(crate) fn hotkey_error(&self) -> Option<String> {
         self.recording.hotkey_error()
+    }
+
+    /// 处理模式「稍后」的天数。读内存里的 `processSnoozeDays`，与设置页「稍后」写入的是同一字段。
+    /// 文件没写这个字段时是 3。超出 1 至 30 时也用 3。
+    pub(crate) fn process_snooze_days(&self) -> u32 {
+        let days = self.commands.current().process_snooze_days;
+        if (MIN_DEFER_DAYS..=MAX_DEFER_DAYS).contains(&days) {
+            days
+        } else {
+            DEFAULT_DEFER_DAYS
+        }
     }
 
     /// 「录入中」状态的唯一出口，见 [`HotkeyRecording::end`]。没在录入时什么也不做。
