@@ -8,7 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::Mutex;
 
 use lanwork_core::storage::Store;
-use lanwork_core::todos::{DueReminder, activation_id, toast_xml};
+use lanwork_core::todos::{DueReminder, toast_launch, toast_xml};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 use windows::Win32::Foundation::{CLASS_E_NOAGGREGATION, E_POINTER};
@@ -158,10 +158,10 @@ pub(crate) fn flush_pending() {
 }
 
 fn note_activation(args: &str) {
-    let Some(id) = activation_id(args) else {
+    if toast_launch(args).is_none() {
         return;
-    };
-    lock(pending()).push(id);
+    }
+    lock(pending()).push(args.trim().to_owned());
     let _ = slint::invoke_from_event_loop(flush_pending);
 }
 

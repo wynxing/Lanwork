@@ -1,23 +1,25 @@
 //! 到期提醒调度。按下一次提醒或安静时段结束设一个定时器，不按秒轮询。
 //!
 //! 睡眠唤醒和系统时间变化也重新计算。通知发不出去时只记日志，角标照常更新。
-//! 安静时段来自 [`configured_quiet_span`]，#120 接入设置之前恒为没有时段。
+//! 安静时段来自配置里的 `quietHours`。配置变更会重新计算。
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
 use lanwork_core::CivilDate;
+use lanwork_core::config::ConfigCommands;
 use lanwork_core::storage::Store;
 use lanwork_core::todos::{
-    ClockTime, ReminderInstant, SentKey, TodoCommands, configured_quiet_span, wait_millis,
+    ClockTime, QuietSpan, ReminderInstant, SentKey, TodoCommands, wait_millis,
 };
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 struct State {
     todos: TodoCommands,
+    config: ConfigCommands,
     store: Store,
-    /// 这次进程里发出失败的提醒。外部事件（待办变更、唤醒、时间变化）会清掉再试。
+    /// 这次进程里发出失败的提醒。外部事件（待办变更、配置变更、唤醒、时间变化）会清掉再试。
     failed: BTreeSet<SentKey>,
 }
 
@@ -32,11 +34,12 @@ thread_local! {
     static TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
 }
 
-pub(crate) fn install(todos: TodoCommands, store: Store, installed: bool) {
+pub(crate) fn install(todos: TodoCommands, config: ConfigCommands, store: Store, installed: bool) {
     crate::toast::prepare(&store, installed);
     STATE.with(|slot| {
         *slot.borrow_mut() = Some(State {
             todos,
+            config,
             store,
             failed: BTreeSet::new(),
         });
@@ -71,7 +74,7 @@ fn evaluate(clear_failed: bool) {
         }
         let plan = match state
             .todos
-            .reminder_plan(clock.now, configured_quiet_span())
+            .reminder_plan(clock.now, quiet_span(&state.config))
         {
             Ok(plan) => plan,
             Err(err) => {
@@ -147,6 +150,13 @@ fn arm(next: Option<ReminderInstant>, clock: &LocalClock) {
             },
         );
     });
+}
+
+fn quiet_span(config: &ConfigCommands) -> Option<QuietSpan> {
+    config
+        .current()
+        .quiet_hours
+        .map(|hours| QuietSpan::from_clocks(hours.start, hours.end))
 }
 
 fn log_warn(message: &str) {

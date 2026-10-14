@@ -34,8 +34,8 @@ pub use model::{
 };
 pub use purge_record::PURGE_PENDING_FILE;
 pub use remind::{
-    DueReminder, MAX_TIMER_MS, QuietSpan, ReminderPlan, SentKey, activation_id,
-    configured_quiet_span, in_quiet, plan, quiet_end, toast_xml, wait_millis,
+    DueReminder, INBOX_LAUNCH, MAX_TIMER_MS, QuietSpan, ReminderPlan, SentKey, TOAST_HEADING,
+    ToastLaunch, in_quiet, plan, quiet_end, toast_launch, toast_xml, wait_millis,
 };
 pub use remind_sent::SENT_FILE;
 pub use schedule::{

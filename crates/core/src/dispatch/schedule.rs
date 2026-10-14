@@ -2,7 +2,7 @@
 //!
 //! 组合中的预编辑不要调用 [`Dispatch::submit`]。起点时间是已提交文本变化的时刻。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::apps::{
@@ -13,10 +13,10 @@ use crate::files::{
 };
 use crate::notes::NoteCommands;
 use crate::search::{
-    FieldRole, Hit, HitKind, OPEN_WEBSITE_LABEL, RankedGroup, SearchGroup, WebSearchEngine,
-    allocate_display, classify_prefix, open_website, rank_hits,
+    DISPLAY_LIMIT, FieldRole, Hit, HitKind, OPEN_WEBSITE_LABEL, RankedGroup, SearchGroup,
+    WebSearchEngine, allocate_display, classify_prefix, open_website, rank_hits,
 };
-use crate::shelves::ShelfCommands;
+use crate::shelves::{ShelfCommands, normalize_path};
 use crate::storage::{self, EntityKind, Error as StorageError, StartupError, Store};
 use crate::todos::TodoCommands;
 
@@ -354,7 +354,7 @@ impl Dispatch {
         storage::lock_mutex(&self.inner).accepts(sequence)
     }
 
-    /// 网页搜索那一条用的搜索引擎。从下一次输入起生效。
+    /// 网页搜索那一条用的搜索引擎。下一次投影这次搜索时读取。
     pub fn set_web_search_engine(&self, engine: WebSearchEngine) {
         storage::lock_mutex(&self.inner).web_engine = engine;
     }
@@ -445,11 +445,11 @@ impl Inner {
     fn rebuild(&mut self) -> Result<(), String> {
         self.index.rebuild_todos(&self.todos)?;
         self.index.rebuild_notes(&self.notes);
-        self.index.rebuild_webs(self.shelves.as_ref());
+        self.index.rebuild_shelves(self.shelves.as_ref());
         while self.changes.try_recv().is_ok() {}
         self.index.rebuild_todos(&self.todos)?;
         self.index.rebuild_notes(&self.notes);
-        self.index.rebuild_webs(self.shelves.as_ref());
+        self.index.rebuild_shelves(self.shelves.as_ref());
         Ok(())
     }
 
@@ -477,7 +477,7 @@ impl Inner {
             self.index.rebuild_notes(&self.notes);
         }
         if shelf {
-            self.index.rebuild_webs(self.shelves.as_ref());
+            self.index.rebuild_shelves(self.shelves.as_ref());
         }
         Ok(())
     }
@@ -723,6 +723,7 @@ fn project(state: &SearchState, engine: WebSearchEngine) -> (Vec<SearchRow>, Fil
         .into_iter()
         .map(|(_group, row)| row)
         .collect();
+    rows = omit_shown_shelf_files(rows, &state.file_hits);
     if let Some(row) = web_search_row(&state.text, engine) {
         rows.push(row);
     }
@@ -781,11 +782,11 @@ fn local_groups(
             items: notes,
         });
     }
-    let webs = index.rank_webs(text, freq);
-    if !webs.is_empty() {
+    let shelves = index.rank_shelves(text, freq);
+    if !shelves.is_empty() {
         groups.push(RankedGroup {
-            group: SearchGroup::Web,
-            items: webs,
+            group: SearchGroup::Shelf,
+            items: shelves,
         });
     }
     groups
@@ -883,6 +884,84 @@ fn app_icon(hit: &AppHit) -> Option<super::model::IconKey> {
         }
         LaunchTarget::Url { .. } => None,
     }
+}
+
+/// 已经出现在「收纳」里的文件不再留在「文件」组。去掉之后按来源顺序补后面的文件，仍不超过 20 条。
+/// 文件夹组不在这里比较。网页搜索还没接上，不占这 20 条。
+fn omit_shown_shelf_files(rows: Vec<SearchRow>, hits: &[FileHit]) -> Vec<SearchRow> {
+    let shown = shelf_file_identities(&rows);
+    if shown.is_empty() {
+        return rows;
+    }
+    let mut removed = false;
+    let mut rows: Vec<SearchRow> = rows
+        .into_iter()
+        .filter(|row| {
+            if row.group != SearchGroup::File {
+                return true;
+            }
+            let RowDetail::File { path } = &row.detail else {
+                return true;
+            };
+            if shown.contains(&file_identity(path)) {
+                removed = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    if !removed {
+        return rows;
+    }
+    let present: HashSet<String> = rows
+        .iter()
+        .filter_map(|row| match (&row.group, &row.detail) {
+            (SearchGroup::File, RowDetail::File { path }) => Some(file_identity(path)),
+            _ => None,
+        })
+        .collect();
+    let room = DISPLAY_LIMIT.saturating_sub(rows.len());
+    let mut extra = Vec::new();
+    for hit in hits {
+        if extra.len() >= room {
+            break;
+        }
+        if hit.kind != FileKind::File {
+            continue;
+        }
+        let identity = file_identity(&hit.path);
+        if shown.contains(&identity) || present.contains(&identity) {
+            continue;
+        }
+        extra.push(file_row(hit));
+    }
+    if extra.is_empty() {
+        return rows;
+    }
+    let at = rows
+        .iter()
+        .rposition(|row| row.group == SearchGroup::File)
+        .map(|index| index + 1)
+        .or_else(|| rows.iter().position(|row| row.group == SearchGroup::Folder))
+        .unwrap_or(rows.len());
+    rows.splice(at..at, extra);
+    rows
+}
+
+fn shelf_file_identities(rows: &[SearchRow]) -> HashSet<String> {
+    rows.iter()
+        .filter_map(|row| match (&row.group, &row.detail) {
+            (SearchGroup::Shelf, RowDetail::File { path }) => Some(file_identity(path)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn file_identity(path: &str) -> String {
+    normalize_path(path)
+        .map(|item| item.key)
+        .unwrap_or_else(|_| path.to_owned())
 }
 
 fn file_rows(hits: &[FileHit]) -> (Vec<SearchRow>, Vec<SearchRow>) {

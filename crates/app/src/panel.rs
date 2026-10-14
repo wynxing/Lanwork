@@ -5,7 +5,7 @@
 //! 拖入的 OLE 放下目标登记在这个窗口的句柄上（`shelf_dnd`）。面板搜索框还没有。
 //! 热角在 `hotcorner`，到点调用 [`show`](crate::panel::show)。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,7 @@ use lanwork_core::panel::{
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
-use lanwork_core::todos::{NewTodo, TodoCommands, TodoItem, TodoList};
+use lanwork_core::todos::{ListKind, NewTodo, TodoCommands, TodoItem, TodoList};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -94,8 +94,12 @@ pub(crate) fn install(
     ui.set_tab_titles(ModelRc::from(Rc::new(VecModel::from(tab_titles))));
     let lists_model = Rc::new(VecModel::<PanelList>::default());
     let rows_model = Rc::new(VecModel::<PanelRow>::default());
+    let triage_actions = Rc::new(VecModel::<slint::SharedString>::default());
+    let triage_lists = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_lists(ModelRc::from(Rc::clone(&lists_model)));
     ui.set_rows(ModelRc::from(Rc::clone(&rows_model)));
+    ui.set_triage_actions(ModelRc::from(Rc::clone(&triage_actions)));
+    ui.set_triage_lists(ModelRc::from(Rc::clone(&triage_lists)));
     wire(&ui);
 
     ui.window().on_winit_window_event(|_, event| {
@@ -132,6 +136,10 @@ pub(crate) fn install(
         store,
         lists_model,
         rows_model,
+        triage_actions,
+        triage_lists,
+        session: None,
+        cleared_gen: 0,
         tab: PanelTab::Todo,
         lists: Vec::new(),
         view: None,
@@ -170,12 +178,18 @@ pub(crate) fn open_target(target: PanelTarget) {
     with_panel(move |panel| panel.open_target(&target));
 }
 
-/// 安装版到期通知的点击。找不到该条时面板上显示「找不到待办」。
+/// 安装版到期通知的点击。单条定位到该待办；合并补发打开收件箱且不选中。
 ///
-/// 没拿到前台也不收起，否则错误和定位都看不见。便携版不走这里。
-pub(crate) fn open_from_notification(item_id: &str) {
-    let item_id = item_id.to_owned();
-    with_panel(move |panel| panel.open_notification(&item_id));
+/// 找不到该条时面板上显示「找不到待办」。没拿到前台也不收起，否则错误和定位都看不见。便携版不走这里。
+pub(crate) fn open_from_notification(launch: &str) {
+    let launch = launch.to_owned();
+    with_panel(
+        move |panel| match lanwork_core::todos::toast_launch(&launch) {
+            Some(lanwork_core::todos::ToastLaunch::Item(id)) => panel.open_notification(&id),
+            Some(lanwork_core::todos::ToastLaunch::Inbox) => panel.open_notification_inbox(),
+            None => {}
+        },
+    );
 }
 
 /// 面板外的动作失败时，把原因显示在面板上。
@@ -301,6 +315,15 @@ fn wire(ui: &Panel) {
         let text = text.to_string();
         with_panel(move |panel| panel.commit_until(&text));
     });
+    ui.on_start_triage(|| with_panel(Controller::enter_triage));
+    ui.on_triage_key(|code, modified| {
+        let handled = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&handled);
+        with_panel(move |panel| flag.set(panel.on_triage_key(code, modified)));
+        handled.get()
+    });
+    ui.on_triage_click(|index| with_panel(move |panel| panel.triage_click(index)));
+    ui.on_triage_pick(|index| with_panel(move |panel| panel.triage_pick(index)));
 }
 
 pub(crate) struct Controller {
@@ -316,6 +339,12 @@ pub(crate) struct Controller {
     store: Store,
     lists_model: Rc<VecModel<PanelList>>,
     rows_model: Rc<VecModel<PanelRow>>,
+    triage_actions: Rc<VecModel<slint::SharedString>>,
+    triage_lists: Rc<VecModel<slint::SharedString>>,
+    /// 处理模式这一轮。没有时待办页是清单。
+    session: Option<panel::Session>,
+    /// 作废已经排好的「1 秒后回到清单」。
+    cleared_gen: u64,
     tab: PanelTab,
     lists: Vec<TodoList>,
     view: Option<TodoView>,
@@ -398,7 +427,21 @@ impl Controller {
         self.from_notification = false;
     }
 
+    /// 合并补发：待办标签、收件箱，不选中任何一条。
+    fn open_notification_inbox(&mut self) {
+        self.from_notification = true;
+        self.exit_triage();
+        self.tab = PanelTab::Todo;
+        self.prepare();
+        self.view = panel::default_view(&self.lists);
+        self.selected = None;
+        self.rebuild();
+        self.present();
+        self.from_notification = false;
+    }
+
     fn open_target(&mut self, target: &PanelTarget) {
+        self.exit_triage();
         self.tab = match target {
             PanelTarget::Todo { .. } => PanelTab::Todo,
             PanelTarget::Note { .. } => PanelTab::Notes,
@@ -525,6 +568,7 @@ impl Controller {
     }
 
     fn hide(&mut self) {
+        self.exit_triage();
         self.settings.cancel_recording(&self.ui);
         self.visible = false;
         self.error = None;
@@ -550,6 +594,9 @@ impl Controller {
     }
 
     fn select_tab(&mut self, tab: PanelTab) {
+        if tab != PanelTab::Todo {
+            self.exit_triage();
+        }
         self.tab = tab;
         self.ui.set_tab(i32::try_from(tab.index()).unwrap_or(0));
         if tab != PanelTab::Settings {
@@ -568,7 +615,11 @@ impl Controller {
             self.push_error();
         }
         self.sync_drop();
-        self.ui.invoke_focus_root();
+        if self.session.is_some() {
+            self.ui.invoke_focus_triage();
+        } else {
+            self.ui.invoke_focus_root();
+        }
     }
 
     fn today(&mut self) -> Option<CivilDate> {
@@ -580,13 +631,21 @@ impl Controller {
     }
 
     /// 从服务重新读清单，保持当前视图和选中的条目，然后推给界面。
+    /// 处理模式开着时，按条目 id 跟上队列，不把光标拉回去。
     fn reload(&mut self) {
+        if self.reload_lists() {
+            self.follow_triage();
+        }
+    }
+
+    /// 重新读清单并重排。不移动处理模式的光标。清单没读到时返回假。
+    fn reload_lists(&mut self) -> bool {
         match self.todos.lists() {
             Ok(lists) => self.lists = lists,
             Err(err) => {
                 self.error = Some(err.to_string());
                 self.push_error();
-                return;
+                return false;
             }
         }
         let keep = self
@@ -595,6 +654,7 @@ impl Controller {
             .filter(|view| panel::view_exists(&self.lists, view));
         self.view = keep.or_else(|| panel::default_view(&self.lists));
         self.rebuild();
+        true
     }
 
     /// 由 `lists` 和 `view` 重排界面数据，不读服务。
@@ -643,7 +703,22 @@ impl Controller {
             .collect();
         self.rows_model.set_vec(models);
         self.ui.set_selected_row(self.selected_index());
+        let incomplete = panel::inbox_queue(&self.lists).len();
+        self.ui.set_show_process(
+            panel::entry_visible(self.viewing_inbox(), incomplete) && self.session.is_none(),
+        );
+        self.ui
+            .set_process_label(panel::entry_label(incomplete).into());
         self.push_detail(false);
+    }
+
+    fn viewing_inbox(&self) -> bool {
+        let Some(TodoView::List(id)) = &self.view else {
+            return false;
+        };
+        self.lists
+            .iter()
+            .any(|list| &list.id == id && list.kind == ListKind::Inbox)
     }
 
     fn selected_index(&self) -> i32 {
@@ -1031,6 +1106,394 @@ impl Controller {
             });
         self.finish(result, true);
     }
+
+    fn enter_triage(&mut self) {
+        if self.session.is_some() || !self.viewing_inbox() {
+            return;
+        }
+        let ids = panel::inbox_queue(&self.lists);
+        self.session = Some(panel::Session::start(ids));
+        self.error = None;
+        self.rebuild();
+        self.push_error();
+        self.push_triage();
+        self.ui.invoke_focus_triage();
+    }
+
+    fn exit_triage(&mut self) {
+        if self.session.is_none() {
+            return;
+        }
+        self.session = None;
+        self.cleared_gen = self.cleared_gen.wrapping_add(1);
+        self.error = None;
+        if let Some(inbox) = self.lists.iter().find(|list| list.kind == ListKind::Inbox) {
+            self.view = Some(TodoView::List(inbox.id.clone()));
+        }
+        self.selected = None;
+        self.rebuild();
+        self.push_triage();
+        self.push_error();
+        self.ui.invoke_scroll_to_top();
+        self.ui.invoke_focus_root();
+    }
+
+    fn on_triage_key(&mut self, code: i32, modified: bool) -> bool {
+        let Some((picker_open, showing_item)) = self
+            .session
+            .as_ref()
+            .map(|session| (session.picker_open(), session.showing_item()))
+        else {
+            return false;
+        };
+        let hit = panel::key_hit(panel::KeyInput {
+            code,
+            composing: false,
+            modified,
+            picker_open,
+            showing_item,
+        });
+        if hit.action != panel::Action::None {
+            self.apply_triage(hit.action);
+        }
+        hit.consume
+    }
+
+    fn triage_click(&mut self, index: i32) {
+        let action = match index {
+            0 => panel::Action::Today,
+            1 => panel::Action::Defer,
+            2 => panel::Action::OpenMove,
+            3 => panel::Action::Complete,
+            4 => panel::Action::Delete,
+            _ => return,
+        };
+        self.apply_triage(action);
+    }
+
+    fn triage_pick(&mut self, index: i32) {
+        let Some(index) = usize::try_from(index).ok() else {
+            return;
+        };
+        let target = self
+            .session
+            .as_mut()
+            .and_then(|session| session.take_pick(index));
+        if let Some(target) = target {
+            self.move_current(&target);
+        }
+    }
+
+    fn apply_triage(&mut self, action: panel::Action) {
+        match action {
+            panel::Action::Exit => self.exit_triage(),
+            panel::Action::CancelMove => {
+                if let Some(session) = self.session.as_mut() {
+                    session.close_picker();
+                }
+                self.push_triage();
+                self.ui.invoke_focus_triage();
+            }
+            panel::Action::MoveUp => self.nudge_picker(false),
+            panel::Action::MoveDown => self.nudge_picker(true),
+            panel::Action::ConfirmMove => {
+                let target = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.take_current_pick());
+                if let Some(target) = target {
+                    self.move_current(&target);
+                }
+            }
+            panel::Action::OpenMove => self.open_move(),
+            panel::Action::Today => self.write_current(TriageWrite::Today),
+            panel::Action::Defer => self.write_current(TriageWrite::Defer),
+            panel::Action::Complete => self.write_current(TriageWrite::Complete),
+            panel::Action::Delete => self.write_current(TriageWrite::Delete),
+            panel::Action::None => {}
+        }
+    }
+
+    fn nudge_picker(&mut self, down: bool) {
+        if let Some(session) = self.session.as_mut() {
+            session.move_picker(down);
+        }
+        self.push_triage();
+        self.ui.invoke_focus_triage();
+    }
+
+    fn open_move(&mut self) {
+        let opened = {
+            let Some(session) = self.session.as_mut() else {
+                return;
+            };
+            if session.picker_open() || !session.showing_item() {
+                return;
+            }
+            session.open_picker(&self.lists)
+        };
+        match opened {
+            panel::OpenMove::Opened => {
+                self.push_triage();
+                self.ui.invoke_focus_triage();
+            }
+            panel::OpenMove::NoList => {
+                self.error = Some(panel::NO_OTHER_LIST.to_owned());
+                self.push_error();
+                self.ui.invoke_focus_triage();
+            }
+            panel::OpenMove::Unavailable => {}
+        }
+    }
+
+    fn move_current(&mut self, target_id: &str) {
+        let Some(id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.shown_id().map(str::to_owned))
+        else {
+            return;
+        };
+        let result = self
+            .todos
+            .process_move(&id, target_id)
+            .map_err(|err| err.to_string());
+        self.finish_triage(result, &id);
+    }
+
+    fn write_current(&mut self, write: TriageWrite) {
+        let Some(id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.shown_id().map(str::to_owned))
+        else {
+            return;
+        };
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.picker_open())
+        {
+            return;
+        }
+        let result = match write {
+            TriageWrite::Today => match self.today() {
+                Some(today) => self
+                    .todos
+                    .process_today(&id, today)
+                    .map_err(|err| err.to_string()),
+                None => Err(panel::NO_TODAY.to_owned()),
+            },
+            TriageWrite::Defer => match self.today() {
+                Some(today) => self
+                    .todos
+                    .process_defer(&id, self.settings.process_snooze_days(), today)
+                    .map_err(|err| err.to_string()),
+                None => Err(panel::NO_TODAY.to_owned()),
+            },
+            TriageWrite::Complete => self
+                .todos
+                .process_complete(&id)
+                .map_err(|err| err.to_string()),
+            TriageWrite::Delete => self
+                .todos
+                .process_soft_delete(&id)
+                .map_err(|err| err.to_string()),
+        };
+        self.finish_triage(result, &id);
+    }
+
+    fn finish_triage(&mut self, result: Result<(), String>, id: &str) {
+        match result {
+            Ok(()) => {
+                self.error = None;
+                self.push_error();
+                if !self.reload_lists() {
+                    self.push_triage();
+                    self.ui.invoke_focus_triage();
+                    return;
+                }
+                match self.todos.next_inbox_incomplete_after(id) {
+                    Ok(next) => self.step_cursor(next),
+                    Err(err) => {
+                        self.error = Some(err.to_string());
+                        self.push_error();
+                        self.push_triage();
+                        self.ui.invoke_focus_triage();
+                    }
+                }
+            }
+            Err(message) => {
+                self.error = Some(message);
+                let _ = self.reload_lists();
+                self.push_error();
+                self.push_triage();
+                self.ui.invoke_focus_triage();
+            }
+        }
+    }
+
+    fn step_cursor(&mut self, next: Option<String>) {
+        let was_cleared = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.is_cleared());
+        if let Some(session) = self.session.as_mut() {
+            session.advance(next);
+        }
+        let cleared = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.is_cleared());
+        if cleared && !was_cleared {
+            self.arm_cleared();
+        }
+        self.push_triage();
+        self.ui.invoke_focus_triage();
+    }
+
+    fn arm_cleared(&mut self) {
+        self.cleared_gen = self.cleared_gen.wrapping_add(1);
+        let generation = self.cleared_gen;
+        slint::Timer::single_shot(Duration::from_millis(panel::CLEARED_HOLD_MS), move || {
+            with_panel(move |panel| panel.return_if_cleared(generation));
+        });
+    }
+
+    fn return_if_cleared(&mut self, generation: u64) {
+        if self.cleared_gen == generation
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.is_cleared())
+        {
+            self.exit_triage();
+        }
+    }
+
+    fn follow_triage(&mut self) {
+        if self.session.is_none() {
+            return;
+        }
+        let fresh = panel::inbox_queue(&self.lists);
+        let Some((cleared, empty, showing, shown_in, cursor)) =
+            self.session.as_ref().map(|session| {
+                (
+                    session.is_cleared(),
+                    session.is_empty(),
+                    session.showing_item(),
+                    session.shown_in(&fresh),
+                    session.cursor().to_owned(),
+                )
+            })
+        else {
+            return;
+        };
+        if empty {
+            if !fresh.is_empty() {
+                self.session = Some(panel::Session::start(fresh));
+            }
+            self.push_triage();
+            return;
+        }
+        if showing && shown_in {
+            if let Some(session) = self.session.as_mut() {
+                session.absorb_ahead(&fresh);
+            }
+            self.push_triage();
+            return;
+        }
+        if showing && !shown_in {
+            match self.todos.next_inbox_incomplete_after(&cursor) {
+                Ok(next) => self.step_cursor(next),
+                Err(err) => {
+                    self.error = Some(err.to_string());
+                    self.push_error();
+                    self.push_triage();
+                }
+            }
+            return;
+        }
+        if cleared {
+            match self.todos.next_inbox_incomplete_after(&cursor) {
+                Ok(Some(next)) => {
+                    self.cleared_gen = self.cleared_gen.wrapping_add(1);
+                    self.step_cursor(Some(next));
+                }
+                Ok(None) => self.push_triage(),
+                Err(err) => {
+                    self.error = Some(err.to_string());
+                    self.push_error();
+                }
+            }
+        }
+    }
+
+    fn push_triage(&mut self) {
+        let Some(view) = self.triage_view() else {
+            self.ui.set_triage_open(false);
+            self.ui.set_triage_show_card(false);
+            self.ui.set_triage_picker(false);
+            return;
+        };
+        self.ui.set_triage_open(true);
+        self.ui.set_triage_show_card(view.show_card);
+        self.ui.set_triage_status(view.status.into());
+        self.ui.set_triage_progress(view.progress.into());
+        self.ui.set_triage_title(view.title.into());
+        self.ui.set_triage_due(view.due.into());
+        self.ui.set_triage_source(view.source.into());
+        self.triage_actions
+            .set_vec(view.labels.into_iter().map(Into::into).collect::<Vec<_>>());
+        self.ui.set_triage_picker(view.picker);
+        self.triage_lists
+            .set_vec(view.names.into_iter().map(Into::into).collect::<Vec<_>>());
+        self.ui.set_triage_list_index(view.index);
+    }
+
+    fn triage_view(&self) -> Option<TriageView> {
+        let session = self.session.as_ref()?;
+        let card = session
+            .shown_id()
+            .and_then(|id| panel::card_text(&self.lists, id))
+            .unwrap_or(panel::CardText {
+                title: String::new(),
+                due: String::new(),
+                source: String::new(),
+            });
+        Some(TriageView {
+            show_card: session.showing_item(),
+            status: session.status().unwrap_or("").to_owned(),
+            progress: session.progress().unwrap_or_default(),
+            title: card.title,
+            due: card.due,
+            source: card.source,
+            labels: panel::action_labels(self.settings.process_snooze_days()),
+            picker: session.picker_open(),
+            names: session.picker_names(),
+            index: i32::try_from(session.picker_index()).unwrap_or(0),
+        })
+    }
+}
+
+struct TriageView {
+    show_card: bool,
+    status: String,
+    progress: String,
+    title: String,
+    due: String,
+    source: String,
+    labels: [String; 5],
+    picker: bool,
+    names: Vec<String>,
+    index: i32,
+}
+
+enum TriageWrite {
+    Today,
+    Defer,
+    Complete,
+    Delete,
 }
 
 fn row_model(row: &Row, shelf: bool) -> PanelRow {

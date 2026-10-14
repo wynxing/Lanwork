@@ -1,10 +1,13 @@
-// 面板的设置页：开机启动、热角、搜索条热键，每项一行。下面是关于与更新，然后是隐藏的应用。
+// 面板的设置页。左边四个分类，右边是当前分类的内容。
 // 版式由这里决定，数据和动作在 Rust。
-// 数据和回调放在 SettingsPageData 里，面板窗口只负责把这个页面摆在标签内容区。
 // 控件只显示配置里的值；请求被拒绝或写盘失败时，Rust 重新推送原值，界面随之回到原状。
-// 前三行的位置不要改：布局测试按这个坐标点它们。
+//
+// 布局测试按这些坐标点（窗口里，标题 48px，其下 1px 分隔线，本页从 y=49 开始）：
+// 左栏宽 132。分类从 y=8 起，步长 40，行高 36。第 i 行中心相对本页是 8+40*i+18。
+// 右栏从 x=132 起，内边距左 16、上 8，行高 48，标签宽 120。
+// 控件左缘相对窗口是 132+16+120=268。第 i 行中心相对本页是 8+48*i+24。
 
-import { Btn, Ink, Segments, ToggleSwitch } from "widgets.slint";
+import { Btn, Field, Ink, Segments, ToggleSwitch } from "widgets.slint";
 
 export struct SettingsHiddenApp {
     name: string,
@@ -16,6 +19,16 @@ export global SettingsPageData {
     in property <int> corner;
     in property <string> hotkey;
     in property <bool> recording;
+    in property <[string]> theme-titles;
+    in property <int> theme;
+    in property <[string]> engine-titles;
+    in property <int> engine;
+    in property <bool> quiet-on;
+    in property <string> quiet-start;
+    in property <string> quiet-end;
+    in property <string> snooze-days;
+    in property <int> field-reset;
+    in property <string> data-dir;
     in property <string> version-text: "0.2.0";
     in property <string> update-status;
     in property <bool> update-status-error: false;
@@ -27,6 +40,13 @@ export global SettingsPageData {
     callback set-launch-at-startup(bool);
     callback choose-corner(int);
     callback toggle-recording();
+    callback choose-theme(int);
+    callback choose-engine(int);
+    callback set-quiet(bool);
+    callback commit-quiet-start(string);
+    callback commit-quiet-end(string);
+    callback commit-snooze(string);
+    callback choose-section(int);
     callback update-clicked();
 
     in property <[SettingsHiddenApp]> hidden-apps;
@@ -41,7 +61,7 @@ component Row inherits Rectangle {
 
     Text {
         x: 0px;
-        width: 140px;
+        width: 120px;
         height: parent.height - 1px;
         text: root.name;
         color: c.ink;
@@ -93,13 +113,13 @@ component HotkeyBox inherits Rectangle {
     }
 }
 
-export component SettingsPage inherits Rectangle {
+component GeneralPage inherits Rectangle {
     in property <Ink> c;
     in property <bool> dark;
 
     VerticalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
+        padding-left: 16px;
+        padding-right: 16px;
         padding-top: 8px;
         alignment: start;
 
@@ -108,7 +128,7 @@ export component SettingsPage inherits Rectangle {
             c: root.c;
 
             ToggleSwitch {
-                x: 140px;
+                x: 120px;
                 y: (parent.height - self.height) / 2;
                 checked: SettingsPageData.launch-at-startup;
                 label: "开机启动";
@@ -125,7 +145,7 @@ export component SettingsPage inherits Rectangle {
             c: root.c;
 
             Segments {
-                x: 140px;
+                x: 120px;
                 y: (parent.height - self.height) / 2;
                 items: SettingsPageData.corner-titles;
                 current: SettingsPageData.corner;
@@ -141,7 +161,7 @@ export component SettingsPage inherits Rectangle {
             c: root.c;
 
             HotkeyBox {
-                x: 140px;
+                x: 120px;
                 y: (parent.height - self.height) / 2;
                 text: SettingsPageData.hotkey;
                 recording: SettingsPageData.recording;
@@ -152,6 +172,174 @@ export component SettingsPage inherits Rectangle {
             }
         }
 
+        Row {
+            name: "主题";
+            c: root.c;
+
+            Segments {
+                x: 120px;
+                y: (parent.height - self.height) / 2;
+                items: SettingsPageData.theme-titles;
+                current: SettingsPageData.theme;
+                c: root.c;
+                chosen(index) => {
+                    SettingsPageData.choose-theme(index);
+                }
+            }
+        }
+
+        Row {
+            name: "网页搜索引擎";
+            c: root.c;
+
+            Segments {
+                x: 120px;
+                y: (parent.height - self.height) / 2;
+                items: SettingsPageData.engine-titles;
+                current: SettingsPageData.engine;
+                c: root.c;
+                chosen(index) => {
+                    SettingsPageData.choose-engine(index);
+                }
+            }
+        }
+    }
+}
+
+component TodoPage inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> dark;
+
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        alignment: start;
+
+        Row {
+            name: "安静时段";
+            c: root.c;
+
+            ToggleSwitch {
+                x: 120px;
+                y: (parent.height - self.height) / 2;
+                checked: SettingsPageData.quiet-on;
+                label: "安静时段";
+                c: root.c;
+                on-fill: root.dark ? #000000 : #ffffff;
+                toggled(value) => {
+                    SettingsPageData.set-quiet(value);
+                }
+            }
+
+            if SettingsPageData.quiet-on: Field {
+                x: 172px;
+                y: (parent.height - self.height) / 2;
+                width: 72px;
+                source-text: SettingsPageData.quiet-start;
+                reset: SettingsPageData.field-reset;
+                name: "开始";
+                c: root.c;
+                committed(text) => {
+                    SettingsPageData.commit-quiet-start(text);
+                }
+            }
+
+            if SettingsPageData.quiet-on: Text {
+                x: 248px;
+                width: 16px;
+                height: parent.height - 1px;
+                text: "–";
+                color: root.c.secondary;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            if SettingsPageData.quiet-on: Field {
+                x: 268px;
+                y: (parent.height - self.height) / 2;
+                width: 72px;
+                source-text: SettingsPageData.quiet-end;
+                reset: SettingsPageData.field-reset;
+                name: "结束";
+                c: root.c;
+                committed(text) => {
+                    SettingsPageData.commit-quiet-end(text);
+                }
+            }
+        }
+
+        Row {
+            name: "稍后";
+            c: root.c;
+
+            Field {
+                x: 120px;
+                y: (parent.height - self.height) / 2;
+                width: 72px;
+                source-text: SettingsPageData.snooze-days;
+                reset: SettingsPageData.field-reset;
+                c: root.c;
+                committed(text) => {
+                    SettingsPageData.commit-snooze(text);
+                }
+            }
+        }
+    }
+}
+
+component DataPage inherits Rectangle {
+    in property <Ink> c;
+
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        alignment: start;
+
+        Row {
+            name: "数据目录";
+            c: root.c;
+
+            Text {
+                x: 120px;
+                width: parent.width - 120px;
+                height: parent.height - 1px;
+                text: SettingsPageData.data-dir;
+                color: root.c.secondary;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        Row {
+            name: "备份";
+            c: root.c;
+        }
+
+        Row {
+            name: "导出";
+            c: root.c;
+        }
+
+        Row {
+            name: "导入";
+            c: root.c;
+        }
+    }
+}
+
+component OtherPage inherits Rectangle {
+    in property <Ink> c;
+
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        alignment: start;
+
         // 关于与更新。没有说明段落。发行说明是 Release 正文。高度固定，下面的隐藏列表才不把按钮顶走。
         Rectangle {
             height: 88px + (SettingsPageData.update-notes-visible ? 120px : 0px);
@@ -159,7 +347,7 @@ export component SettingsPage inherits Rectangle {
             Text {
                 x: 0px;
                 y: 0px;
-                width: 140px;
+                width: 120px;
                 height: 28px;
                 text: "版本";
                 color: root.c.ink;
@@ -169,9 +357,9 @@ export component SettingsPage inherits Rectangle {
             }
 
             Text {
-                x: 140px;
+                x: 120px;
                 y: 0px;
-                width: parent.width - 140px;
+                width: parent.width - 120px;
                 height: 28px;
                 text: SettingsPageData.version-text;
                 color: root.c.ink;
@@ -181,9 +369,9 @@ export component SettingsPage inherits Rectangle {
             }
 
             Text {
-                x: 140px;
+                x: 120px;
                 y: 28px;
-                width: parent.width - 140px;
+                width: parent.width - 120px;
                 height: 20px;
                 text: SettingsPageData.update-status;
                 color: SettingsPageData.update-status-error ? root.c.critical : root.c.secondary;
@@ -205,7 +393,7 @@ export component SettingsPage inherits Rectangle {
             }
 
             Btn {
-                x: 140px;
+                x: 120px;
                 y: 52px + (SettingsPageData.update-notes-visible ? 120px : 0px);
                 text: SettingsPageData.update-button;
                 enabled: SettingsPageData.update-enabled;
@@ -271,5 +459,140 @@ export component SettingsPage inherits Rectangle {
                 }
             }
         }
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> name;
+    in property <bool> selected;
+    in property <Ink> c;
+    callback clicked();
+
+    x: 8px;
+    width: 116px;
+    height: 36px;
+    border-radius: 6px;
+    background: selected ? c.selection : touch.has-hover ? c.hover : transparent;
+
+    Text {
+        x: 12px;
+        width: parent.width - 20px;
+        height: 100%;
+        text: root.name;
+        color: selected ? c.ink : c.secondary;
+        font-size: 13px;
+        font-weight: selected ? 600 : 400;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component SettingsPage inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> dark;
+    property <int> section: 0;
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 132px;
+        height: 100%;
+
+        Rectangle {
+            x: 131px;
+            width: 1px;
+            height: 100%;
+            background: root.c.divider;
+        }
+
+        NavItem {
+            y: 8px;
+            name: "常规";
+            selected: root.section == 0;
+            c: root.c;
+            clicked => {
+                if (root.section != 0) {
+                    root.section = 0;
+                    SettingsPageData.choose-section(0);
+                }
+            }
+        }
+
+        NavItem {
+            y: 48px;
+            name: "待办";
+            selected: root.section == 1;
+            c: root.c;
+            clicked => {
+                if (root.section != 1) {
+                    root.section = 1;
+                    SettingsPageData.choose-section(1);
+                }
+            }
+        }
+
+        NavItem {
+            y: 88px;
+            name: "数据";
+            selected: root.section == 2;
+            c: root.c;
+            clicked => {
+                if (root.section != 2) {
+                    root.section = 2;
+                    SettingsPageData.choose-section(2);
+                }
+            }
+        }
+
+        NavItem {
+            y: 128px;
+            name: "其他";
+            selected: root.section == 3;
+            c: root.c;
+            clicked => {
+                if (root.section != 3) {
+                    root.section = 3;
+                    SettingsPageData.choose-section(3);
+                }
+            }
+        }
+    }
+
+    if root.section == 0: GeneralPage {
+        x: 132px;
+        width: parent.width - 132px;
+        height: 100%;
+        c: root.c;
+        dark: root.dark;
+    }
+
+    if root.section == 1: TodoPage {
+        x: 132px;
+        width: parent.width - 132px;
+        height: 100%;
+        c: root.c;
+        dark: root.dark;
+    }
+
+    if root.section == 2: DataPage {
+        x: 132px;
+        width: parent.width - 132px;
+        height: 100%;
+        c: root.c;
+    }
+
+    if root.section == 3: OtherPage {
+        x: 132px;
+        width: parent.width - 132px;
+        height: 100%;
+        c: root.c;
     }
 }

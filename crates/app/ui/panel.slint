@@ -3,7 +3,7 @@
 
 import { ListView, Palette } from "std-widgets.slint";
 import { Btn, Check, Chip, Field, Ink, Segments } from "widgets.slint";
-import { NotesPage } from "notespage.slint";
+import { NotesPage, NotesPageData } from "notespage.slint";
 import { SettingsPage } from "settingspage.slint";
 import { ShelvesPage } from "shelvespage.slint";
 
@@ -95,6 +95,27 @@ export component Panel inherits Window {
     callback open-shelf();
     callback float-todos();
 
+    // 处理模式。收件箱有未完成条目时，清单顶部有「处理 N 条」。
+    in property <bool> show-process: false;
+    in property <string> process-label;
+    in property <bool> triage-open: false;
+    in property <bool> triage-show-card: false;
+    in property <string> triage-status;
+    in property <string> triage-progress;
+    in property <string> triage-title;
+    in property <string> triage-due;
+    in property <string> triage-source;
+    in property <[string]> triage-actions;
+    in property <bool> triage-picker: false;
+    in property <[string]> triage-lists;
+    in property <int> triage-list-index: 0;
+
+    callback start-triage();
+    // 返回真表示这个键已经处理，调用方接受它。code 见 core 的 KEY_*。
+    callback triage-key(int, bool) -> bool;
+    callback triage-click(int);
+    callback triage-pick(int);
+
     // 收纳页的放下区域，窗口客户区里的逻辑像素。OLE 放下目标用它判断指针在不在收纳页上。
     out property <length> shelf-zone-x: 0px;
     out property <length> shelf-zone-y: title-height + 1px;
@@ -133,6 +154,64 @@ export component Panel inherits Window {
         scope.focus();
     }
 
+    public function focus-triage() {
+        triage-input.focus();
+    }
+
+    // 按住 Esc 退出处理模式后，同一次按住的重复不要再收起面板。松开，或出现一次不是重复的按下，就清掉。
+    property <bool> swallow-esc-repeat: false;
+
+    function swallow-held-escape(text: string, repeat: bool) -> bool {
+        if !root.swallow-esc-repeat || text != Key.Escape {
+            return false;
+        }
+        if repeat {
+            return true;
+        }
+        root.swallow-esc-repeat = false;
+        return false;
+    }
+
+    function arm-held-escape(text: string) {
+        if text == Key.Escape && !root.triage-open {
+            root.swallow-esc-repeat = true;
+        }
+    }
+
+    // 组合输入期间不把 1 至 5 交给处理模式。preedit 非空时返回假，按键交还输入法。
+    function triage-code(text: string) -> int {
+        if text == "1" { return 1; }
+        if text == "2" { return 2; }
+        if text == "3" { return 3; }
+        if text == "4" { return 4; }
+        if text == "5" { return 5; }
+        if text == Key.Escape { return 27; }
+        if text == Key.Return { return 13; }
+        if text == Key.UpArrow { return 38; }
+        if text == Key.DownArrow { return 40; }
+        return 0;
+    }
+
+    function triage-handle(text: string, control: bool, alt: bool, shift: bool, meta: bool, repeat: bool) -> bool {
+        if root.swallow-held-escape(text, repeat) {
+            return true;
+        }
+        if !root.triage-open || triage-input.preedit-text != "" {
+            return false;
+        }
+        if repeat {
+            return true;
+        }
+        if triage-code(text) == 0 {
+            return false;
+        }
+        if !root.triage-key(triage-code(text), control || alt || shift || meta) {
+            return false;
+        }
+        root.arm-held-escape(text);
+        return true;
+    }
+
     public function clear-new-item() {
         new-item.clear();
     }
@@ -157,11 +236,34 @@ export component Panel inherits Window {
         list.content-y = 0px;
     }
 
-    scope := FocusScope {
+        scope := FocusScope {
         key-pressed(event) => {
-            if event.text == Key.Escape {
-                root.escape();
+            if root.swallow-held-escape(event.text, event.repeat) {
                 return accept;
+            }
+            if root.triage-open {
+                if triage-input.preedit-text != "" {
+                    return reject;
+                }
+                if root.triage-handle(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta, event.repeat) {
+                    return accept;
+                }
+                return reject;
+            }
+            if event.text == Key.Escape {
+                if root.tab == 1 && NotesPageData.selecting {
+                    NotesPageData.set-selecting(false);
+                } else {
+                    root.escape();
+                }
+                return accept;
+            }
+            reject
+        }
+
+        key-released(event) => {
+            if event.text == Key.Escape {
+                root.swallow-esc-repeat = false;
             }
             reject
         }
@@ -306,8 +408,9 @@ export component Panel inherits Window {
                 width: parent.width;
                 height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
 
-                // 左侧清单。
+                // 左侧清单。处理模式时整页换成一张卡片，清单栏先让开。
                 Rectangle {
+                    visible: !root.triage-open;
                     x: 0px;
                     width: rail-width;
                     height: parent.height;
@@ -402,6 +505,7 @@ export component Panel inherits Window {
                 }
 
                 Rectangle {
+                    visible: !root.triage-open;
                     x: rail-width;
                     width: 1px;
                     height: parent.height;
@@ -410,6 +514,7 @@ export component Panel inherits Window {
 
                 // 右侧内容。
                 Rectangle {
+                    visible: !root.triage-open;
                     x: rail-width + 1px;
                     width: parent.width - rail-width - 1px;
                     height: parent.height;
@@ -447,6 +552,21 @@ export component Panel inherits Window {
                                 c: root.c;
                                 clicked => {
                                     root.float-todos();
+                                }
+                            }
+                        }
+
+                        if root.show-process: HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            height: 36px;
+                            alignment: start;
+
+                            Btn {
+                                text: root.process-label;
+                                c: root.c;
+                                clicked => {
+                                    root.start-triage();
                                 }
                             }
                         }
@@ -762,6 +882,205 @@ export component Panel inherits Window {
                                     }
                                     escape => {
                                         root.escape();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 处理模式。颜色用主题里的淡色，不用强调色。
+                Rectangle {
+                    visible: root.triage-open;
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+
+                    property <length> card-w: 420px;
+                    property <length> card-h: 148px;
+                    property <length> block-h: 222px;
+                    property <length> block-y: (parent.height - block-h) / 2;
+                    property <length> key-w: 108px;
+                    property <length> key-gap: 8px;
+                    property <length> keys-w: key-w * 5 + key-gap * 4;
+
+                    TouchArea {
+                        clicked => {
+                            triage-input.focus();
+                        }
+                    }
+
+                    triage-input := TextInput {
+                        x: (parent.width - self.width) / 2;
+                        y: block-y;
+                        width: 1px;
+                        height: 1px;
+                        opacity: 0;
+                        single-line: true;
+                        font-size: 1px;
+
+                        edited => {
+                            if self.preedit-text == "" && self.text != "" {
+                                self.text = "";
+                            }
+                        }
+
+                        key-pressed(event) => {
+                            if root.triage-handle(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta, event.repeat) {
+                                return accept;
+                            }
+                            reject
+                        }
+
+                        key-released(event) => {
+                            if event.text == Key.Escape {
+                                root.swallow-esc-repeat = false;
+                            }
+                            reject
+                        }
+                    }
+
+                    if !root.triage-show-card: Text {
+                        x: 24px;
+                        y: (parent.height - self.preferred-height) / 2;
+                        width: parent.width - 48px;
+                        text: root.triage-status;
+                        color: c.secondary;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if root.triage-show-card: Text {
+                        x: 24px;
+                        y: block-y;
+                        width: parent.width - 48px;
+                        height: 20px;
+                        text: root.triage-progress;
+                        color: c.tertiary;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if root.triage-show-card: Rectangle {
+                        x: (parent.width - card-w) / 2;
+                        y: block-y + 32px;
+                        width: card-w;
+                        height: card-h;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: c.divider;
+                        background: c.field;
+                        clip: true;
+
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 6px;
+
+                            Text {
+                                text: root.triage-title;
+                                color: c.ink;
+                                font-size: 18px;
+                                wrap: word-wrap;
+                                overflow: elide;
+                                height: 48px;
+                            }
+
+                            if root.triage-due != "": Text {
+                                text: root.triage-due;
+                                color: c.secondary;
+                                font-size: 13px;
+                                overflow: elide;
+                                height: 20px;
+                            }
+
+                            if root.triage-source != "": Text {
+                                text: root.triage-source;
+                                color: c.secondary;
+                                font-size: 13px;
+                                overflow: elide;
+                                height: 20px;
+                            }
+                        }
+                    }
+
+                    if root.triage-show-card: Rectangle {
+                        x: (parent.width - keys-w) / 2;
+                        y: block-y + 32px + card-h + 12px;
+                        width: keys-w;
+                        height: 30px;
+
+                        for action[index] in root.triage-actions: Rectangle {
+                            x: (key-w + key-gap) * index;
+                            width: key-w;
+                            height: 30px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: c.divider;
+                            background: action-touch.has-hover ? c.hover : transparent;
+
+                            Text {
+                                x: 4px;
+                                width: parent.width - 8px;
+                                height: parent.height;
+                                text: action;
+                                color: c.ink;
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            action-touch := TouchArea {
+                                clicked => {
+                                    root.triage-click(index);
+                                }
+                            }
+                        }
+                    }
+
+                    if root.triage-picker: Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+
+                        TouchArea {}
+
+                        Rectangle {
+                            x: (parent.width - card-w) / 2;
+                            y: block-y + 32px;
+                            width: card-w;
+                            height: min(280px, max(36px, triage-lists.length * 36px));
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: c.divider;
+                            background: c.field;
+                            clip: true;
+
+                            ListView {
+                                for name[index] in root.triage-lists: Rectangle {
+                                    height: 36px;
+                                    background: index == root.triage-list-index ? c.selection : pick-touch.has-hover ? c.hover : transparent;
+
+                                    Text {
+                                        x: 16px;
+                                        width: parent.width - 32px;
+                                        height: parent.height;
+                                        text: name;
+                                        color: c.ink;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+
+                                    pick-touch := TouchArea {
+                                        clicked => {
+                                            root.triage-pick(index);
+                                        }
                                     }
                                 }
                             }

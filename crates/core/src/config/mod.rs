@@ -9,6 +9,7 @@ mod command;
 mod error;
 mod hotkey;
 mod model;
+mod quiet;
 mod service;
 
 pub use command::ConfigCommands;
@@ -16,8 +17,11 @@ pub use error::ConfigError;
 pub use hotkey::{Hotkey, HotkeyKey, default_search_hotkey, parse_hotkey};
 pub use model::{
     Config, DEFAULT_BREAK_MINUTES, DEFAULT_LONG_BREAK_MINUTES, DEFAULT_WORK_MINUTES, HotCorner,
-    MAX_BREAK_MINUTES, MAX_WORK_MINUTES, MIN_BREAK_MINUTES, MIN_WORK_MINUTES, SearchBarOrigin,
-    Theme, normalize,
+    MAX_BREAK_MINUTES, MAX_WORK_MINUTES, MIN_BREAK_MINUTES, MIN_WORK_MINUTES, SNOOZE_DAYS_ERROR,
+    SearchBarOrigin, Theme, normalize,
+};
+pub use quiet::{
+    CLOCK_FORMAT_ERROR, QuietHours, default_quiet_hours, format_clock, is_quiet_now, parse_clock,
 };
 pub use service::{ConfigService, Fallback};
 
@@ -492,12 +496,80 @@ mod tests {
     }
 
     #[test]
-    fn quiet_hours_object_is_rejected() {
-        let (_temp, _store, commands) = open();
+    fn quiet_hours_roundtrip_across_midnight_and_same_endpoints_stay_on_disk() {
+        let (_temp, store, commands) = open();
         let mut next = commands.current();
-        next.quiet_hours = Some(serde_json::json!({"start": "22:00"}));
-        let err = commands.replace(next).unwrap_err();
-        assert_eq!(err.to_string(), "安静时段的格式尚未确定");
+        next.quiet_hours = Some(default_quiet_hours());
+        next.theme = Theme::Dark;
+        commands.replace(next).unwrap();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["quietHours"]["start"], "22:00");
+        assert_eq!(saved["quietHours"]["end"], "08:00");
+        let again = ConfigCommands::open(store.clone()).unwrap();
+        let hours = again.current().quiet_hours.unwrap();
+        assert!(is_quiet_now(Some(hours), parse_clock("23:30").unwrap()));
+        assert!(is_quiet_now(Some(hours), parse_clock("07:59").unwrap()));
+        assert!(!is_quiet_now(Some(hours), parse_clock("08:00").unwrap()));
+        assert!(!is_quiet_now(Some(hours), parse_clock("21:59").unwrap()));
+        assert_eq!(again.current().theme, Theme::Dark);
+
+        let original = std::fs::read(&path).unwrap();
+        let mut same = again.current();
+        same.quiet_hours = Some(QuietHours {
+            start: parse_clock("10:00").unwrap(),
+            end: parse_clock("10:00").unwrap(),
+        });
+        let err = commands.replace(same).unwrap_err();
+        assert_eq!(err.to_string(), "安静时段起止相同");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(commands.current().quiet_hours, Some(default_quiet_hours()));
+
+        commands.set_quiet_hours(None).unwrap();
+        let cleared: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(cleared.get("quietHours").is_none());
         assert!(commands.current().quiet_hours.is_none());
+        assert!(!is_quiet_now(
+            commands.current().quiet_hours,
+            parse_clock("23:00").unwrap()
+        ));
+    }
+
+    #[test]
+    fn malformed_quiet_hours_keep_the_file() {
+        let (_temp, store, _) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        let original = br#"{"schemaVersion":1,"quietHours":{"start":"22:00"},"theme":"dark"}"#;
+        std::fs::write(&path, original).unwrap();
+        let commands = ConfigCommands::open(store).unwrap();
+        assert_eq!(commands.fallback(), Some(Fallback::Invalid));
+        assert!(commands.current().quiet_hours.is_none());
+        assert_eq!(commands.current().theme, Theme::System);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn one_digit_quiet_hours_load_and_snooze_setter_rejects_the_ends() {
+        let (_temp, store, _) = open();
+        let path = store.document_path(&DocumentId::Config).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"schemaVersion":1,"quietHours":{"start":"9:00","end":"17:00"},"processSnoozeDays":3}"#,
+        )
+        .unwrap();
+        let commands = ConfigCommands::open(store).unwrap();
+        assert_eq!(commands.fallback(), None);
+        let hours = commands.current().quiet_hours.unwrap();
+        assert!(is_quiet_now(Some(hours), parse_clock("09:00").unwrap()));
+        assert!(!is_quiet_now(Some(hours), parse_clock("17:00").unwrap()));
+        assert!(commands.set_process_snooze_days(30).is_ok());
+        assert_eq!(commands.current().process_snooze_days, 30);
+        let err = commands.set_process_snooze_days(31).unwrap_err();
+        assert_eq!(err.to_string(), SNOOZE_DAYS_ERROR);
+        assert_eq!(commands.current().process_snooze_days, 30);
+        let err = commands.set_process_snooze_days(0).unwrap_err();
+        assert_eq!(err.to_string(), SNOOZE_DAYS_ERROR);
     }
 }

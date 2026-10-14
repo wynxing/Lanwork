@@ -4,8 +4,7 @@
 //! 早于当前分钟的多条是错过的，合并成一条补发。安静时段内两条都不发出，
 //! 时段结束后再按错过处理。
 //!
-//! #120 写入安静时段之前，[`configured_quiet_span`] 恒为没有时段。
-//! 设置页不在这里。
+//! 安静时段由调用方传入。设置里的起止见 `config.json` 的 `quietHours`。
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -21,7 +20,7 @@ pub const MAX_TIMER_MS: u64 = 24 * 60 * 60 * 1000;
 /// 本地日上的一段分钟。结束分钟不含在内。
 ///
 /// 开始等于结束时没有时段。开始大于结束时跨过午夜：从开始到当天结束，
-/// 以及次日 0 点到结束。起止怎么写进 `config.json` 仍由 #120 决定。
+/// 以及次日 0 点到结束。`quietHours` 的起止由配置层解析，这里只看分钟。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuietSpan {
     pub start_minute: u16,
@@ -39,6 +38,30 @@ impl QuietSpan {
             end_minute,
         })
     }
+
+    /// 用配置里两个时刻的「一天中的分钟」做成一段。
+    #[must_use]
+    pub fn from_clocks(start: ClockTime, end: ClockTime) -> Self {
+        Self {
+            start_minute: start.minute_of_day(),
+            end_minute: end.minute_of_day(),
+        }
+    }
+}
+
+/// 合并补发的 `launch`。点击后打开收件箱，不选中条目。
+pub const INBOX_LAUNCH: &str = "inbox";
+
+/// 通知第一行。后面每一行是一条待办的标题。
+pub const TOAST_HEADING: &str = "到期提醒";
+
+/// 点击带回的 `launch`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToastLaunch {
+    /// 定位到这一条。
+    Item(String),
+    /// 打开待办标签的收件箱，不选中条目。
+    Inbox,
 }
 
 /// 一条到点或错过的提醒。
@@ -79,14 +102,7 @@ pub struct ReminderPlan {
     pub next: Option<ReminderInstant>,
 }
 
-/// #120 把设置里的起止接进来之前，调度看到的是没有安静时段。
-///
-/// 不读 `config.json`。非空的 `quietHours` 仍由配置层拒绝。
-#[must_use]
-pub fn configured_quiet_span() -> Option<QuietSpan> {
-    None
-}
-
+/// 半开区间 `[开始, 结束)`。配置层的 `is_quiet_now` 只调用这一条。
 #[must_use]
 pub fn in_quiet(minute: u16, span: QuietSpan) -> bool {
     if minute >= 24 * 60 || span.start_minute == span.end_minute {
@@ -178,21 +194,23 @@ pub fn wait_millis(now: ReminderInstant, target: ReminderInstant, second: u32, m
     if raw == 0 { 1 } else { raw.min(MAX_TIMER_MS) }
 }
 
-/// 系统通知的 XML。一条时 `launch` 是待办 id。多条不写 `launch`：规格没有写合并后点哪一条。
+/// 系统通知的 XML。第一行是「到期提醒」，后面每行一条待办标题。没有操作按钮。
 ///
-/// 正文是各条标题。没有操作按钮。
+/// 一条时 `launch` 是待办 id。多条时 `launch` 是 [`INBOX_LAUNCH`]，点击打开收件箱且不选中条目。
 #[must_use]
 pub fn toast_xml(items: &[DueReminder]) -> Option<String> {
     if items.is_empty() {
         return None;
     }
-    let mut xml = String::from("<toast");
+    let mut xml = String::from("<toast launch=\"");
     if items.len() == 1 {
-        xml.push_str(" launch=\"");
         xml.push_str(&xml_escape(&items[0].id));
-        xml.push('"');
+    } else {
+        xml.push_str(INBOX_LAUNCH);
     }
-    xml.push_str("><visual><binding template=\"ToastGeneric\">");
+    xml.push_str("\"><visual><binding template=\"ToastGeneric\"><text>");
+    xml.push_str(&xml_escape(TOAST_HEADING));
+    xml.push_str("</text>");
     for item in items {
         xml.push_str("<text>");
         xml.push_str(&xml_escape(&item.title));
@@ -202,14 +220,16 @@ pub fn toast_xml(items: &[DueReminder]) -> Option<String> {
     Some(xml)
 }
 
-/// 点击带回的 `launch`。空白表示这条通知没有要定位的待办。
+/// 点击带回的 `launch`。空白表示没有要打开的位置。
 #[must_use]
-pub fn activation_id(launch: &str) -> Option<String> {
-    let id = launch.trim();
-    if id.is_empty() {
+pub fn toast_launch(launch: &str) -> Option<ToastLaunch> {
+    let launch = launch.trim();
+    if launch.is_empty() {
         None
+    } else if launch == INBOX_LAUNCH {
+        Some(ToastLaunch::Inbox)
     } else {
-        Some(id.to_owned())
+        Some(ToastLaunch::Item(launch.to_owned()))
     }
 }
 
@@ -320,6 +340,13 @@ mod tests {
     #[test]
     fn quiet_hours_cross_midnight_and_stop_at_the_end_minute() {
         let overnight = span(22, 0, 7, 0);
+        assert_eq!(
+            overnight,
+            QuietSpan::from_clocks(
+                ClockTime::try_new(22, 0).unwrap(),
+                ClockTime::try_new(7, 0).unwrap(),
+            )
+        );
         assert!(in_quiet(23 * 60, overnight));
         assert!(in_quiet(0, overnight));
         assert!(in_quiet(6 * 60 + 59, overnight));
@@ -338,7 +365,6 @@ mod tests {
             Some(at(2026, 10, 14, 6, 0))
         );
         assert!(!in_quiet(9 * 60, span(9, 0, 9, 0)));
-        assert!(configured_quiet_span().is_none());
     }
 
     #[test]
@@ -446,7 +472,7 @@ mod tests {
         };
         let xml = toast_xml(std::slice::from_ref(&one)).unwrap();
         assert!(xml.contains("launch=\"i1\""));
-        assert!(xml.contains("买菜 &amp; 水果"));
+        assert!(xml.starts_with("<toast launch=\"i1\"><visual><binding template=\"ToastGeneric\"><text>到期提醒</text><text>买菜 &amp; 水果</text>"));
         assert!(!xml.contains("<action"));
         let two = [
             one.clone(),
@@ -457,12 +483,14 @@ mod tests {
             },
         ];
         let merged = toast_xml(&two).unwrap();
-        assert!(!merged.contains("launch="));
-        assert!(merged.contains("<text>买菜 &amp; 水果</text>"));
-        assert!(merged.contains("<text>写信</text>"));
+        assert!(merged.contains("launch=\"inbox\""));
+        assert!(
+            merged.contains("<text>到期提醒</text><text>买菜 &amp; 水果</text><text>写信</text>")
+        );
         assert!(!merged.contains("<action"));
-        assert_eq!(activation_id(" i1 "), Some("i1".into()));
-        assert_eq!(activation_id("  "), None);
+        assert_eq!(toast_launch(" i1 "), Some(ToastLaunch::Item("i1".into())));
+        assert_eq!(toast_launch("inbox"), Some(ToastLaunch::Inbox));
+        assert_eq!(toast_launch("  "), None);
         assert!(toast_xml(&[]).is_none());
     }
 }

@@ -4,8 +4,10 @@
 //! 注册失败时不写盘。[`ConfigCommands::replace`] 在发布变更之前更新内存。
 
 use super::error::ConfigError;
-use super::model::{Config, HotCorner};
+use super::model::{Config, HotCorner, Theme};
+use super::quiet::QuietHours;
 use super::service::{ConfigService, Fallback};
+use crate::search::WebSearchEngine;
 use crate::storage::Store;
 
 /// 界面和外壳调用的配置命令。
@@ -53,6 +55,26 @@ impl ConfigCommands {
     /// 让轮询立即换角是调用方在这次返回成功之后的事。
     pub fn set_hot_corner(&self, corner: HotCorner) -> Result<Config, ConfigError> {
         self.change(|config| config.hot_corner = corner)
+    }
+
+    /// 只改主题。值没变时不写盘。界面换色是调用方在这次返回成功之后的事。
+    pub fn set_theme(&self, theme: Theme) -> Result<Config, ConfigError> {
+        self.change(|config| config.theme = theme)
+    }
+
+    /// 只改网页搜索引擎。值没变时不写盘。搜索条换名称是调用方在这次返回成功之后的事。
+    pub fn set_web_search_engine(&self, engine: WebSearchEngine) -> Result<Config, ConfigError> {
+        self.change(|config| config.web_search_engine = engine)
+    }
+
+    /// 只改安静时段。`None` 表示关掉。值没变时不写盘。
+    pub fn set_quiet_hours(&self, hours: Option<QuietHours>) -> Result<Config, ConfigError> {
+        self.change(|config| config.quiet_hours = hours)
+    }
+
+    /// 只改处理模式「稍后」天数。超出 1 至 30 时不写盘。
+    pub fn set_process_snooze_days(&self, days: u32) -> Result<Config, ConfigError> {
+        self.change(|config| config.process_snooze_days = days)
     }
 
     fn change(&self, edit: impl FnOnce(&mut Config)) -> Result<Config, ConfigError> {

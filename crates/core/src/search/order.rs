@@ -125,8 +125,8 @@ pub enum SearchGroup {
     Todo,
     /// 不在回收站中的便签。
     Note,
-    /// 收纳里的网页引用。在便签之后、文件之前。
-    Web,
+    /// 收纳里的文件、文件夹和网页引用。在便签之后、本机文件之前。
+    Shelf,
     /// 文件。
     File,
     /// 文件夹。
@@ -140,7 +140,7 @@ const SEARCH_GROUPS: [SearchGroup; 7] = [
     SearchGroup::Application,
     SearchGroup::Todo,
     SearchGroup::Note,
-    SearchGroup::Web,
+    SearchGroup::Shelf,
     SearchGroup::File,
     SearchGroup::Folder,
 ];
@@ -152,7 +152,7 @@ impl SearchGroup {
             Self::Application => Some(1),
             Self::Todo => Some(2),
             Self::Note => Some(3),
-            Self::Web => Some(4),
+            Self::Shelf => Some(4),
             Self::File => Some(5),
             Self::Folder => Some(6),
             Self::WebSearch => None,

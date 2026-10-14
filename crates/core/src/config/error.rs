@@ -18,8 +18,8 @@ pub enum ConfigError {
     EmptySearchHotkey,
     /// 数值不在产品规格写明的范围内。`message` 是可以显示的整句。
     OutOfRange { message: &'static str },
-    /// 安静时段的起止格式产品规格没有写。非空值不保存。
-    QuietHoursUnspecified,
+    /// 安静时段的开始和结束是同一分钟。不保存。
+    QuietHoursSame,
     /// JSON 能解析，但 `schemaVersion` 不是本程序负责的版本。不改文件。
     UnsupportedSchema { found: u32 },
     /// 存储层错误。写盘失败时原文件还在。
@@ -33,7 +33,7 @@ impl fmt::Display for ConfigError {
             Self::SameHotkey => write!(f, "搜索条热键与面板热键相同"),
             Self::EmptySearchHotkey => write!(f, "搜索条热键不能为空"),
             Self::OutOfRange { message } => write!(f, "{message}"),
-            Self::QuietHoursUnspecified => write!(f, "安静时段的格式尚未确定"),
+            Self::QuietHoursSame => write!(f, "安静时段起止相同"),
             Self::UnsupportedSchema { found } => {
                 write!(f, "schemaVersion {found} 不受支持，当前为 {SCHEMA_VERSION}")
             }

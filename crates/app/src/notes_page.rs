@@ -1,4 +1,4 @@
-//! 面板的便签页：列表、标签筛选、回收站，以及选中便签的编辑区。
+//! 面板的便签页：列表、标签筛选、回收站、多选，以及选中便签的编辑区。
 //!
 //! 窗口在 `panel`，版式在 `ui/notespage.slint`。保存流程在 `note_editor`，规则在 `lanwork_core::panel`
 //! 和便签服务。这里把服务的结果排成界面要的行，并把用户的动作交给服务。
@@ -6,7 +6,11 @@
 use std::rc::Rc;
 
 use lanwork_core::notes::{Note, NoteCommands, NoteInput};
-use lanwork_core::panel::{NoteRow, NoteView, list_rows, locate_note, tag_names, trash_rows};
+use lanwork_core::panel::{
+    NoteMultiSelect, NoteRow, NoteRowPick, NoteView, clear_note_checks, enter_note_select,
+    list_rows, locate_note, note_row_mods, note_select_after_delete, pick_note_row,
+    retain_note_select, select_all_notes, tag_names, trash_rows,
+};
 use lanwork_core::storage::Store;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -36,6 +40,8 @@ pub(crate) struct NotesPage {
     deleted: Vec<Note>,
     rows: Vec<NoteRow>,
     selected: Option<String>,
+    multi: NoteMultiSelect,
+    confirm_delete: bool,
     editor: Option<Editor<After>>,
     focus_ticket: i32,
 }
@@ -67,6 +73,8 @@ impl NotesPage {
             deleted: Vec::new(),
             rows: Vec::new(),
             selected: None,
+            multi: NoteMultiSelect::default(),
+            confirm_delete: false,
             editor: None,
             focus_ticket: 0,
         };
@@ -94,6 +102,11 @@ impl NotesPage {
         };
         self.list = notes.list();
         self.deleted = notes.deleted();
+        self.layout(ui);
+    }
+
+    /// 用内存里的列表重排行，并按当前视图收紧多选。
+    fn layout(&mut self, ui: &Panel) {
         let tags = tag_names(&self.list);
         if self
             .tag_filter
@@ -106,6 +119,27 @@ impl NotesPage {
             NoteView::List => list_rows(&self.list, self.tag_filter.as_deref()),
             NoteView::Trash => trash_rows(&self.deleted, unix_now_ms()),
         };
+        if self.view == NoteView::Trash {
+            self.multi = NoteMultiSelect::default();
+            self.confirm_delete = false;
+        } else if self.multi.active {
+            let visible = self.visible_ids();
+            let next = retain_note_select(&self.multi, &visible);
+            if next.ids != self.multi.ids || next.ids.is_empty() {
+                self.confirm_delete = false;
+            }
+            self.multi = next;
+        }
+        self.publish(ui);
+    }
+
+    fn visible_ids(&self) -> Vec<String> {
+        self.rows.iter().map(|row| row.id.clone()).collect()
+    }
+
+    fn publish(&self, ui: &Panel) {
+        let tags = tag_names(&self.list);
+        let selecting = self.multi.active && self.view == NoteView::List;
         self.rows_model.set_vec(
             self.rows
                 .iter()
@@ -114,6 +148,7 @@ impl NotesPage {
                     pinned: row.pinned,
                     tags: row.tags.as_str().into(),
                     note: row.trash_note.as_str().into(),
+                    checked: selecting && self.multi.ids.iter().any(|id| id == &row.id),
                 })
                 .collect::<Vec<_>>(),
         );
@@ -130,6 +165,9 @@ impl NotesPage {
         data.set_list_count(count(self.list.len()));
         data.set_trash_count(count(self.deleted.len()));
         data.set_selected(self.selected_index());
+        data.set_selecting(selecting);
+        data.set_selected_count(count(if selecting { self.multi.ids.len() } else { 0 }));
+        data.set_confirm_delete(selecting && self.confirm_delete);
     }
 
     fn selected_index(&self) -> i32 {
@@ -242,9 +280,16 @@ impl NotesPage {
 
     fn perform(&mut self, ui: &Panel, after: After) {
         match after {
-            After::Select(id) => self.load(ui, &id),
-            After::Create => self.create(ui),
+            After::Select(id) => {
+                self.leave_select();
+                self.load(ui, &id);
+            }
+            After::Create => {
+                self.leave_select();
+                self.create(ui);
+            }
             After::ShowTrash => {
+                self.leave_select();
                 self.view = NoteView::Trash;
                 self.clear_page(ui);
                 self.reload(ui);
@@ -428,6 +473,197 @@ impl NotesPage {
         self.save_now(ui);
     }
 
+    fn leave_select(&mut self) {
+        self.multi = NoteMultiSelect::default();
+        self.confirm_delete = false;
+    }
+
+    fn set_selecting(&mut self, ui: &Panel, active: bool) {
+        if self.view != NoteView::List || active == self.multi.active {
+            return;
+        }
+        if active {
+            if self.rows.is_empty() {
+                return;
+            }
+            let visible = self.visible_ids();
+            self.multi = enter_note_select(self.selected.as_deref(), &visible);
+        } else {
+            self.leave_select();
+        }
+        self.confirm_delete = false;
+        self.publish(ui);
+    }
+
+    fn row_clicked(&mut self, ui: &Panel, index: i32, ctrl: bool, shift: bool) {
+        let Some(index) = usize::try_from(index).ok() else {
+            return;
+        };
+        if self.view == NoteView::Trash {
+            self.open_index(ui, index);
+            return;
+        }
+        let visible = self.visible_ids();
+        match pick_note_row(
+            &self.multi,
+            &visible,
+            index,
+            note_row_mods(ctrl, shift),
+            self.selected.as_deref(),
+        ) {
+            NoteRowPick::Open => self.open_index(ui, index),
+            NoteRowPick::Multi(next) => {
+                self.multi = next;
+                self.confirm_delete = false;
+                self.publish(ui);
+            }
+        }
+    }
+
+    fn open_index(&mut self, ui: &Panel, index: usize) {
+        let Some(id) = self.rows.get(index).map(|row| row.id.clone()) else {
+            return;
+        };
+        self.request(ui, After::Select(id));
+    }
+
+    fn select_all(&mut self, ui: &Panel) {
+        if !self.multi.active || self.view != NoteView::List {
+            return;
+        }
+        let visible = self.visible_ids();
+        self.multi = select_all_notes(&self.multi, &visible);
+        self.confirm_delete = false;
+        self.publish(ui);
+    }
+
+    fn clear_checks(&mut self, ui: &Panel) {
+        if !self.multi.active {
+            return;
+        }
+        self.multi = clear_note_checks(&self.multi);
+        self.confirm_delete = false;
+        self.publish(ui);
+    }
+
+    fn ask_delete(&mut self, ui: &Panel) {
+        if !self.multi.active || self.multi.ids.is_empty() {
+            return;
+        }
+        self.confirm_delete = true;
+        self.publish(ui);
+    }
+
+    fn cancel_delete(&mut self, ui: &Panel) {
+        self.confirm_delete = false;
+        self.publish(ui);
+    }
+
+    fn delete_selected(&mut self, ui: &Panel) {
+        let Some(notes) = self.notes.clone() else {
+            return;
+        };
+        if !self.multi.active || self.multi.ids.is_empty() {
+            return;
+        }
+        let ids = self.multi.ids.clone();
+        let anchor = self.multi.anchor.clone();
+        let mut failed = Vec::new();
+        let mut first_error = None;
+        let open_id = self
+            .editor
+            .as_ref()
+            .map(|editor| editor.session.id().to_owned());
+        for id in &ids {
+            if open_id.as_deref() == Some(id.as_str())
+                && self
+                    .editor
+                    .as_mut()
+                    .is_some_and(|editor| !editor.flush(&notes))
+            {
+                failed.push(id.clone());
+                if let Some(editor) = self.editor.as_ref()
+                    && first_error.is_none()
+                {
+                    first_error = Some(save_error_text(editor));
+                }
+                self.push_problem(ui);
+                continue;
+            }
+            let revision = if open_id.as_deref() == Some(id.as_str()) {
+                self.editor.as_ref().map(|editor| editor.session.revision())
+            } else {
+                None
+            };
+            let result = match revision {
+                Some(revision) => notes.soft_delete(id, revision),
+                None => notes
+                    .get(id)
+                    .and_then(|note| notes.soft_delete(id, note.revision)),
+            };
+            if let Err(err) = result {
+                failed.push(id.clone());
+                if first_error.is_none() {
+                    first_error = Some(err.to_string());
+                }
+            }
+        }
+        let removed_open = open_id.as_ref().is_some_and(|id| {
+            ids.iter().any(|item| item == id) && !failed.iter().any(|item| item == id)
+        });
+        if removed_open {
+            self.clear_page(ui);
+        }
+        self.list = notes.list();
+        self.deleted = notes.deleted();
+        self.rows = list_rows(&self.list, self.tag_filter.as_deref());
+        let visible = self.visible_ids();
+        self.multi = note_select_after_delete(
+            &NoteMultiSelect {
+                active: true,
+                ids,
+                anchor,
+            },
+            &failed,
+            &visible,
+        );
+        self.confirm_delete = false;
+        self.layout(ui);
+        if let Some(message) = first_error {
+            self.fail(ui, &message);
+        } else {
+            ui.set_error(SharedString::new());
+        }
+    }
+
+    fn float_selected(&mut self, ui: &Panel) {
+        let Some(notes) = self.notes.clone() else {
+            return;
+        };
+        if !self.multi.active || self.multi.ids.is_empty() {
+            return;
+        }
+        if let Some(editor) = self.editor.as_mut()
+            && self.multi.ids.iter().any(|id| id == editor.session.id())
+        {
+            editor.flush(&notes);
+            self.push_problem(ui);
+        }
+        let mut first_error = None;
+        for id in &self.multi.ids.clone() {
+            if let Err(message) = crate::note_float::open(id)
+                && first_error.is_none()
+            {
+                first_error = Some(message);
+            }
+        }
+        if let Some(message) = first_error {
+            self.fail(ui, &message);
+        } else {
+            ui.set_error(SharedString::new());
+        }
+    }
+
     fn float_note(&mut self, ui: &Panel) {
         let (Some(notes), Some(editor)) = (self.notes.clone(), self.editor.as_mut()) else {
             return;
@@ -507,6 +743,17 @@ fn count(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
 
+fn save_error_text(editor: &Editor<After>) -> String {
+    let view = editor.problem_view();
+    if view.kind == 2 {
+        "便签已在别处保存".to_owned()
+    } else if view.text.is_empty() {
+        "保存失败".to_owned()
+    } else {
+        format!("保存失败：{}", view.text)
+    }
+}
+
 fn wire(ui: &Panel) {
     let data = ui.global::<NotesPageData>();
     data.on_show_list(|| {
@@ -526,17 +773,16 @@ fn wire(ui: &Panel) {
         });
     });
     data.on_new_note(|| with_notes(|page, ui| page.request(ui, After::Create)));
-    data.on_select_note(|index| {
-        with_notes(move |page, ui| {
-            let id = usize::try_from(index)
-                .ok()
-                .and_then(|index| page.rows.get(index))
-                .map(|row| row.id.clone());
-            if let Some(id) = id {
-                page.request(ui, After::Select(id));
-            }
-        });
+    data.on_row_clicked(|index, ctrl, shift| {
+        with_notes(move |page, ui| page.row_clicked(ui, index, ctrl, shift));
     });
+    data.on_set_selecting(|active| with_notes(move |page, ui| page.set_selecting(ui, active)));
+    data.on_select_all(|| with_notes(NotesPage::select_all));
+    data.on_clear_checks(|| with_notes(NotesPage::clear_checks));
+    data.on_ask_delete(|| with_notes(NotesPage::ask_delete));
+    data.on_cancel_delete(|| with_notes(NotesPage::cancel_delete));
+    data.on_delete_selected(|| with_notes(NotesPage::delete_selected));
+    data.on_float_selected(|| with_notes(NotesPage::float_selected));
     data.on_toggle_filter(|name| {
         let name = name.to_string();
         with_notes(move |page, ui| {
@@ -545,6 +791,7 @@ fn wire(ui: &Panel) {
             } else {
                 Some(name)
             };
+            page.confirm_delete = false;
             page.reload(ui);
         });
     });

@@ -216,7 +216,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         store.log_warn(&format!("热角轮询没有启动：{err}"));
     }
     crate::update::start(store.clone());
-    crate::remind::install(todos.clone(), store.clone(), installed);
+    crate::remind::install(todos.clone(), config.clone(), store.clone(), installed);
 
     // 搜索条收起时所有窗口都隐藏，事件循环不能因此结束。
     let run = slint::run_event_loop_until_quit().map_err(|err| err.to_string());
@@ -462,7 +462,7 @@ fn tray_image(overdue: u32, update: bool) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-fn refresh_theme(config: &ConfigCommands, store: &Store) {
+pub(crate) fn refresh_theme(config: &ConfigCommands, store: &Store) {
     let system = read_system_theme();
     if config.current().theme == Theme::System && system == SystemLight::Unknown {
         static LOGGED: AtomicBool = AtomicBool::new(false);
