@@ -124,6 +124,7 @@ impl WebIconCache {
         match decode_cache(&bytes) {
             Some(image) => Some(image),
             None => {
+                // 只删这份缓存。用户拖入的文件不经过这里。
                 let _ = storage::fs_remove_file(&path);
                 None
             }

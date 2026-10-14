@@ -762,7 +762,19 @@ fn service_source_does_not_mutate_user_files() {
         }
         let source = std::fs::read_to_string(&path).unwrap();
         let production = production_source(&source);
+        // 坏的网站图标缓存删掉后当作没有。只删数据目录里的那份，不碰用户拖入的文件。
+        let cache_discard = path.file_name().and_then(|name| name.to_str()) == Some("favicon.rs");
+        if cache_discard {
+            assert_eq!(
+                production.matches("remove_file").count(),
+                1,
+                "favicon.rs 只应删除坏的图标缓存"
+            );
+        }
         for token in forbidden {
+            if cache_discard && token == "remove_file" {
+                continue;
+            }
             assert!(
                 !production.contains(token),
                 "{} contains {token}",
