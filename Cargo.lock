@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "dnd"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "raw-window-handle",
  "slint",
@@ -1365,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "fileidx"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "serde",
@@ -1877,7 +1877,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "hermit-abi"
@@ -1899,7 +1899,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hotcorner"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "serde_json",
@@ -2459,7 +2459,7 @@ checksum = "65b27460c2c92b037f3f94c538ed9a3342f3fdf923606781629ccb35f82d042a"
 
 [[package]]
 name = "ime"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "raw-window-handle",
  "slint",
@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lanwork-core",
  "raw-window-handle",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "criterion",
  "serde",
@@ -2716,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-fixture"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "serde",
@@ -2726,7 +2726,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-foreground"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lanwork-core",
  "windows",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-render-spike"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "png 0.17.16",
  "raw-window-handle",
@@ -2747,7 +2747,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-sample"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "serde",
@@ -2757,7 +2757,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-shortcut"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "lanwork-core",
  "windows",
@@ -4834,7 +4834,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "toast"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "windows",
  "windows-core",
@@ -5063,7 +5063,7 @@ dependencies = [
 
 [[package]]
 name = "urldrop"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "windows",
  "windows-core",
