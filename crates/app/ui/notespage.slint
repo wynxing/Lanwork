@@ -313,7 +313,12 @@ export component NotesPage inherits Rectangle {
 
                         row-touch := TouchArea {
                             pointer-event(event) => {
-                                if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                                if event.button == PointerEventButton.left
+                                    && event.kind == PointerEventKind.up
+                                    && row-touch.mouse-x >= 0px
+                                    && row-touch.mouse-y >= 0px
+                                    && row-touch.mouse-x < row-touch.width
+                                    && row-touch.mouse-y < row-touch.height {
                                     NotesPageData.row-clicked(index, event.modifiers.control, event.modifiers.shift);
                                 }
                             }

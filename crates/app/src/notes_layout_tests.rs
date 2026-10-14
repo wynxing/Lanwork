@@ -1,5 +1,5 @@
 //! 便签页多选的布局和点击。软件渲染摆出面板的便签标签，确认「选择」、勾选和底部操作条互不重叠，
-//! 点得到，Esc 退出多选时不收起面板。
+//! 点得到，在行外松开不打开按下的那一行，Esc 退出多选时不收起面板。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -55,15 +55,23 @@ fn open() -> Panel {
 }
 
 fn click(ui: &Panel, x: f32, y: f32) {
-    let position = slint::LogicalPosition::new(x, y);
+    stroke(ui, (x, y), (x, y));
+}
+
+/// 在 `from` 按下，移到 `to` 再松开。松开点可以落在另一行或列表外。
+fn stroke(ui: &Panel, from: (f32, f32), to: (f32, f32)) {
+    let from = slint::LogicalPosition::new(from.0, from.1);
+    let to = slint::LogicalPosition::new(to.0, to.1);
     ui.window()
-        .dispatch_event(WindowEvent::PointerMoved { position });
+        .dispatch_event(WindowEvent::PointerMoved { position: from });
     ui.window().dispatch_event(WindowEvent::PointerPressed {
-        position,
+        position: from,
         button: PointerEventButton::Left,
     });
+    ui.window()
+        .dispatch_event(WindowEvent::PointerMoved { position: to });
     ui.window().dispatch_event(WindowEvent::PointerReleased {
-        position,
+        position: to,
         button: PointerEventButton::Left,
     });
 }
@@ -183,4 +191,58 @@ fn trash_has_no_select_button() {
     slint::platform::update_timers_and_animations();
     assert_eq!(data.get_choose_h(), 0.0, "回收站不显示选择");
     assert_eq!(data.get_bar_h(), 0.0, "回收站不显示操作条");
+}
+
+fn refresh(data: &NotesPageData) {
+    data.set_geometry_refresh(data.get_geometry_refresh().wrapping_add(1));
+    slint::platform::update_timers_and_animations();
+}
+
+/// 行高与 `notespage.slint` 的 `row-height` 一致。按下点在第一行中部，松开点在第二行中部。
+const ROW_HEIGHT: f32 = 52.0;
+
+fn release_outside_does_not_activate(
+    ui: &Panel,
+    data: &NotesPageData,
+    rows: &RefCell<Vec<(i32, bool, bool)>>,
+    label: &str,
+) {
+    let list_y = data.get_list_y() + PAGE_Y;
+    let row0 = list_y + ROW_HEIGHT / 2.0;
+    let row1 = list_y + ROW_HEIGHT + ROW_HEIGHT / 2.0;
+    let before = rows.borrow().len();
+    stroke(ui, (20.0, row0), (20.0, row1));
+    assert_eq!(rows.borrow().len(), before, "{label}：松在下一行没有动作");
+    stroke(ui, (20.0, row0), (400.0, row0));
+    assert_eq!(rows.borrow().len(), before, "{label}：松在列表右侧没有动作");
+    click(ui, 20.0, row0);
+    assert_eq!(
+        rows.borrow().last().copied(),
+        Some((0, false, false)),
+        "{label}：在行内松开仍点到第一行"
+    );
+}
+
+#[test]
+fn releasing_outside_the_pressed_row_does_not_activate_it() {
+    let ui = open();
+    let data = ui.global::<NotesPageData>();
+    let rows = Rc::new(RefCell::new(Vec::new()));
+    {
+        let rows = Rc::clone(&rows);
+        data.on_row_clicked(move |index, ctrl, shift| {
+            rows.borrow_mut().push((index, ctrl, shift));
+        });
+    }
+
+    release_outside_does_not_activate(&ui, &data, &rows, "普通列表");
+
+    data.set_selecting(true);
+    refresh(&data);
+    release_outside_does_not_activate(&ui, &data, &rows, "多选");
+
+    data.set_trash(true);
+    data.set_selecting(false);
+    refresh(&data);
+    release_outside_does_not_activate(&ui, &data, &rows, "回收站");
 }
