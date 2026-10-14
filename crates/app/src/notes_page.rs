@@ -582,10 +582,10 @@ impl NotesPage {
                     .is_some_and(|editor| !editor.flush(&notes))
             {
                 failed.push(id.clone());
-                if let Some(editor) = self.editor.as_ref() {
-                    if first_error.is_none() {
-                        first_error = Some(save_error_text(editor));
-                    }
+                if let Some(editor) = self.editor.as_ref()
+                    && first_error.is_none()
+                {
+                    first_error = Some(save_error_text(editor));
                 }
                 self.push_problem(ui);
                 continue;
