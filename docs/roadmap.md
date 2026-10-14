@@ -156,7 +156,7 @@
 
 ## 发布
 
-安装程序、便携版 zip 和 Release 工作流已有代码，见 [architecture.md](architecture.md)「安装程序与便携包」。安装程序是校验过的 Inno Setup 6.7.3 编出的按用户 exe，不用镜像上预装的别的编译器，不安装 WebView2。发布版 `lanwork.exe` 是 Windows GUI 子系统（PE Subsystem 2），调试构建保留控制台。CI 检查这个字段。简体中文消息的 MIT 许可和 Inno Setup 许可条件在 `packaging/`，并写入 `THIRD_PARTY_NOTICES.txt`。开始菜单快捷方式带 AUMID `Lanwork` 和激活 CLSID `{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}`。卸载清理这些注册项和 Run 值 `Lanwork`，不删数据目录。便携版文件名含 `portable`。Cargo 版本、安装包和 exe 版本字符串都是 `0.3.0`。
+安装程序、便携版 zip 和 Release 工作流已有代码，见 [architecture.md](architecture.md)「安装程序与便携包」。安装程序是校验过的 Inno Setup 6.7.3 编出的按用户 exe，不用镜像上预装的别的编译器，不安装 WebView2。发布版 `lanwork.exe` 是 Windows GUI 子系统（PE Subsystem 2），调试构建保留控制台。CI 检查这个字段。简体中文消息的 MIT 许可和 Inno Setup 许可条件在 `packaging/`，并写入 `THIRD_PARTY_NOTICES.txt`。开始菜单快捷方式带 AUMID `Lanwork` 和激活 CLSID `{E8E9EF84-55BA-4A0C-B4DC-9F9F4A28068D}`。卸载清理这些注册项和 Run 值 `Lanwork`，不删数据目录。便携版文件名含 `portable`。Cargo 版本、安装包和 exe 版本字符串都是 `0.3.1`。
 
 发布工作流在安装包旁边写入 `latest.json`（版本、发行说明、文件名、SHA-256）。已经发出的 v0.3.0 没有发行说明。设置页可以检查更新：安装版核对后静默安装并重新启动，便携版只打开发布页。不使用 minisign。最低系统版本判断还没有。没有从旧安装目录完成的升级记录，更新未验收。便携版启动时仍不写 `DisplayName`，进程侧的通知激活也不在 `lanwork.exe` 里。Pull request 的 CI 会静默安装再卸载，并上传安装包、便携版和 `latest.json`；那不是 Windows 上的人工试装，也不是升级验收。未登录浏览器打开 Release 页、确认 Slint 徽标和链接的记录还没有，留在第一次 `v*` 发布之后做。「背景」和「渲染器」仍未通过，打包不改变这两项。
 
