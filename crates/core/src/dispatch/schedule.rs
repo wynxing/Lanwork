@@ -354,7 +354,7 @@ impl Dispatch {
         storage::lock_mutex(&self.inner).accepts(sequence)
     }
 
-    /// 网页搜索那一条用的搜索引擎。从下一次输入起生效。
+    /// 网页搜索那一条用的搜索引擎。下一次投影这次搜索时读取。
     pub fn set_web_search_engine(&self, engine: WebSearchEngine) {
         storage::lock_mutex(&self.inner).web_engine = engine;
     }
