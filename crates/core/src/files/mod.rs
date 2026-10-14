@@ -1,6 +1,6 @@
 //! 文件来源：Everything SDK 与 Windows Search 回退。
 //!
-//! 不复制全盘索引，也不为查询启动进程。界面以后调用 [`FileCommands`]。
+//! 不复制全盘索引，也不为查询启动进程。搜索条经 [`crate::dispatch::Dispatch`] 调用 [`FileCommands`]。
 //! 查询队列、60ms 等待和结果合并不在这里。
 
 mod backend;
