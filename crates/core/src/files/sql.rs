@@ -1,6 +1,6 @@
 //! Windows Search 只按文件名匹配的 SQL。
 //!
-//! 语句与 `spikes/fileidx` 里测通的那条相同。匹配方式（子串、前缀或整名，
+//! 匹配方式（子串、前缀或整名，
 //! 以及 `*`、`?` 和 `LIKE` 通配符是否同义）产品规格还没定。这里不生成正文检索。
 
 use super::model::{MAX_FILE_RESULTS, clamp_results};
