@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::shelves::IncomingWeb;
+use crate::shelves::{IncomingRef, IncomingWeb};
 use crate::storage::{DocumentId, Store, StorePaths};
 use crate::todos::TodoNotice;
 
@@ -93,6 +93,109 @@ fn failed_web_write_does_not_leave_a_group() {
         .unwrap_err();
     assert!(err.to_string().contains("写入失败"), "{err}");
     assert!(service.list().unwrap().is_empty());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn moving_refs_relocates_paths_and_web_pages_without_touching_the_file() {
+    let (temp, store, service) = service();
+    let file = temp.path.join("note.txt");
+    std::fs::write(&file, b"keep").unwrap();
+    let source = service.create_group("甲").unwrap();
+    let target = service.create_group("乙").unwrap();
+    let other = service.create_group("丙").unwrap();
+    let path = file.to_str().unwrap().to_owned();
+    service
+        .add_refs(
+            Some(&source.id),
+            &[IncomingRef {
+                path: path.clone(),
+                folder: false,
+            }],
+        )
+        .unwrap();
+    service
+        .add_refs(
+            Some(&target.id),
+            &[IncomingRef {
+                path: path.clone(),
+                folder: false,
+            }],
+        )
+        .unwrap();
+    service
+        .add_web_refs(
+            Some(&source.id),
+            &[IncomingWeb {
+                url: "https://Example.com/a/".to_owned(),
+                title: "页".to_owned(),
+            }],
+        )
+        .unwrap();
+    let rx = store.subscribe();
+    let same = service
+        .move_refs(&source.id, &source.id, std::slice::from_ref(&path), &[])
+        .unwrap();
+    assert_eq!(same.moved, 0);
+    assert!(rx.try_recv().is_err(), "同一分组不写盘");
+
+    let moved = service
+        .move_refs(
+            &source.id,
+            &other.id,
+            std::slice::from_ref(&path),
+            &["https://example.com/a".to_owned()],
+        )
+        .unwrap();
+    assert_eq!(moved.moved, 2);
+    assert!(moved.source.refs.is_empty());
+    assert!(moved.source.web_refs.is_empty());
+    assert_eq!(moved.target.refs.len(), 1);
+    assert_eq!(moved.target.web_refs.len(), 1);
+    assert_eq!(moved.target.web_refs[0].title, "页");
+    assert_eq!(service.get(&target.id).unwrap().refs.len(), 1);
+    assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+
+    let collapsed = service
+        .move_refs(&target.id, &other.id, &[path], &[])
+        .unwrap();
+    assert_eq!(collapsed.moved, 1);
+    assert!(collapsed.source.refs.is_empty());
+    assert_eq!(
+        collapsed.target.refs.len(),
+        1,
+        "目标里已有同一路径时不留第二条"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+}
+
+#[test]
+fn a_failed_move_leaves_both_groups_unchanged() {
+    let (_temp, store, service) = service();
+    let source = service.create_group("甲").unwrap();
+    let target = service.create_group("乙").unwrap();
+    service
+        .add_web_refs(
+            Some(&source.id),
+            &[IncomingWeb {
+                url: "https://example.com/a".to_owned(),
+                title: "页".to_owned(),
+            }],
+        )
+        .unwrap();
+    let rx = store.subscribe();
+    service.fail_next_write_at(1);
+    let err = service
+        .move_refs(
+            &source.id,
+            &target.id,
+            &[],
+            &["https://example.com/a".to_owned()],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("写入失败"), "{err}");
+    assert_eq!(service.get(&source.id).unwrap().web_refs.len(), 1);
+    assert!(service.get(&target.id).unwrap().web_refs.is_empty());
     assert!(rx.try_recv().is_err());
 }
 

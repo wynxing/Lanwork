@@ -21,8 +21,8 @@ pub use favicon::{
     load_web_icon, parse_icon_url, resolve_icon_redirect,
 };
 pub use model::{
-    AddRefsOutcome, DEFAULT_GROUP_NAME, EXISTS_TIMEOUT, IncomingRef, IncomingWeb, Shelf, ShelfRef,
-    WebRef,
+    AddRefsOutcome, DEFAULT_GROUP_NAME, EXISTS_TIMEOUT, IncomingRef, IncomingWeb, MoveRefsOutcome,
+    Shelf, ShelfRef, WebRef,
 };
 pub use path::{NormalizedPath, normalize_path};
 pub use service::ShelfService;
