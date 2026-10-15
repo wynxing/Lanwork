@@ -63,13 +63,17 @@ my-tool/
 
 放入的基础函数：`assert`、`error`、`ipairs`、`next`、`pairs`、`pcall`、`xpcall`、`select`、`tonumber`、`tostring`、`type`、`rawget`、`rawset`、`rawequal`、`setmetatable`、`getmetatable`，以及 `table.unpack`。
 
+`xpcall` 由宿主换成自己的函数。被保护的函数出错并展开之后，才调用处理函数，超时钩子在这两段里都开着。处理函数里的死循环会在 1 秒后中止，窗口显示「脚本超时」。Lua 自带的 `xpcall` 会在钩子关掉时调用处理函数，所以没有放进沙箱。
+
 放入的标准库：`string`、`table`、`math`、`utf8`。
+
+`string.find`、`string.match`、`string.gmatch`、`string.gsub` 在宿主的匹配器里按 Lua 5.4 的规则执行，并按步对照这 1 秒。到点与钩子一样中止，窗口显示「脚本超时」，`pcall` 不能把这次回调留住。文本、模式和 `string.rep` 的结果仍有临时长度上限；超过则这次调用报错，可以用 `pcall` 接住，这次回调继续。`gsub` 的结果在每次扩容前计入同一块临时内存预算，各层还没交还的缓冲区加在一起算，超过同样可以用 `pcall` 接住；复制大约每 64 KiB 再对照这 1 秒，到点与钩子一样中止。这四个模式函数同时嵌套最多 8 层，超过可以用 `pcall` 接住；到顶之后，这次调用展开完之前不能再进。`xpcall` 和 `table.sort` 从宿主再进 Lua 时还有重入上限，到顶之后同样要等这次调用展开完。字节数和层数仍待定，见 tools.md「待定」第 2 条。
 
 另放入 `json.decode` 和 `json.encode`。两者只处理文本。`json.decode` 成功时返回值，失败时返回 `nil` 和错误字符串。这不是服务，不必写进 `services`。
 
 `ui` 始终放入。它只碰到本工具清单里的组件 id。
 
-不放入 `io`、`os`、`package`、`debug`、`load`、`loadfile`、`dofile`、`require`、`collectgarbage`。协程是否放入，待定。示例不使用协程。
+不放入 `io`、`os`、`package`、`debug`、`load`、`loadfile`、`dofile`、`require`、`collectgarbage`，也不放入协程。超时钩子按 Lua 线程安装，协程是另一条线程，钩子管不到。`require` 和多个 Lua 文件是否允许，见 tools.md「待定」。示例不使用协程。
 
 ## 生命周期
 
@@ -88,7 +92,7 @@ my-tool/
 | `on_todos_changed()` | 仅当授予了 `todo.read`。待办变更之后。脚本再调用 `todo.list` |
 | `on_timer(id)` | 计时组件正在倒数并走到 0 |
 
-函数抛错时，悬浮窗显示「脚本错误」和行号，不含密钥。一次回调从进入到返回超过 1 秒，宿主中止这次调用，显示「脚本超时」和行号，不含密钥。
+函数抛错时，悬浮窗显示「脚本错误」和行号，不含密钥。一次回调从进入到返回超过 1 秒，宿主中止这次调用，显示「脚本超时」和行号，不含密钥。`xpcall` 的处理函数也算在这 1 秒里。
 
 ## 服务函数
 
@@ -154,7 +158,7 @@ http.request({
 end)
 ```
 
-`secret` 可以省略。省略则不附带密钥。写了 `secret` 时，`id` 必须是清单里的一项，`header` 是头的名字，`prefix` 是值的前缀，可以是空字符串。宿主把「前缀 + 密钥原文」放进这个头。脚本读不到这个值。
+`secret` 可以省略。省略则不附带密钥。写了 `secret` 时，`id` 必须是清单里的一项，`header` 是头的名字，`prefix` 是值的前缀，可以是空字符串。宿主把「前缀 + 密钥原文」放进这个头。脚本读不到这个值。调用 `http.request` 的函数不等待网络；宿主在连接和读取结束后再调用下面的函数。
 
 `result` 在请求结束时传入：
 
@@ -162,7 +166,7 @@ end)
 | --- | --- |
 | `ok` | 状态码是 2xx 时为 `true` |
 | `status` | HTTP 状态码。没有发出去时没有这个字段 |
-| `body` | 响应正文，字符串。没有正文时是空字符串 |
+| `body` | 响应正文，字符串。没有正文时是空字符串。正文或响应头对上密钥的列出形式时，正文改成空字符串，`ok` 为假，`error` 为「请求失败」。哪些形式、以及这是对已确认主机的尽力检查，见 tools.md「密钥」。响应头本身不在这个表里 |
 | `error` | `ok` 为 `false` 时的说明，是 tools.md「错误」里的句子 |
 
 第一批纳入的是 `https` 的 GET。其它方法显示「不在范围内」，是否以后纳入见 tools.md「待定」。附带密钥但不是 `https`、URL 无法解析，或协议不是 `http` / `https` 时，显示「地址无效」，不发请求。不附带密钥的明文 `http` 是否允许，待定。主机名未确认时显示「域名未允许」。密钥未填写时显示「未填写密钥」，并且不发请求。这些说明里没有密钥，也没有请求头。
