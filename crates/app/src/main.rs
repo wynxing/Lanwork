@@ -30,6 +30,8 @@ mod favicon_http;
 #[cfg(windows)]
 mod favicon_wic;
 #[cfg(windows)]
+mod file_pick;
+#[cfg(windows)]
 mod float_dock;
 #[cfg(windows)]
 mod float_frame;

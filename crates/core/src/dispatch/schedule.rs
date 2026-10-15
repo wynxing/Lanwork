@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::apps::{
-    AppHit, AppIndex, HiddenApp, LaunchTarget, UserCatalog, launch_key, save_user_catalog,
+    AppHit, AppIndex, HiddenApp, LaunchTarget, UserCatalog, launch_key, load_user_catalog,
+    save_user_catalog,
 };
 use crate::files::{
     FILE_INDEX_UNAVAILABLE, FileCommands, FileHit, FileKind, FileQueryResult, FileSource,
@@ -64,6 +65,11 @@ pub trait AppLookup: Send {
     fn user_catalog(&mut self) -> UserCatalog {
         UserCatalog::default()
     }
+
+    /// 导入替换 `user-apps.json` 之后，用磁盘上的那份换掉内存。默认不支持。
+    fn replace_user_catalog(&mut self, _catalog: UserCatalog) -> Result<(), String> {
+        Err("应用索引不支持更换用户目录".to_owned())
+    }
 }
 
 impl AppLookup for AppIndex {
@@ -85,6 +91,12 @@ impl AppLookup for AppIndex {
 
     fn user_catalog(&mut self) -> UserCatalog {
         AppIndex::user_catalog(self)
+    }
+
+    fn replace_user_catalog(&mut self, catalog: UserCatalog) -> Result<(), String> {
+        AppIndex::set_user_catalog(self, catalog)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
     }
 }
 
@@ -295,6 +307,12 @@ impl Dispatch {
     #[must_use]
     pub fn hidden_apps(&self) -> Vec<HiddenApp> {
         storage::lock_mutex(&self.apps).hidden_apps()
+    }
+
+    /// 从磁盘重新读 `user-apps.json`。文件不在时换成空目录。
+    pub fn reload_user_catalog(&self) -> Result<(), String> {
+        let catalog = load_user_catalog(&self.store.user_apps_path())?;
+        storage::lock_mutex(&self.apps).replace_user_catalog(catalog)
     }
 
     /// 已提交的文本变化。

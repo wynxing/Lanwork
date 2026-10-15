@@ -102,6 +102,14 @@ impl HotkeyRecording {
         }
     }
 
+    /// 导入替换配置并重新注册之后，记下没注册上的热键。录入中不改。
+    pub fn note_unregistered(&mut self, unregistered: Vec<HotkeyRole>) {
+        if self.active {
+            return;
+        }
+        self.unregistered = unregistered;
+    }
+
     /// 配置里有、此刻没注册上的热键。
     #[must_use]
     pub fn unregistered(&self) -> &[HotkeyRole] {
@@ -257,5 +265,20 @@ mod tests {
         );
         assert_eq!(state.unregistered(), [HotkeyRole::Search]);
         assert!(!state.is_active());
+    }
+
+    #[test]
+    fn note_unregistered_replaces_the_list_unless_recording() {
+        let mut state = HotkeyRecording::new(vec![HotkeyRole::Search]);
+        state.note_unregistered(Vec::new());
+        assert_eq!(state.hotkey_error(), None);
+        state.begin();
+        state.note_unregistered(vec![HotkeyRole::Search]);
+        assert!(state.is_active());
+        assert_eq!(state.unregistered(), []);
+        let ending = state.end(EndReason::Abandon).unwrap();
+        state.finish(&ending, report(Ok(()), &[])).unwrap();
+        state.note_unregistered(vec![HotkeyRole::Search]);
+        assert_eq!(state.unregistered(), [HotkeyRole::Search]);
     }
 }

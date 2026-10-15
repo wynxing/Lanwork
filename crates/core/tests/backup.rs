@@ -1,11 +1,11 @@
-//! 备份、导出和导入。界面尚未调用这些命令。
+//! 备份、导出和导入。设置页调用这些命令。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
-use lanwork_core::backup::{BackupCommands, LaunchBackup};
+use lanwork_core::backup::{BackupCommands, BackupKind, LaunchBackup, overview_text};
 use lanwork_core::notes::{FloatGeometry, FloatStackSlot, NoteCommands, NoteError, NoteInput};
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::{BootHooks, EntityKind, Store, StorePaths};
@@ -104,6 +104,17 @@ fn export_includes_user_apps_and_omits_logs_env_and_referenced_file() {
         "github/cache/acme%2Fapp.json",
         r#"{"schemaVersion":1,"repo":"cache-marker-77"}"#,
     );
+    write_rel(
+        &fx.store,
+        "todo-purge-pending.json",
+        r#"{"schemaVersion":1,"ids":["purge-marker-77"]}"#,
+    );
+    write_rel(
+        &fx.store,
+        "token.json",
+        r#"{"schemaVersion":1,"token":"token-marker-77"}"#,
+    );
+    write_rel(&fx.store, "cache/web-icons/icon.bin", "web-icon-marker-77");
     let outside = fx._temp.path().join("outside.bin");
     std::fs::write(&outside, b"shelf-file-bytes-not-in-zip").unwrap();
     std::fs::write(
@@ -126,6 +137,11 @@ fn export_includes_user_apps_and_omits_logs_env_and_referenced_file() {
     assert!(!text.contains("shelf-file-bytes-not-in-zip"));
     assert!(!text.contains("cache-marker-77"));
     assert!(!text.contains("import.pending"));
+    assert!(!text.contains("purge-marker-77"));
+    assert!(!text.contains("todo-purge-pending"));
+    assert!(!text.contains("token-marker-77"));
+    assert!(!text.contains("web-icon-marker-77"));
+    assert!(!text.contains("cache/web-icons"));
     assert_zip_omits_env(&text, &["note-body-marker-77", "我的工具", "kept-ref"]);
 
     let full = commands.backup_manual(50).unwrap();
@@ -135,7 +151,72 @@ fn export_includes_user_apps_and_omits_logs_env_and_referenced_file() {
     assert!(!backed.contains("github/watchlist"));
     assert!(backed.contains("我的工具"));
     assert!(!backed.contains("log-secret-marker-77"));
+    assert!(!backed.contains("purge-marker-77"));
+    assert!(!backed.contains("token-marker-77"));
+    assert!(!backed.contains("web-icon-marker-77"));
     assert_zip_omits_env(&backed, &["note-body-marker-77", "我的工具", "kept-ref"]);
+}
+
+#[test]
+fn retained_list_is_newest_first_and_drops_the_oldest_without_import_copies() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    assert!(commands.list_retained().unwrap().is_empty());
+    write_rel(
+        &fx.store,
+        "config.json",
+        r#"{"schemaVersion":1,"launchAtStartup":false}"#,
+    );
+    write_rel(
+        &fx.store,
+        "notes/n.json",
+        r#"{"schemaVersion":1,"body":"one"}"#,
+    );
+    write_rel(
+        &fx.store,
+        "user-apps.json",
+        r#"{"schemaVersion":1,"portable":[]}"#,
+    );
+    let package = fx._temp.path().join("pkg.zip");
+    let overview = commands.export(&package, 30).unwrap();
+    assert_eq!(
+        overview_text(&overview),
+        "待办 0，便签 1，收纳 0，配置，应用"
+    );
+    assert!(!overview_text(&overview).contains(env!("CARGO_PKG_VERSION")));
+
+    commands.backup_manual(1_700_000_000_000).unwrap();
+    commands
+        .backup_on_launch(day(2026, 10, 15), 1_700_000_000_100)
+        .unwrap();
+    let listed = commands.list_retained().unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].kind, BackupKind::Auto);
+    assert_eq!(listed[0].label(), "自动 2026-10-15");
+    assert_eq!(listed[1].kind, BackupKind::Manual);
+    assert_eq!(listed[1].label(), "手动 2023-11-14 22:13");
+
+    commands.import(&package, 40).unwrap();
+    assert_eq!(
+        commands.list_retained().unwrap().len(),
+        2,
+        "导入前的备份不进入这 7 份"
+    );
+    assert!(fx.store.backups_dir().join("import-40.zip").is_file());
+
+    for millis in [100, 200, 300, 400, 500, 600, 700] {
+        commands.backup_manual(millis).unwrap();
+    }
+    let listed = commands.list_retained().unwrap();
+    assert_eq!(listed.len(), 7);
+    assert!(
+        listed
+            .iter()
+            .all(|item| item.at_ms != 100 && item.at_ms != 200)
+    );
+    assert_eq!(listed[0].at_ms, 1_700_000_000_100);
+    assert!(listed.iter().any(|item| item.at_ms == 700));
+    assert!(fx.store.backups_dir().join("import-40.zip").is_file());
 }
 
 fn assert_zip_omits_env(text: &str, intentional: &[&str]) {

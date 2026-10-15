@@ -18,6 +18,38 @@ pub enum LaunchBackup {
     AlreadyDone,
 }
 
+/// 计入 7 份上限的一份备份。导入前的 `import-` 不在这里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupKind {
+    Auto,
+    Manual,
+}
+
+/// 设置页列出的一份自动或手动备份。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedBackup {
+    pub kind: BackupKind,
+    pub at_ms: i64,
+    /// 自动备份文件名里的公历日。手动备份没有。
+    pub day: Option<CivilDate>,
+}
+
+impl ListedBackup {
+    /// 自动用文件名里的公历日。手动用 UTC 的「YYYY-MM-DD HH:MM」。
+    ///
+    /// 时区不是产品规则。自动备份的日子是外壳传入的本地公历日，手动只有 UTC 毫秒。
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self.kind {
+            BackupKind::Auto => match self.day {
+                Some(day) => format!("自动 {:04}-{:02}-{:02}", day.year(), day.month(), day.day()),
+                None => format!("自动 {}", format_utc_minute(self.at_ms)),
+            },
+            BackupKind::Manual => format!("手动 {}", format_utc_minute(self.at_ms)),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BackupService {
     store: Store,
@@ -66,6 +98,14 @@ impl BackupService {
             self.prune()?;
             Ok(LaunchBackup::Created { path })
         })
+    }
+
+    /// 自动和手动备份，从新到旧。目录不存在时是空列表。
+    ///
+    /// 在写锁里读文件名，和修剪用同一把锁，避免列出刚被删掉的最旧一份。
+    pub fn list_retained(&self) -> Result<Vec<ListedBackup>, BackupError> {
+        self.store
+            .with_write_lock(|| list_retained_holding(&self.store))
     }
 
     /// 校验包并返回概览，不改当前数据。
@@ -258,6 +298,86 @@ fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), BackupError> {
 
 fn format_day(day: CivilDate) -> String {
     format!("{:04}-{:02}-{:02}", day.year(), day.month(), day.day())
+}
+
+fn list_retained_holding(store: &Store) -> Result<Vec<ListedBackup>, BackupError> {
+    let dir = store.backups_dir();
+    if !storage::fs_exists(&dir) {
+        return Ok(Vec::new());
+    }
+    let entries = storage::fs_read_dir(&dir).map_err(|_| BackupError::io("无法读取", &dir))?;
+    let mut rows = Vec::new();
+    for entry in entries {
+        if !entry.is_file {
+            continue;
+        }
+        let Some(name) = entry.path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(item) = listed_from_name(name) else {
+            continue;
+        };
+        rows.push((item, name.to_owned()));
+    }
+    rows.sort_by(|left, right| right.0.at_ms.cmp(&left.0.at_ms).then(right.1.cmp(&left.1)));
+    Ok(rows.into_iter().map(|(item, _)| item).collect())
+}
+
+fn listed_from_name(name: &str) -> Option<ListedBackup> {
+    let millis = package::retention_millis(name)?;
+    let at_ms = i64::try_from(millis).ok()?;
+    let stem = name.strip_suffix(".zip")?;
+    if stem.strip_prefix("manual-").is_some() {
+        return Some(ListedBackup {
+            kind: BackupKind::Manual,
+            at_ms,
+            day: None,
+        });
+    }
+    let rest = stem.strip_prefix("auto-")?;
+    let (day_text, _) = rest.rsplit_once('-')?;
+    Some(ListedBackup {
+        kind: BackupKind::Auto,
+        at_ms,
+        day: parse_day(day_text),
+    })
+}
+
+fn parse_day(text: &str) -> Option<CivilDate> {
+    let mut parts = text.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    CivilDate::try_from_ymd(year, month, day)
+}
+
+/// UTC。`at_ms` 为负时仍给出 1970 年之前的日期。
+fn format_utc_minute(at_ms: i64) -> String {
+    let secs = at_ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = tod / 3600;
+    let minute = (tod % 3600) / 60;
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+/// Howard Hinnant 的公历算法。`days` 是 Unix 纪元起的天数。
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    (year as i32, month as u32, day as u32)
 }
 
 #[cfg(test)]
@@ -496,6 +616,16 @@ mod tests {
             .join("abc.bin");
         std::fs::create_dir_all(icon.parent().unwrap()).unwrap();
         std::fs::write(&icon, b"LWFI-keep").unwrap();
+        std::fs::write(
+            store.data_dir().join("todo-purge-pending.json"),
+            br#"{"schemaVersion":1,"ids":["purge-marker-stay"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            store.data_dir().join("token.json"),
+            b"token-marker-not-exported",
+        )
+        .unwrap();
 
         let package = temp.path().join("pkg.zip");
         BackupService::open(store.clone())
@@ -508,10 +638,30 @@ mod tests {
                 .iter()
                 .all(|file| !file.name.replace('\\', "/").starts_with("cache/"))
         );
+        assert!(
+            files
+                .iter()
+                .all(|file| file.name != "todo-purge-pending.json")
+        );
+        assert!(files.iter().all(|file| file.name != "token.json"));
+        let packed = String::from_utf8_lossy(&std::fs::read(&package).unwrap()).into_owned();
+        assert!(!packed.contains("purge-marker-stay"));
+        assert!(!packed.contains("token-marker-not-exported"));
+        assert!(!packed.contains("LWFI-keep"));
 
         BackupService::open(store.clone())
             .import(&package, 4)
             .unwrap();
         assert_eq!(std::fs::read(&icon).unwrap(), b"LWFI-keep");
+        let purge =
+            std::fs::read_to_string(store.data_dir().join("todo-purge-pending.json")).unwrap();
+        assert!(purge.contains("purge-marker-stay"));
+    }
+
+    #[test]
+    fn utc_labels_use_the_unix_epoch() {
+        assert_eq!(format_utc_minute(0), "1970-01-01 00:00");
+        assert_eq!(format_utc_minute(86_400_000), "1970-01-02 00:00");
+        assert_eq!(format_utc_minute(1_700_000_000_000), "2023-11-14 22:13");
     }
 }

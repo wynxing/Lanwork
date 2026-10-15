@@ -1,6 +1,6 @@
 //! 面板的设置页。左边四个分类，右边是当前分类。
 //! 常规：开机启动、热角、搜索条热键、主题、网页搜索引擎。
-//! 待办：安静时段、「稍后」天数。数据：当前数据目录、更换并迁移，以及备份、导出、导入的名称。
+//! 待办：安静时段、「稍后」天数。数据：当前数据目录、更换并迁移、立即备份、导出和导入。
 //! 其他：关于与更新、隐藏的应用。
 //!
 //! 决定在 `lanwork_core::panel` 和 `lanwork_core::shell`：先写 `config.json`，成功后才写注册表、
@@ -11,10 +11,11 @@
 //! 切标签、关闭和进程退出都走它，它把卸掉的热键注册回去。
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use lanwork_core::backup::{self, MigrateError};
+use lanwork_core::backup::{self, BackupCommands, MigrateError, overview_text};
 use lanwork_core::config::{
     CLOCK_FORMAT_ERROR, ConfigCommands, QuietHours, SNOOZE_DAYS_ERROR, default_quiet_hours,
     parse_clock,
@@ -34,7 +35,7 @@ use crate::keycap;
 use crate::panel::with_settings;
 use crate::platform::HotkeyControl;
 use crate::registry::apply_startup;
-use crate::{Panel, SettingsHiddenApp, SettingsPageData};
+use crate::{Panel, SettingsBackup, SettingsHiddenApp, SettingsPageData};
 
 const CAPTURE_UNAVAILABLE: &str = "热键录入不可用";
 
@@ -58,8 +59,19 @@ pub(crate) struct SettingsPage {
     apps: Option<Arc<Dispatch>>,
     hidden_keys: RefCell<Vec<String>>,
     field_reset: Cell<i32>,
-    /// 迁移在后台线程里跑。完成之前界面仍显示原来的目录。
-    migrating: Cell<bool>,
+    /// 迁移、备份、导出或导入在后台线程里跑。完成之前对应按钮不可再点。
+    busy: Cell<bool>,
+    /// 已经校验过、还等用户确认的导入包。
+    pending_import: RefCell<Option<PathBuf>>,
+    import_overview: RefCell<String>,
+}
+
+enum Hold {
+    Migrate(&'static str),
+    Backup,
+    Export,
+    Read,
+    Import,
 }
 
 impl SettingsPage {
@@ -92,6 +104,11 @@ impl SettingsPage {
             with_settings(move |page, ui| page.choose_section(ui, index));
         });
         data.on_choose_data_dir(|| with_settings(SettingsPage::choose_data_dir));
+        data.on_backup_now(|| with_settings(SettingsPage::backup_now));
+        data.on_export_clicked(|| with_settings(SettingsPage::export_clicked));
+        data.on_import_clicked(|| with_settings(SettingsPage::import_clicked));
+        data.on_confirm_import(|| with_settings(SettingsPage::confirm_import));
+        data.on_cancel_import(|| with_settings(SettingsPage::cancel_import));
         data.on_update_clicked(crate::update::on_clicked);
         crate::update::push_into(ui);
         data.on_restore_hidden(|index| {
@@ -112,7 +129,9 @@ impl SettingsPage {
             apps,
             hidden_keys: RefCell::new(Vec::new()),
             field_reset: Cell::new(0),
-            migrating: Cell::new(false),
+            busy: Cell::new(false),
+            pending_import: RefCell::new(None),
+            import_overview: RefCell::new(String::new()),
         };
         page.push(ui);
         page
@@ -186,9 +205,10 @@ impl SettingsPage {
         data.set_quiet_end(rows.quiet_end.into());
         data.set_snooze_days(rows.snooze_days.into());
         data.set_data_dir(self.store.data_dir().display().to_string().into());
-        if !self.migrating.get() {
-            data.set_data_dir_action("更换".into());
-            data.set_data_dir_enabled(true);
+        data.set_import_recovered(crate::host::import_was_recovered());
+        if !self.busy.get() {
+            self.arm_idle(ui);
+            self.push_backups(ui);
         }
         let reset = self.field_reset.get().wrapping_add(1);
         self.field_reset.set(reset);
@@ -198,7 +218,7 @@ impl SettingsPage {
 
     /// 选择文件夹。取消就什么也不做。选中之后才开始迁移，路径要等切换成功才换。
     fn choose_data_dir(&mut self, ui: &Panel) {
-        if self.migrating.get() {
+        if self.busy.get() {
             return;
         }
         self.cancel_recording(ui);
@@ -214,8 +234,7 @@ impl SettingsPage {
     }
 
     fn begin_migrate(&mut self, ui: &Panel, target: std::path::PathBuf) {
-        self.migrating.set(true);
-        self.show_progress(ui, "正在复制");
+        self.hold(ui, Hold::Migrate("正在复制"));
         let store = self.store.clone();
         let env_blocks = std::env::var(ENV_DATA_DIR)
             .ok()
@@ -234,19 +253,18 @@ impl SettingsPage {
                 });
             });
         if spawned.is_err() {
-            self.migrating.set(false);
+            self.busy.set(false);
             self.finish(ui, Err("不能开始迁移，仍使用原来的目录".to_owned()));
         }
     }
 
     fn show_progress(&self, ui: &Panel, text: &str) {
-        let data = ui.global::<SettingsPageData>();
-        data.set_data_dir_action(text.into());
-        data.set_data_dir_enabled(false);
+        ui.global::<SettingsPageData>()
+            .set_data_dir_action(text.into());
     }
 
     fn finish_migrate(&mut self, ui: &Panel, result: Result<std::path::PathBuf, MigrateError>) {
-        self.migrating.set(false);
+        self.busy.set(false);
         match result {
             Ok(dir) => {
                 self.store
@@ -260,6 +278,288 @@ impl SettingsPage {
             }
         }
         self.push(ui);
+    }
+
+    fn arm_idle(&self, ui: &Panel) {
+        let data = ui.global::<SettingsPageData>();
+        data.set_data_dir_action("更换".into());
+        data.set_data_dir_enabled(true);
+        data.set_backup_action("立即备份".into());
+        data.set_backup_enabled(true);
+        data.set_export_action("导出".into());
+        data.set_export_enabled(true);
+        let confirming = self.pending_import.borrow().is_some();
+        data.set_import_confirming(confirming);
+        data.set_import_overview(self.import_overview.borrow().as_str().into());
+        data.set_import_action(if confirming { "确认导入" } else { "导入" }.into());
+        data.set_import_enabled(true);
+    }
+
+    fn hold(&self, ui: &Panel, kind: Hold) {
+        self.busy.set(true);
+        let data = ui.global::<SettingsPageData>();
+        data.set_data_dir_enabled(false);
+        data.set_backup_enabled(false);
+        data.set_export_enabled(false);
+        data.set_import_enabled(false);
+        match kind {
+            Hold::Migrate(text) => data.set_data_dir_action(text.into()),
+            Hold::Backup => data.set_backup_action("正在备份".into()),
+            Hold::Export => data.set_export_action("正在导出".into()),
+            Hold::Read => data.set_import_action("正在读取".into()),
+            Hold::Import => data.set_import_action("正在导入".into()),
+        }
+    }
+
+    fn push_backups(&self, ui: &Panel) {
+        let listed = match BackupCommands::open(self.store.clone()).list_retained() {
+            Ok(listed) => listed,
+            Err(err) => {
+                let message = err.to_string();
+                self.store.log_warn(&format!("设置页：{message}"));
+                ui.set_error(message.into());
+                Vec::new()
+            }
+        };
+        let rows: Vec<SettingsBackup> = listed
+            .iter()
+            .map(|item| SettingsBackup {
+                label: item.label().into(),
+            })
+            .collect();
+        ui.global::<SettingsPageData>()
+            .set_backups(ModelRc::new(VecModel::from(rows)));
+    }
+
+    fn backup_now(&mut self, ui: &Panel) {
+        if self.busy.get() {
+            return;
+        }
+        self.cancel_recording(ui);
+        self.hold(ui, Hold::Backup);
+        let store = self.store.clone();
+        let now = crate::host::unix_now_ms();
+        let spawned = std::thread::Builder::new()
+            .name("lanwork-backup".to_owned())
+            .spawn(move || {
+                let result = BackupCommands::open(store.clone())
+                    .backup_manual(now)
+                    .map(|path| {
+                        store.log_info(&format!("设置页：已手动备份：{}", path.display()));
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_settings(move |page, ui| page.finish_transfer(ui, result));
+                });
+            });
+        if spawned.is_err() {
+            self.busy.set(false);
+            self.finish(ui, Err("不能开始备份".to_owned()));
+        }
+    }
+
+    fn export_clicked(&mut self, ui: &Panel) {
+        if self.busy.get() {
+            return;
+        }
+        self.cancel_recording(ui);
+        let Some(hwnd) = crate::bar_win::hwnd_of(ui.window()) else {
+            self.finish(ui, Err("不能选择文件".to_owned()));
+            return;
+        };
+        match crate::file_pick::pick_export(hwnd) {
+            Ok(None) => {}
+            Ok(Some(path)) => self.begin_export(ui, path),
+            Err(message) => self.finish(ui, Err(message)),
+        }
+    }
+
+    fn begin_export(&mut self, ui: &Panel, dest: PathBuf) {
+        self.hold(ui, Hold::Export);
+        let store = self.store.clone();
+        let now = crate::host::unix_now_ms();
+        let spawned = std::thread::Builder::new()
+            .name("lanwork-export".to_owned())
+            .spawn(move || {
+                let result = BackupCommands::open(store.clone())
+                    .export(&dest, now)
+                    .map(|_| {
+                        store.log_info(&format!("设置页：已导出：{}", dest.display()));
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_settings(move |page, ui| page.finish_transfer(ui, result));
+                });
+            });
+        if spawned.is_err() {
+            self.busy.set(false);
+            self.finish(ui, Err("不能开始导出".to_owned()));
+        }
+    }
+
+    fn import_clicked(&mut self, ui: &Panel) {
+        if self.busy.get() {
+            return;
+        }
+        self.cancel_recording(ui);
+        let Some(hwnd) = crate::bar_win::hwnd_of(ui.window()) else {
+            self.finish(ui, Err("不能选择文件".to_owned()));
+            return;
+        };
+        match crate::file_pick::pick_import(hwnd) {
+            Ok(None) => {}
+            Ok(Some(path)) => self.begin_inspect(ui, path),
+            Err(message) => self.finish(ui, Err(message)),
+        }
+    }
+
+    fn begin_inspect(&mut self, ui: &Panel, path: PathBuf) {
+        self.hold(ui, Hold::Read);
+        let store = self.store.clone();
+        let spawned = std::thread::Builder::new()
+            .name("lanwork-import".to_owned())
+            .spawn(move || {
+                let result = BackupCommands::open(store)
+                    .inspect(&path)
+                    .map(|overview| overview_text(&overview))
+                    .map_err(|err| err.to_string());
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_settings(move |page, ui| page.finish_inspect(ui, path, result));
+                });
+            });
+        if spawned.is_err() {
+            self.busy.set(false);
+            self.finish(ui, Err("不能开始导入".to_owned()));
+        }
+    }
+
+    fn finish_inspect(&mut self, ui: &Panel, path: PathBuf, result: Result<String, String>) {
+        self.busy.set(false);
+        match result {
+            Ok(overview) => {
+                *self.pending_import.borrow_mut() = Some(path);
+                *self.import_overview.borrow_mut() = overview;
+                ui.set_error(self.hotkey_error().unwrap_or_default().into());
+                self.push(ui);
+            }
+            Err(message) => {
+                self.pending_import.borrow_mut().take();
+                self.import_overview.borrow_mut().clear();
+                self.finish(ui, Err(message));
+            }
+        }
+    }
+
+    fn confirm_import(&mut self, ui: &Panel) {
+        if self.busy.get() {
+            return;
+        }
+        let Some(path) = self.pending_import.borrow().clone() else {
+            self.push(ui);
+            return;
+        };
+        self.cancel_recording(ui);
+        self.hold(ui, Hold::Import);
+        let store = self.store.clone();
+        let apps = self.apps.clone();
+        let now = crate::host::unix_now_ms();
+        let spawned = std::thread::Builder::new()
+            .name("lanwork-import".to_owned())
+            .spawn(move || {
+                let outcome = BackupCommands::open(store).import(&path, now);
+                let catalog_error = if outcome.is_ok() {
+                    apps.as_ref()
+                        .and_then(|apps| apps.reload_user_catalog().err())
+                } else {
+                    None
+                };
+                let result = outcome.map(|_| ()).map_err(|err| err.to_string());
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_settings(move |page, ui| page.finish_import(ui, result, catalog_error));
+                });
+            });
+        if spawned.is_err() {
+            self.busy.set(false);
+            self.finish(ui, Err("不能开始导入".to_owned()));
+        }
+    }
+
+    fn finish_import(
+        &mut self,
+        ui: &Panel,
+        result: Result<(), String>,
+        catalog_error: Option<String>,
+    ) {
+        self.busy.set(false);
+        if let Err(message) = result {
+            self.finish(ui, Err(message));
+            return;
+        }
+        self.pending_import.borrow_mut().take();
+        self.import_overview.borrow_mut().clear();
+        self.store.log_info("设置页：导入完成");
+        let applied = self.apply_imported_runtime();
+        let result = match (applied, catalog_error) {
+            (Ok(()), Some(message)) => {
+                self.store.log_warn(&format!("设置页：{message}"));
+                Err(message)
+            }
+            (Err(message), Some(catalog)) => {
+                self.store.log_warn(&format!("设置页：{catalog}"));
+                Err(message)
+            }
+            (result, None) => result,
+        };
+        self.finish(ui, result);
+    }
+
+    fn cancel_import(&mut self, ui: &Panel) {
+        if self.busy.get() {
+            return;
+        }
+        self.pending_import.borrow_mut().take();
+        self.import_overview.borrow_mut().clear();
+        ui.set_error(self.hotkey_error().unwrap_or_default().into());
+        self.push(ui);
+    }
+
+    fn finish_transfer(&mut self, ui: &Panel, result: Result<(), String>) {
+        self.busy.set(false);
+        self.finish(ui, result);
+    }
+
+    /// 导入已经换过磁盘和已打开的服务内存。这里让正在跑的界面跟上那份配置。
+    fn apply_imported_runtime(&mut self) -> Result<(), String> {
+        crate::host::refresh_theme(&self.commands, &self.store);
+        crate::hotcorner::apply(self.commands.current().hot_corner);
+        if let Some(apps) = &self.apps {
+            apps.set_web_search_engine(self.commands.current().web_search_engine);
+        }
+        crate::searchbar::requery();
+        let hotkey_gap = match self.hotkeys.register(self.commands.clone()) {
+            Some(unregistered) => {
+                for role in &unregistered {
+                    self.store
+                        .log_warn(&format!("设置页：{}没有注册上：热键已被占用", role.title()));
+                }
+                self.recording.note_unregistered(unregistered);
+                None
+            }
+            None => {
+                self.store
+                    .log_warn("设置页：热键服务没有应答，热键没有按导入的配置注册");
+                Some("热键服务没有应答".to_owned())
+            }
+        };
+        let executable = std::env::current_exe().map_err(|_| "读不到可执行文件路径".to_owned())?;
+        let startup =
+            crate::registry::apply_startup(self.commands.current().launch_at_startup, &executable)
+                .map_err(|err| startup_error_text(&err));
+        match (startup, hotkey_gap) {
+            (Err(message), _) => Err(message),
+            (Ok(()), Some(message)) => Err(message),
+            (Ok(()), None) => Ok(()),
+        }
     }
 
     fn push_hidden(&self, ui: &Panel) {
