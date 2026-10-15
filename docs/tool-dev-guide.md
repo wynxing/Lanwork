@@ -1,6 +1,6 @@
 # 工具开发说明
 
-本文说明悬浮窗工具的清单、组件、Lua 调用和两份完整示例。可见行为以 [tools.md](tools.md) 为准。待办和番茄钟的规则以 [product.md](product.md) 为准。与 tools.md 冲突时，以 tools.md 为准。现在没有这部分代码。没有通过记录之前，不写依赖该规格的界面。
+本文说明悬浮窗工具的清单、组件、Lua 调用和两份完整示例。可见行为以 [tools.md](tools.md) 为准。待办和番茄钟的规则以 [product.md](product.md) 为准。与 tools.md 冲突时，以 tools.md 为准。现在没有这部分代码。技术验证「工具宿主」已通过，见 [roadmap.md](roadmap.md)。凭据管理器界面留到正式实现第 1 步，不挡住界面。
 
 示例写成一个文件夹。导入时文件夹和 zip 都接受，也可以拖入「自定义」页，见 tools.md「导入」。
 
