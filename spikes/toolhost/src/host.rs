@@ -11,7 +11,8 @@
 //!
 //! 内存字节上限仍待定。这里的 `MEMORY_CAP` 只是验证程序的临时天花板，超过后与超时一样中止这次回调，不是产品规则。
 //! `xpcall` 换成宿主的函数：处理函数在错误展开之后调用，超时钩子仍然有效。
-//! `string.find`、`match`、`gmatch`、`gsub`、`rep` 在进入 C 之前有临时的长度和回溯上限。那些字节数不是产品规则。
+//! `string.find`、`match`、`gmatch`、`gsub` 在宿主的匹配器里执行，每 4096 步对照这次回调的截止时间。
+//! 文本、模式和 `string.rep` 的结果另有临时长度上限。不带比较函数的 `table.sort` 在元素过多时拒绝。这些不是产品规则。
 //! HTTP 在另一条线程上连接和读取。脚本回调返回之后，宿主才按等待上限取结果并调用 Lua。等待上限的秒数仍待定，这次默认 5 秒。
 
 use std::cell::RefCell;
@@ -37,10 +38,10 @@ const HOOK_INSTRUCTIONS: u32 = 4_096;
 const MEMORY_CAP: usize = 16 * 1024 * 1024;
 const MEMORY_HEADROOM: usize = 1024 * 1024;
 /// 下面几项只是验证程序的临时天花板。产品上的字节数仍待定。
-/// 量词个数决定被搜索文本的上限：0 个 256 KiB，1 个 64 KiB，2 个 4 KiB，3 个 256 字节，
-/// 之后每多一个再收紧，8 个及以上直接拒绝。三个 `*` 是 O(n³)，256³ 大约一千六百万步。
-const PATTERN_LEN_CAP: usize = 256;
 const STRING_REP_CAP: usize = 1024 * 1024;
+/// 不带比较函数时，`table.sort` 的比较在 C 里完成，钩子插不进去。
+/// 10 万个元素的默认排序仍落在 1 秒内；再大就拒绝这次调用。
+const SORT_LEN_CAP: i64 = 100_000;
 const HTTP_BUDGET: Duration = Duration::from_secs(5);
 /// 回调里再发请求会再等一轮。不停地一轮接一轮，规格没有写。最多 8 轮，避免宿主停不下来。
 const HTTP_DRAIN_ROUNDS: u32 = 8;
@@ -166,6 +167,25 @@ struct Limit {
     /// 超时或临时内存上限已经到了。之后每次钩子都报错，`pcall` 不能把这次回调留住。
     aborted: AtomicBool,
     steps: AtomicU32,
+}
+
+impl crate::pattern::CpuWatch for Limit {
+    fn deadline_ms(&self) -> u64 {
+        self.deadline_ms.load(Ordering::Relaxed)
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    fn aborted(&self) -> bool {
+        self.aborted.load(Ordering::Relaxed)
+    }
+
+    fn abort(&self, line: i64) {
+        self.timeout_line.store(line, Ordering::Relaxed);
+        self.aborted.store(true, Ordering::Relaxed);
+    }
 }
 
 struct WidgetState {
@@ -624,8 +644,8 @@ fn sandbox(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
             .set(name, Value::Nil)
             .map_err(|err| format!("脚本错误：{err}"))?;
     }
-    install_xpcall(lua, limit)?;
-    install_string_limits(lua)?;
+    install_xpcall(lua, Arc::clone(&limit))?;
+    install_string_limits(lua, limit)?;
     Ok(())
 }
 
@@ -672,30 +692,45 @@ fn install_xpcall(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
     Ok(())
 }
 
-fn install_string_limits(lua: &Lua) -> Result<(), String> {
+fn install_string_limits(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
+    crate::pattern::install(lua, limit)?;
     let library: Table = lua
         .globals()
         .get("string")
         .map_err(|err| format!("脚本错误：{err}"))?;
-    for name in ["find", "match", "gmatch", "gsub"] {
-        wrap_pattern(lua, &library, name)?;
-    }
     wrap_rep(lua, &library)?;
+    install_sort_limit(lua)?;
     Ok(())
 }
 
-fn wrap_pattern(lua: &Lua, library: &Table, name: &'static str) -> Result<(), String> {
+/// `table.concat` 按元素线性拼接，结果受临时内存上限约束。
+/// `string.format` 的宽度和精度最多两位数字。`string.lower`、`upper`、`reverse`、`sub`、`pack`，
+/// 以及 `utf8.len`、`utf8.offset` 按文本长度线性完成，同样受临时内存上限约束。
+/// `utf8.char` 的参数个数受 Lua 栈限制，`utf8.codes` 每次回到 Lua。这些都不再单独包一层。
+fn install_sort_limit(lua: &Lua) -> Result<(), String> {
+    let library: Table = lua
+        .globals()
+        .get("table")
+        .map_err(|err| format!("脚本错误：{err}"))?;
     let original: Function = library
-        .get(name)
+        .get("sort")
         .map_err(|err| format!("脚本错误：{err}"))?;
     let wrapper = lua
         .create_function(move |_, args: MultiValue| {
-            check_pattern(name, &args)?;
+            let has_comparator = args
+                .get(1)
+                .is_some_and(|value| !matches!(value, Value::Nil));
+            if !has_comparator && let Some(Value::Table(table)) = args.front() {
+                let len = table.len()?;
+                if len > SORT_LEN_CAP {
+                    return Err(mlua::Error::runtime("表过长"));
+                }
+            }
             original.call::<MultiValue>(args)
         })
         .map_err(|err| format!("脚本错误：{err}"))?;
     library
-        .set(name, wrapper)
+        .set("sort", wrapper)
         .map_err(|err| format!("脚本错误：{err}"))
 }
 
@@ -712,35 +747,6 @@ fn wrap_rep(lua: &Lua, library: &Table) -> Result<(), String> {
     library
         .set("rep", wrapper)
         .map_err(|err| format!("脚本错误：{err}"))
-}
-
-fn check_pattern(name: &str, args: &MultiValue) -> mlua::Result<()> {
-    let (Some(subject), Some(pattern)) = (args.front(), args.get(1)) else {
-        return Ok(());
-    };
-    let (Some(subject_len), Some(pattern_len)) = (byte_len(subject), byte_len(pattern)) else {
-        return Ok(());
-    };
-    if pattern_len > PATTERN_LEN_CAP {
-        return Err(mlua::Error::runtime("模式过于复杂"));
-    }
-    let plain = name == "find" && args.get(3).is_some_and(is_truthy);
-    let quantifiers = if plain {
-        0
-    } else {
-        let Value::String(text) = pattern else {
-            return Ok(());
-        };
-        // `find` / `match` / `gsub` 会剥掉开头的 `^`。`gmatch` 不会，开头的 `^` 在匹配器里是字面量。
-        count_quantifiers(&text.as_bytes(), name != "gmatch")
-    };
-    let Some(cap) = subject_cap(quantifiers) else {
-        return Err(mlua::Error::runtime("模式过于复杂"));
-    };
-    if subject_len > cap {
-        return Err(mlua::Error::runtime("文本过长"));
-    }
-    Ok(())
 }
 
 fn check_rep(args: &MultiValue) -> mlua::Result<()> {
@@ -940,139 +946,6 @@ fn coerced_len(value: &Value) -> Option<usize> {
         Value::Number(number) if number.is_finite() => Some(format!("{number}").len()),
         _ => None,
     }
-}
-
-fn subject_cap(quantifiers: usize) -> Option<usize> {
-    Some(match quantifiers {
-        0 => 256 * 1024,
-        1 => 64 * 1024,
-        2 => 4 * 1024,
-        3 => 256,
-        4 => 64,
-        5 => 32,
-        6 => 16,
-        7 => 8,
-        _ => return None,
-    })
-}
-
-/// 按 Lua 5.4 `lstrlib.c` 的 `match` / `classend` 数回溯量词。
-///
-/// `^` 只有在 `caret_is_anchor` 且位于开头时是锚点。`$` 只有作为模式最后一个字节时是锚点。
-/// 其余位置的 `^` / `$` 是字面量，后面的 `*+?-` 算量词。`%b`、`%f` 和 `%0`–`%9` 不带量词后缀。
-/// 解析不了的片段按量词计，避免把回溯漏掉。
-fn count_quantifiers(pattern: &[u8], caret_is_anchor: bool) -> usize {
-    let mut index = 0;
-    let mut count = 0;
-    if caret_is_anchor && pattern.first() == Some(&b'^') {
-        index = 1;
-    }
-    while index < pattern.len() {
-        match pattern_step(pattern, index) {
-            PatternStep::Item(next) => index = next,
-            PatternStep::Quantified(next) => {
-                count += 1;
-                index = next;
-            }
-            PatternStep::Unknown => {
-                count += 1;
-                count += pattern[index + 1..]
-                    .iter()
-                    .filter(|byte| matches!(byte, b'*' | b'+' | b'-' | b'?'))
-                    .count();
-                break;
-            }
-        }
-    }
-    count
-}
-
-enum PatternStep {
-    Item(usize),
-    Quantified(usize),
-    Unknown,
-}
-
-fn pattern_step(pattern: &[u8], index: usize) -> PatternStep {
-    match pattern[index] {
-        b'(' => {
-            let next = if pattern.get(index + 1) == Some(&b')') {
-                index + 2
-            } else {
-                index + 1
-            };
-            PatternStep::Item(next)
-        }
-        b')' => PatternStep::Item(index + 1),
-        b'$' if index + 1 == pattern.len() => PatternStep::Item(index + 1),
-        b'%' => match pattern.get(index + 1).copied() {
-            None => PatternStep::Unknown,
-            Some(b'b') => {
-                if pattern.len() - index < 4 {
-                    PatternStep::Unknown
-                } else {
-                    PatternStep::Item(index + 4)
-                }
-            }
-            Some(b'f') => {
-                if pattern.get(index + 2) != Some(&b'[') {
-                    PatternStep::Unknown
-                } else {
-                    match skip_class(pattern, index + 2) {
-                        Some(end) => PatternStep::Item(end),
-                        None => PatternStep::Unknown,
-                    }
-                }
-            }
-            Some(byte) if byte.is_ascii_digit() => PatternStep::Item(index + 2),
-            Some(_) => with_suffix(pattern, index + 2),
-        },
-        b'[' => match skip_class(pattern, index) {
-            Some(end) => with_suffix(pattern, end),
-            None => PatternStep::Unknown,
-        },
-        _ => with_suffix(pattern, index + 1),
-    }
-}
-
-fn with_suffix(pattern: &[u8], index: usize) -> PatternStep {
-    if index < pattern.len() && matches!(pattern[index], b'*' | b'+' | b'-' | b'?') {
-        PatternStep::Quantified(index + 1)
-    } else {
-        PatternStep::Item(index)
-    }
-}
-
-fn skip_class(pattern: &[u8], start: usize) -> Option<usize> {
-    let mut index = start + 1;
-    if index < pattern.len() && pattern[index] == b'^' {
-        index += 1;
-    }
-    if index < pattern.len() && pattern[index] == b']' {
-        index += 1;
-    }
-    while index < pattern.len() {
-        if pattern[index] == b'%' && index + 1 < pattern.len() {
-            index += 2;
-            continue;
-        }
-        if pattern[index] == b']' {
-            return Some(index + 1);
-        }
-        index += 1;
-    }
-    None
-}
-
-fn byte_len(value: &Value) -> Option<usize> {
-    match value {
-        Value::String(text) => Some(text.as_bytes().len()),
-        _ => None,
-    }
-}
-
-fn is_truthy(value: &Value) -> bool {
-    !matches!(value, Value::Nil | Value::Boolean(false))
 }
 
 fn response_leaks(
@@ -1842,36 +1715,7 @@ fn line_of(err: &mlua::Error) -> Option<usize> {
 
 #[cfg(test)]
 mod pattern_limits {
-    use super::{RepCount, count_quantifiers, repetition_from_bytes};
-
-    #[test]
-    fn quantifiers_follow_lua_pattern_grammar() {
-        let count = |pattern: &str| count_quantifiers(pattern.as_bytes(), true);
-        assert_eq!(count("%d+"), 1);
-        assert_eq!(count("%%"), 0);
-        assert_eq!(count("%?"), 0);
-        assert_eq!(count("[a?]+"), 1);
-        assert_eq!(count("%b()"), 0);
-        assert_eq!(count(".*a.*"), 2);
-        // `%f` 在 lstrlib 里不带量词后缀，后面的 `+` 是字面量。
-        assert_eq!(count("%f[%w]+"), 0);
-        assert_eq!(count(&"a?".repeat(30)), 30);
-        assert_eq!(count("$?"), 1);
-        assert_eq!(count("$"), 0);
-        assert_eq!(count("$$"), 0);
-        assert_eq!(count("a$"), 0);
-        assert_eq!(count("^a?"), 1);
-        assert_eq!(count("^?"), 0);
-        assert_eq!(count("^^?"), 1);
-        assert_eq!(count("a^?"), 1);
-        assert_eq!(count("(a?)"), 1);
-        assert_eq!(count("(a)?"), 0);
-        assert_eq!(count("%1*"), 0);
-        assert_eq!(count("%ba?"), 0);
-        let dollars = format!("{}{}", "$?".repeat(26), "$".repeat(26));
-        assert_eq!(count(&dollars), 26);
-        assert_eq!(count_quantifiers(b"^?", false), 1);
-    }
+    use super::{RepCount, repetition_from_bytes};
 
     #[test]
     fn string_repetition_accepts_lua_integer_strings() {

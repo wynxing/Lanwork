@@ -8,6 +8,7 @@ mod http;
 mod id;
 mod manifest;
 mod measure;
+mod pattern;
 mod secret;
 mod shell;
 

@@ -389,11 +389,16 @@ function on_load()
     end,
     function() string.gsub(string.rep("a", 30), string.rep("a?", 30), "b") end,
     function() string.rep("a", 1e8) end,
-    function()
-      string.find(string.rep("$", 26), string.rep("$?", 26) .. string.rep("$", 26))
-    end,
     function() string.rep("a", "2000000") end,
     function() string.rep("a", "2000000", "-") end,
+    function() string.find("a", "[") end,
+    function() string.find("a", "%") end,
+    function() string.gsub("a", "a", "%") end,
+    function() string.find("a", string.rep("a?", 5000)) end,
+    function()
+      local a = string.rep("a", 600000)
+      string.find(a .. a, "b")
+    end,
   }
   local flags = {}
   for _, probe in ipairs(probes) do
@@ -417,14 +422,185 @@ end
     let elapsed = started.elapsed();
     assert!(
         elapsed.as_millis() < 2_000,
-        "模式和 string.rep 应在进入 C 之前被拒绝，实际 {} ms",
+        "能马上结束的探测不应拖过 2 秒，实际 {} ms",
         elapsed.as_millis()
     );
     assert_eq!(
         caption(&session, "out"),
-        "false,false,false,false,false,false,false,false:done"
+        "true,true,true,true,false,false,false,false,false,false,false,false:done"
     );
     assert_eq!(caption(&session, "plain"), "2:ababab:ababab:ab-ab-ab:2:b:2");
+    assert!(session.notices().is_empty());
+}
+
+fn pattern_deadline(name: &str, body: &str) -> Session {
+    let dir = Scratch::new(name);
+    write_tool(&dir, &tool(name, "", "", &text_widgets(&["out"])), body);
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() >= 500 && elapsed.as_millis() < 10_000,
+        "{name} 应在 1 秒附近停下，实际 {} ms",
+        elapsed.as_millis()
+    );
+    let notice = session.notices().last().cloned().expect("超时提示");
+    assert!(notice.text.contains("脚本超时"), "{}", notice.text);
+    session
+}
+
+#[test]
+fn unanchored_dot_star_on_64kib_times_out() {
+    let session = pattern_deadline(
+        "example.dotstar",
+        r#"
+function on_load()
+  ui.text("out", "began")
+  local anchored = string.find(string.rep("b", 65536), "^.*x")
+  ui.text("out", "anchored:" .. tostring(anchored))
+  pcall(function()
+    string.find(string.rep("b", 65536), ".*x")
+  end)
+  ui.text("out", "after")
+end
+"#,
+    );
+    assert_eq!(caption(&session, "out"), "anchored:nil");
+}
+
+#[test]
+fn unanchored_match_gmatch_and_gsub_time_out() {
+    let session = pattern_deadline(
+        "example.dotmatch",
+        r#"
+function on_load()
+  ui.text("out", "began")
+  pcall(function()
+    string.match(string.rep("b", 65536), ".*x")
+  end)
+  ui.text("out", "after")
+end
+"#,
+    );
+    assert_eq!(caption(&session, "out"), "began");
+
+    let session = pattern_deadline(
+        "example.dotgmatch",
+        r#"
+function on_load()
+  ui.text("out", "began")
+  pcall(function()
+    for _ in string.gmatch(string.rep("b", 65536), ".*x") do end
+  end)
+  ui.text("out", "after")
+end
+"#,
+    );
+    assert_eq!(caption(&session, "out"), "began");
+
+    let session = pattern_deadline(
+        "example.dotgsub",
+        r#"
+function on_load()
+  ui.text("out", "began")
+  pcall(function()
+    string.gsub(string.rep("b", 65536), ".*x", "z")
+  end)
+  ui.text("out", "after")
+end
+"#,
+    );
+    assert_eq!(caption(&session, "out"), "began");
+}
+
+#[test]
+fn xpcall_cannot_keep_a_pattern_timeout() {
+    let session = pattern_deadline(
+        "example.dotxpcall",
+        r#"
+function on_load()
+  ui.text("out", "began")
+  xpcall(function()
+    string.find(string.rep("b", 65536), ".*x")
+  end, function()
+    ui.text("out", "handler")
+  end)
+  ui.text("out", "after")
+end
+"#,
+    );
+    assert_eq!(caption(&session, "out"), "began");
+}
+
+#[test]
+fn optional_dollar_probe_does_not_run_away() {
+    let dir = Scratch::new("dollar-probe");
+    write_tool(
+        &dir,
+        &tool("example.dollar", "", "", &text_widgets(&["out"])),
+        r#"
+function on_load()
+  ui.text("out", "began")
+  pcall(function()
+    string.find(string.rep("$", 26), string.rep("$?", 26) .. string.rep("$", 26))
+  end)
+  ui.text("out", "after")
+end
+"#,
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() < 10_000,
+        "$? 探测不应超过截止时间很久，实际 {} ms",
+        elapsed.as_millis()
+    );
+    let timed_out = session
+        .notices()
+        .last()
+        .is_some_and(|notice| notice.text.contains("脚本超时"));
+    if timed_out {
+        assert!(
+            elapsed.as_millis() >= 500,
+            "超时不应是长度预检立刻拒绝，实际 {} ms",
+            elapsed.as_millis()
+        );
+        assert_eq!(caption(&session, "out"), "began");
+    } else {
+        assert_eq!(caption(&session, "out"), "after");
+        assert!(session.notices().is_empty());
+    }
+}
+
+#[test]
+fn sort_without_comparator_rejects_a_huge_table() {
+    let dir = Scratch::new("sort-cap");
+    write_tool(
+        &dir,
+        &tool("example.sort", "", "", &text_widgets(&["out"])),
+        r#"
+function on_load()
+  local t = {3, 1, 2}
+  table.sort(t)
+  local desc = {3, 1, 2}
+  table.sort(desc, function(a, b) return a > b end)
+  local big = {}
+  for i = 1, 100001 do
+    big[i] = 1
+  end
+  local ok = pcall(table.sort, big)
+  ui.text("out", table.concat(t, "") .. ":" .. table.concat(desc, "") .. ":" .. tostring(ok) .. ":done")
+end
+"#,
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    assert!(started.elapsed().as_millis() < 2_000);
+    assert_eq!(caption(&session, "out"), "123:321:false:done");
     assert!(session.notices().is_empty());
 }
 
