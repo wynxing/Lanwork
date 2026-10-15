@@ -171,8 +171,8 @@ mod wincred {
 
     /// 列出目标名。不返回密钥原文。
     pub fn credential_list_targets(prefix: &str) -> Result<Vec<String>, String> {
-        // Filter 是目标名前缀，不是通配符。
-        let filter = wide(prefix);
+        // CredEnumerateW 的 Filter 必须是「前缀 + 末尾一个星号」。没有星号时不匹配子目标。
+        let filter = wide(&format!("{prefix}*"));
         let mut count = 0u32;
         let mut raw: *mut *mut CREDENTIALW = std::ptr::null_mut();
         // `None` 是标志 0。`CRED_ENUMERATE_FLAGS` 不是整数，不能写 `Some(0)`。

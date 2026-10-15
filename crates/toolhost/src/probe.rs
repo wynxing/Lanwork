@@ -202,7 +202,10 @@ mod tests {
         let _guard = ClearGuard(target.clone());
         super::write_persisted(&target, "ci-only").expect("写入");
         let listed = super::list_targets().expect("列出");
-        assert!(listed.iter().any(|name| name == &target));
+        assert!(
+            listed.iter().any(|name| name == &target),
+            "列出的目标里没有 {target}，实际是 {listed:?}"
+        );
         assert!(listed.iter().all(|name| !name.contains("ci-only")));
         crate::secret::credential_delete(&target).expect("删除");
         let listed = super::list_targets().expect("再列");
