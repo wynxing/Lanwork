@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 lanwork-core.workspace = true
+lanwork-toolhost = { path = "../toolhost" }
 slint = { workspace = true, features = ["raw-window-handle-06", "unstable-winit-030"] }
 
 [target.'cfg(windows)'.dependencies]

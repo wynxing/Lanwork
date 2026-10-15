@@ -299,8 +299,12 @@ fn header_token(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
+/// 传输失败。套接字和证书的原因留在宿主里，不交给脚本。
+#[derive(Debug, Clone, Copy)]
+pub struct TransportError;
+
 pub trait HttpTransport: Send + Sync {
-    fn get(&self, request: &Outgoing) -> Result<HttpResponse, ()>;
+    fn get(&self, request: &Outgoing) -> Result<HttpResponse, TransportError>;
 }
 
 pub struct RustlsTransport {
@@ -328,15 +332,18 @@ impl RustlsTransport {
 }
 
 impl HttpTransport for RustlsTransport {
-    fn get(&self, request: &Outgoing) -> Result<HttpResponse, ()> {
-        let url = Url::parse(&request.url).map_err(|_| ())?;
-        let host = url.host_str().ok_or(())?;
-        let port = url.port_or_known_default().ok_or(())?;
-        let server = ServerName::try_from(host.to_string()).map_err(|_| ())?;
-        let connection = ClientConnection::new(Arc::clone(&self.config), server).map_err(|_| ())?;
+    fn get(&self, request: &Outgoing) -> Result<HttpResponse, TransportError> {
+        let url = Url::parse(&request.url).map_err(|_| TransportError)?;
+        let host = url.host_str().ok_or(TransportError)?;
+        let port = url.port_or_known_default().ok_or(TransportError)?;
+        let server = ServerName::try_from(host.to_string()).map_err(|_| TransportError)?;
+        let connection =
+            ClientConnection::new(Arc::clone(&self.config), server).map_err(|_| TransportError)?;
         let tcp = connect_with_deadline(host, port)?;
-        tcp.set_read_timeout(Some(TIMEOUT)).map_err(|_| ())?;
-        tcp.set_write_timeout(Some(TIMEOUT)).map_err(|_| ())?;
+        tcp.set_read_timeout(Some(TIMEOUT))
+            .map_err(|_| TransportError)?;
+        tcp.set_write_timeout(Some(TIMEOUT))
+            .map_err(|_| TransportError)?;
         let mut tls = StreamOwned::new(connection, tcp);
         let path = match url.query() {
             Some(query) => format!("{}?{query}", url.path()),
@@ -348,7 +355,7 @@ impl HttpTransport for RustlsTransport {
             path
         };
         let mut head = format!(
-            "GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Lanwork-toolhost-spike\r\nAccept: */*\r\nConnection: close\r\n"
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Lanwork\r\nAccept: */*\r\nConnection: close\r\n"
         );
         if let (Some(name), Some(value)) = (&request.header_name, &request.header_value) {
             head.push_str(name);
@@ -357,12 +364,12 @@ impl HttpTransport for RustlsTransport {
             head.push_str("\r\n");
         }
         head.push_str("\r\n");
-        tls.write_all(head.as_bytes()).map_err(|_| ())?;
+        tls.write_all(head.as_bytes()).map_err(|_| TransportError)?;
         let mut buf = Vec::new();
         let mut chunk = [0u8; 8192];
         loop {
             if buf.len() >= BODY_CAP + 64 * 1024 {
-                return Err(());
+                return Err(TransportError);
             }
             match tls.read(&mut chunk) {
                 Ok(0) => break,
@@ -371,7 +378,7 @@ impl HttpTransport for RustlsTransport {
                 Err(err) if err.kind() == std::io::ErrorKind::TimedOut => break,
                 Err(_) => {
                     if buf.is_empty() {
-                        return Err(());
+                        return Err(TransportError);
                     }
                     break;
                 }
@@ -381,33 +388,33 @@ impl HttpTransport for RustlsTransport {
     }
 }
 
-fn connect_with_deadline(host: &str, port: u16) -> Result<TcpStream, ()> {
-    let addrs = (host, port).to_socket_addrs().map_err(|_| ())?;
+fn connect_with_deadline(host: &str, port: u16) -> Result<TcpStream, TransportError> {
+    let addrs = (host, port).to_socket_addrs().map_err(|_| TransportError)?;
     for addr in addrs {
         if let Ok(tcp) = TcpStream::connect_timeout(&addr, TIMEOUT) {
             return Ok(tcp);
         }
     }
-    Err(())
+    Err(TransportError)
 }
 
-fn parse_response(bytes: &[u8]) -> Result<HttpResponse, ()> {
+fn parse_response(bytes: &[u8]) -> Result<HttpResponse, TransportError> {
     let text = String::from_utf8_lossy(bytes);
-    let (head, body) = text.split_once("\r\n\r\n").ok_or(())?;
-    let status_line = head.lines().next().ok_or(())?;
+    let (head, body) = text.split_once("\r\n\r\n").ok_or(TransportError)?;
+    let status_line = head.lines().next().ok_or(TransportError)?;
     let status: u16 = status_line
         .split_whitespace()
         .nth(1)
-        .ok_or(())?
+        .ok_or(TransportError)?
         .parse()
-        .map_err(|_| ())?;
+        .map_err(|_| TransportError)?;
     let mut body = body.to_string();
     if body.len() > BODY_CAP {
-        return Err(());
+        return Err(TransportError);
     }
     if let Some(length) = content_length(head) {
         if length > BODY_CAP {
-            return Err(());
+            return Err(TransportError);
         }
         if body.len() > length {
             body.truncate(length);

@@ -2691,6 +2691,7 @@ name = "lanwork"
 version = "0.4.0"
 dependencies = [
  "lanwork-core",
+ "lanwork-toolhost",
  "raw-window-handle",
  "slint",
  "slint-build",
@@ -2761,19 +2762,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "lanwork-toolhost-spike"
+name = "lanwork-toolhost"
 version = "0.4.0"
 dependencies = [
  "mlua",
  "rcgen",
  "rustls",
+ "serde_json",
+ "toml 0.8.23",
+ "url",
+ "webpki-roots 0.26.11",
+ "windows",
+]
+
+[[package]]
+name = "lanwork-toolhost-spike"
+version = "0.4.0"
+dependencies = [
+ "lanwork-toolhost",
  "serde",
  "serde_json",
  "slint",
  "slint-build",
- "toml 0.8.23",
- "url",
- "webpki-roots 0.26.11",
  "windows",
 ]
 

@@ -123,7 +123,7 @@
 | --- | --- |
 | ⚡ **快速收集** | 搜索条里以 `/note` 开头快速收集便签。待办快速收集已放弃；便签快速收集提交动作尚未接入搜索条 |
 | ⚙️ **设置页其余项** | 便携应用、别名和手动刷新应用索引仍只能手改数据目录里的 `config.json`，或等「应用」页 |
-| 🍅 **番茄钟** | 计时规则已写入产品规格。作为应用页的内置工具，用清单和沙箱 Lua 来写，排在 v0.4.0 之后。产品界面还没有。验证程序在 `spikes/toolhost`，Windows 屏幕未测 |
+| 🍅 **番茄钟** | 计时规则已写入产品规格。作为应用页的内置工具，用清单和沙箱 Lua 来写，排在 v0.4.0 之后。卡片上的「悬浮窗」只打开窗口，不自动开始计时。产品界面还没有。宿主在 `crates/toolhost`，窗口验证在 `spikes/toolhost`，Windows 屏幕未测 |
 | 🧪 **验收与测量** | 背景、渲染器等技术验证项尚有未通过的部分；没有符合测量协议的性能记录，因此这里不给出内存和延迟数字 |
 
 ### v0.4.0 之后
@@ -131,7 +131,7 @@
 | 方向 | 现状 |
 | --- | --- |
 | 🤖 **外部 AI** | 本机 MCP，默认关闭，在设置里打开。只改待办和便签。规格见 [docs/external-ai.md](docs/external-ai.md)。还没有代码 |
-| 🧩 **应用页与自定义工具** | 面板上的「应用」标签，分类是「内置」和「自定义」。悬浮窗外壳加 TOML 清单和沙箱 Lua。番茄钟是内置工具。规格见 [docs/tools.md](docs/tools.md)。产品界面还没有；验证程序在 `spikes/toolhost`，Windows 屏幕未测。一键把网页收进收纳的浏览器扩展也还没有，先做 Chrome |
+| 🧩 **应用页与自定义工具** | 面板上的「应用」标签，分类是「内置」和「自定义」。设置里不另设「应用」页。悬浮窗外壳加 TOML 清单和沙箱 Lua。番茄钟是内置工具。规格见 [docs/tools.md](docs/tools.md)。产品界面还没有；宿主在 `crates/toolhost`，窗口验证在 `spikes/toolhost`，Windows 屏幕未测。一键把网页收进收纳的浏览器扩展也还没有，先做 Chrome |
 
 不做的事：「今日」聚合页、GitHub PR/Issue 追踪、由搜索词自动创建待办、云同步、文件内容搜索。完整清单见 [产品规格](docs/product.md)「明确不做」。
 
@@ -215,7 +215,8 @@ CI 在 `windows-latest` 上运行，还会检查 `lanwork-core` 的依赖树里�
 | --- | --- |
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储、搜索匹配与调度、备份等，不依赖 Slint，也不依赖 Win32 窗口 API |
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。程序外壳（单实例、托盘、热键、主题、开机启动）、搜索条、面板、便签与收纳悬浮窗；Slint 界面文件在 `ui/` |
-| `spikes/` | 技术验证程序：渲染与背景（`lanwork-render-spike`）、热角（`hotcorner`）、工具宿主（`lanwork-toolhost-spike`）。已通过的 spike 已归档清理 |
+| `crates/toolhost` | 自定义工具宿主 `lanwork-toolhost`。没有界面。安全测试在这里 |
+| `spikes/` | 技术验证程序：渲染与背景（`lanwork-render-spike`）、热角（`hotcorner`）、工具悬浮窗屏幕验证（`lanwork-toolhost-spike`）。已通过的 spike 已归档清理 |
 | `tools/` | 测量工具：固定数据夹具 `lanwork-fixture`、进程采样 `lanwork-sample`，以及图标渲染脚本 |
 | `third_party/` | 第三方许可与随附文件：Unihan 读音摘录、Everything SDK |
 | `docs/` | 产品规格、架构、实现状态。技术验证结论在 `docs/roadmap.md`，测量模板在 `docs/measurements/TEMPLATE.md` |
@@ -240,7 +241,7 @@ cargo run -p lanwork-sample -- sample --name lanwork --duration-secs 300 --inter
 cargo run -p hotcorner -- probe --out probe.json
 ```
 
-渲染器和背景的验证程序是 `lanwork-render-spike`，各渲染器的 feature 互斥。工具宿主的验证程序是 `lanwork-toolhost-spike`。详见 [spikes/README.md](spikes/README.md)。
+渲染器和背景的验证程序是 `lanwork-render-spike`，各渲染器的 feature 互斥。工具宿主在 `lanwork-toolhost`，悬浮窗屏幕验证是 `lanwork-toolhost-spike`。详见 [spikes/README.md](spikes/README.md)。
 
 </details>
 
@@ -254,7 +255,7 @@ cargo run -p hotcorner -- probe --out probe.json
 | [架构](docs/architecture.md) | Slint、Rust、数据与性能测量。技术验证结论见实现状态。它描述目标，不是现有代码的地图 |
 | [实现状态](docs/roadmap.md) | 哪些界面已有代码、哪些没有，以及技术验证记录 |
 | [外部 AI](docs/external-ai.md) | 本机 MCP。排在 v0.4.0 之后，还没有代码 |
-| [应用页与自定义工具](docs/tools.md) | 悬浮窗工具。原先的扩展页已并入。排在 v0.4.0 之后，产品界面还没有。验证程序见 `spikes/toolhost`，Windows 屏幕未测。开发说明见 [docs/tool-dev-guide.md](docs/tool-dev-guide.md) |
+| [应用页与自定义工具](docs/tools.md) | 悬浮窗工具。原先的扩展页已并入。设置不另设「应用」页。排在 v0.4.0 之后，产品界面还没有。宿主见 `crates/toolhost`，窗口验证见 `spikes/toolhost`，Windows 屏幕未测。开发说明见 [docs/tool-dev-guide.md](docs/tool-dev-guide.md) |
 | [测量模板](docs/measurements/TEMPLATE.md) | 空白模板，不是实测。技术验证结论在实现状态 |
 
 <a id="credits"></a>

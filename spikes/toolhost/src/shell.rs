@@ -10,7 +10,7 @@ use slint::platform::{Platform, WindowAdapter};
 use slint::winit_030::WinitWindowAccessor;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use crate::host::{Session, WidgetViewKind};
+use lanwork_toolhost::{Session, WidgetViewKind};
 
 slint::include_modules!();
 

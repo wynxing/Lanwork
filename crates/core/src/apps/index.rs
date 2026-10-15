@@ -660,6 +660,14 @@ enum Watcher {
     Windows(super::windows::watch::WatchHandle),
 }
 
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        // 字段在这个函数返回后析构。Windows 上 `WatchHandle` 会发停止信号并
+        // 等待监视线程结束。非 Windows 构建没有变体，仍实现 `Drop`，
+        // 关闭路径上的 `drop(watcher)` 在两个目标上都成立。
+    }
+}
+
 fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
