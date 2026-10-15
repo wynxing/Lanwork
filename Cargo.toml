@@ -11,6 +11,7 @@ members = [
     "tools/shortcut",
     "tools/foreground",
     "spikes/toolhost",
+    "spikes/apps-page-preview",
 ]
 
 [workspace.package]

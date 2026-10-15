@@ -4,4 +4,4 @@
 
 面板标签是待办、便签、收纳、应用、设置。没有「扩展」标签。不再规定另一套不带脚本的声明式插件，也不再把番茄钟写成官方插件。
 
-产品界面还没有代码。设置不另设「应用」页。宿主在 `crates/toolhost`，没有界面。技术验证「工具宿主」在 [roadmap.md](roadmap.md)，窗口验证程序在 `spikes/toolhost`，Windows 屏幕检查未测，该项未通过。没有通过记录之前，不写依赖该规格的产品界面。
+产品界面还没有代码。宿主在 `crates/toolhost`，没有界面。技术验证「工具宿主」在 [roadmap.md](roadmap.md)，2026-10-15 通过。窗口验证程序在 `spikes/toolhost`。凭据管理器界面待用户用 `lanwork --toolhost-cred` 确认。

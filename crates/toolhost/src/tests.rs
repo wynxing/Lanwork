@@ -886,13 +886,13 @@ fn pomodoro_example_runs_end_to_end() {
     session.set_todos(vec![cleared]);
     session.todos_changed();
     assert_eq!(caption(&session, "clock"), "0");
-    assert_eq!(caption(&session, "title"), "没有待办");
+    assert_eq!(caption(&session, "title"), "没有当前待办");
 
     let mut options = Options::default();
     options.durations = short;
     let session = open_at(&dir, Origin::Builtin, options).unwrap();
     session.on_load();
-    assert_eq!(caption(&session, "title"), "没有待办");
+    assert_eq!(caption(&session, "title"), "没有当前待办");
     assert_eq!(caption(&session, "clock"), "0");
     session.click("pause");
     session.click("skip");
