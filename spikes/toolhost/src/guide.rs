@@ -3,10 +3,16 @@
 pub const GUIDE: &str = include_str!("../../../docs/tool-dev-guide.md");
 
 pub fn example(heading: &str) -> Result<(String, String), String> {
-    let start = GUIDE
+    example_in(GUIDE, heading)
+}
+
+fn example_in(guide: &str, heading: &str) -> Result<(String, String), String> {
+    // Windows 检出可能把说明转成 CRLF。代码块标记按 LF 查找。
+    let guide = guide.replace("\r\n", "\n");
+    let start = guide
         .find(heading)
         .ok_or_else(|| format!("开发说明里没有 {heading}"))?;
-    let rest = &GUIDE[start + heading.len()..];
+    let rest = &guide[start + heading.len()..];
     let end = rest.find("\n## ").unwrap_or(rest.len());
     let section = &rest[..end];
     let manifest = fence(section, "toml")?;
@@ -41,4 +47,19 @@ pub fn write_example(dir: &std::path::Path, which: &str) -> Result<(), String> {
         _ => return Err(format!("没有这个示例：{which}")),
     };
     crate::manifest::materialize(dir, &manifest, &script)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GUIDE, example_in};
+
+    #[test]
+    fn crlf_guide_still_yields_pomodoro() {
+        let crlf = GUIDE.replace('\n', "\r\n");
+        let (manifest, script) = example_in(&crlf, "## 示例：番茄钟").expect("番茄钟示例");
+        assert!(manifest.contains("id = \"lanwork.pomodoro\""));
+        assert!(script.contains("function on_timer"));
+        assert!(!manifest.contains('\r'));
+        assert!(!script.contains('\r'));
+    }
 }
