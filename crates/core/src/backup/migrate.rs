@@ -3,11 +3,15 @@
 //! 顺序是：暂停写入、复制、逐个校验、写引导文件、再把已打开的存储指到新目录。
 //! 引导文件是唯一切换点。写它之前失败或进程结束，下次启动仍用旧目录。
 //! 旧目录不删除。导出白名单以外的文件不复制，留在旧目录。
+//! `todo-purge-pending.json` 例外：它和清单、收纳分组一起复制，否则下次启动补不上解除。
 
 use std::path::{Path, PathBuf};
 
 use super::package::data_file_names;
 use crate::storage::{self, Store, absolute_lexical, is_same_or_under, write_bootstrap};
+
+/// 永久删除尚未让收纳解除时的记录。不在导出白名单里，迁移仍要复制。
+const PURGE_PENDING: &str = "todo-purge-pending.json";
 
 /// 迁移进行到哪一步。界面只拿这个显示进度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,19 +159,13 @@ fn migrate_holding(
     if storage::fs_exists(&source.join("import.pending")) {
         return Err(MigrateError::ImportPending);
     }
-    let mut names = data_file_names(source).map_err(|err| MigrateError::Io {
-        message: format!("{err}，仍使用原来的目录"),
-    })?;
-    names.sort();
+    let names = migration_names(source)?;
     ensure_space(target, source, &names, fault.force_no_space)?;
     let total = names.len() as u64;
     let preexisting = has_lanwork_data(target)?;
     let mut written = Vec::new();
     if preexisting {
-        let mut target_names = data_file_names(target).map_err(|err| MigrateError::Io {
-            message: format!("{err}，仍使用原来的目录"),
-        })?;
-        target_names.sort();
+        let target_names = migration_names(target)?;
         if target_names != names || !all_match(source, target, &names)? {
             return Err(MigrateError::AlreadyHasData);
         }
@@ -295,18 +293,24 @@ fn ensure_space(
     Ok(())
 }
 
+/// 导出白名单，加上存在的清除记录。两边用同一份名单比较，字节一致才能补写引导文件。
+fn migration_names(dir: &Path) -> Result<Vec<String>, MigrateError> {
+    let mut names = data_file_names(dir).map_err(|err| MigrateError::Io {
+        message: format!("{err}，仍使用原来的目录"),
+    })?;
+    if storage::fs_exists(&join(dir, PURGE_PENDING)) {
+        names.push(PURGE_PENDING.to_owned());
+    }
+    names.sort();
+    Ok(names)
+}
+
 fn has_lanwork_data(dir: &Path) -> Result<bool, MigrateError> {
-    if !data_file_names(dir)
-        .map_err(|err| MigrateError::Io {
-            message: format!("{err}，仍使用原来的目录"),
-        })?
-        .is_empty()
-    {
+    if !migration_names(dir)?.is_empty() {
         return Ok(true);
     }
     for name in [
         "reminder-sent.json",
-        "todo-purge-pending.json",
         "import.pending",
         "github/watchlist.json",
     ] {
@@ -503,6 +507,7 @@ mod tests {
             "user-apps.json",
             "todo-float.json",
             "notes/n1.json",
+            "todo-purge-pending.json",
         ] {
             let from = super::join(&old, name);
             let dest = super::join(&target, name);
@@ -519,7 +524,6 @@ mod tests {
         );
         for name in [
             "reminder-sent.json",
-            "todo-purge-pending.json",
             "cache/web-icons/ab.bin",
             "backups/manual-1.zip",
             "logs/app.log",
@@ -688,6 +692,70 @@ mod tests {
     }
 
     #[test]
+    fn purge_pending_follows_the_list_and_shelf_and_must_match_to_resume() {
+        let temp = TempDir::new();
+        let store = open(temp.path());
+        seed(&store);
+        let old = store.data_dir();
+        let list = br#"{"schemaVersion":1,"id":"inbox","items":[]}"#;
+        let shelf = br#"{"schemaVersion":1,"id":"g","todoIds":["gone"]}"#;
+        let purge = br#"{"schemaVersion":1,"ids":["gone"]}"#;
+        std::fs::write(old.join("todos").join("inbox.json"), list).unwrap();
+        std::fs::create_dir_all(old.join("shelves")).unwrap();
+        std::fs::write(old.join("shelves").join("g.json"), shelf).unwrap();
+        std::fs::write(old.join("todo-purge-pending.json"), purge).unwrap();
+        let target = temp.path().join("next");
+        let err = migrate(
+            &store,
+            &target,
+            false,
+            Fault {
+                skip_bootstrap: true,
+                ..Fault::default()
+            },
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("仍使用原来的目录"));
+        assert_eq!(store.data_dir(), old);
+        for (name, bytes) in [
+            ("todos/inbox.json", list.as_slice()),
+            ("shelves/g.json", shelf.as_slice()),
+            ("todo-purge-pending.json", purge.as_slice()),
+        ] {
+            assert_eq!(std::fs::read(super::join(&target, name)).unwrap(), bytes);
+            assert_eq!(std::fs::read(super::join(&old, name)).unwrap(), bytes);
+        }
+        let mut flipped = purge.to_vec();
+        flipped[0] ^= 0xff;
+        std::fs::write(target.join("todo-purge-pending.json"), &flipped).unwrap();
+        let err = run(&store, &target).unwrap_err();
+        assert!(matches!(err, MigrateError::AlreadyHasData));
+        assert_eq!(store.data_dir(), old);
+        assert_eq!(
+            std::fs::read(target.join("todo-purge-pending.json")).unwrap(),
+            flipped
+        );
+        assert_eq!(
+            std::fs::read(old.join("todo-purge-pending.json")).unwrap(),
+            purge
+        );
+        std::fs::write(target.join("todo-purge-pending.json"), purge).unwrap();
+        run(&store, &target).unwrap();
+        assert_eq!(store.data_dir(), target);
+        assert_eq!(resolved(temp.path()).data_dir, target);
+        assert_eq!(
+            std::fs::read(target.join("shelves").join("g.json")).unwrap(),
+            shelf
+        );
+        assert_eq!(
+            std::fs::read(target.join("todo-purge-pending.json")).unwrap(),
+            purge
+        );
+        assert!(old.join("todo-purge-pending.json").is_file());
+    }
+
+    #[test]
     fn different_existing_data_is_refused_and_not_deleted() {
         let temp = TempDir::new();
         let store = open(temp.path());
@@ -790,6 +858,8 @@ mod tests {
         assert!(!from_names.iter().any(|name| name.contains("reminder-sent")));
         assert!(!from_names.iter().any(|name| name.contains("web-icons")));
         assert!(!from_names.iter().any(|name| name.contains("todo-purge")));
+        let copied = migration_names(&store.data_dir()).unwrap();
+        assert!(copied.iter().any(|name| name == "todo-purge-pending.json"));
         assert_eq!(
             progress_text(MigrateProgress {
                 phase: MigratePhase::Copy,
