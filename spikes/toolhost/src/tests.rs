@@ -389,6 +389,11 @@ function on_load()
     end,
     function() string.gsub(string.rep("a", 30), string.rep("a?", 30), "b") end,
     function() string.rep("a", 1e8) end,
+    function()
+      string.find(string.rep("$", 26), string.rep("$?", 26) .. string.rep("$", 26))
+    end,
+    function() string.rep("a", "2000000") end,
+    function() string.rep("a", "2000000", "-") end,
   }
   local flags = {}
   for _, probe in ipairs(probes) do
@@ -397,9 +402,12 @@ function on_load()
   ui.text("out", table.concat(flags, ",") .. ":done")
   local at = string.find("hello", "ell")
   local rep = string.rep("ab", 3)
+  local reps = string.rep("ab", "3")
+  local seps = string.rep("ab", "3", "-")
   local method = ("hello"):find("ell")
   local swapped = string.gsub("a", "a", "b")
-  ui.text("plain", tostring(at) .. ":" .. rep .. ":" .. tostring(method) .. ":" .. swapped)
+  local tail = string.find("ba", "a$")
+  ui.text("plain", tostring(at) .. ":" .. rep .. ":" .. reps .. ":" .. seps .. ":" .. tostring(method) .. ":" .. swapped .. ":" .. tostring(tail))
 end
 "#,
     );
@@ -414,9 +422,9 @@ end
     );
     assert_eq!(
         caption(&session, "out"),
-        "false,false,false,false,false:done"
+        "false,false,false,false,false,false,false,false:done"
     );
-    assert_eq!(caption(&session, "plain"), "2:ababab:2:b");
+    assert_eq!(caption(&session, "plain"), "2:ababab:ababab:ab-ab-ab:2:b:2");
     assert!(session.notices().is_empty());
 }
 
@@ -817,6 +825,14 @@ fn percent_encoded_secret_blanks_the_body() {
     }
     let clean = echo_caption("pct-clean", r#"{"used":20,"limit":100}"#, "ok", secret);
     assert_eq!(clean, r#"true|{"used":20,"limit":100}||200"#);
+}
+
+#[test]
+fn short_secret_base64_blanks_the_body() {
+    let text = echo_caption("short-b64", "eHl6", "x-clean", "xyz");
+    assert_eq!(text, "false||请求失败|200", "{text}");
+    assert!(!text.contains("xyz"));
+    assert!(!text.contains("eHl6"));
 }
 
 fn echo_caption(name: &str, body: &str, header: &str, secret: &str) -> String {

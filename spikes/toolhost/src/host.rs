@@ -731,7 +731,8 @@ fn check_pattern(name: &str, args: &MultiValue) -> mlua::Result<()> {
         let Value::String(text) = pattern else {
             return Ok(());
         };
-        count_quantifiers(&text.as_bytes())
+        // `find` / `match` / `gsub` 会剥掉开头的 `^`。`gmatch` 不会，开头的 `^` 在匹配器里是字面量。
+        count_quantifiers(&text.as_bytes(), name != "gmatch")
     };
     let Some(cap) = subject_cap(quantifiers) else {
         return Err(mlua::Error::runtime("模式过于复杂"));
@@ -746,22 +747,198 @@ fn check_rep(args: &MultiValue) -> mlua::Result<()> {
     let (Some(unit), Some(count)) = (args.front(), args.get(1)) else {
         return Ok(());
     };
-    let Some(unit_len) = byte_len(unit) else {
-        return Ok(());
-    };
-    let Some(times) = repeat_count(count) else {
-        return Ok(());
+    let times = match repetition_count(count) {
+        RepCount::Times(times) => times,
+        // 转不成整数时，Lua 在分配之前就报错。
+        RepCount::LeaveToLua => return Ok(()),
+        RepCount::Reject => return Err(mlua::Error::runtime("结果过长")),
     };
     if times == 0 {
         return Ok(());
     }
-    let separator = args.get(2).and_then(byte_len).unwrap_or(0);
-    let total = unit_len
-        .checked_mul(times)
-        .and_then(|body| separator.checked_mul(times - 1)?.checked_add(body));
+    let Some(unit_len) = coerced_len(unit) else {
+        return Ok(());
+    };
+    let separator = match args.get(2) {
+        None | Some(Value::Nil) => 0,
+        Some(value) => match coerced_len(value) {
+            Some(len) => len,
+            None => {
+                if unit_len
+                    .checked_mul(times)
+                    .is_none_or(|body| body > STRING_REP_CAP)
+                {
+                    return Err(mlua::Error::runtime("结果过长"));
+                }
+                return Ok(());
+            }
+        },
+    };
+    let total = unit_len.checked_mul(times).and_then(|body| {
+        separator
+            .checked_mul(times.saturating_sub(1))?
+            .checked_add(body)
+    });
     match total {
         Some(total) if total <= STRING_REP_CAP => Ok(()),
         _ => Err(mlua::Error::runtime("结果过长")),
+    }
+}
+
+enum RepCount {
+    Times(usize),
+    /// 不是 Lua 能转成整数的值。`string.rep` 会在分配之前报错。
+    LeaveToLua,
+    /// 像数字，但放不进整数，或大到不能安全交给 C。
+    Reject,
+}
+
+fn repetition_count(value: &Value) -> RepCount {
+    match value {
+        Value::Integer(count) => RepCount::Times(non_negative_times(*count)),
+        Value::Number(count) => match lua_integral_i64(*count) {
+            Some(count) => RepCount::Times(non_negative_times(count)),
+            None => RepCount::LeaveToLua,
+        },
+        Value::String(text) => repetition_from_bytes(&text.as_bytes()),
+        _ => RepCount::LeaveToLua,
+    }
+}
+
+fn repetition_from_bytes(bytes: &[u8]) -> RepCount {
+    let trimmed = trim_lua_space(bytes);
+    if trimmed.is_empty() {
+        return RepCount::LeaveToLua;
+    }
+    if let Some(count) = parse_lua_integer(trimmed) {
+        return RepCount::Times(non_negative_times(count));
+    }
+    if let Some(count) = parse_lua_integral_float(trimmed) {
+        return RepCount::Times(non_negative_times(count));
+    }
+    if looks_numeric(trimmed) {
+        RepCount::Reject
+    } else {
+        RepCount::LeaveToLua
+    }
+}
+
+fn non_negative_times(count: i64) -> usize {
+    usize::try_from(count).unwrap_or(0)
+}
+
+fn lua_integral_i64(number: f64) -> Option<i64> {
+    if !number.is_finite() || number.fract() != 0.0 {
+        return None;
+    }
+    if number < i64::MIN as f64 || number >= (i64::MAX as f64) {
+        return None;
+    }
+    Some(number as i64)
+}
+
+fn trim_lua_space(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !is_lua_space(*byte))
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !is_lua_space(*byte))
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
+}
+
+fn is_lua_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | 0x0b | b'\n' | b'\r' | 0x0c)
+}
+
+fn looks_numeric(bytes: &[u8]) -> bool {
+    matches!(bytes.first(), Some(b'+' | b'-' | b'.' | b'0'..=b'9'))
+}
+
+/// Lua `l_str2int`：可选符号，十进制或 `0x` 十六进制，必须吃完整个字符串。
+fn parse_lua_integer(bytes: &[u8]) -> Option<i64> {
+    let mut index = 0;
+    let negative = match bytes.first() {
+        Some(b'+') => {
+            index = 1;
+            false
+        }
+        Some(b'-') => {
+            index = 1;
+            true
+        }
+        _ => false,
+    };
+    if index >= bytes.len() {
+        return None;
+    }
+    let mut acc: u64 = 0;
+    if bytes[index] == b'0' && matches!(bytes.get(index + 1), Some(b'x' | b'X')) {
+        index += 2;
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_hexdigit() {
+            let digit = hex_digit(bytes[index])?;
+            acc = acc.checked_mul(16)?.checked_add(u64::from(digit))?;
+            index += 1;
+        }
+        if index == start {
+            return None;
+        }
+    } else {
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            let digit = u64::from(bytes[index] - b'0');
+            acc = acc.checked_mul(10)?.checked_add(digit)?;
+            index += 1;
+        }
+        if index == start {
+            return None;
+        }
+    }
+    if index != bytes.len() {
+        return None;
+    }
+    if negative {
+        if acc == 0 {
+            Some(0)
+        } else if acc == i64::MAX as u64 + 1 {
+            Some(i64::MIN)
+        } else {
+            i64::try_from(acc).ok().map(|count| -count)
+        }
+    } else {
+        i64::try_from(acc).ok()
+    }
+}
+
+fn parse_lua_integral_float(bytes: &[u8]) -> Option<i64> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    if text.to_ascii_lowercase().contains("nan") || text.to_ascii_lowercase().contains("inf") {
+        return None;
+    }
+    let number: f64 = text.parse().ok()?;
+    lua_integral_i64(number)
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// `string.rep` 会把数字收成字符串。长度按这个结果算，避免数字单元或分隔符绕过上限。
+fn coerced_len(value: &Value) -> Option<usize> {
+    match value {
+        Value::String(text) => Some(text.as_bytes().len()),
+        Value::Integer(number) => Some(number.to_string().len()),
+        Value::Number(number) if number.is_finite() => Some(format!("{number}").len()),
+        _ => None,
     }
 }
 
@@ -779,57 +956,94 @@ fn subject_cap(quantifiers: usize) -> Option<usize> {
     })
 }
 
-fn count_quantifiers(pattern: &[u8]) -> usize {
+/// 按 Lua 5.4 `lstrlib.c` 的 `match` / `classend` 数回溯量词。
+///
+/// `^` 只有在 `caret_is_anchor` 且位于开头时是锚点。`$` 只有作为模式最后一个字节时是锚点。
+/// 其余位置的 `^` / `$` 是字面量，后面的 `*+?-` 算量词。`%b`、`%f` 和 `%0`–`%9` 不带量词后缀。
+/// 解析不了的片段按量词计，避免把回溯漏掉。
+fn count_quantifiers(pattern: &[u8], caret_is_anchor: bool) -> usize {
     let mut index = 0;
     let mut count = 0;
-    let mut atom = false;
+    if caret_is_anchor && pattern.first() == Some(&b'^') {
+        index = 1;
+    }
     while index < pattern.len() {
-        let byte = pattern[index];
-        if byte == b'%' {
-            if index + 1 >= pattern.len() {
+        match pattern_step(pattern, index) {
+            PatternStep::Item(next) => index = next,
+            PatternStep::Quantified(next) => {
+                count += 1;
+                index = next;
+            }
+            PatternStep::Unknown => {
+                count += 1;
+                count += pattern[index + 1..]
+                    .iter()
+                    .filter(|byte| matches!(byte, b'*' | b'+' | b'-' | b'?'))
+                    .count();
                 break;
             }
-            let next = pattern[index + 1];
-            if next == b'b' {
-                index = (index + 4).min(pattern.len());
-                atom = true;
-                continue;
-            }
-            if next == b'f' {
-                index += 2;
-                if index < pattern.len() && pattern[index] == b'[' {
-                    index = skip_class(pattern, index);
-                }
-                atom = true;
-                continue;
-            }
-            index += 2;
-            atom = true;
-            continue;
         }
-        if byte == b'[' {
-            index = skip_class(pattern, index);
-            atom = true;
-            continue;
-        }
-        if byte == b'(' || byte == b')' || byte == b'^' || byte == b'$' {
-            index += 1;
-            atom = false;
-            continue;
-        }
-        if atom && matches!(byte, b'*' | b'+' | b'-' | b'?') {
-            count += 1;
-            atom = false;
-            index += 1;
-            continue;
-        }
-        index += 1;
-        atom = true;
     }
     count
 }
 
-fn skip_class(pattern: &[u8], start: usize) -> usize {
+enum PatternStep {
+    Item(usize),
+    Quantified(usize),
+    Unknown,
+}
+
+fn pattern_step(pattern: &[u8], index: usize) -> PatternStep {
+    match pattern[index] {
+        b'(' => {
+            let next = if pattern.get(index + 1) == Some(&b')') {
+                index + 2
+            } else {
+                index + 1
+            };
+            PatternStep::Item(next)
+        }
+        b')' => PatternStep::Item(index + 1),
+        b'$' if index + 1 == pattern.len() => PatternStep::Item(index + 1),
+        b'%' => match pattern.get(index + 1).copied() {
+            None => PatternStep::Unknown,
+            Some(b'b') => {
+                if pattern.len() - index < 4 {
+                    PatternStep::Unknown
+                } else {
+                    PatternStep::Item(index + 4)
+                }
+            }
+            Some(b'f') => {
+                if pattern.get(index + 2) != Some(&b'[') {
+                    PatternStep::Unknown
+                } else {
+                    match skip_class(pattern, index + 2) {
+                        Some(end) => PatternStep::Item(end),
+                        None => PatternStep::Unknown,
+                    }
+                }
+            }
+            Some(byte) if byte.is_ascii_digit() => PatternStep::Item(index + 2),
+            Some(_) => with_suffix(pattern, index + 2),
+        },
+        b'[' => match skip_class(pattern, index) {
+            Some(end) => with_suffix(pattern, end),
+            None => PatternStep::Unknown,
+        },
+        _ => with_suffix(pattern, index + 1),
+    }
+}
+
+fn with_suffix(pattern: &[u8], index: usize) -> PatternStep {
+    if index < pattern.len() && matches!(pattern[index], b'*' | b'+' | b'-' | b'?') {
+        PatternStep::Quantified(index + 1)
+    } else {
+        PatternStep::Item(index)
+    }
+}
+
+fn skip_class(pattern: &[u8], start: usize) -> Option<usize> {
     let mut index = start + 1;
     if index < pattern.len() && pattern[index] == b'^' {
         index += 1;
@@ -843,11 +1057,11 @@ fn skip_class(pattern: &[u8], start: usize) -> usize {
             continue;
         }
         if pattern[index] == b']' {
-            return index + 1;
+            return Some(index + 1);
         }
         index += 1;
     }
-    pattern.len()
+    None
 }
 
 fn byte_len(value: &Value) -> Option<usize> {
@@ -855,15 +1069,6 @@ fn byte_len(value: &Value) -> Option<usize> {
         Value::String(text) => Some(text.as_bytes().len()),
         _ => None,
     }
-}
-
-fn repeat_count(value: &Value) -> Option<usize> {
-    let count = match value {
-        Value::Integer(count) => *count,
-        Value::Number(count) if count.is_finite() && *count >= 0.0 => *count as i64,
-        _ => return None,
-    };
-    usize::try_from(count).ok()
 }
 
 fn is_truthy(value: &Value) -> bool {
@@ -1637,17 +1842,58 @@ fn line_of(err: &mlua::Error) -> Option<usize> {
 
 #[cfg(test)]
 mod pattern_limits {
-    use super::count_quantifiers;
+    use super::{RepCount, count_quantifiers, repetition_from_bytes};
 
     #[test]
     fn quantifiers_follow_lua_pattern_grammar() {
-        assert_eq!(count_quantifiers(b"%d+"), 1);
-        assert_eq!(count_quantifiers(b"%%"), 0);
-        assert_eq!(count_quantifiers(b"%?"), 0);
-        assert_eq!(count_quantifiers(b"[a?]+"), 1);
-        assert_eq!(count_quantifiers(b"%b()"), 0);
-        assert_eq!(count_quantifiers(b".*a.*"), 2);
-        assert_eq!(count_quantifiers(b"%f[%w]+"), 1);
-        assert_eq!(count_quantifiers("a?".repeat(30).as_bytes()), 30);
+        let count = |pattern: &str| count_quantifiers(pattern.as_bytes(), true);
+        assert_eq!(count("%d+"), 1);
+        assert_eq!(count("%%"), 0);
+        assert_eq!(count("%?"), 0);
+        assert_eq!(count("[a?]+"), 1);
+        assert_eq!(count("%b()"), 0);
+        assert_eq!(count(".*a.*"), 2);
+        // `%f` 在 lstrlib 里不带量词后缀，后面的 `+` 是字面量。
+        assert_eq!(count("%f[%w]+"), 0);
+        assert_eq!(count(&"a?".repeat(30)), 30);
+        assert_eq!(count("$?"), 1);
+        assert_eq!(count("$"), 0);
+        assert_eq!(count("$$"), 0);
+        assert_eq!(count("a$"), 0);
+        assert_eq!(count("^a?"), 1);
+        assert_eq!(count("^?"), 0);
+        assert_eq!(count("^^?"), 1);
+        assert_eq!(count("a^?"), 1);
+        assert_eq!(count("(a?)"), 1);
+        assert_eq!(count("(a)?"), 0);
+        assert_eq!(count("%1*"), 0);
+        assert_eq!(count("%ba?"), 0);
+        let dollars = format!("{}{}", "$?".repeat(26), "$".repeat(26));
+        assert_eq!(count(&dollars), 26);
+        assert_eq!(count_quantifiers(b"^?", false), 1);
+    }
+
+    #[test]
+    fn string_repetition_accepts_lua_integer_strings() {
+        assert!(matches!(
+            repetition_from_bytes(b"2000000"),
+            RepCount::Times(2_000_000)
+        ));
+        assert!(matches!(repetition_from_bytes(b"3"), RepCount::Times(3)));
+        assert!(matches!(repetition_from_bytes(b" 3 "), RepCount::Times(3)));
+        assert!(matches!(
+            repetition_from_bytes(b"2e6"),
+            RepCount::Times(2_000_000)
+        ));
+        assert!(matches!(repetition_from_bytes(b"-1"), RepCount::Times(0)));
+        assert!(matches!(
+            repetition_from_bytes(b"0x10"),
+            RepCount::Times(16)
+        ));
+        assert!(matches!(repetition_from_bytes(b"1.5"), RepCount::Reject));
+        assert!(matches!(
+            repetition_from_bytes(b"hello"),
+            RepCount::LeaveToLua
+        ));
     }
 }

@@ -54,7 +54,7 @@ pub struct HttpResponse {
 ///
 /// 命中时调用方应把正文清空并显示「请求失败」，而不是逐段替换。
 /// 检查这些形式：原文；`Bearer` / `bearer` 加空格再加原文；实际发出的请求头值；
-/// 上述每一项的标准 Base64 与 URL 安全 Base64（带填充和不带填充）。
+/// 上述每一项的标准 Base64 与 URL 安全 Base64（带填充和不带填充）。不按长度丢弃：短密钥的编码可能只有几个字符。
 /// 另外把正文里的 `%XX`（十六进制忽略大小写，未保留字节也可以编码，可以只编码其中一部分）
 /// 反复解码后再找上面的明文和 Base64。原文或解码结果里的 `+` 再按空格看一次。
 pub fn response_exposes_secret(parts: &[&str], secret: &str, header_value: Option<&str>) -> bool {
@@ -77,13 +77,14 @@ pub fn response_exposes_secret(parts: &[&str], secret: &str, header_value: Optio
     for item in &plain {
         for url_safe in [false, true] {
             let b64 = base64_encode(item.as_bytes(), url_safe);
-            if b64.len() >= 8 {
-                let trimmed = b64.trim_end_matches('=').to_string();
-                if trimmed.len() >= 6 && trimmed != b64 {
-                    encoded.push(trimmed);
-                }
-                encoded.push(b64);
+            if b64.is_empty() {
+                continue;
             }
+            let trimmed = b64.trim_end_matches('=').to_string();
+            if !trimmed.is_empty() && trimmed != b64 {
+                encoded.push(trimmed);
+            }
+            encoded.push(b64);
         }
     }
     encoded.sort();
@@ -584,5 +585,23 @@ mod tests {
         assert!(response_exposes_secret(&["a+b%2Fc"], short, None));
         assert!(response_exposes_secret(&["a+b/c"], short, None));
         assert_eq!(base64_encode(b"a/b", false), "YS9i");
+
+        let short_key = "xyz";
+        assert_eq!(base64_encode(short_key.as_bytes(), false), "eHl6");
+        assert_eq!(base64_encode(short_key.as_bytes(), true), "eHl6");
+        assert!(response_exposes_secret(&["eHl6"], short_key, None));
+        assert!(response_exposes_secret(
+            &["prefix eHl6 suffix"],
+            short_key,
+            None
+        ));
+        assert!(!response_exposes_secret(
+            &[r#"{"ok":true}"#],
+            short_key,
+            None
+        ));
+        assert_eq!(base64_encode(b"x", false), "eA==");
+        assert!(response_exposes_secret(&["eA=="], "x", None));
+        assert!(response_exposes_secret(&["eA"], "x", None));
     }
 }
