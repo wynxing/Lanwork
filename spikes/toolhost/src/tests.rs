@@ -576,6 +576,39 @@ end
 }
 
 #[test]
+fn gsub_result_over_the_budget_stays_catchable() {
+    let dir = Scratch::new("gsub-budget");
+    write_tool(
+        &dir,
+        &tool("example.gsubbudget", "", "", &text_widgets(&["out"])),
+        r#"
+function on_load()
+  ui.text("out", "began")
+  local ok, err = pcall(function()
+    string.gsub(string.rep("a", 700), "", string.rep("x", 512 * 1024))
+  end)
+  ui.text("out", (ok and "true" or "false") .. ":" .. tostring(err) .. ":done")
+end
+"#,
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() < 2_000,
+        "结果超过临时内存预算时应马上返回，实际 {} ms",
+        elapsed.as_millis()
+    );
+    let caption = caption(&session, "out");
+    assert!(caption.contains("false"), "{caption}");
+    assert!(caption.contains("not enough memory"), "{caption}");
+    assert!(caption.contains(":done"), "{caption}");
+    assert!(!caption.contains("脚本超时"), "{caption}");
+    assert!(session.notices().is_empty());
+}
+
+#[test]
 fn sort_without_comparator_rejects_a_huge_table() {
     let dir = Scratch::new("sort-cap");
     write_tool(

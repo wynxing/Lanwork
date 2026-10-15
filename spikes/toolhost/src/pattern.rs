@@ -5,8 +5,10 @@
 //! 模式写错、捕获写错、嵌套过深仍是普通脚本错误，不置中止标记。
 //!
 //! 文本和模式另有长度上限，只是验证程序的临时天花板，不是产品规则。
+//! `gsub` 的结果缓冲区在扩容前计入同一块 16 MiB 预算。超过则这次调用报错，不置中止标记。
+//! 复制进结果的字节大约每 64 KiB 再看一次截止时间。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -20,6 +22,12 @@ const STEP_INTERVAL: u32 = 4_096;
 /// 临时上限。64 KiB 的 `.*` 必须还能跑进匹配器，由步数时钟拦住。
 const SUBJECT_CAP: usize = 1024 * 1024;
 const PATTERN_CAP: usize = 8 * 1024;
+/// 与宿主的临时内存天花板相同。`gsub` 的结果还在 Rust 缓冲区里时，Lua 分配器看不见它。
+const RESULT_BUDGET: usize = 16 * 1024 * 1024;
+/// 最后交给 Lua 的字符串还有一个小头。留出来，避免刚通过预算检查就在 `create_string` 上失败。
+const STRING_OVERHEAD: usize = 64;
+/// 复制进结果时，每这么多字节约看一次截止时间。
+const COPY_STEP: usize = 64 * 1024;
 
 pub(crate) trait CpuWatch: Send + Sync {
     fn deadline_ms(&self) -> u64;
@@ -250,7 +258,7 @@ fn gsub<W: CpuWatch>(lua: &Lua, watch: &W, args: &MultiValue) -> mlua::Result<Mu
             continue;
         }
         if src < subject.len() {
-            buf.push(subject[src]);
+            state.write_span(&mut buf, src, src + 1)?;
             src += 1;
         } else {
             break;
@@ -261,7 +269,7 @@ fn gsub<W: CpuWatch>(lua: &Lua, watch: &W, args: &MultiValue) -> mlua::Result<Mu
     }
     // `luaL_checklstring` 会把数字参数就地收成字符串。没有替换时返回的也是这个字符串。
     let text = if changed {
-        buf.extend_from_slice(&subject[src..]);
+        state.write_span(&mut buf, src, subject.len())?;
         Value::String(lua.create_string(&buf)?)
     } else if matches!(original, Value::String(_)) {
         original
@@ -427,6 +435,8 @@ struct MatchState<'a, W: CpuWatch> {
     src: &'a [u8],
     pat: &'a [u8],
     steps: u32,
+    /// 自从上次看截止时间以来，写进 `gsub` 结果的字节数。
+    copied: Cell<usize>,
     depth: i32,
     level: usize,
     capture: [Capture; MAX_CAPTURES],
@@ -445,6 +455,7 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
             src,
             pat,
             steps: 0,
+            copied: Cell::new(0),
             depth: MAX_CALLS,
             level: 0,
             capture: [Capture { init: 0, len: 0 }; MAX_CAPTURES],
@@ -458,6 +469,80 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
 
     fn charge(&mut self) -> mlua::Result<()> {
         charge(self.lua, self.watch, &mut self.steps)
+    }
+
+    fn check_deadline(&self) -> mlua::Result<()> {
+        if self.watch.aborted() {
+            return Err(mlua::Error::runtime("脚本超时"));
+        }
+        let deadline = self.watch.deadline_ms();
+        if deadline == 0 || self.watch.elapsed_ms() < deadline {
+            return Ok(());
+        }
+        self.watch.abort(script_line(self.lua));
+        Err(mlua::Error::runtime("脚本超时"))
+    }
+
+    /// 扩容前把结果长度算进 16 MiB 预算。超过是普通脚本错误，不置中止标记。
+    fn begin_write(&self, buf: &mut Vec<u8>, len: usize) -> mlua::Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        let new_len = buf.len().checked_add(len).ok_or_else(memory_error)?;
+        let used = self.lua.used_memory();
+        let room = RESULT_BUDGET
+            .saturating_sub(used)
+            .saturating_sub(STRING_OVERHEAD)
+            .saturating_sub(buf.len());
+        if len > room || used.saturating_add(new_len) > RESULT_BUDGET {
+            return Err(memory_error());
+        }
+        if buf.capacity() < new_len {
+            let extra = len.max(COPY_STEP).min(room);
+            buf.try_reserve_exact(extra).map_err(|_| memory_error())?;
+        }
+        Ok(())
+    }
+
+    fn account_copy(&self, n: usize) -> mlua::Result<()> {
+        let pending = self.copied.get() + n;
+        if pending >= COPY_STEP {
+            self.copied.set(0);
+            self.check_deadline()?;
+        } else {
+            self.copied.set(pending);
+        }
+        Ok(())
+    }
+
+    fn write_bytes(&self, buf: &mut Vec<u8>, mut data: &[u8]) -> mlua::Result<()> {
+        self.begin_write(buf, data.len())?;
+        while !data.is_empty() {
+            let room = COPY_STEP - self.copied.get();
+            let n = room.min(data.len());
+            buf.extend_from_slice(&data[..n]);
+            data = &data[n..];
+            self.account_copy(n)?;
+        }
+        Ok(())
+    }
+
+    fn write_span(&self, buf: &mut Vec<u8>, from: usize, to: usize) -> mlua::Result<()> {
+        let start = from.min(self.src.len());
+        let end = to.min(self.src.len());
+        if end <= start {
+            return Ok(());
+        }
+        self.begin_write(buf, end - start)?;
+        let mut off = start;
+        while off < end {
+            let room = COPY_STEP - self.copied.get();
+            let n = room.min(end - off);
+            buf.extend_from_slice(&self.src[off..off + n]);
+            off += n;
+            self.account_copy(n)?;
+        }
+        Ok(())
     }
 
     fn exec(&mut self, s: usize, p: usize) -> mlua::Result<Option<usize>> {
@@ -850,7 +935,7 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
         value: &Value,
     ) -> mlua::Result<bool> {
         if matches!(value, Value::Nil | Value::Boolean(false)) {
-            buf.extend_from_slice(&self.src[from..to]);
+            self.write_span(buf, from, to)?;
             return Ok(false);
         }
         let Some(text) = self.lua.coerce_string(value.clone())? else {
@@ -859,7 +944,7 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
                 type_name(value)
             )));
         };
-        buf.extend_from_slice(&text.as_bytes());
+        self.write_bytes(buf, &text.as_bytes())?;
         Ok(true)
     }
 
@@ -873,8 +958,11 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
         let mut index = 0;
         while index < repl.len() {
             if repl[index] != b'%' {
-                buf.push(repl[index]);
-                index += 1;
+                let start = index;
+                while index < repl.len() && repl[index] != b'%' {
+                    index += 1;
+                }
+                self.write_bytes(buf, &repl[start..index])?;
                 continue;
             }
             index += 1;
@@ -884,11 +972,11 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
                 ));
             }
             match repl[index] {
-                b'%' => buf.push(b'%'),
-                b'0' => buf.extend_from_slice(&self.src[from..to]),
+                b'%' => self.write_bytes(buf, b"%")?,
+                b'0' => self.write_span(buf, from, to)?,
                 digit @ b'1'..=b'9' => {
                     let value = self.one_capture((digit - b'1') as usize, from, to)?;
-                    append_value(buf, &value)?;
+                    self.append_capture_text(buf, &value)?;
                 }
                 _ => {
                     return Err(mlua::Error::runtime(
@@ -901,6 +989,17 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
         Ok(())
     }
 
+    fn append_capture_text(&self, buf: &mut Vec<u8>, value: &Value) -> mlua::Result<()> {
+        match value {
+            Value::String(text) => self.write_bytes(buf, &text.as_bytes()),
+            Value::Integer(number) => self.write_bytes(buf, number.to_string().as_bytes()),
+            Value::Number(number) => self.write_bytes(buf, number.to_string().as_bytes()),
+            _ => Err(mlua::Error::runtime(
+                "invalid use of '%' in replacement string",
+            )),
+        }
+    }
+
     fn pat_byte(&self, index: usize) -> u8 {
         self.pat.get(index).copied().unwrap_or(0)
     }
@@ -910,18 +1009,8 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
     }
 }
 
-fn append_value(buf: &mut Vec<u8>, value: &Value) -> mlua::Result<()> {
-    match value {
-        Value::String(text) => buf.extend_from_slice(&text.as_bytes()),
-        Value::Integer(number) => buf.extend_from_slice(number.to_string().as_bytes()),
-        Value::Number(number) => buf.extend_from_slice(number.to_string().as_bytes()),
-        _ => {
-            return Err(mlua::Error::runtime(
-                "invalid use of '%' in replacement string",
-            ));
-        }
-    }
-    Ok(())
+fn memory_error() -> mlua::Error {
+    mlua::Error::runtime("not enough memory")
 }
 
 fn type_name(value: &Value) -> &'static str {
@@ -1127,6 +1216,7 @@ end
                 for s in string.gmatch("^a^a", "^") do t[#t+1] = s end
                 return table.concat(t, ",")
               end)()"#,
+            r#"return show(string.gsub("ab", "", "X"))"#,
             r#"return show(string.gsub("abc", "b", "B"))"#,
             r#"return show(string.gsub("abc", "b", "%0%0"))"#,
             r#"return show(string.gsub("ab", "(a)", "%1x"))"#,
@@ -1262,5 +1352,60 @@ end
             .eval()
             .unwrap();
         assert_eq!(text, "nil");
+    }
+
+    #[test]
+    fn gsub_result_stays_inside_the_memory_budget() {
+        let lua = Lua::new();
+        let watch = std::sync::Arc::new(Open {
+            aborted: AtomicBool::new(false),
+        });
+        install(&lua, std::sync::Arc::clone(&watch)).unwrap();
+        let started = std::time::Instant::now();
+        let err = lua
+            .load(r#"return string.gsub(string.rep("a", 700), "", string.rep("x", 512 * 1024))"#)
+            .eval::<Value>()
+            .unwrap_err();
+        assert!(
+            started.elapsed().as_millis() < 2_000,
+            "结果预算应在扩容前拦住，实际 {} ms",
+            started.elapsed().as_millis()
+        );
+        let message = err.to_string();
+        assert!(message.contains("not enough memory"), "{message}");
+        assert!(!message.contains("脚本超时"), "{message}");
+        assert!(!watch.aborted());
+        let text: String = lua
+            .load(r#"return (string.gsub("ab", "", "X"))"#)
+            .eval()
+            .unwrap();
+        assert_eq!(text, "XaXbX");
+    }
+
+    #[test]
+    fn gsub_copy_checks_the_deadline_every_64kib() {
+        let lua = Lua::new();
+        let watch = std::sync::Arc::new(Trip {
+            aborted: AtomicBool::new(false),
+        });
+        install(&lua, std::sync::Arc::clone(&watch)).unwrap();
+        let below: i64 = lua
+            .load(r#"return #(string.gsub("a", "a", string.rep("x", 65535)))"#)
+            .eval()
+            .unwrap();
+        assert_eq!(below, 65_535);
+        assert!(!watch.aborted());
+        let started = std::time::Instant::now();
+        let err = lua
+            .load(r#"return string.gsub("a", "a", string.rep("x", 65536))"#)
+            .eval::<Value>()
+            .unwrap_err();
+        assert!(
+            started.elapsed().as_millis() < 1_000,
+            "64 KiB 复制应立刻对照截止时间，实际 {} ms",
+            started.elapsed().as_millis()
+        );
+        assert!(err.to_string().contains("脚本超时"), "{err}");
+        assert!(watch.aborted());
     }
 }
