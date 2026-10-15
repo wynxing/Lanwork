@@ -1873,7 +1873,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hotcorner"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "clap",
  "serde_json",
@@ -2655,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "lanwork-core",
  "raw-window-handle",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "serde",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-fixture"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "clap",
  "serde",
@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-foreground"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "lanwork-core",
  "windows",
@@ -2698,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-render-spike"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "png 0.17.16",
  "raw-window-handle",
@@ -2711,7 +2711,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-sample"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "clap",
  "serde",
@@ -2721,7 +2721,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-shortcut"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "lanwork-core",
  "windows",
