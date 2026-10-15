@@ -10,6 +10,8 @@
 //! 待办是验证程序里的内存替身，不调用产品的 `TodoCommands`。
 //!
 //! 内存字节上限仍待定。这里的 `MEMORY_CAP` 只是验证程序的临时天花板，超过后与超时一样中止这次回调，不是产品规则。
+//! `xpcall` 换成宿主的函数：处理函数在错误展开之后调用，超时钩子仍然有效。
+//! `string.find`、`match`、`gmatch`、`gsub`、`rep` 在进入 C 之前有临时的长度和回溯上限。那些字节数不是产品规则。
 //! HTTP 在另一条线程上连接和读取。脚本回调返回之后，宿主才按等待上限取结果并调用 Lua。等待上限的秒数仍待定，这次默认 5 秒。
 
 use std::cell::RefCell;
@@ -21,7 +23,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mlua::{Function, HookTriggers, Lua, LuaOptions, RegistryKey, StdLib, Table, Value, VmState};
+use mlua::{
+    Function, HookTriggers, Lua, LuaOptions, MultiValue, RegistryKey, StdLib, Table, Value, VmState,
+};
 
 use crate::http::{HttpDeny, HttpRequest, HttpTransport, Outgoing, SecretAttach, prepare};
 use crate::manifest::{Manifest, Origin, WidgetDecl, WidgetKind, load_dir};
@@ -32,6 +36,11 @@ const HOOK_INSTRUCTIONS: u32 = 4_096;
 /// 临时内存天花板。产品上的字节数仍待定。
 const MEMORY_CAP: usize = 16 * 1024 * 1024;
 const MEMORY_HEADROOM: usize = 1024 * 1024;
+/// 下面几项只是验证程序的临时天花板。产品上的字节数仍待定。
+/// 量词个数决定被搜索文本的上限：0 个 256 KiB，1 个 64 KiB，2 个 4 KiB，3 个 256 字节，
+/// 之后每多一个再收紧，8 个及以上直接拒绝。三个 `*` 是 O(n³)，256³ 大约一千六百万步。
+const PATTERN_LEN_CAP: usize = 256;
+const STRING_REP_CAP: usize = 1024 * 1024;
 const HTTP_BUDGET: Duration = Duration::from_secs(5);
 /// 回调里再发请求会再等一轮。不停地一轮接一轮，规格没有写。最多 8 轮，避免宿主停不下来。
 const HTTP_DRAIN_ROUNDS: u32 = 8;
@@ -201,6 +210,7 @@ struct Inflight {
     rx: mpsc::Receiver<Result<crate::http::HttpResponse, ()>>,
     callback: RegistryKey,
     secret: String,
+    header_value: Option<String>,
 }
 
 pub struct Session {
@@ -238,7 +248,7 @@ impl Session {
         .map_err(|err| format!("脚本错误：{err}"))?;
         lua.set_memory_limit(MEMORY_CAP)
             .map_err(|err| format!("脚本错误：{err}"))?;
-        sandbox(&lua)?;
+        sandbox(&lua, Arc::clone(&limit))?;
         install_hook(&lua, Arc::clone(&limit))?;
         let inner = Rc::new(RefCell::new(Inner {
             widgets: manifest
@@ -468,17 +478,22 @@ impl Session {
                 };
                 let (ok, status, body, error) = match response {
                     Ok(Ok(response)) => {
-                        let response = crate::http::sanitize_response(response, &item.secret);
-                        let ok = (200..300).contains(&response.status);
-                        let error = if ok {
-                            String::new()
+                        if response_leaks(&response, &item.secret, item.header_value.as_deref()) {
+                            let text = HttpDeny::RequestFailed.text().to_string();
+                            self.inner.borrow_mut().note(&text);
+                            (false, Some(response.status), String::new(), text)
                         } else {
-                            HttpDeny::RequestFailed.text().to_string()
-                        };
-                        if !ok {
-                            self.inner.borrow_mut().note(&error);
+                            let ok = (200..300).contains(&response.status);
+                            let error = if ok {
+                                String::new()
+                            } else {
+                                HttpDeny::RequestFailed.text().to_string()
+                            };
+                            if !ok {
+                                self.inner.borrow_mut().note(&error);
+                            }
+                            (ok, Some(response.status), response.body, error)
                         }
-                        (ok, Some(response.status), response.body, error)
                     }
                     Ok(Err(())) | Err(_) => {
                         let text = HttpDeny::RequestFailed.text().to_string();
@@ -486,9 +501,8 @@ impl Session {
                         (false, None, String::new(), text)
                     }
                 };
-                let secret = item.secret;
                 self.run_lua(
-                    || deliver(&self.lua, &callback, ok, status, &body, &error, &secret),
+                    || deliver(&self.lua, &callback, ok, status, &body, &error),
                     false,
                 );
             }
@@ -588,7 +602,7 @@ impl Inner {
     }
 }
 
-fn sandbox(lua: &Lua) -> Result<(), String> {
+fn sandbox(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
     let globals = lua.globals();
     for name in [
         "load",
@@ -610,7 +624,267 @@ fn sandbox(lua: &Lua) -> Result<(), String> {
             .set(name, Value::Nil)
             .map_err(|err| format!("脚本错误：{err}"))?;
     }
+    install_xpcall(lua, limit)?;
+    install_string_limits(lua)?;
     Ok(())
+}
+
+/// Lua 自带的 `xpcall` 在处理函数里关掉钩子。这里先 `pcall` 被保护的函数，
+/// 错误展开之后再普通调用处理函数，钩子仍然开着。已经超时就不再进入处理函数。
+fn install_xpcall(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
+    let xpcall = lua
+        .create_function(move |_, mut args: MultiValue| -> mlua::Result<MultiValue> {
+            let Some(function) = args.pop_front() else {
+                return Err(mlua::Error::runtime("xpcall 需要函数"));
+            };
+            let Some(handler) = args.pop_front() else {
+                return Err(mlua::Error::runtime("xpcall 需要处理函数"));
+            };
+            let Value::Function(function) = function else {
+                return Err(mlua::Error::runtime("xpcall 需要函数"));
+            };
+            let Value::Function(handler) = handler else {
+                return Err(mlua::Error::runtime("xpcall 需要处理函数"));
+            };
+            match function.call::<MultiValue>(args) {
+                Ok(mut values) => {
+                    values.push_front(Value::Boolean(true));
+                    Ok(values)
+                }
+                Err(err) => {
+                    if limit.aborted.load(Ordering::Relaxed) || timeout_error(&err) {
+                        return Err(err);
+                    }
+                    match handler.call::<MultiValue>(err.to_string()) {
+                        Ok(mut values) => {
+                            values.push_front(Value::Boolean(false));
+                            Ok(values)
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
+            }
+        })
+        .map_err(|err| format!("脚本错误：{err}"))?;
+    lua.globals()
+        .set("xpcall", xpcall)
+        .map_err(|err| format!("脚本错误：{err}"))?;
+    Ok(())
+}
+
+fn install_string_limits(lua: &Lua) -> Result<(), String> {
+    let library: Table = lua
+        .globals()
+        .get("string")
+        .map_err(|err| format!("脚本错误：{err}"))?;
+    for name in ["find", "match", "gmatch", "gsub"] {
+        wrap_pattern(lua, &library, name)?;
+    }
+    wrap_rep(lua, &library)?;
+    Ok(())
+}
+
+fn wrap_pattern(lua: &Lua, library: &Table, name: &'static str) -> Result<(), String> {
+    let original: Function = library
+        .get(name)
+        .map_err(|err| format!("脚本错误：{err}"))?;
+    let wrapper = lua
+        .create_function(move |_, args: MultiValue| {
+            check_pattern(name, &args)?;
+            original.call::<MultiValue>(args)
+        })
+        .map_err(|err| format!("脚本错误：{err}"))?;
+    library
+        .set(name, wrapper)
+        .map_err(|err| format!("脚本错误：{err}"))
+}
+
+fn wrap_rep(lua: &Lua, library: &Table) -> Result<(), String> {
+    let original: Function = library
+        .get("rep")
+        .map_err(|err| format!("脚本错误：{err}"))?;
+    let wrapper = lua
+        .create_function(move |_, args: MultiValue| {
+            check_rep(&args)?;
+            original.call::<MultiValue>(args)
+        })
+        .map_err(|err| format!("脚本错误：{err}"))?;
+    library
+        .set("rep", wrapper)
+        .map_err(|err| format!("脚本错误：{err}"))
+}
+
+fn check_pattern(name: &str, args: &MultiValue) -> mlua::Result<()> {
+    let (Some(subject), Some(pattern)) = (args.front(), args.get(1)) else {
+        return Ok(());
+    };
+    let (Some(subject_len), Some(pattern_len)) = (byte_len(subject), byte_len(pattern)) else {
+        return Ok(());
+    };
+    if pattern_len > PATTERN_LEN_CAP {
+        return Err(mlua::Error::runtime("模式过于复杂"));
+    }
+    let plain = name == "find" && args.get(3).is_some_and(is_truthy);
+    let quantifiers = if plain {
+        0
+    } else {
+        let Value::String(text) = pattern else {
+            return Ok(());
+        };
+        count_quantifiers(&text.as_bytes())
+    };
+    let Some(cap) = subject_cap(quantifiers) else {
+        return Err(mlua::Error::runtime("模式过于复杂"));
+    };
+    if subject_len > cap {
+        return Err(mlua::Error::runtime("文本过长"));
+    }
+    Ok(())
+}
+
+fn check_rep(args: &MultiValue) -> mlua::Result<()> {
+    let (Some(unit), Some(count)) = (args.front(), args.get(1)) else {
+        return Ok(());
+    };
+    let Some(unit_len) = byte_len(unit) else {
+        return Ok(());
+    };
+    let Some(times) = repeat_count(count) else {
+        return Ok(());
+    };
+    if times == 0 {
+        return Ok(());
+    }
+    let separator = args.get(2).and_then(byte_len).unwrap_or(0);
+    let total = unit_len
+        .checked_mul(times)
+        .and_then(|body| separator.checked_mul(times - 1)?.checked_add(body));
+    match total {
+        Some(total) if total <= STRING_REP_CAP => Ok(()),
+        _ => Err(mlua::Error::runtime("结果过长")),
+    }
+}
+
+fn subject_cap(quantifiers: usize) -> Option<usize> {
+    Some(match quantifiers {
+        0 => 256 * 1024,
+        1 => 64 * 1024,
+        2 => 4 * 1024,
+        3 => 256,
+        4 => 64,
+        5 => 32,
+        6 => 16,
+        7 => 8,
+        _ => return None,
+    })
+}
+
+fn count_quantifiers(pattern: &[u8]) -> usize {
+    let mut index = 0;
+    let mut count = 0;
+    let mut atom = false;
+    while index < pattern.len() {
+        let byte = pattern[index];
+        if byte == b'%' {
+            if index + 1 >= pattern.len() {
+                break;
+            }
+            let next = pattern[index + 1];
+            if next == b'b' {
+                index = (index + 4).min(pattern.len());
+                atom = true;
+                continue;
+            }
+            if next == b'f' {
+                index += 2;
+                if index < pattern.len() && pattern[index] == b'[' {
+                    index = skip_class(pattern, index);
+                }
+                atom = true;
+                continue;
+            }
+            index += 2;
+            atom = true;
+            continue;
+        }
+        if byte == b'[' {
+            index = skip_class(pattern, index);
+            atom = true;
+            continue;
+        }
+        if byte == b'(' || byte == b')' || byte == b'^' || byte == b'$' {
+            index += 1;
+            atom = false;
+            continue;
+        }
+        if atom && matches!(byte, b'*' | b'+' | b'-' | b'?') {
+            count += 1;
+            atom = false;
+            index += 1;
+            continue;
+        }
+        index += 1;
+        atom = true;
+    }
+    count
+}
+
+fn skip_class(pattern: &[u8], start: usize) -> usize {
+    let mut index = start + 1;
+    if index < pattern.len() && pattern[index] == b'^' {
+        index += 1;
+    }
+    if index < pattern.len() && pattern[index] == b']' {
+        index += 1;
+    }
+    while index < pattern.len() {
+        if pattern[index] == b'%' && index + 1 < pattern.len() {
+            index += 2;
+            continue;
+        }
+        if pattern[index] == b']' {
+            return index + 1;
+        }
+        index += 1;
+    }
+    pattern.len()
+}
+
+fn byte_len(value: &Value) -> Option<usize> {
+    match value {
+        Value::String(text) => Some(text.as_bytes().len()),
+        _ => None,
+    }
+}
+
+fn repeat_count(value: &Value) -> Option<usize> {
+    let count = match value {
+        Value::Integer(count) => *count,
+        Value::Number(count) if count.is_finite() && *count >= 0.0 => *count as i64,
+        _ => return None,
+    };
+    usize::try_from(count).ok()
+}
+
+fn is_truthy(value: &Value) -> bool {
+    !matches!(value, Value::Nil | Value::Boolean(false))
+}
+
+fn response_leaks(
+    response: &crate::http::HttpResponse,
+    secret: &str,
+    header_value: Option<&str>,
+) -> bool {
+    if secret.is_empty() {
+        return false;
+    }
+    let mut parts = Vec::with_capacity(1 + response.headers.len() * 2);
+    parts.push(response.body.as_str());
+    for (name, value) in &response.headers {
+        parts.push(name.as_str());
+        parts.push(value.as_str());
+    }
+    crate::http::response_exposes_secret(&parts, secret, header_value)
 }
 
 fn install_hook(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
@@ -1017,10 +1291,11 @@ fn http_request(
     match gate {
         Gate::Deny(text) => {
             inner.borrow_mut().note(text);
-            deliver(lua, &callback, false, None, "", text, "")
+            deliver(lua, &callback, false, None, "", text)
         }
         Gate::Send { outgoing, secret } => {
             let transport = Arc::clone(&inner.borrow().transport);
+            let header_value = outgoing.header_value.clone();
             let (tx, rx) = mpsc::channel();
             thread::Builder::new()
                 .name("toolhost-http".to_string())
@@ -1035,6 +1310,7 @@ fn http_request(
                 rx,
                 callback: key,
                 secret,
+                header_value,
             });
             Ok(())
         }
@@ -1083,10 +1359,7 @@ fn deliver(
     status: Option<u16>,
     body: &str,
     error: &str,
-    secret: &str,
 ) -> mlua::Result<()> {
-    let body = crate::http::redact_secret(body, secret);
-    let error = crate::http::redact_secret(error, secret);
     let result = lua.create_table()?;
     result.set("ok", ok)?;
     if let Some(status) = status {
@@ -1360,4 +1633,21 @@ fn line_of(err: &mlua::Error) -> Option<usize> {
         }
     }
     line
+}
+
+#[cfg(test)]
+mod pattern_limits {
+    use super::count_quantifiers;
+
+    #[test]
+    fn quantifiers_follow_lua_pattern_grammar() {
+        assert_eq!(count_quantifiers(b"%d+"), 1);
+        assert_eq!(count_quantifiers(b"%%"), 0);
+        assert_eq!(count_quantifiers(b"%?"), 0);
+        assert_eq!(count_quantifiers(b"[a?]+"), 1);
+        assert_eq!(count_quantifiers(b"%b()"), 0);
+        assert_eq!(count_quantifiers(b".*a.*"), 2);
+        assert_eq!(count_quantifiers(b"%f[%w]+"), 1);
+        assert_eq!(count_quantifiers("a?".repeat(30).as_bytes()), 30);
+    }
 }

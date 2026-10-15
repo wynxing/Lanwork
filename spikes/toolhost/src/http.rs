@@ -50,79 +50,127 @@ pub struct HttpResponse {
     pub headers: Vec<(String, String)>,
 }
 
-/// 从交给脚本的文本里去掉密钥原文和常见编码。
+/// 响应里能否看出密钥。只能看到清单里声明的主机返回的正文和响应头，所以这是尽力检查。
 ///
-/// 编码至少包括原文、标准 Base64（含去掉末尾 `=` 的写法）、URL 安全 Base64、
-/// 百分号编码（十六进制大小写）和 `application/x-www-form-urlencoded`（空格写成 `+`）。
-pub fn redact_secret(text: &str, secret: &str) -> String {
+/// 命中时调用方应把正文清空并显示「请求失败」，而不是逐段替换。
+/// 检查这些形式：原文；`Bearer` / `bearer` 加空格再加原文；实际发出的请求头值；
+/// 上述每一项的标准 Base64 与 URL 安全 Base64（带填充和不带填充）。
+/// 另外把正文里的 `%XX`（十六进制忽略大小写，未保留字节也可以编码，可以只编码其中一部分）
+/// 反复解码后再找上面的明文和 Base64。原文或解码结果里的 `+` 再按空格看一次。
+pub fn response_exposes_secret(parts: &[&str], secret: &str, header_value: Option<&str>) -> bool {
     if secret.is_empty() {
-        return text.to_string();
+        return false;
     }
-    let mask = if secret.contains('□') { "" } else { "□" };
-    let mut patterns = secret_patterns(secret);
-    patterns.sort_by_key(|pattern| std::cmp::Reverse(pattern.len()));
-    patterns.dedup();
-    let mut text = text.to_string();
-    for pattern in patterns {
-        if !pattern.is_empty() {
-            text = text.replace(&pattern, mask);
+    let mut plain = vec![
+        secret.to_string(),
+        format!("Bearer {secret}"),
+        format!("bearer {secret}"),
+    ];
+    if let Some(header) = header_value
+        && !header.is_empty()
+    {
+        plain.push(header.to_string());
+    }
+    plain.sort();
+    plain.dedup();
+    let mut encoded = Vec::new();
+    for item in &plain {
+        for url_safe in [false, true] {
+            let b64 = base64_encode(item.as_bytes(), url_safe);
+            if b64.len() >= 8 {
+                let trimmed = b64.trim_end_matches('=').to_string();
+                if trimmed.len() >= 6 && trimmed != b64 {
+                    encoded.push(trimmed);
+                }
+                encoded.push(b64);
+            }
         }
     }
-    text
-}
-
-pub fn sanitize_response(response: HttpResponse, secret: &str) -> HttpResponse {
-    HttpResponse {
-        status: response.status,
-        body: redact_secret(&response.body, secret),
-        headers: response
-            .headers
-            .into_iter()
-            .map(|(name, value)| (redact_secret(&name, secret), redact_secret(&value, secret)))
-            .collect(),
-    }
-}
-
-fn secret_patterns(secret: &str) -> Vec<String> {
-    let mut patterns = vec![secret.to_string()];
-    let std = base64_encode(secret.as_bytes(), false);
-    let url = base64_encode(secret.as_bytes(), true);
-    for encoded in [std, url] {
-        let trimmed = encoded.trim_end_matches('=').to_string();
-        if trimmed != encoded {
-            patterns.push(trimmed);
+    encoded.sort();
+    encoded.dedup();
+    let hit = |bytes: &[u8]| {
+        plain
+            .iter()
+            .any(|needle| contains_bytes(bytes, needle.as_bytes()))
+            || encoded
+                .iter()
+                .any(|needle| contains_bytes(bytes, needle.as_bytes()))
+    };
+    for part in parts {
+        let bytes = part.as_bytes();
+        if hit(bytes) {
+            return true;
         }
-        patterns.push(encoded);
+        if let Some(spaced) = plus_as_space(bytes)
+            && hit(&spaced)
+        {
+            return true;
+        }
+        let mut decoded = bytes.to_vec();
+        for _ in 0..4 {
+            let next = percent_decode_loose(&decoded);
+            if next == decoded {
+                break;
+            }
+            decoded = next;
+            if hit(&decoded) {
+                return true;
+            }
+            if let Some(spaced) = plus_as_space(&decoded)
+                && hit(&spaced)
+            {
+                return true;
+            }
+        }
     }
-    for space_as_plus in [false, true] {
-        let upper = percent_encode(secret, space_as_plus, true);
-        let lower = percent_encode(secret, space_as_plus, false);
-        patterns.push(upper);
-        patterns.push(lower);
-    }
-    patterns.retain(|pattern| !pattern.is_empty());
-    patterns.sort();
-    patterns.dedup();
-    patterns
+    false
 }
 
-fn percent_encode(secret: &str, space_as_plus: bool, upper_hex: bool) -> String {
-    const HEX_UPPER: &[u8] = b"0123456789ABCDEF";
-    const HEX_LOWER: &[u8] = b"0123456789abcdef";
-    let hex = if upper_hex { HEX_UPPER } else { HEX_LOWER };
-    let mut out = String::new();
-    for byte in secret.as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            out.push(*byte as char);
-        } else if space_as_plus && *byte == b' ' {
-            out.push('+');
-        } else {
-            out.push('%');
-            out.push(hex[(byte >> 4) as usize] as char);
-            out.push(hex[(byte & 0x0f) as usize] as char);
+fn plus_as_space(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.contains(&b'+') {
+        return None;
+    }
+    let mut copy = bytes.to_vec();
+    for byte in &mut copy {
+        if *byte == b'+' {
+            *byte = b' ';
         }
+    }
+    Some(copy)
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn percent_decode_loose(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (hex_val(bytes[index + 1]), hex_val(bytes[index + 2]))
+        {
+            out.push((high << 4) | low);
+            index += 3;
+            continue;
+        }
+        out.push(bytes[index]);
+        index += 1;
     }
     out
+}
+
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn base64_encode(bytes: &[u8], url_safe: bool) -> String {
@@ -486,29 +534,55 @@ mod tests {
     }
 
     #[test]
-    fn redact_removes_raw_base64_and_percent() {
-        let secret = "a b/c";
-        let patterns = secret_patterns(secret);
-        assert!(patterns.iter().any(|pattern| pattern == "a%20b%2Fc"));
-        assert!(patterns.iter().any(|pattern| pattern == "a%20b%2fc"));
-        assert!(patterns.iter().any(|pattern| pattern == "a+b%2Fc"));
-        assert!(patterns.iter().any(|pattern| pattern == "YSBiL2M="));
-        assert!(patterns.iter().any(|pattern| pattern == "YSBiL2M"));
-        let body = patterns.join(" | ");
-        let cleaned = redact_secret(&body, secret);
-        for pattern in &patterns {
-            assert!(!cleaned.contains(pattern), "{pattern} still in {cleaned}");
-        }
-        let response = sanitize_response(
-            HttpResponse {
-                status: 200,
-                body: format!("echo {secret}"),
-                headers: vec![("X-Echo".to_string(), format!("Bearer {secret}"))],
-            },
-            secret,
+    fn secret_detection_covers_percent_and_base64() {
+        let secret = "lw-raw-secret-9f3a";
+        let full: String = secret.bytes().map(|byte| format!("%{byte:02x}")).collect();
+        let partial = format!("%{:02X}{}", secret.as_bytes()[0], &secret[1..]);
+        let mixed: String = secret
+            .bytes()
+            .enumerate()
+            .map(|(index, byte)| {
+                if index % 2 == 0 {
+                    format!("%{byte:02X}")
+                } else {
+                    format!("%{byte:02x}")
+                }
+            })
+            .collect();
+        assert!(response_exposes_secret(&[&full], secret, None), "{full}");
+        assert!(
+            response_exposes_secret(&[&partial], secret, None),
+            "{partial}"
         );
-        assert!(!response.body.contains(secret));
-        assert!(!response.headers[0].1.contains(secret));
+        assert!(response_exposes_secret(&[&mixed], secret, None), "{mixed}");
+        let standard = base64_encode(secret.as_bytes(), false);
+        let url_safe = base64_encode(secret.as_bytes(), true);
+        assert!(standard.len() >= 8);
+        assert!(response_exposes_secret(&[&standard], secret, None));
+        assert!(response_exposes_secret(&[&url_safe], secret, None));
+        assert!(!response_exposes_secret(
+            &[r#"{"used":20,"limit":100}"#],
+            secret,
+            None
+        ));
+        assert!(response_exposes_secret(
+            &[r#"{"used":20}"#, "X-Echo", &format!("Bearer {secret}")],
+            secret,
+            None,
+        ));
+
+        let short = "a b/c";
+        assert!(response_exposes_secret(
+            &["prefix a b/c suffix"],
+            short,
+            None
+        ));
+        assert!(response_exposes_secret(&["YSBiL2M="], short, None));
+        assert!(response_exposes_secret(&["YSBiL2M"], short, None));
+        assert!(response_exposes_secret(&["a%20b%2Fc"], short, None));
+        assert!(response_exposes_secret(&["a%20b%2fc"], short, None));
+        assert!(response_exposes_secret(&["a+b%2Fc"], short, None));
+        assert!(response_exposes_secret(&["a+b/c"], short, None));
         assert_eq!(base64_encode(b"a/b", false), "YS9i");
     }
 }

@@ -312,6 +312,112 @@ end
     assert_eq!(caption(&session, "out"), "began");
     let notice = session.notices().last().cloned().expect("超时提示");
     assert!(notice.text.contains("脚本超时"), "{}", notice.text);
+
+    let dir = Scratch::new("xpcall-timeout");
+    write_tool(
+        &dir,
+        &tool("example.xpcall", "", "", &text_widgets(&["out"])),
+        "function on_load()\n  ui.text(\"out\", \"began\")\n  xpcall(function() while true do end end, function() while true do end end)\n  ui.text(\"out\", \"after\")\nend\n",
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() >= 500 && elapsed.as_millis() < 8_000,
+        "xpcall 的两个死循环都应被 1 秒拦住，实际 {} ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(caption(&session, "out"), "began");
+    let notice = session.notices().last().cloned().expect("超时提示");
+    assert!(notice.text.contains("脚本超时"), "{}", notice.text);
+
+    let dir = Scratch::new("xpcall-handler");
+    write_tool(
+        &dir,
+        &tool("example.xpcallh", "", "", &text_widgets(&["out"])),
+        "function on_load()\n  ui.text(\"out\", \"began\")\n  xpcall(function() error(\"x\") end, function() while true do end end)\n  ui.text(\"out\", \"after\")\nend\n",
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() >= 500 && elapsed.as_millis() < 8_000,
+        "处理函数里的死循环也应被拦住，实际 {} ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(caption(&session, "out"), "began");
+    assert!(
+        session
+            .notices()
+            .last()
+            .is_some_and(|notice| notice.text.contains("脚本超时"))
+    );
+
+    let dir = Scratch::new("xpcall-ok");
+    write_tool(
+        &dir,
+        &tool("example.xpcallok", "", "", &text_widgets(&["out"])),
+        r#"
+function on_load()
+  local ok, saw = xpcall(function() error("boom") end, function() return "saw" end)
+  local ok2, sum = xpcall(function(a, b) return a + b end, function() return "no" end, 2, 3)
+  ui.text("out", tostring(ok) .. ":" .. tostring(saw) .. ":" .. tostring(ok2) .. ":" .. tostring(sum))
+end
+"#,
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    session.on_load();
+    assert_eq!(caption(&session, "out"), "false:saw:true:5");
+    assert!(session.notices().is_empty());
+}
+
+#[test]
+fn string_probes_return_without_running_the_matcher() {
+    let dir = Scratch::new("string-probe");
+    write_tool(
+        &dir,
+        &tool("example.strings", "", "", &text_widgets(&["out", "plain"])),
+        r#"
+function on_load()
+  local probes = {
+    function() string.find(string.rep("a", 30), string.rep("a?", 30)) end,
+    function() string.match(string.rep("a", 30), string.rep("a?", 30)) end,
+    function()
+      for _ in string.gmatch(string.rep("a", 30), string.rep("a?", 30)) do end
+    end,
+    function() string.gsub(string.rep("a", 30), string.rep("a?", 30), "b") end,
+    function() string.rep("a", 1e8) end,
+  }
+  local flags = {}
+  for _, probe in ipairs(probes) do
+    table.insert(flags, tostring(pcall(probe)))
+  end
+  ui.text("out", table.concat(flags, ",") .. ":done")
+  local at = string.find("hello", "ell")
+  local rep = string.rep("ab", 3)
+  local method = ("hello"):find("ell")
+  local swapped = string.gsub("a", "a", "b")
+  ui.text("plain", tostring(at) .. ":" .. rep .. ":" .. tostring(method) .. ":" .. swapped)
+end
+"#,
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() < 2_000,
+        "模式和 string.rep 应在进入 C 之前被拒绝，实际 {} ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(
+        caption(&session, "out"),
+        "false,false,false,false,false:done"
+    );
+    assert_eq!(caption(&session, "plain"), "2:ababab:2:b");
+    assert!(session.notices().is_empty());
 }
 
 #[test]
@@ -630,7 +736,12 @@ function on_load()
     url = "https://api.example.com/v1",
     secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
   }, function(result)
-    local blob = tostring(result.body)
+    local blob = table.concat({
+      tostring(result.ok),
+      result.body or "",
+      result.error or "",
+      tostring(result.status),
+    }, "|")
     for k, v in pairs(result) do
       blob = blob .. "\n" .. tostring(k) .. "=" .. tostring(v)
     end
@@ -655,6 +766,7 @@ end
     let session = open_at(&dir, Origin::Imported, options).unwrap();
     session.on_load();
     let text = caption(&session, "out");
+    assert!(text.starts_with("false||请求失败|200"), "{text}");
     for pattern in [
         secret,
         "YSBiL2M=",
@@ -665,6 +777,105 @@ end
     ] {
         assert!(!text.contains(pattern), "{pattern} still in {text}");
     }
+    assert!(
+        session
+            .notices()
+            .iter()
+            .any(|notice| notice.text == "请求失败")
+    );
+}
+
+#[test]
+fn percent_encoded_secret_blanks_the_body() {
+    let secret = "lw-raw-secret-9f3a";
+    let full: String = secret.bytes().map(|byte| format!("%{byte:02x}")).collect();
+    let partial = format!("%{:02X}{}", secret.as_bytes()[0], &secret[1..]);
+    let mixed: String = secret
+        .bytes()
+        .enumerate()
+        .map(|(index, byte)| {
+            if index % 2 == 0 {
+                format!("%{byte:02X}")
+            } else {
+                format!("%{byte:02x}")
+            }
+        })
+        .collect();
+    for (name, body, header) in [
+        ("full", full, "x-clean".to_string()),
+        ("partial", partial, "x-clean".to_string()),
+        ("mixed", mixed, "x-clean".to_string()),
+        (
+            "header",
+            r#"{"used":20,"limit":100}"#.to_string(),
+            format!("Bearer {secret}"),
+        ),
+    ] {
+        let text = echo_caption(&format!("pct-{name}"), &body, &header, secret);
+        assert_eq!(text, "false||请求失败|200", "{name}: {text}");
+        assert!(!text.contains(secret), "{name}");
+    }
+    let clean = echo_caption("pct-clean", r#"{"used":20,"limit":100}"#, "ok", secret);
+    assert_eq!(clean, r#"true|{"used":20,"limit":100}||200"#);
+}
+
+fn echo_caption(name: &str, body: &str, header: &str, secret: &str) -> String {
+    let dir = Scratch::new(name);
+    write_tool(
+        &dir,
+        &tool(
+            "example.echo",
+            "\"http\", \"secret\"",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\n",
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  http.request({
+    method = "GET",
+    url = "https://api.example.com/v1",
+    secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
+  }, function(result)
+    ui.text("out", table.concat({
+      tostring(result.ok),
+      result.body or "",
+      result.error or "",
+      tostring(result.status),
+    }, "|"))
+  end)
+end
+"#,
+    );
+    let transport = Arc::new(EchoTransport {
+        body: body.to_string(),
+        header: header.to_string(),
+    });
+    let store = Rc::new(RefCell::new(MemorySecretStore::default()));
+    store
+        .borrow_mut()
+        .put("example.echo", "api_key", secret)
+        .unwrap();
+    let mut options = Options::default();
+    options.store = store;
+    options.transport = transport;
+    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    session.on_load();
+    assert!(
+        session
+            .notices()
+            .iter()
+            .all(|notice| !notice.text.contains(secret))
+    );
+    if body.contains(secret) || header.contains(secret) || header != "ok" {
+        assert!(
+            session
+                .notices()
+                .iter()
+                .any(|notice| notice.text == "请求失败"),
+            "{name}"
+        );
+    }
+    caption(&session, "out")
 }
 
 struct EchoTransport {
