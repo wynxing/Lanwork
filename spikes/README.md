@@ -25,7 +25,7 @@ cargo run -p hotcorner --release -- run --scheme poll --interval-ms 100 --monito
 cargo run -p lanwork-apps-preview -- --out shots
 ```
 
-自定义工具宿主的技术验证在 `spikes/toolhost`，包名 `lanwork-toolhost-spike`。不进 `lanwork` 的依赖，不进安装包。它读开发说明里的番茄钟和额度示例，不写 `%USERPROFILE%\Documents\Lanwork`，也不读 MayDolist。`run` 开一扇软件渲染的悬浮窗。`measure` 在无桌面的软件窗口上记一帧，再让进程睡一会儿。2026-10-15 的 Windows 11 手测见 [docs/roadmap.md](../docs/roadmap.md)「技术验证」。内存和 CPU 的数字上限仍待定。
+自定义工具的宿主在 `crates/toolhost`，包名 `lanwork-toolhost`。安全测试在这里。窗口验证仍在 `spikes/toolhost`，包名 `lanwork-toolhost-spike`，依赖产品 crate，不进安装包。它读开发说明里的番茄钟和额度示例，不写 `%USERPROFILE%\Documents\Lanwork`，也不读 MayDolist。`run` 开一扇软件渲染的悬浮窗。`measure` 在无桌面的软件窗口上记一帧，再让进程睡一会儿。2026-10-15 的 Windows 11 手测见 [docs/roadmap.md](../docs/roadmap.md)「技术验证」。凭据管理器界面待用户用 `lanwork --toolhost-cred write|list|clear` 确认。内存和 CPU 的数字上限仍待定。
 
 ```
 cargo test -p lanwork-toolhost-spike

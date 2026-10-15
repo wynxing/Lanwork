@@ -88,6 +88,10 @@ mod web_icons;
 mod winutil;
 
 fn main() {
+    // 凭据验证在打开数据目录之前返回。没有这个参数时不碰凭据管理器。
+    if let Some(code) = lanwork_toolhost::probe::dispatch_from_args() {
+        std::process::exit(code);
+    }
     #[cfg(windows)]
     {
         let code = host::run();

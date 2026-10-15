@@ -1,15 +1,15 @@
 //! 一个工具一块 Lua 5.4 状态。未授予的服务不放进状态。
 //!
-//! 计时组件由宿主逐秒倒数，不走 `timer.every`。这次验证用虚拟时钟 `advance`，
-//! 窗口上的外壳每一秒调用一次。同一拍里先处理计时组件，再处理 `timer.every` /
-//! `timer.after`。谁先，规格没有写，待定。
+//! 计时组件由宿主逐秒倒数，不走 `timer.every`。调用方用虚拟时钟 `advance` 推进。
+//! 同一拍里先处理计时组件，再处理 `timer.every` / `timer.after`。谁先，规格没有写，待定。
 //!
 //! 协程不放入。钩子按 Lua 线程安装，协程是另一条线程，超时钩子管不到。
 //! `require` 和多个 Lua 文件是否允许仍待定。
 //! `timer.after` 的最短秒数待定，这次任意正数都可以登记。
-//! 待办是验证程序里的内存替身，不调用产品的 `TodoCommands`。
+//! 待办由调用方注入。这一步不打开数据目录，也不调用 `TodoCommands`。
+//! `notify.send` 在 `Options.quiet` 为真时不弹出，只记入待补发。安静时段是否成立由调用方判断。
 //!
-//! 内存字节上限仍待定。这里的 `MEMORY_CAP` 只是验证程序的临时天花板，超过后与超时一样中止这次回调，不是产品规则。
+//! 内存字节上限仍待定。这里的 `MEMORY_CAP` 只是临时天花板，超过后与超时一样中止这次回调，不是产品规则。
 //! `xpcall` 换成宿主的函数：处理函数在错误展开之后调用，超时钩子仍然有效。
 //! `string.find`、`match`、`gmatch`、`gsub` 在宿主的匹配器里执行，每 4096 步对照这次回调的截止时间。
 //! `gsub` 各层还没交还的结果缓冲区加在一起，跟 Lua 已用内存计入同一块 16 MiB 预算；超过则这次调用报错，不置中止标记。复制大约每 64 KiB 再看一次截止时间。
@@ -157,8 +157,11 @@ impl Default for Options {
 struct DenyTransport;
 
 impl HttpTransport for DenyTransport {
-    fn get(&self, _request: &Outgoing) -> Result<crate::http::HttpResponse, ()> {
-        Err(())
+    fn get(
+        &self,
+        _request: &Outgoing,
+    ) -> Result<crate::http::HttpResponse, crate::http::TransportError> {
+        Err(crate::http::TransportError)
     }
 }
 
@@ -229,7 +232,7 @@ struct Inner {
 }
 
 struct Inflight {
-    rx: mpsc::Receiver<Result<crate::http::HttpResponse, ()>>,
+    rx: mpsc::Receiver<Result<crate::http::HttpResponse, crate::http::TransportError>>,
     callback: RegistryKey,
     secret: String,
     header_value: Option<String>,
@@ -517,7 +520,7 @@ impl Session {
                             (ok, Some(response.status), response.body, error)
                         }
                     }
-                    Ok(Err(())) | Err(_) => {
+                    Ok(Err(_)) | Err(_) => {
                         let text = HttpDeny::RequestFailed.text().to_string();
                         self.inner.borrow_mut().note(&text);
                         (false, None, String::new(), text)
