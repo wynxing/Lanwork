@@ -12,7 +12,7 @@
 | `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。依赖 `lanwork-core` 和 Slint。程序外壳在这里：单实例、托盘、全局热键、主题、开机启动，以及启动时创建并保持隐藏的搜索条和面板。搜索条已有界面并调用查询调度，见「程序外壳」的「搜索条」。面板有标签框架、待办页、便签页、收纳页和设置页（常规、待办、数据、其他：开机启动、热角、搜索条热键、主题、网页搜索引擎、安静时段、「稍后」天数、数据目录的更换与迁移、立即备份、导出和导入、隐藏的应用、检查更新），便签悬浮窗也在这里，见「程序外壳」的「面板」「便签页与悬浮窗」和「设置页」。热角的 50ms 轮询在 `crates/app/src/hotcorner.rs`，见「热角」。应用内更新的下载和安装在 `crates/app/src/update.rs`，见「更新」。没有 Windows 验收。 |
 | `spikes/render` | 渲染器与背景的测量程序，包名 `lanwork-render-spike`。不在 `lanwork` 的依赖里，不进发布包。四种渲染路径分开编译。运行命令写在 `spikes/README.md`。产品渲染器见「运行时」。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
 | `spikes/hotcorner` | 热角技术验证。方案 A 是独立线程上的 `WH_MOUSE_LL`，方案 B 是 50ms 或 100ms 的 `GetCursorPos`。不依赖 Slint，不进 `lanwork` 的依赖。运行命令写在 `spikes/README.md`。产品用 50ms 轮询，见「运行时」。结论见 [roadmap.md](roadmap.md)「技术验证」。 |
-| `spikes/toolhost` | 自定义工具宿主的技术验证，包名 `lanwork-toolhost-spike`。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。结论见 [roadmap.md](roadmap.md)「技术验证」。Windows 11 屏幕检查未测，该项未通过。没有产品界面。 |
+| `spikes/toolhost` | 自定义工具宿主的技术验证，包名 `lanwork-toolhost-spike`。不在 `lanwork` 的依赖里，不进发布包。运行命令写在 `spikes/README.md`。结论见 [roadmap.md](roadmap.md)「技术验证」。2026-10-15 该项通过。凭据管理器界面未测，留到正式实现第 1 步。没有产品界面。 |
 | `tools/fixture` | 测量夹具 `lanwork-fixture`。在显式给出的目录里生成「性能测量」的固定数据。不读 `LANWORK_DATA_DIR`，也不写入正式数据目录。 |
 | `tools/sample` | 测量采样 `lanwork-sample`。按进程采样 CSV，并汇总延迟原始时间戳。运行命令和交换格式写在 `tools/README.md`。 |
 | `docs/measurements/TEMPLATE.md` | 技术验证和性能测量的记录模板。还没有符合「性能测量」协议的实测记录。各项结论见 [roadmap.md](roadmap.md)「技术验证」。 |
@@ -27,7 +27,7 @@
 | 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、设置页（常规、待办、数据、其他：开机启动、热角、搜索条热键、主题、网页搜索引擎、安静时段、「稍后」天数、数据目录的更换与迁移、立即备份、导出和导入、隐藏的应用、检查更新）、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用（面板搜索框已放弃）。便签快速收集（`/note`）的预览和提交还没有（待办快速收集已放弃）。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/render`、`spikes/hotcorner` 与 `spikes/toolhost` 仍在维护，已通过验证的 spike 程序已清理归档 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。见 [roadmap.md](roadmap.md)「技术验证」，这一项仍未通过 |
-| 外部 AI（本机 MCP）、应用页与自定义工具 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [tools.md](tools.md)。原先的扩展页已并入应用页，见 [extensions.md](extensions.md)。外部 AI 没有代码。应用页的产品界面也没有。工具宿主的验证程序在 `spikes/toolhost`，技术验证「工具宿主」未通过（Windows 屏幕未测）。没有通过记录之前，不写依赖它们的产品界面 |
+| 外部 AI（本机 MCP）、应用页与自定义工具 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [tools.md](tools.md)。原先的扩展页已并入应用页，见 [extensions.md](extensions.md)。外部 AI 没有代码，技术验证表里还没有对应项，没有通过记录之前不写依赖它的界面。应用页的产品界面也没有。工具宿主的验证程序在 `spikes/toolhost`，技术验证「工具宿主」已通过。凭据管理器界面留到正式实现第 1 步，不挡住应用页。 |
 | 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。有代码，未在 Windows 上验收。拖放和打开见「收纳」的「网页引用」。依赖的技术验证「网址拖放」已通过，结论见 [roadmap.md](roadmap.md)。浏览器扩展还没有代码 |
 | 待办悬浮窗 | `crates/app` 的 `todo_float` 与 `crates/core` 的 `todos/float_file`。可见行为见 [product.md](product.md)「待办」。已敲定并按实际实现运作（未完成与已完成展示、仅标题和勾选框、逾期标红等），未在 Windows 上最终验收。位置记在数据目录的 `todo-float.json`，不写进清单文件，进入导出和备份白名单。贴边和叠页加入现有悬浮窗，见「待办悬浮窗」。「背景」和「渲染器」仍没有通过记录。窗口外观沿用便签悬浮窗，写了也不改变这两项的记录 |
 

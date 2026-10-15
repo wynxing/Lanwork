@@ -1,0 +1,916 @@
+component PageTab inherits Rectangle {
+    in property <string> name;
+    in property <bool> on;
+    in property <color> ink;
+    in property <color> accent;
+
+    width: label.preferred-width + 24px;
+
+    label := Text {
+        x: 12px;
+        height: parent.height;
+        text: root.name;
+        color: on ? accent : ink;
+        font-size: 14px;
+        font-weight: on ? 600 : 400;
+        vertical-alignment: center;
+    }
+
+    if on: Rectangle {
+        x: 12px;
+        y: parent.height - 3px;
+        width: parent.width - 24px;
+        height: 2px;
+        border-radius: 1px;
+        background: accent;
+    }
+}
+
+component CloseMark inherits Rectangle {
+    in property <color> tone;
+
+    Path {
+        x: (parent.width - 14px) / 2;
+        y: (parent.height - 14px) / 2;
+        width: 14px;
+        height: 14px;
+        viewbox-width: 14;
+        viewbox-height: 14;
+        fill: transparent;
+        stroke: tone;
+        stroke-width: 1.4px;
+        commands: "M2 2l10 10 M12 2l-10 10";
+    }
+}
+
+component Btn inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    in property <color> ink;
+    in property <color> tertiary;
+    in property <color> divider;
+    in property <color> hover;
+    in property <color> critical: #c42b1c;
+
+    height: 30px;
+    width: label.preferred-width + 20px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: divider;
+
+    label := Text {
+        x: 10px;
+        text: root.text;
+        color: !enabled ? tertiary : danger ? critical : ink;
+        font-size: 13px;
+        vertical-alignment: center;
+        height: 100%;
+    }
+}
+
+component Switch inherits Rectangle {
+    in property <bool> checked;
+    in property <color> accent;
+    in property <color> secondary;
+    in property <color> knob: #ffffff;
+
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    border-width: 1.5px;
+    border-color: checked ? accent : secondary;
+    background: checked ? accent : #00000000;
+
+    Rectangle {
+        x: checked ? parent.width - self.width - 5px : 3px;
+        y: (parent.height - self.height) / 2 - 1.5px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: checked ? knob : secondary;
+    }
+}
+
+component ToolCard inherits Rectangle {
+    in property <string> mark;
+    in property <string> name;
+    in property <string> detail;
+    in property <bool> switched;
+    in property <color> ink;
+    in property <color> secondary;
+    in property <color> tertiary;
+    in property <color> divider;
+    in property <color> selection;
+    in property <color> surface;
+    in property <color> critical;
+
+    out property <length> anchor-x: more.absolute-position.x;
+    out property <length> anchor-y: more.absolute-position.y;
+    out property <length> anchor-w: more.width;
+    out property <length> anchor-h: more.height;
+
+    height: 72px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: divider;
+    background: surface;
+
+    Rectangle {
+        x: 12px;
+        y: (parent.height - 32px) / 2;
+        width: 32px;
+        height: 32px;
+        border-radius: 6px;
+        background: selection;
+
+        Text {
+            width: 100%;
+            height: 100%;
+            text: root.mark;
+            color: ink;
+            font-size: 14px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    more := Rectangle {
+        x: parent.width - 12px - 30px;
+        y: (parent.height - 30px) / 2;
+        width: 30px;
+        height: 30px;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: divider;
+
+        Rectangle {
+            x: (parent.width - 12px) / 2;
+            y: (parent.height - 2px) / 2;
+            width: 2px;
+            height: 2px;
+            border-radius: 1px;
+            background: secondary;
+        }
+
+        Rectangle {
+            x: (parent.width - 2px) / 2;
+            y: (parent.height - 2px) / 2;
+            width: 2px;
+            height: 2px;
+            border-radius: 1px;
+            background: secondary;
+        }
+
+        Rectangle {
+            x: (parent.width - 12px) / 2 + 10px;
+            y: (parent.height - 2px) / 2;
+            width: 2px;
+            height: 2px;
+            border-radius: 1px;
+            background: secondary;
+        }
+    }
+
+    sw := Switch {
+        x: more.x - 8px - self.width;
+        y: (parent.height - self.height) / 2;
+        checked: root.switched;
+        accent: #005fb8;
+        secondary: secondary;
+    }
+
+    open := Btn {
+        x: sw.x - 8px - self.width;
+        y: (parent.height - self.height) / 2;
+        text: "悬浮窗";
+        ink: ink;
+        tertiary: tertiary;
+        divider: divider;
+        hover: #00000000;
+        critical: critical;
+    }
+
+    Text {
+        x: 56px;
+        y: 16px;
+        width: open.x - 16px - 56px;
+        text: root.name;
+        color: ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        height: 20px;
+        overflow: elide;
+    }
+
+    Text {
+        x: 56px;
+        y: 38px;
+        width: open.x - 16px - 56px;
+        text: root.detail;
+        color: secondary;
+        font-size: 12px;
+        vertical-alignment: center;
+        height: 18px;
+        overflow: elide;
+    }
+}
+
+component ImportCard inherits Rectangle {
+    in property <color> ink;
+    in property <color> secondary;
+    in property <color> divider;
+    in property <color> selection;
+    in property <color> surface;
+
+    height: 72px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: divider;
+    background: surface;
+
+    Rectangle {
+        x: 12px;
+        y: (parent.height - 32px) / 2;
+        width: 32px;
+        height: 32px;
+        border-radius: 6px;
+        background: selection;
+
+        Path {
+            x: 9px;
+            y: 9px;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 14;
+            viewbox-height: 14;
+            fill: transparent;
+            stroke: secondary;
+            stroke-width: 1.4px;
+            commands: "M7 2v10 M2 7h10";
+        }
+    }
+
+    Text {
+        x: 56px;
+        width: parent.width - 68px;
+        height: parent.height;
+        text: "导入+";
+        color: ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <color> ink;
+    in property <color> fill;
+
+    height: 36px;
+    border-radius: 6px;
+    background: fill;
+
+    Text {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.text;
+        color: ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component Perm inherits Rectangle {
+    in property <string> text;
+    in property <color> ink;
+
+    height: 26px;
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: ink;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// 应用页的静态预览。不是产品界面。
+// 颜色、字号、圆角和按钮沿用面板：浅底、细描边、没有色块按钮。
+// 产品字体是 Microsoft YaHei UI。这里用 Noto Sans CJK SC，只为在没有雅黑的环境里画出中文。
+
+export component AppsPreview inherits Window {
+    title: "Lanwork 应用页预览";
+    no-frame: true;
+    default-font-family: "Noto Sans CJK SC";
+    default-font-size: 14px;
+    background: #f3f3f3;
+
+    // builtin、custom、empty、menu、import、uninstall、error。
+    in property <string> scene: "builtin";
+    in property <length> frame-width: 760px;
+    in property <length> frame-height: 560px;
+
+    width: frame-width;
+    height: frame-height;
+
+    property <color> ink: #1b1b1b;
+    property <color> secondary: #5d5d5d;
+    property <color> tertiary: #767676;
+    property <color> divider: #00000014;
+    property <color> hover: #00000008;
+    property <color> selection: #0000000d;
+    property <color> accent: #005fb8;
+    property <color> critical: #c42b1c;
+    property <color> surface: #ffffff;
+    property <color> page: #f3f3f3;
+
+    property <bool> is-error: scene == "error";
+    property <bool> is-builtin: scene == "builtin";
+    property <bool> is-empty: scene == "empty";
+    property <bool> show-tools: scene == "custom" || scene == "menu" || scene == "import" || scene == "uninstall";
+    property <bool> menu-open: scene == "menu";
+    property <bool> import-open: scene == "import";
+    property <bool> uninstall-open: scene == "uninstall";
+
+    property <length> title-height: 48px;
+    property <length> category-height: 40px;
+    property <length> content-y: title-height + 1px + category-height + 1px;
+
+    if !is-error: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: page;
+
+        // 标题栏。标签顺序与面板相同，当前是「应用」。
+        // 没写 x、y 时这一版 Slint 会把高度不满的元素居中，所以写上 0。
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: title-height;
+
+            Text {
+                x: 20px;
+                width: 80px;
+                height: parent.height;
+                text: "Lanwork";
+                color: ink;
+                font-size: 14px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+
+            HorizontalLayout {
+                x: 108px;
+                height: parent.height;
+                spacing: 4px;
+
+                PageTab {
+                    name: "待办";
+                    on: false;
+                    ink: secondary;
+                    accent: accent;
+                }
+
+                PageTab {
+                    name: "便签";
+                    on: false;
+                    ink: secondary;
+                    accent: accent;
+                }
+
+                PageTab {
+                    name: "收纳";
+                    on: false;
+                    ink: secondary;
+                    accent: accent;
+                }
+
+                PageTab {
+                    name: "应用";
+                    on: true;
+                    ink: secondary;
+                    accent: accent;
+                }
+
+                PageTab {
+                    name: "设置";
+                    on: false;
+                    ink: secondary;
+                    accent: accent;
+                }
+            }
+
+            CloseMark {
+                x: parent.width - 48px;
+                width: 48px;
+                height: parent.height;
+                tone: secondary;
+            }
+        }
+
+        Rectangle {
+            x: 0px;
+            y: title-height;
+            width: parent.width;
+            height: 1px;
+            background: divider;
+        }
+
+        // 分类。只有「内置」和「自定义」，用和标题标签同一套下划线。
+        Rectangle {
+            x: 0px;
+            y: title-height + 1px;
+            width: parent.width;
+            height: category-height;
+
+            HorizontalLayout {
+                x: 8px;
+                height: parent.height;
+                spacing: 4px;
+
+                PageTab {
+                    name: "内置";
+                    on: is-builtin;
+                    ink: secondary;
+                    accent: accent;
+                }
+
+                PageTab {
+                    name: "自定义";
+                    on: !is-builtin;
+                    ink: secondary;
+                    accent: accent;
+                }
+            }
+        }
+
+        Rectangle {
+            x: 0px;
+            y: title-height + 1px + category-height;
+            width: parent.width;
+            height: 1px;
+            background: divider;
+        }
+
+        Rectangle {
+            y: content-y;
+            width: parent.width;
+            height: parent.height - content-y;
+
+            if is-empty: Text {
+                x: 16px;
+                y: 12px;
+                text: "没有工具";
+                color: secondary;
+                font-size: 14px;
+            }
+
+            if is-builtin: VerticalLayout {
+                y: 12px;
+                width: parent.width;
+                height: parent.height - 12px;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 8px;
+                alignment: start;
+
+                ToolCard {
+                    mark: "番";
+                    name: "番茄钟";
+                    detail: "当前待办的计时";
+                    switched: true;
+                    ink: ink;
+                    secondary: secondary;
+                    divider: divider;
+                    selection: selection;
+                    surface: surface;
+                    critical: critical;
+                    tertiary: tertiary;
+                }
+            }
+
+            if is-empty: VerticalLayout {
+                y: 40px;
+                width: parent.width;
+                height: parent.height - 40px;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 8px;
+                alignment: start;
+
+                ImportCard {
+                    ink: ink;
+                    secondary: secondary;
+                    divider: divider;
+                    selection: selection;
+                    surface: surface;
+                }
+            }
+
+            if show-tools: host := Rectangle {
+                width: parent.width;
+                height: parent.height;
+
+                VerticalLayout {
+                    y: 12px;
+                    width: parent.width;
+                    height: parent.height - 12px;
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    api-card := ToolCard {
+                        mark: "额";
+                        name: "API 额度";
+                        detail: "服务商接口的剩余额度";
+                        switched: true;
+                        ink: ink;
+                        secondary: secondary;
+                        divider: divider;
+                        selection: selection;
+                        surface: surface;
+                        critical: critical;
+                        tertiary: tertiary;
+                    }
+
+                    ToolCard {
+                        mark: "日";
+                        name: "日报";
+                        detail: "接口上的待办摘要";
+                        switched: true;
+                        ink: ink;
+                        secondary: secondary;
+                        divider: divider;
+                        selection: selection;
+                        surface: surface;
+                        critical: critical;
+                        tertiary: tertiary;
+                    }
+
+                    ImportCard {
+                        ink: ink;
+                        secondary: secondary;
+                        divider: divider;
+                        selection: selection;
+                        surface: surface;
+                    }
+                }
+
+                if menu-open: Rectangle {
+                    x: api-card.anchor-x + api-card.anchor-w - self.width - host.absolute-position.x;
+                    y: api-card.anchor-y + api-card.anchor-h + 4px - host.absolute-position.y;
+                    width: 168px;
+                    height: 116px;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: divider;
+                    background: page;
+
+                    MenuRow {
+                        x: 4px;
+                        y: 4px;
+                        width: parent.width - 8px;
+                        text: "更新";
+                        ink: ink;
+                        fill: #00000000;
+                    }
+
+                    MenuRow {
+                        x: 4px;
+                        y: 40px;
+                        width: parent.width - 8px;
+                        text: "卸载";
+                        ink: ink;
+                        fill: #00000000;
+                    }
+
+                    MenuRow {
+                        x: 4px;
+                        y: 76px;
+                        width: parent.width - 8px;
+                        text: "查看权限";
+                        ink: ink;
+                        fill: #00000000;
+                    }
+                }
+            }
+        }
+
+        if import-open || uninstall-open: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: #1b1b1b0a;
+        }
+
+        if import-open: Rectangle {
+            property <length> box-w: 420px;
+            property <length> box-h: 404px;
+
+            x: (parent.width - box-w) / 2;
+            y: content-y + (parent.height - content-y - box-h) / 2;
+            width: box-w;
+            height: box-h;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: divider;
+            background: surface;
+
+            Text {
+                x: 20px;
+                y: 18px;
+                text: "更新";
+                color: tertiary;
+                font-size: 12px;
+            }
+
+            Text {
+                x: 20px;
+                y: 38px;
+                width: parent.width - 40px;
+                text: "日报";
+                color: ink;
+                font-size: 16px;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            Text {
+                x: 20px;
+                y: 64px;
+                width: parent.width - 40px;
+                text: "接口上的待办摘要";
+                color: secondary;
+                font-size: 13px;
+                overflow: elide;
+            }
+
+            Perm {
+                x: 20px;
+                y: 96px;
+                width: parent.width - 40px;
+                text: "访问 api.example.com";
+                ink: ink;
+            }
+
+            Perm {
+                x: 20px;
+                y: 122px;
+                width: parent.width - 40px;
+                text: "访问 files.example.com";
+                ink: ink;
+            }
+
+            Perm {
+                x: 20px;
+                y: 148px;
+                width: parent.width - 40px;
+                text: "使用你填写的 API 密钥";
+                ink: ink;
+            }
+
+            Perm {
+                x: 20px;
+                y: 174px;
+                width: parent.width - 40px;
+                text: "发送通知";
+                ink: ink;
+            }
+
+            Perm {
+                x: 20px;
+                y: 200px;
+                width: parent.width - 40px;
+                text: "读取你的待办";
+                ink: ink;
+            }
+
+            Perm {
+                x: 20px;
+                y: 226px;
+                width: parent.width - 40px;
+                text: "完成你的待办";
+                ink: ink;
+            }
+
+            Perm {
+                x: 20px;
+                y: 252px;
+                width: parent.width - 40px;
+                text: "保存这个工具自己的数据";
+                ink: ink;
+            }
+
+            Perm {
+                x: 20px;
+                y: 278px;
+                width: parent.width - 40px;
+                text: "定时刷新";
+                ink: ink;
+            }
+
+            Rectangle {
+                x: 20px;
+                y: 316px;
+                width: parent.width - 40px;
+                height: 1px;
+                background: divider;
+            }
+
+            Text {
+                x: 20px;
+                y: 328px;
+                width: parent.width - 40px;
+                text: "确认后才会替换已安装的工具。";
+                color: secondary;
+                font-size: 13px;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                x: 20px;
+                y: 358px;
+                width: parent.width - 40px;
+                height: 30px;
+                spacing: 8px;
+                alignment: end;
+
+                Btn {
+                    text: "取消";
+                    ink: ink;
+                    tertiary: tertiary;
+                    divider: divider;
+                    hover: hover;
+                }
+
+                Btn {
+                    text: "确认";
+                    ink: ink;
+                    tertiary: tertiary;
+                    divider: divider;
+                    hover: hover;
+                }
+            }
+        }
+
+        if uninstall-open: Rectangle {
+            property <length> box-w: 360px;
+            property <length> box-h: 148px;
+
+            x: (parent.width - box-w) / 2;
+            y: content-y + (parent.height - content-y - box-h) / 2;
+            width: box-w;
+            height: box-h;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: divider;
+            background: surface;
+
+            Text {
+                x: 20px;
+                y: 20px;
+                width: parent.width - 40px;
+                text: "API 额度";
+                color: ink;
+                font-size: 16px;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            Text {
+                x: 20px;
+                y: 52px;
+                width: parent.width - 40px;
+                text: "会删除这个工具的存储和密钥。";
+                color: secondary;
+                font-size: 13px;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                x: 20px;
+                y: 96px;
+                width: parent.width - 40px;
+                height: 30px;
+                spacing: 8px;
+                alignment: end;
+
+                Btn {
+                    text: "取消";
+                    ink: ink;
+                    tertiary: tertiary;
+                    divider: divider;
+                    hover: hover;
+                }
+
+                Btn {
+                    text: "卸载";
+                    danger: true;
+                    ink: ink;
+                    tertiary: tertiary;
+                    divider: divider;
+                    hover: hover;
+                    critical: critical;
+                }
+            }
+        }
+    }
+
+    if is-error: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: page;
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 28px;
+
+            Text {
+                x: 12px;
+                width: parent.width - 48px;
+                height: parent.height;
+                text: "API 额度";
+                color: ink;
+                font-size: 14px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            CloseMark {
+                x: parent.width - 28px;
+                width: 28px;
+                height: parent.height;
+                tone: secondary;
+            }
+        }
+
+        Text {
+            x: 16px;
+            y: 44px;
+            width: parent.width - 32px;
+            text: "已用 20 / 100";
+            color: ink;
+            font-size: 14px;
+            overflow: elide;
+        }
+
+        Rectangle {
+            x: 16px;
+            y: 76px;
+            width: parent.width - 32px;
+            height: 4px;
+            border-radius: 2px;
+            background: divider;
+
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width * 0.2;
+                height: parent.height;
+                border-radius: 2px;
+                background: accent;
+            }
+        }
+
+        Rectangle {
+            x: 0px;
+            y: parent.height - 32px;
+            width: parent.width;
+            height: 32px;
+
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: 1px;
+                background: divider;
+            }
+
+            Text {
+                x: 20px;
+                width: parent.width - 40px;
+                height: parent.height;
+                text: "脚本超时（第 5 行）";
+                color: critical;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
