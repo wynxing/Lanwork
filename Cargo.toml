@@ -9,6 +9,7 @@ members = [
     "tools/sample",
     "tools/shortcut",
     "tools/foreground",
+    "spikes/toolhost",
 ]
 
 [workspace.package]

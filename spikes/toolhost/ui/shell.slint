@@ -1,0 +1,150 @@
+// 技术验证用的悬浮窗外壳。不是产品里的应用页，也不是番茄钟窗口。
+// 默认大小 320×360 只是这次验证窗口的尺寸，产品默认大小仍待定。
+// 钉住画在哪里、贴边把手，规格仍待定，这个窗口不画。
+
+export struct Row {
+    kind: string,
+    id: string,
+    caption: string,
+    label: string,
+    progress: float,
+}
+
+export component ToolShell inherits Window {
+    title: "Lanwork 工具宿主验证";
+    width: 320px;
+    height: 360px;
+    no-frame: true;
+    always-on-top: true;
+    background: #f3f3f3;
+    default-font-size: 14px;
+
+    in property <[Row]> rows;
+    in property <string> tool-name;
+    in property <string> status-text;
+    callback row-clicked(string);
+    callback drag-requested();
+
+    out property <length> drag-height: 28px;
+    out property <length> row-stride: 44px;
+    out property <int> row-count: root.rows.length;
+
+    public function row-kind(index: int) -> string {
+        if (index >= 0 && index < root.rows.length) {
+            root.rows[index].kind
+        } else {
+            ""
+        }
+    }
+
+    public function row-caption(index: int) -> string {
+        if (index >= 0 && index < root.rows.length) {
+            root.rows[index].caption
+        } else {
+            ""
+        }
+    }
+
+    public function row-label(index: int) -> string {
+        if (index >= 0 && index < root.rows.length) {
+            root.rows[index].label
+        } else {
+            ""
+        }
+    }
+
+    public function row-progress(index: int) -> float {
+        if (index >= 0 && index < root.rows.length) {
+            root.rows[index].progress
+        } else {
+            -1
+        }
+    }
+
+    TouchArea {
+        width: parent.width;
+        height: root.drag-height;
+
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                root.drag-requested();
+            }
+        }
+
+        Text {
+            x: 12px;
+            y: 0px;
+            width: parent.width - 24px;
+            height: parent.height;
+            text: root.tool-name;
+            color: #1a1a1a;
+            vertical-alignment: center;
+        }
+    }
+
+    for row[index] in root.rows: Rectangle {
+        x: 0px;
+        y: root.drag-height + index * root.row-stride;
+        width: parent.width;
+        height: root.row-stride;
+
+        if row.kind == "text" || row.kind == "timer": Text {
+            x: 12px;
+            y: 0px;
+            width: parent.width - 24px;
+            height: parent.height;
+            text: row.caption;
+            color: #1a1a1a;
+            vertical-alignment: center;
+        }
+
+        if row.kind == "button": Rectangle {
+            x: 12px;
+            y: 6px;
+            width: 96px;
+            height: 32px;
+            background: #d0d0d0;
+            border-radius: 4px;
+
+            TouchArea {
+                clicked => {
+                    root.row-clicked(row.id);
+                }
+
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: row.label;
+                    color: #1a1a1a;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if row.kind == "progress": Rectangle {
+            x: 12px;
+            y: 16px;
+            width: parent.width - 24px;
+            height: 12px;
+            background: #e0e0e0;
+
+            Rectangle {
+                width: parent.width * max(0, min(row.progress, 1));
+                height: 100%;
+                background: #2f9e44;
+            }
+        }
+    }
+
+    Text {
+        x: 12px;
+        y: parent.height - 28px;
+        width: parent.width - 24px;
+        height: 24px;
+        text: root.status-text;
+        color: #9b1c1c;
+        font-size: 12px;
+        vertical-alignment: center;
+    }
+}
