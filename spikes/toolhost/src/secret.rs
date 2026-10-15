@@ -1,9 +1,12 @@
 //! 密钥只放在宿主侧。Lua 没有读取函数。
 //!
-//! 产品在凭据管理器里的目标名字符串仍待定。这个验证程序用
+//! 产品在凭据管理器里的目标名字符串仍待定。Windows 自动测试用
 //! `Lanwork.Spike.ToolHost/<工具 id>/<密钥 id>`，只为这次读写，不作为产品规则。
-//! Windows 上写入的是当前登录会话的凭据（`CRED_PERSIST_SESSION`），进程结束并注销后不保留。
+//! 写入的是当前登录会话的凭据（`CRED_PERSIST_SESSION`），进程结束并注销后不保留。
 //! 持久放在哪一级，规格没有写，待定。
+//!
+//! Win32 读写只在 `cfg(test)` 里编译：唯一调用方是 Windows 上的凭据往返测试。
+//! 非测试的库目标不包含这段代码。命令行验证用 `MemorySecretStore`。
 
 use std::collections::BTreeMap;
 
@@ -45,7 +48,7 @@ impl SecretStore for MemorySecretStore {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 mod wincred {
     use super::{SecretStore, spike_target_name};
     use windows::Win32::Foundation::FILETIME;
@@ -144,5 +147,5 @@ mod wincred {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 pub use wincred::WindowsCredentialStore;
