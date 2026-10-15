@@ -5,8 +5,12 @@
 //! 模式写错、捕获写错、嵌套过深仍是普通脚本错误，不置中止标记。
 //!
 //! 文本和模式另有长度上限，只是验证程序的临时天花板，不是产品规则。
-//! `gsub` 的结果缓冲区在扩容前计入同一块 16 MiB 预算。超过则这次调用报错，不置中止标记。
+//! 同一块 Lua 状态上，所有还没交还的 `gsub` 结果缓冲区加在一起，跟 Lua 已用内存计入同一块 16 MiB 预算。
+//! 超过则这次调用报错，不置中止标记。缓冲区释放时把占用减回去。
 //! 复制进结果的字节大约每 64 KiB 再看一次截止时间。
+//! 模式函数最多嵌套 8 层。从 Rust 再进 Lua 的宿主函数另有重入上限。
+//! Lua 5.4 的 `lua_setcstacklimit` 不改变编译进去的 C 栈上限，所以这层限制放在宿主里。
+//! 超过是普通脚本错误，不置中止标记。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -28,6 +32,119 @@ const RESULT_BUDGET: usize = 16 * 1024 * 1024;
 const STRING_OVERHEAD: usize = 64;
 /// 复制进结果时，每这么多字节约看一次截止时间。
 const COPY_STEP: usize = 64 * 1024;
+/// `find` / `match` / `gmatch` / `gsub` 同时还在栈上的层数。再深就报可接住的错误。
+const PATTERN_REENTRY_CAP: u32 = 8;
+/// 从 Rust 回调再进入 Lua 的层数。`xpcall`、`table.sort` 和模式函数都算。
+/// 默认的 200 层 C 调用会把 Rust 栈撑爆，而 `lua_setcstacklimit` 改不了这个上限。
+const HOST_REENTRY_CAP: u32 = 16;
+
+/// 挂在 Lua 状态上。嵌套的 `gsub` 看见的是同一份计数。
+struct Nest {
+    buffers: Cell<usize>,
+    pattern_depth: Cell<u32>,
+    pattern_overflow: Cell<bool>,
+    host_depth: Cell<u32>,
+    /// 到顶之后保持拒绝，直到这一层全部展开。否则处理函数会再次整棵重试。
+    host_overflow: Cell<bool>,
+}
+
+fn nest(lua: &Lua) -> Rc<Nest> {
+    if let Some(existing) = lua.app_data_ref::<Rc<Nest>>() {
+        return Rc::clone(&existing);
+    }
+    let created = Rc::new(Nest {
+        buffers: Cell::new(0),
+        pattern_depth: Cell::new(0),
+        pattern_overflow: Cell::new(false),
+        host_depth: Cell::new(0),
+        host_overflow: Cell::new(false),
+    });
+    lua.set_app_data(Rc::clone(&created));
+    created
+}
+
+#[must_use]
+pub(crate) struct HostGuard {
+    nest: Rc<Nest>,
+}
+
+impl Drop for HostGuard {
+    fn drop(&mut self) {
+        release(&self.nest.host_depth, &self.nest.host_overflow);
+    }
+}
+
+/// 进入一个会再调用 Lua 的宿主函数。超过上限是普通脚本错误，不置中止标记。
+pub(crate) fn enter_host(lua: &Lua) -> mlua::Result<HostGuard> {
+    let nest = nest(lua);
+    if nest.host_overflow.get() || nest.host_depth.get() >= HOST_REENTRY_CAP {
+        nest.host_overflow.set(true);
+        return Err(mlua::Error::runtime("调用过深"));
+    }
+    nest.host_depth.set(nest.host_depth.get() + 1);
+    Ok(HostGuard { nest })
+}
+
+#[must_use]
+struct PatternGuard {
+    nest: Rc<Nest>,
+}
+
+impl Drop for PatternGuard {
+    fn drop(&mut self) {
+        release(&self.nest.pattern_depth, &self.nest.pattern_overflow);
+    }
+}
+
+fn enter_pattern(lua: &Lua) -> mlua::Result<PatternGuard> {
+    let nest = nest(lua);
+    if nest.pattern_overflow.get() || nest.pattern_depth.get() >= PATTERN_REENTRY_CAP {
+        nest.pattern_overflow.set(true);
+        return Err(mlua::Error::runtime("模式调用过深"));
+    }
+    nest.pattern_depth.set(nest.pattern_depth.get() + 1);
+    Ok(PatternGuard { nest })
+}
+
+fn release(depth: &Cell<u32>, overflow: &Cell<bool>) {
+    let next = depth.get().saturating_sub(1);
+    depth.set(next);
+    if next == 0 {
+        overflow.set(false);
+    }
+}
+
+/// 一层 `gsub` 结果缓冲区占着的字节。丢弃时从共享计数里减掉，出错路径也走这里。
+struct BufferCharge {
+    nest: Rc<Nest>,
+    charged: Cell<usize>,
+}
+
+impl BufferCharge {
+    fn new(nest: Rc<Nest>) -> Self {
+        Self {
+            nest,
+            charged: Cell::new(0),
+        }
+    }
+
+    fn note(&self, capacity: usize) {
+        let old = self.charged.get();
+        if capacity <= old {
+            return;
+        }
+        let delta = capacity - old;
+        self.nest.buffers.set(self.nest.buffers.get() + delta);
+        self.charged.set(capacity);
+    }
+}
+
+impl Drop for BufferCharge {
+    fn drop(&mut self) {
+        let left = self.nest.buffers.get().saturating_sub(self.charged.get());
+        self.nest.buffers.set(left);
+    }
+}
 
 pub(crate) trait CpuWatch: Send + Sync {
     fn deadline_ms(&self) -> u64;
@@ -59,6 +176,7 @@ pub(crate) fn install<W>(lua: &Lua, watch: Arc<W>) -> Result<(), String>
 where
     W: CpuWatch + 'static,
 {
+    lua.set_app_data(nest(lua));
     let library: Table = lua
         .globals()
         .get("string")
@@ -84,6 +202,8 @@ where
     if watch.aborted() {
         return Err(mlua::Error::runtime("脚本超时"));
     }
+    let _host = enter_host(lua)?;
+    let _pattern = enter_pattern(lua)?;
     match kind {
         Call::Find => find(lua, watch.as_ref(), &args, true),
         Call::Match => find(lua, watch.as_ref(), &args, false),
@@ -122,7 +242,7 @@ fn find<W: CpuWatch>(
     }
     let anchor = pattern.first() == Some(&b'^');
     let pat = if anchor { &pattern[1..] } else { &pattern };
-    let mut state = MatchState::new(lua, watch, &subject, pat);
+    let mut state = MatchState::new(lua, watch, &subject, pat, None);
     let mut at = init;
     loop {
         state.reprep();
@@ -165,6 +285,8 @@ where
         last: None,
     }));
     let iter = lua.create_function(move |lua, _: MultiValue| {
+        let _host = enter_host(lua)?;
+        let _pattern = enter_pattern(lua)?;
         gmatch_next(lua, watch.as_ref(), &subject, &pattern, &cursor)
     })?;
     Ok(MultiValue::from_vec(vec![Value::Function(iter)]))
@@ -182,7 +304,7 @@ fn gmatch_next<W: CpuWatch>(
     }
     let mut slot = cursor.borrow_mut();
     let mut src = slot.src;
-    let mut state = MatchState::new(lua, watch, subject, pattern);
+    let mut state = MatchState::new(lua, watch, subject, pattern, None);
     while src <= subject.len() {
         state.reprep();
         if let Some(end) = state.exec(src, 0)?
@@ -234,7 +356,8 @@ fn gsub<W: CpuWatch>(lua: &Lua, watch: &W, args: &MultiValue) -> mlua::Result<Mu
     )?;
     let anchor = pattern.first() == Some(&b'^');
     let pat: &[u8] = if anchor { &pattern[1..] } else { &pattern };
-    let mut state = MatchState::new(lua, watch, &subject, pat);
+    let charge = BufferCharge::new(nest(lua));
+    let mut state = MatchState::new(lua, watch, &subject, pat, Some(&charge));
     let mut buf = Vec::new();
     let mut src = 0usize;
     let mut last = None;
@@ -437,6 +560,7 @@ struct MatchState<'a, W: CpuWatch> {
     steps: u32,
     /// 自从上次看截止时间以来，写进 `gsub` 结果的字节数。
     copied: Cell<usize>,
+    charge: Option<&'a BufferCharge>,
     depth: i32,
     level: usize,
     capture: [Capture; MAX_CAPTURES],
@@ -448,7 +572,13 @@ enum Flow {
 }
 
 impl<'a, W: CpuWatch> MatchState<'a, W> {
-    fn new(lua: &'a Lua, watch: &'a W, src: &'a [u8], pat: &'a [u8]) -> Self {
+    fn new(
+        lua: &'a Lua,
+        watch: &'a W,
+        src: &'a [u8],
+        pat: &'a [u8],
+        charge: Option<&'a BufferCharge>,
+    ) -> Self {
         Self {
             lua,
             watch,
@@ -456,6 +586,7 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
             pat,
             steps: 0,
             copied: Cell::new(0),
+            charge,
             depth: MAX_CALLS,
             level: 0,
             capture: [Capture { init: 0, len: 0 }; MAX_CAPTURES],
@@ -483,24 +614,30 @@ impl<'a, W: CpuWatch> MatchState<'a, W> {
         Err(mlua::Error::runtime("脚本超时"))
     }
 
-    /// 扩容前把结果长度算进 16 MiB 预算。超过是普通脚本错误，不置中止标记。
+    /// 扩容前把各层还没交还的结果缓冲区加进 16 MiB 预算。超过是普通脚本错误，不置中止标记。
     fn begin_write(&self, buf: &mut Vec<u8>, len: usize) -> mlua::Result<()> {
         if len == 0 {
             return Ok(());
         }
         let new_len = buf.len().checked_add(len).ok_or_else(memory_error)?;
+        if buf.capacity() >= new_len {
+            return Ok(());
+        }
+        let Some(charge) = self.charge else {
+            return Err(memory_error());
+        };
         let used = self.lua.used_memory();
+        let held = charge.nest.buffers.get();
         let room = RESULT_BUDGET
             .saturating_sub(used)
             .saturating_sub(STRING_OVERHEAD)
-            .saturating_sub(buf.len());
-        if len > room || used.saturating_add(new_len) > RESULT_BUDGET {
+            .saturating_sub(held);
+        if len > room {
             return Err(memory_error());
         }
-        if buf.capacity() < new_len {
-            let extra = len.max(COPY_STEP).min(room);
-            buf.try_reserve_exact(extra).map_err(|_| memory_error())?;
-        }
+        let extra = len.max(COPY_STEP).min(room);
+        buf.try_reserve_exact(extra).map_err(|_| memory_error())?;
+        charge.note(buf.capacity());
         Ok(())
     }
 
@@ -1407,5 +1544,81 @@ end
         );
         assert!(err.to_string().contains("脚本超时"), "{err}");
         assert!(watch.aborted());
+    }
+
+    #[test]
+    fn nested_gsub_buffers_share_one_budget() {
+        let lua = Lua::new();
+        let watch = std::sync::Arc::new(Open {
+            aborted: AtomicBool::new(false),
+        });
+        install(&lua, std::sync::Arc::clone(&watch)).unwrap();
+        let started = std::time::Instant::now();
+        let err = lua
+            .load(
+                r#"
+                local piece = string.rep("x", 4 * 1024 * 1024)
+                local level = 0
+                local function repl(c)
+                  if c == "x" then return piece end
+                  level = level + 1
+                  if level >= 3 then return "z" end
+                  return (string.gsub("xy", ".", repl))
+                end
+                return string.gsub("xy", ".", repl)
+                "#,
+            )
+            .eval::<Value>()
+            .unwrap_err();
+        assert!(
+            started.elapsed().as_millis() < 2_000,
+            "嵌套结果应在预算内停下，实际 {} ms",
+            started.elapsed().as_millis()
+        );
+        let message = err.to_string();
+        assert!(message.contains("not enough memory"), "{message}");
+        assert!(!message.contains("脚本超时"), "{message}");
+        assert!(!watch.aborted());
+        let text: String = lua
+            .load(r#"return (string.gsub("ab", "", "X"))"#)
+            .eval()
+            .unwrap();
+        assert_eq!(text, "XaXbX");
+    }
+
+    #[test]
+    fn recursive_gsub_stops_before_the_rust_stack_overflows() {
+        for limit in [48, 100] {
+            let lua = Lua::new();
+            let watch = std::sync::Arc::new(Open {
+                aborted: AtomicBool::new(false),
+            });
+            install(&lua, std::sync::Arc::clone(&watch)).unwrap();
+            let started = std::time::Instant::now();
+            let text: String = lua
+                .load(format!(
+                    r#"
+                    local n = 0
+                    local function repl()
+                      n = n + 1
+                      if n >= {limit} then return "z" end
+                      return (string.gsub("a", "a", repl))
+                    end
+                    local ok, err = pcall(function() string.gsub("a", "a", repl) end)
+                    return (ok and "true" or "false") .. ":" .. n .. ":" .. tostring(err)
+                    "#
+                ))
+                .eval()
+                .unwrap();
+            assert!(
+                started.elapsed().as_millis() < 2_000,
+                "深度 {limit} 不应撑爆栈，实际 {} ms",
+                started.elapsed().as_millis()
+            );
+            assert!(text.starts_with("false:8:"), "{limit} {text}");
+            assert!(text.contains("模式调用过深"), "{limit} {text}");
+            assert!(!text.contains("脚本超时"), "{limit} {text}");
+            assert!(!watch.aborted());
+        }
     }
 }

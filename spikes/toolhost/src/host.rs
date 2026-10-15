@@ -12,7 +12,8 @@
 //! 内存字节上限仍待定。这里的 `MEMORY_CAP` 只是验证程序的临时天花板，超过后与超时一样中止这次回调，不是产品规则。
 //! `xpcall` 换成宿主的函数：处理函数在错误展开之后调用，超时钩子仍然有效。
 //! `string.find`、`match`、`gmatch`、`gsub` 在宿主的匹配器里执行，每 4096 步对照这次回调的截止时间。
-//! `gsub` 的结果缓冲区在扩容前计入同一块 16 MiB 预算；超过则这次调用报错，不置中止标记。复制大约每 64 KiB 再看一次截止时间。
+//! `gsub` 各层还没交还的结果缓冲区加在一起，跟 Lua 已用内存计入同一块 16 MiB 预算；超过则这次调用报错，不置中止标记。复制大约每 64 KiB 再看一次截止时间。
+//! 模式函数最多嵌套 8 层。`xpcall` 和 `table.sort` 再进 Lua 时还有一层重入上限，避免把 Rust 栈撑爆。
 //! 文本、模式和 `string.rep` 的结果另有临时长度上限。不带比较函数的 `table.sort` 在元素过多时拒绝。这些不是产品规则。
 //! HTTP 在另一条线程上连接和读取。脚本回调返回之后，宿主才按等待上限取结果并调用 Lua。等待上限的秒数仍待定，这次默认 5 秒。
 
@@ -654,38 +655,41 @@ fn sandbox(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
 /// 错误展开之后再普通调用处理函数，钩子仍然开着。已经超时就不再进入处理函数。
 fn install_xpcall(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
     let xpcall = lua
-        .create_function(move |_, mut args: MultiValue| -> mlua::Result<MultiValue> {
-            let Some(function) = args.pop_front() else {
-                return Err(mlua::Error::runtime("xpcall 需要函数"));
-            };
-            let Some(handler) = args.pop_front() else {
-                return Err(mlua::Error::runtime("xpcall 需要处理函数"));
-            };
-            let Value::Function(function) = function else {
-                return Err(mlua::Error::runtime("xpcall 需要函数"));
-            };
-            let Value::Function(handler) = handler else {
-                return Err(mlua::Error::runtime("xpcall 需要处理函数"));
-            };
-            match function.call::<MultiValue>(args) {
-                Ok(mut values) => {
-                    values.push_front(Value::Boolean(true));
-                    Ok(values)
-                }
-                Err(err) => {
-                    if limit.aborted.load(Ordering::Relaxed) || timeout_error(&err) {
-                        return Err(err);
+        .create_function(
+            move |lua, mut args: MultiValue| -> mlua::Result<MultiValue> {
+                let _guard = crate::pattern::enter_host(lua)?;
+                let Some(function) = args.pop_front() else {
+                    return Err(mlua::Error::runtime("xpcall 需要函数"));
+                };
+                let Some(handler) = args.pop_front() else {
+                    return Err(mlua::Error::runtime("xpcall 需要处理函数"));
+                };
+                let Value::Function(function) = function else {
+                    return Err(mlua::Error::runtime("xpcall 需要函数"));
+                };
+                let Value::Function(handler) = handler else {
+                    return Err(mlua::Error::runtime("xpcall 需要处理函数"));
+                };
+                match function.call::<MultiValue>(args) {
+                    Ok(mut values) => {
+                        values.push_front(Value::Boolean(true));
+                        Ok(values)
                     }
-                    match handler.call::<MultiValue>(err.to_string()) {
-                        Ok(mut values) => {
-                            values.push_front(Value::Boolean(false));
-                            Ok(values)
+                    Err(err) => {
+                        if limit.aborted.load(Ordering::Relaxed) || timeout_error(&err) {
+                            return Err(err);
                         }
-                        Err(err) => Err(err),
+                        match handler.call::<MultiValue>(err.to_string()) {
+                            Ok(mut values) => {
+                                values.push_front(Value::Boolean(false));
+                                Ok(values)
+                            }
+                            Err(err) => Err(err),
+                        }
                     }
                 }
-            }
-        })
+            },
+        )
         .map_err(|err| format!("脚本错误：{err}"))?;
     lua.globals()
         .set("xpcall", xpcall)
@@ -717,7 +721,8 @@ fn install_sort_limit(lua: &Lua) -> Result<(), String> {
         .get("sort")
         .map_err(|err| format!("脚本错误：{err}"))?;
     let wrapper = lua
-        .create_function(move |_, args: MultiValue| {
+        .create_function(move |lua, args: MultiValue| {
+            let _guard = crate::pattern::enter_host(lua)?;
             let has_comparator = args
                 .get(1)
                 .is_some_and(|value| !matches!(value, Value::Nil));
@@ -1448,6 +1453,7 @@ fn deliver(
     if !ok {
         result.set("error", error)?;
     }
+    let _guard = crate::pattern::enter_host(lua)?;
     callback.call::<()>(result)
 }
 

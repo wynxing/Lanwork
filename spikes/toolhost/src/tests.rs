@@ -609,6 +609,99 @@ end
 }
 
 #[test]
+fn recursive_gsub_xpcall_and_sort_stay_bounded() {
+    let dir = Scratch::new("reentry");
+    write_tool(
+        &dir,
+        &tool("example.reentry", "", "", &text_widgets(&["out"])),
+        r#"
+function on_load()
+  local function gsub_depth(limit)
+    local n = 0
+    local function repl()
+      n = n + 1
+      if n >= limit then return "z" end
+      return (string.gsub("a", "a", repl))
+    end
+    local ok, err = pcall(function() string.gsub("a", "a", repl) end)
+    return (ok and "true" or "false") .. ":" .. n .. ":" .. tostring(err)
+  end
+  local function xp_depth()
+    local n = 0
+    local saved = ""
+    local function f()
+      n = n + 1
+      return xpcall(f, function(err)
+        saved = tostring(err)
+        return saved
+      end)
+    end
+    pcall(f)
+    local hit = string.find(saved, "调用过深", 1, true) and "hit" or "miss"
+    return n .. ":" .. hit
+  end
+  local function xp_bomb()
+    local n = 0
+    local function f()
+      n = n + 1
+      return xpcall(f, f)
+    end
+    pcall(f)
+    return tostring(n)
+  end
+  local function sort_depth()
+    local n = 0
+    local function cmp()
+      n = n + 1
+      if n > 100 then return false end
+      table.sort({2, 1}, cmp)
+      return false
+    end
+    local ok, err = pcall(function() table.sort({2, 1}, cmp) end)
+    local saw = tostring(err)
+    local hit = string.find(saw, "调用过深", 1, true) and "hit" or "miss"
+    return (ok and "true" or "false") .. ":" .. n .. ":" .. hit
+  end
+  ui.text("out", "g48:" .. gsub_depth(48)
+    .. "|g100:" .. gsub_depth(100)
+    .. "|xp:" .. xp_depth()
+    .. "|bomb:" .. xp_bomb()
+    .. "|sort:" .. sort_depth()
+    .. ":done")
+end
+"#,
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() < 2_000,
+        "递归 gsub、xpcall、sort 应在重入上限停下，实际 {} ms",
+        elapsed.as_millis()
+    );
+    let caption = caption(&session, "out");
+    assert!(caption.contains("g48:false:8:"), "{caption}");
+    assert!(caption.contains("g100:false:8:"), "{caption}");
+    assert!(caption.contains("模式调用过深"), "{caption}");
+    assert!(caption.contains("xp:17:hit"), "{caption}");
+    assert!(caption.contains("|sort:false:16:hit"), "{caption}");
+    assert!(caption.contains(":done"), "{caption}");
+    assert!(!caption.contains("脚本超时"), "{caption}");
+    assert!(session.notices().is_empty());
+    let bomb = caption
+        .split("|bomb:")
+        .nth(1)
+        .and_then(|rest| rest.split("|sort:").next())
+        .and_then(|text| text.parse::<i32>().ok())
+        .expect("bomb 次数");
+    assert!(
+        (1..80).contains(&bomb),
+        "xpcall 自递归应在展开时停住，实际 {bomb} 次"
+    );
+}
+
+#[test]
 fn sort_without_comparator_rejects_a_huge_table() {
     let dir = Scratch::new("sort-cap");
     write_tool(

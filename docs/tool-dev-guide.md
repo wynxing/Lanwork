@@ -67,7 +67,7 @@ my-tool/
 
 放入的标准库：`string`、`table`、`math`、`utf8`。
 
-`string.find`、`string.match`、`string.gmatch`、`string.gsub` 在宿主的匹配器里按 Lua 5.4 的规则执行，并按步对照这 1 秒。到点与钩子一样中止，窗口显示「脚本超时」，`pcall` 不能把这次回调留住。文本、模式和 `string.rep` 的结果仍有临时长度上限；超过则这次调用报错，可以用 `pcall` 接住，这次回调继续。`gsub` 的结果在每次扩容前计入同一块临时内存预算，超过同样可以用 `pcall` 接住；复制大约每 64 KiB 再对照这 1 秒，到点与钩子一样中止。字节数仍待定，见 tools.md「待定」第 2 条。
+`string.find`、`string.match`、`string.gmatch`、`string.gsub` 在宿主的匹配器里按 Lua 5.4 的规则执行，并按步对照这 1 秒。到点与钩子一样中止，窗口显示「脚本超时」，`pcall` 不能把这次回调留住。文本、模式和 `string.rep` 的结果仍有临时长度上限；超过则这次调用报错，可以用 `pcall` 接住，这次回调继续。`gsub` 的结果在每次扩容前计入同一块临时内存预算，各层还没交还的缓冲区加在一起算，超过同样可以用 `pcall` 接住；复制大约每 64 KiB 再对照这 1 秒，到点与钩子一样中止。这四个模式函数同时嵌套最多 8 层，超过可以用 `pcall` 接住；到顶之后，这次调用展开完之前不能再进。`xpcall` 和 `table.sort` 从宿主再进 Lua 时还有重入上限，到顶之后同样要等这次调用展开完。字节数和层数仍待定，见 tools.md「待定」第 2 条。
 
 另放入 `json.decode` 和 `json.encode`。两者只处理文本。`json.decode` 成功时返回值，失败时返回 `nil` 和错误字符串。这不是服务，不必写进 `services`。
 
