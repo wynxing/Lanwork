@@ -44,27 +44,40 @@ enum Kind {
     LegacyCache,
 }
 
+/// 按 [`data_file_names`] 收集。这份名单不含 `todo-purge-pending.json`、日志、
+/// `cache/web-icons`、备份目录和 `import.pending`。
 pub(crate) fn collect(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
     let mut files = Vec::new();
-    push_optional(
-        &mut files,
-        "config.json",
-        &store.data_dir().join("config.json"),
-    )?;
-    push_optional(&mut files, "user-apps.json", &store.user_apps_path())?;
-    push_optional(
-        &mut files,
-        "todo-float.json",
-        &store.data_dir().join("todo-float.json"),
-    )?;
-    push_dir(&mut files, store, "todos")?;
-    push_dir(&mut files, store, "notes")?;
-    push_dir(&mut files, store, "shelves")?;
+    for name in data_file_names(&store.data_dir())? {
+        let path = disk_path(store, &name)?;
+        files.push(StoredFile {
+            name,
+            bytes: read_file(&path)?,
+        });
+    }
     for file in &files {
         check_entry(&file.name, &file.bytes)?;
     }
     files.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(files)
+}
+
+/// 导入确认前给设置页看的概览。只有数量和有没有配置、应用名单。
+///
+/// 不写导出时刻、程序版本，也不写旧包里的 GitHub 计数：那些文件导入时不写入。
+#[must_use]
+pub fn overview_text(overview: &PackageOverview) -> String {
+    let mut text = format!(
+        "待办 {}，便签 {}，收纳 {}",
+        overview.todos, overview.notes, overview.shelves
+    );
+    if overview.config {
+        text.push_str("，配置");
+    }
+    if overview.user_apps {
+        text.push_str("，应用");
+    }
+    text
 }
 
 pub(crate) fn with_manifest(
@@ -374,27 +387,6 @@ fn id_of(name: &str) -> Result<String, BackupError> {
         .strip_suffix(".json")
         .ok_or_else(|| BackupError::entry(name, "压缩包含有不允许的路径"))?;
     Ok(id.to_owned())
-}
-
-fn push_optional(files: &mut Vec<StoredFile>, name: &str, path: &Path) -> Result<(), BackupError> {
-    if !storage::fs_exists(path) {
-        return Ok(());
-    }
-    files.push(StoredFile {
-        name: name.to_owned(),
-        bytes: read_file(path)?,
-    });
-    Ok(())
-}
-
-fn push_dir(files: &mut Vec<StoredFile>, store: &Store, relative: &str) -> Result<(), BackupError> {
-    for (name, path) in dir_files(&store.data_dir(), relative)? {
-        files.push(StoredFile {
-            name,
-            bytes: read_file(&path)?,
-        });
-    }
-    Ok(())
 }
 
 fn dir_files(data_dir: &Path, relative: &str) -> Result<Vec<(String, PathBuf)>, BackupError> {

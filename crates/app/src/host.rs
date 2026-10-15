@@ -380,7 +380,7 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
 
 /// 这次启动是否用 `import.pending` 里的备份恢复过。
 ///
-/// 界面以后用它显示「导入未完成」。现在只在启动时记日志。
+/// 设置页在每一类顶上显示「导入未完成」。
 pub(crate) fn import_was_recovered() -> bool {
     IMPORT_RECOVERED.load(Ordering::Acquire)
 }

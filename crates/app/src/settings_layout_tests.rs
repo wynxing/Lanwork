@@ -186,6 +186,96 @@ fn the_data_directory_button_asks_to_choose_and_does_not_change_the_path() {
 }
 
 #[test]
+fn backup_export_and_import_buttons_ask_and_do_not_run_when_disabled() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    let backups = Rc::new(Cell::new(0));
+    let exports = Rc::new(Cell::new(0));
+    let imports = Rc::new(Cell::new(0));
+    let confirms = Rc::new(Cell::new(0));
+    let cancels = Rc::new(Cell::new(0));
+    {
+        let backups = Rc::clone(&backups);
+        data.on_backup_now(move || backups.set(backups.get() + 1));
+        let exports = Rc::clone(&exports);
+        data.on_export_clicked(move || exports.set(exports.get() + 1));
+        let imports = Rc::clone(&imports);
+        data.on_import_clicked(move || imports.set(imports.get() + 1));
+        let confirms = Rc::clone(&confirms);
+        data.on_confirm_import(move || confirms.set(confirms.get() + 1));
+        let cancels = Rc::clone(&cancels);
+        data.on_cancel_import(move || cancels.set(cancels.get() + 1));
+    }
+    open_section(&ui, 2.0);
+    let right = WIDTH as f32 - 16.0 - 20.0;
+    click(&ui, right, row_center(1.0));
+    click(&ui, right, row_center(2.0));
+    click(&ui, right, row_center(3.0));
+    assert_eq!(backups.get(), 1, "立即备份");
+    assert_eq!(exports.get(), 1, "导出");
+    assert_eq!(imports.get(), 1, "导入");
+    assert_eq!(confirms.get(), 0);
+    data.set_backup_enabled(false);
+    data.set_export_enabled(false);
+    data.set_import_enabled(false);
+    slint::platform::update_timers_and_animations();
+    click(&ui, right, row_center(1.0));
+    click(&ui, right, row_center(2.0));
+    click(&ui, right, row_center(3.0));
+    assert_eq!(backups.get(), 1, "正在备份时不再发出请求");
+    assert_eq!(exports.get(), 1);
+    assert_eq!(imports.get(), 1);
+
+    data.set_import_enabled(true);
+    data.set_import_confirming(true);
+    data.set_import_action("确认导入".into());
+    data.set_import_overview("待办 1，便签 0，收纳 2".into());
+    slint::platform::update_timers_and_animations();
+    click(&ui, right, row_center(3.0));
+    assert_eq!(confirms.get(), 1, "确认导入在行的右边");
+    assert_eq!(imports.get(), 1, "确认时没有「导入」");
+    // 「确认导入」大约 72 宽，左边隔 8 是「取消」。
+    click(
+        &ui,
+        WIDTH as f32 - 16.0 - 72.0 - 8.0 - 23.0,
+        row_center(3.0),
+    );
+    assert_eq!(cancels.get(), 1, "取消在确认的左边");
+}
+
+#[test]
+fn import_recovered_shifts_every_section_and_stays_a_line_of_text() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    let chooses = Rc::new(Cell::new(0));
+    {
+        let chooses = Rc::clone(&chooses);
+        data.on_choose_data_dir(move || chooses.set(chooses.get() + 1));
+    }
+    open_section(&ui, 2.0);
+    let x = WIDTH as f32 - 16.0 - 26.0;
+    click(&ui, x, row_center(0.0));
+    assert_eq!(chooses.get(), 1);
+    data.set_import_recovered(true);
+    slint::platform::update_timers_and_animations();
+    click(&ui, x, row_center(0.0));
+    assert_eq!(chooses.get(), 1, "「导入未完成」占了原来第一行的位置");
+    click(&ui, x, row_center(0.0) + 36.0);
+    assert_eq!(chooses.get(), 2, "数据目录下移 36");
+    open_section(&ui, 0.0);
+    click(&ui, CONTROL_X + 20.0, row_center(0.0));
+    let startup = Rc::new(RefCell::new(Vec::new()));
+    {
+        let startup = Rc::clone(&startup);
+        data.on_set_launch_at_startup(move |value| startup.borrow_mut().push(value));
+    }
+    click(&ui, CONTROL_X + 20.0, row_center(0.0));
+    assert!(startup.borrow().is_empty(), "常规页的开关也下移了");
+    click(&ui, CONTROL_X + 20.0, row_center(0.0) + 36.0);
+    assert_eq!(*startup.borrow(), [true]);
+}
+
+#[test]
 fn the_update_button_sits_on_the_other_section() {
     let (ui, _window) = open(false);
     let data = ui.global::<SettingsPageData>();

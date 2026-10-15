@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 
 use super::error::BackupError;
 use super::package::PackageOverview;
-use super::service::{BackupService, LaunchBackup};
+use super::service::{BackupService, LaunchBackup, ListedBackup};
 use crate::capture::CivilDate;
 use crate::storage::{BootHooks, Store};
 
-/// 设置里的备份、导出和导入调用这些命令。界面尚未接入。
+/// 设置页的备份、导出和导入调用这些命令。
 #[derive(Clone, Debug)]
 pub struct BackupCommands {
     service: BackupService,
@@ -33,6 +33,11 @@ impl BackupCommands {
 
     pub fn backup_manual(&self, now_ms: i64) -> Result<PathBuf, BackupError> {
         self.service.backup_manual(now_ms)
+    }
+
+    /// 自动备份和手动备份，从新到旧。不含 `import-`。合计不超过 7 份。
+    pub fn list_retained(&self) -> Result<Vec<ListedBackup>, BackupError> {
+        self.service.list_retained()
     }
 
     pub fn backup_on_launch(

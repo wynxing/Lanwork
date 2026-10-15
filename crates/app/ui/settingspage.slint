@@ -6,12 +6,17 @@
 // 左栏宽 132。分类从 y=8 起，步长 40，行高 36。第 i 行中心相对本页是 8+40*i+18。
 // 右栏从 x=132 起，内边距左 16、上 8，行高 48，标签宽 120。
 // 控件左缘相对窗口是 132+16+120=268。第 i 行中心相对本页是 8+48*i+24。
-// 数据页「更换」贴在行的右边，右边距 16。按钮宽是文字宽加 20。
+// 数据页「更换」「立即备份」「导出」「导入」贴在行的右边，右边距 16。按钮宽是文字宽加 20。
+// 「导入未完成」为真时，右侧每一类的内容下移 36。
 
 import { Btn, Field, Ink, Segments, ToggleSwitch } from "widgets.slint";
 
 export struct SettingsHiddenApp {
     name: string,
+}
+
+export struct SettingsBackup {
+    label: string,
 }
 
 export global SettingsPageData {
@@ -32,6 +37,16 @@ export global SettingsPageData {
     in property <string> data-dir;
     in property <string> data-dir-action: "更换";
     in property <bool> data-dir-enabled: true;
+    in property <string> backup-action: "立即备份";
+    in property <bool> backup-enabled: true;
+    in property <string> export-action: "导出";
+    in property <bool> export-enabled: true;
+    in property <string> import-action: "导入";
+    in property <bool> import-enabled: true;
+    in property <bool> import-confirming: false;
+    in property <string> import-overview;
+    in property <bool> import-recovered: false;
+    in property <[SettingsBackup]> backups;
     in property <string> version-text: "0.2.0";
     in property <string> update-status;
     in property <bool> update-status-error: false;
@@ -51,6 +66,11 @@ export global SettingsPageData {
     callback commit-snooze(string);
     callback choose-section(int);
     callback choose-data-dir();
+    callback backup-now();
+    callback export-clicked();
+    callback import-clicked();
+    callback confirm-import();
+    callback cancel-import();
     callback update-clicked();
 
     in property <[SettingsHiddenApp]> hidden-apps;
@@ -334,16 +354,118 @@ component DataPage inherits Rectangle {
         Row {
             name: "备份";
             c: root.c;
+
+            Btn {
+                x: parent.width - self.width;
+                y: (parent.height - self.height) / 2;
+                text: SettingsPageData.backup-action;
+                enabled: SettingsPageData.backup-enabled;
+                c: root.c;
+                clicked => {
+                    SettingsPageData.backup-now();
+                }
+            }
         }
 
         Row {
             name: "导出";
             c: root.c;
+
+            Btn {
+                x: parent.width - self.width;
+                y: (parent.height - self.height) / 2;
+                text: SettingsPageData.export-action;
+                enabled: SettingsPageData.export-enabled;
+                c: root.c;
+                clicked => {
+                    SettingsPageData.export-clicked();
+                }
+            }
         }
 
         Row {
             name: "导入";
             c: root.c;
+
+            // 确认时右侧是「取消」和「确认导入」。概览在标签和按钮之间，放不下就省略。
+            HorizontalLayout {
+                x: 120px;
+                y: (parent.height - self.height) / 2;
+                width: parent.width - 120px;
+                height: 30px;
+                spacing: 8px;
+                alignment: end;
+
+                if SettingsPageData.import-confirming: Text {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    text: SettingsPageData.import-overview;
+                    color: root.c.secondary;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                if SettingsPageData.import-confirming: Btn {
+                    text: "取消";
+                    enabled: SettingsPageData.import-enabled;
+                    c: root.c;
+                    clicked => {
+                        SettingsPageData.cancel-import();
+                    }
+                }
+
+                Btn {
+                    text: SettingsPageData.import-action;
+                    enabled: SettingsPageData.import-enabled;
+                    c: root.c;
+                    clicked => {
+                        if SettingsPageData.import-confirming {
+                            SettingsPageData.confirm-import();
+                        } else {
+                            SettingsPageData.import-clicked();
+                        }
+                    }
+                }
+            }
+        }
+
+        if SettingsPageData.backups.length == 0: Text {
+            height: 36px;
+            text: "没有备份";
+            color: root.c.secondary;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        if SettingsPageData.backups.length > 0: backup-list := Flickable {
+            vertical-stretch: 1;
+            min-height: 44px;
+            content-width: self.width;
+            content-height: max(self.height, SettingsPageData.backups.length * 44px);
+
+            for item[index] in SettingsPageData.backups: Rectangle {
+                y: index * 44px;
+                width: backup-list.width;
+                height: 44px;
+
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: item.label;
+                    color: root.c.ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: parent.width;
+                    background: root.c.divider;
+                }
+            }
         }
     }
 }
@@ -516,6 +638,7 @@ export component SettingsPage inherits Rectangle {
     in property <Ink> c;
     in property <bool> dark;
     property <int> section: 0;
+    property <length> content-shift: SettingsPageData.import-recovered ? 36px : 0px;
 
     Rectangle {
         x: 0px;
@@ -583,33 +706,50 @@ export component SettingsPage inherits Rectangle {
         }
     }
 
+    // 启动时恢复过未完成的导入。每一类顶上都有这一句，下面的行跟着下移。
+    if SettingsPageData.import-recovered: Text {
+        x: 148px;
+        y: 4px;
+        width: parent.width - 148px - 16px;
+        height: 28px;
+        text: "导入未完成";
+        color: root.c.critical;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
     if root.section == 0: GeneralPage {
         x: 132px;
+        y: root.content-shift;
         width: parent.width - 132px;
-        height: 100%;
+        height: parent.height - root.content-shift;
         c: root.c;
         dark: root.dark;
     }
 
     if root.section == 1: TodoPage {
         x: 132px;
+        y: root.content-shift;
         width: parent.width - 132px;
-        height: 100%;
+        height: parent.height - root.content-shift;
         c: root.c;
         dark: root.dark;
     }
 
     if root.section == 2: DataPage {
         x: 132px;
+        y: root.content-shift;
         width: parent.width - 132px;
-        height: 100%;
+        height: parent.height - root.content-shift;
         c: root.c;
     }
 
     if root.section == 3: OtherPage {
         x: 132px;
+        y: root.content-shift;
         width: parent.width - 132px;
-        height: 100%;
+        height: parent.height - root.content-shift;
         c: root.c;
     }
 }

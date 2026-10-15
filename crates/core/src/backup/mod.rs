@@ -15,5 +15,5 @@ mod zipstore;
 pub use command::BackupCommands;
 pub use error::BackupError;
 pub use migrate::{MigrateError, MigratePhase, MigrateProgress, migrate_data_dir, progress_text};
-pub use package::PackageOverview;
-pub use service::LaunchBackup;
+pub use package::{PackageOverview, overview_text};
+pub use service::{BackupKind, LaunchBackup, ListedBackup};
