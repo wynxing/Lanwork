@@ -2700,6 +2700,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lanwork-apps-preview"
+version = "0.4.0"
+dependencies = [
+ "png 0.17.16",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "lanwork-core"
 version = "0.4.0"
 dependencies = [

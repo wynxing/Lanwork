@@ -1,0 +1,19 @@
+[package]
+name = "lanwork-apps-preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+png = "0.17.16"
+slint = { workspace = true, default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "renderer-software",
+] }
+
+[build-dependencies]
+slint-build.workspace = true

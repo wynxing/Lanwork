@@ -19,6 +19,12 @@ cargo run -p hotcorner --release -- run --scheme poll --interval-ms 50 --monitor
 cargo run -p hotcorner --release -- run --scheme poll --interval-ms 100 --monitor primary --corner top-right --corner-px 32 --dwell-ms 350 --duration-secs 360
 ```
 
+应用页的界面预览在 `spikes/apps-page-preview`，包名 `lanwork-apps-preview`。不进 `lanwork` 的依赖，不进安装包，也不进产品界面。它只画出静态状态，不安装工具，不读数据目录。
+
+```
+cargo run -p lanwork-apps-preview -- --out shots
+```
+
 自定义工具宿主的技术验证在 `spikes/toolhost`，包名 `lanwork-toolhost-spike`。不进 `lanwork` 的依赖，不进安装包。它读开发说明里的番茄钟和额度示例，不写 `%USERPROFILE%\Documents\Lanwork`，也不读 MayDolist。`run` 开一扇软件渲染的悬浮窗。`measure` 在无桌面的软件窗口上记一帧，再让进程睡一会儿。Windows 11 桌面上这扇窗口看起来怎么样，记录里标未测。内存和 CPU 的数字上限仍待定。
 
 ```
