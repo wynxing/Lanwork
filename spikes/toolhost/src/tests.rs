@@ -3,8 +3,8 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::host::{Durations, Notification, Options, Session, TodoItem};
 use crate::http::{HttpResponse, HttpTransport, Outgoing, RustlsTransport};
@@ -102,12 +102,13 @@ impl HttpTransport for Recorded {
         Ok(HttpResponse {
             status: self.status,
             body: self.body.clone(),
+            headers: Vec::new(),
         })
     }
 }
 
-fn recorded(body: &str) -> Rc<Recorded> {
-    Rc::new(Recorded {
+fn recorded(body: &str) -> Arc<Recorded> {
+    Arc::new(Recorded {
         log: Mutex::new(Vec::new()),
         status: 200,
         body: body.to_string(),
@@ -292,6 +293,25 @@ end
     let notice = session.notices().last().cloned().expect("超时提示");
     assert!(notice.text.contains("脚本超时"), "{}", notice.text);
     assert!(notice.line.is_some(), "{}", notice.text);
+
+    let dir = Scratch::new("pcall-timeout");
+    write_tool(
+        &dir,
+        &tool("example.pcall", "", "", &text_widgets(&["out"])),
+        "function on_load()\n  ui.text(\"out\", \"began\")\n  while true do\n    pcall(function()\n      while true do end\n    end)\n  end\nend\n",
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed.as_millis() < 8_000,
+        "pcall 不能把超时留住，实际 {} ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(caption(&session, "out"), "began");
+    let notice = session.notices().last().cloned().expect("超时提示");
+    assert!(notice.text.contains("脚本超时"), "{}", notice.text);
 }
 
 #[test]
@@ -592,6 +612,221 @@ end
 }
 
 #[test]
+fn response_echo_is_redacted_before_lua() {
+    let secret = "a b/c";
+    let dir = Scratch::new("echo");
+    write_tool(
+        &dir,
+        &tool(
+            "example.echo",
+            "\"http\", \"secret\"",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\n",
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  http.request({
+    method = "GET",
+    url = "https://api.example.com/v1",
+    secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
+  }, function(result)
+    local blob = tostring(result.body)
+    for k, v in pairs(result) do
+      blob = blob .. "\n" .. tostring(k) .. "=" .. tostring(v)
+    end
+    ui.text("out", blob)
+  end)
+end
+"#,
+    );
+    let echoed = "a b/c YSBiL2M= YSBiL2M a%20b%2Fc a%20b%2fc a+b%2Fc Bearer a b/c";
+    let transport = Arc::new(EchoTransport {
+        body: echoed.to_string(),
+        header: format!("Bearer {secret}"),
+    });
+    let store = Rc::new(RefCell::new(MemorySecretStore::default()));
+    store
+        .borrow_mut()
+        .put("example.echo", "api_key", secret)
+        .unwrap();
+    let mut options = Options::default();
+    options.store = store;
+    options.transport = transport;
+    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    session.on_load();
+    let text = caption(&session, "out");
+    for pattern in [
+        secret,
+        "YSBiL2M=",
+        "YSBiL2M",
+        "a%20b%2Fc",
+        "a%20b%2fc",
+        "a+b%2Fc",
+    ] {
+        assert!(!text.contains(pattern), "{pattern} still in {text}");
+    }
+}
+
+struct EchoTransport {
+    body: String,
+    header: String,
+}
+
+impl HttpTransport for EchoTransport {
+    fn get(&self, _request: &Outgoing) -> Result<HttpResponse, ()> {
+        Ok(HttpResponse {
+            status: 200,
+            body: self.body.clone(),
+            headers: vec![("X-Echo".to_string(), self.header.clone())],
+        })
+    }
+}
+
+#[test]
+fn http_callback_does_not_block_on_transport() {
+    let dir = Scratch::new("slow-http");
+    write_tool(
+        &dir,
+        &tool(
+            "example.slow",
+            "\"http\"",
+            "[http]\ndomains = [\"api.example.com\"]\n",
+            &text_widgets(&["phase", "out"]),
+        ),
+        r#"
+function on_load()
+  ui.text("phase", "before")
+  http.request({ method = "GET", url = "https://api.example.com/v1" }, function(result)
+    ui.text("out", (result.body or "") .. (result.error or ""))
+  end)
+  ui.text("phase", "after")
+end
+"#,
+    );
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let transport = Arc::new(SlowTransport {
+        pair: Arc::clone(&pair),
+    });
+    let mut options = Options::default();
+    options.transport = transport;
+    options.http_budget = Duration::from_millis(200);
+    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let started = Instant::now();
+    session.on_load();
+    let elapsed = started.elapsed();
+    {
+        let (lock, cv) = &*pair;
+        *lock.lock().expect("锁") = true;
+        cv.notify_one();
+    }
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "脚本回调不应等网络，实际 {} ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(caption(&session, "phase"), "after");
+    assert_eq!(caption(&session, "out"), "请求失败");
+    assert!(!caption(&session, "out").contains("late"));
+}
+
+struct SlowTransport {
+    pair: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl HttpTransport for SlowTransport {
+    fn get(&self, _request: &Outgoing) -> Result<HttpResponse, ()> {
+        let (lock, cv) = &*self.pair;
+        let guard = lock.lock().expect("锁");
+        let (guard, _wait) = cv
+            .wait_timeout_while(guard, Duration::from_secs(2), |ready| !*ready)
+            .expect("等待");
+        drop(guard);
+        Ok(HttpResponse {
+            status: 200,
+            body: "late".to_string(),
+            headers: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn failing_secret_read_does_not_panic() {
+    let dir = Scratch::new("bad-store");
+    write_tool(
+        &dir,
+        &tool(
+            "example.bad-store",
+            "\"http\", \"secret\"",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\n",
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  http.request({
+    method = "GET",
+    url = "https://api.example.com/v1",
+    secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
+  }, function(result)
+    ui.text("out", result.error or "ok")
+  end)
+end
+"#,
+    );
+    let mut options = Options::default();
+    options.store = Rc::new(RefCell::new(FailingStore));
+    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "out"), "请求失败");
+    assert_eq!(session.http_sends(), 0);
+    assert!(session.notices().iter().any(|note| note.text == "请求失败"));
+}
+
+struct FailingStore;
+
+impl SecretStore for FailingStore {
+    fn put(&mut self, _tool_id: &str, _secret_id: &str, _value: &str) -> Result<(), String> {
+        Err("不写".to_string())
+    }
+
+    fn read(&self, _tool_id: &str, _secret_id: &str) -> Result<Option<String>, String> {
+        Err("凭据读取失败".to_string())
+    }
+
+    fn remove(&mut self, _tool_id: &str, _secret_id: &str) -> Result<(), String> {
+        Err("不删".to_string())
+    }
+}
+
+#[test]
+fn caught_allocation_still_aborts() {
+    let dir = Scratch::new("memory");
+    write_tool(
+        &dir,
+        &tool("example.memory", "", "", &text_widgets(&["out"])),
+        r#"
+function on_load()
+  local t = {}
+  while true do
+    pcall(function()
+      t[#t + 1] = string.rep("x", 200000)
+    end)
+  end
+end
+"#,
+    );
+    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let started = Instant::now();
+    session.on_load();
+    assert!(
+        started.elapsed().as_millis() < 8_000,
+        "分配失败被 pcall 接住后不应一直跑，实际 {} ms",
+        started.elapsed().as_millis()
+    );
+    let notice = session.notices().last().cloned().expect("中止提示");
+    assert!(notice.text.contains("脚本超时"), "{}", notice.text);
+}
+
+#[test]
 fn localhost_tls_attaches_secret_header() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -665,7 +900,7 @@ fn localhost_tls_attaches_secret_header() {
         .unwrap();
     let mut options = Options::default();
     options.store = store;
-    options.transport = Rc::new(RustlsTransport::with_config(client));
+    options.transport = Arc::new(RustlsTransport::with_config(client));
     let session = open_at(&dir, Origin::Imported, options).unwrap();
     session.on_load();
     server.join().expect("服务线程");

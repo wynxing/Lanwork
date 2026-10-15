@@ -3,11 +3,12 @@
 //! 不跟随重定向。同一主机名之内是否跟随，待定。
 //! 不附带密钥的明文 `http` 是否允许，待定；这次不发送，Lua 看到的说明写明仍待定。
 //! 附带密钥时只允许 `https`。
-//! HTTP 超时和正文上限规格待定。这次连接 5 秒，正文最多 1 MiB，超过则「请求失败」。
+//! HTTP 超时和正文上限规格待定。这次连接和读取各最多 5 秒，正文最多 1 MiB，超过则「请求失败」。
+//! 套接字在另一条线程上，脚本回调不等待网络。
 //! 脚本不能自带其它请求头。表里多出来的字段这次忽略，是否拒绝待定。
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,6 +47,115 @@ pub struct Outgoing {
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    pub headers: Vec<(String, String)>,
+}
+
+/// 从交给脚本的文本里去掉密钥原文和常见编码。
+///
+/// 编码至少包括原文、标准 Base64（含去掉末尾 `=` 的写法）、URL 安全 Base64、
+/// 百分号编码（十六进制大小写）和 `application/x-www-form-urlencoded`（空格写成 `+`）。
+pub fn redact_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        return text.to_string();
+    }
+    let mask = if secret.contains('□') { "" } else { "□" };
+    let mut patterns = secret_patterns(secret);
+    patterns.sort_by_key(|pattern| std::cmp::Reverse(pattern.len()));
+    patterns.dedup();
+    let mut text = text.to_string();
+    for pattern in patterns {
+        if !pattern.is_empty() {
+            text = text.replace(&pattern, mask);
+        }
+    }
+    text
+}
+
+pub fn sanitize_response(response: HttpResponse, secret: &str) -> HttpResponse {
+    HttpResponse {
+        status: response.status,
+        body: redact_secret(&response.body, secret),
+        headers: response
+            .headers
+            .into_iter()
+            .map(|(name, value)| (redact_secret(&name, secret), redact_secret(&value, secret)))
+            .collect(),
+    }
+}
+
+fn secret_patterns(secret: &str) -> Vec<String> {
+    let mut patterns = vec![secret.to_string()];
+    let std = base64_encode(secret.as_bytes(), false);
+    let url = base64_encode(secret.as_bytes(), true);
+    for encoded in [std, url] {
+        let trimmed = encoded.trim_end_matches('=').to_string();
+        if trimmed != encoded {
+            patterns.push(trimmed);
+        }
+        patterns.push(encoded);
+    }
+    for space_as_plus in [false, true] {
+        let upper = percent_encode(secret, space_as_plus, true);
+        let lower = percent_encode(secret, space_as_plus, false);
+        patterns.push(upper);
+        patterns.push(lower);
+    }
+    patterns.retain(|pattern| !pattern.is_empty());
+    patterns.sort();
+    patterns.dedup();
+    patterns
+}
+
+fn percent_encode(secret: &str, space_as_plus: bool, upper_hex: bool) -> String {
+    const HEX_UPPER: &[u8] = b"0123456789ABCDEF";
+    const HEX_LOWER: &[u8] = b"0123456789abcdef";
+    let hex = if upper_hex { HEX_UPPER } else { HEX_LOWER };
+    let mut out = String::new();
+    for byte in secret.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(*byte as char);
+        } else if space_as_plus && *byte == b' ' {
+            out.push('+');
+        } else {
+            out.push('%');
+            out.push(hex[(byte >> 4) as usize] as char);
+            out.push(hex[(byte & 0x0f) as usize] as char);
+        }
+    }
+    out
+}
+
+fn base64_encode(bytes: &[u8], url_safe: bool) -> String {
+    const STD: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const URL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let alphabet = if url_safe { URL } else { STD };
+    let mut out = String::new();
+    let mut index = 0;
+    while index + 3 <= bytes.len() {
+        let n = ((bytes[index] as u32) << 16)
+            | ((bytes[index + 1] as u32) << 8)
+            | bytes[index + 2] as u32;
+        out.push(alphabet[((n >> 18) & 0x3f) as usize] as char);
+        out.push(alphabet[((n >> 12) & 0x3f) as usize] as char);
+        out.push(alphabet[((n >> 6) & 0x3f) as usize] as char);
+        out.push(alphabet[(n & 0x3f) as usize] as char);
+        index += 3;
+    }
+    let rest = bytes.len() - index;
+    if rest == 1 {
+        let n = (bytes[index] as u32) << 16;
+        out.push(alphabet[((n >> 18) & 0x3f) as usize] as char);
+        out.push(alphabet[((n >> 12) & 0x3f) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rest == 2 {
+        let n = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
+        out.push(alphabet[((n >> 18) & 0x3f) as usize] as char);
+        out.push(alphabet[((n >> 12) & 0x3f) as usize] as char);
+        out.push(alphabet[((n >> 6) & 0x3f) as usize] as char);
+        out.push('=');
+    }
+    out
 }
 
 #[derive(Debug)]
@@ -140,7 +250,7 @@ fn header_token(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-pub trait HttpTransport {
+pub trait HttpTransport: Send + Sync {
     fn get(&self, request: &Outgoing) -> Result<HttpResponse, ()>;
 }
 
@@ -175,7 +285,7 @@ impl HttpTransport for RustlsTransport {
         let port = url.port_or_known_default().ok_or(())?;
         let server = ServerName::try_from(host.to_string()).map_err(|_| ())?;
         let connection = ClientConnection::new(Arc::clone(&self.config), server).map_err(|_| ())?;
-        let tcp = TcpStream::connect((host, port)).map_err(|_| ())?;
+        let tcp = connect_with_deadline(host, port)?;
         tcp.set_read_timeout(Some(TIMEOUT)).map_err(|_| ())?;
         tcp.set_write_timeout(Some(TIMEOUT)).map_err(|_| ())?;
         let mut tls = StreamOwned::new(connection, tcp);
@@ -222,6 +332,16 @@ impl HttpTransport for RustlsTransport {
     }
 }
 
+fn connect_with_deadline(host: &str, port: u16) -> Result<TcpStream, ()> {
+    let addrs = (host, port).to_socket_addrs().map_err(|_| ())?;
+    for addr in addrs {
+        if let Ok(tcp) = TcpStream::connect_timeout(&addr, TIMEOUT) {
+            return Ok(tcp);
+        }
+    }
+    Err(())
+}
+
 fn parse_response(bytes: &[u8]) -> Result<HttpResponse, ()> {
     let text = String::from_utf8_lossy(bytes);
     let (head, body) = text.split_once("\r\n\r\n").ok_or(())?;
@@ -244,7 +364,19 @@ fn parse_response(bytes: &[u8]) -> Result<HttpResponse, ()> {
             body.truncate(length);
         }
     }
-    Ok(HttpResponse { status, body })
+    let headers = head
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_string(), value.trim().to_string()))
+        })
+        .collect();
+    Ok(HttpResponse {
+        status,
+        body,
+        headers,
+    })
 }
 
 fn content_length(head: &str) -> Option<usize> {
@@ -351,5 +483,32 @@ mod tests {
             ),
             Err(HttpDeny::BadAddress)
         ));
+    }
+
+    #[test]
+    fn redact_removes_raw_base64_and_percent() {
+        let secret = "a b/c";
+        let patterns = secret_patterns(secret);
+        assert!(patterns.iter().any(|pattern| pattern == "a%20b%2Fc"));
+        assert!(patterns.iter().any(|pattern| pattern == "a%20b%2fc"));
+        assert!(patterns.iter().any(|pattern| pattern == "a+b%2Fc"));
+        assert!(patterns.iter().any(|pattern| pattern == "YSBiL2M="));
+        assert!(patterns.iter().any(|pattern| pattern == "YSBiL2M"));
+        let body = patterns.join(" | ");
+        let cleaned = redact_secret(&body, secret);
+        for pattern in &patterns {
+            assert!(!cleaned.contains(pattern), "{pattern} still in {cleaned}");
+        }
+        let response = sanitize_response(
+            HttpResponse {
+                status: 200,
+                body: format!("echo {secret}"),
+                headers: vec![("X-Echo".to_string(), format!("Bearer {secret}"))],
+            },
+            secret,
+        );
+        assert!(!response.body.contains(secret));
+        assert!(!response.headers[0].1.contains(secret));
+        assert_eq!(base64_encode(b"a/b", false), "YS9i");
     }
 }

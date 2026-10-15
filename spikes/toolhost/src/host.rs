@@ -4,16 +4,22 @@
 //! 窗口上的外壳每一秒调用一次。同一拍里先处理计时组件，再处理 `timer.every` /
 //! `timer.after`。谁先，规格没有写，待定。
 //!
-//! 协程不放入。是否放入仍待定。
+//! 协程不放入。钩子按 Lua 线程安装，协程是另一条线程，超时钩子管不到。
+//! `require` 和多个 Lua 文件是否允许仍待定。
 //! `timer.after` 的最短秒数待定，这次任意正数都可以登记。
 //! 待办是验证程序里的内存替身，不调用产品的 `TodoCommands`。
+//!
+//! 内存字节上限仍待定。这里的 `MEMORY_CAP` 只是验证程序的临时天花板，超过后与超时一样中止这次回调，不是产品规则。
+//! HTTP 在另一条线程上连接和读取。脚本回调返回之后，宿主才按等待上限取结果并调用 Lua。等待上限的秒数仍待定，这次默认 5 秒。
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use mlua::{Function, HookTriggers, Lua, LuaOptions, RegistryKey, StdLib, Table, Value, VmState};
 
@@ -23,6 +29,12 @@ use crate::secret::SecretStore;
 
 const CALLBACK_MS: u64 = 1000;
 const HOOK_INSTRUCTIONS: u32 = 4_096;
+/// 临时内存天花板。产品上的字节数仍待定。
+const MEMORY_CAP: usize = 16 * 1024 * 1024;
+const MEMORY_HEADROOM: usize = 1024 * 1024;
+const HTTP_BUDGET: Duration = Duration::from_secs(5);
+/// 回调里再发请求会再等一轮。不停地一轮接一轮，规格没有写。最多 8 轮，避免宿主停不下来。
+const HTTP_DRAIN_ROUNDS: u32 = 8;
 const SERVICE_NAMES: &[&str] = &["timer", "notify", "storage", "todo", "http", "secret"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,7 +124,9 @@ pub struct Options {
     pub durations: Durations,
     pub quiet: bool,
     pub store: Rc<RefCell<dyn SecretStore>>,
-    pub transport: Rc<dyn HttpTransport>,
+    pub transport: Arc<dyn HttpTransport>,
+    /// 连接加读取的等待。产品上的秒数仍待定。
+    pub http_budget: Duration,
 }
 
 impl Default for Options {
@@ -122,7 +136,8 @@ impl Default for Options {
             durations: Durations::DEFAULT,
             quiet: false,
             store: Rc::new(RefCell::new(crate::secret::MemorySecretStore::default())),
-            transport: Rc::new(DenyTransport),
+            transport: Arc::new(DenyTransport),
+            http_budget: HTTP_BUDGET,
         }
     }
 }
@@ -139,6 +154,9 @@ struct Limit {
     start: Instant,
     deadline_ms: AtomicU64,
     timeout_line: AtomicI64,
+    /// 超时或临时内存上限已经到了。之后每次钩子都报错，`pcall` 不能把这次回调留住。
+    aborted: AtomicBool,
+    steps: AtomicU32,
 }
 
 struct WidgetState {
@@ -174,14 +192,22 @@ struct Inner {
     unauthorized: bool,
     todo_reads: u32,
     store: Rc<RefCell<dyn SecretStore>>,
-    transport: Rc<dyn HttpTransport>,
+    transport: Arc<dyn HttpTransport>,
     http_sends: u32,
+    inflight: Vec<Inflight>,
+}
+
+struct Inflight {
+    rx: mpsc::Receiver<Result<crate::http::HttpResponse, ()>>,
+    callback: RegistryKey,
+    secret: String,
 }
 
 pub struct Session {
     inner: Rc<RefCell<Inner>>,
     limit: Arc<Limit>,
     lua: Lua,
+    http_budget: Duration,
 }
 
 impl Session {
@@ -202,12 +228,16 @@ impl Session {
             start: Instant::now(),
             deadline_ms: AtomicU64::new(0),
             timeout_line: AtomicI64::new(-1),
+            aborted: AtomicBool::new(false),
+            steps: AtomicU32::new(0),
         });
         let lua = Lua::new_with(
             StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8,
             LuaOptions::default(),
         )
         .map_err(|err| format!("脚本错误：{err}"))?;
+        lua.set_memory_limit(MEMORY_CAP)
+            .map_err(|err| format!("脚本错误：{err}"))?;
         sandbox(&lua)?;
         install_hook(&lua, Arc::clone(&limit))?;
         let inner = Rc::new(RefCell::new(Inner {
@@ -240,15 +270,26 @@ impl Session {
             store: options.store,
             transport: options.transport,
             http_sends: 0,
+            inflight: Vec::new(),
         }));
         lua.set_app_data(Rc::clone(&inner));
         bind(&lua, Rc::clone(&inner))?;
         let script = inner.borrow().manifest.script.clone();
-        let session = Self { inner, limit, lua };
+        let session = Self {
+            inner,
+            limit,
+            lua,
+            http_budget: options.http_budget,
+        };
         session.arm();
         let loaded = session.lua.load(&script).set_name("main.lua").exec();
         session.disarm();
+        if session.limit.aborted.load(Ordering::Relaxed) {
+            let line = session.limit.timeout_line.load(Ordering::Relaxed);
+            return Err(timeout_text(line));
+        }
         loaded.map_err(|err| format!("脚本错误：{}", display_error(&err)))?;
+        session.drain_http();
         Ok(session)
     }
 
@@ -257,7 +298,9 @@ impl Session {
     }
 
     pub fn on_unload(&self) {
-        self.call("on_unload", ());
+        self.drop_inflight();
+        self.invoke("on_unload", (), false);
+        self.drop_inflight();
         self.inner.borrow_mut().timers.clear();
     }
 
@@ -349,6 +392,13 @@ impl Session {
     where
         A: mlua::IntoLuaMulti,
     {
+        self.invoke(name, args, true);
+    }
+
+    fn invoke<A>(&self, name: &str, args: A, drain: bool)
+    where
+        A: mlua::IntoLuaMulti,
+    {
         self.inner.borrow_mut().unauthorized = false;
         let func = match self.lua.globals().get::<Option<Function>>(name) {
             Ok(Some(func)) => func,
@@ -358,10 +408,7 @@ impl Session {
                 return;
             }
         };
-        self.arm();
-        let result = func.call::<()>(args);
-        self.disarm();
-        self.finish(result);
+        self.run_lua(|| func.call::<()>(args), drain);
     }
 
     fn call_timer(&self, id: i64) {
@@ -376,25 +423,88 @@ impl Session {
         let Some(func) = func else {
             return;
         };
+        self.run_lua(|| func.call::<()>(()), true);
+    }
+
+    fn run_lua(&self, invoke: impl FnOnce() -> mlua::Result<()>, drain: bool) {
         self.arm();
-        let result = func.call::<()>(());
+        let result = invoke();
         self.disarm();
         self.finish(result);
+        if drain {
+            self.drain_http();
+        }
     }
 
     fn arm(&self) {
+        self.limit.aborted.store(false, Ordering::Relaxed);
+        self.limit.timeout_line.store(-1, Ordering::Relaxed);
         let now = self.limit.start.elapsed().as_millis() as u64;
         self.limit
             .deadline_ms
             .store(now.saturating_add(CALLBACK_MS), Ordering::Relaxed);
-        self.limit.timeout_line.store(-1, Ordering::Relaxed);
     }
 
     fn disarm(&self) {
         self.limit.deadline_ms.store(0, Ordering::Relaxed);
     }
 
+    fn drop_inflight(&self) {
+        self.inner.borrow_mut().inflight.clear();
+    }
+
+    fn drain_http(&self) {
+        for _ in 0..HTTP_DRAIN_ROUNDS {
+            let batch = std::mem::take(&mut self.inner.borrow_mut().inflight);
+            if batch.is_empty() {
+                return;
+            }
+            for item in batch {
+                let response = item.rx.recv_timeout(self.http_budget);
+                let callback = self.lua.registry_value::<Function>(&item.callback).ok();
+                self.lua.remove_registry_value(item.callback).ok();
+                let Some(callback) = callback else {
+                    continue;
+                };
+                let (ok, status, body, error) = match response {
+                    Ok(Ok(response)) => {
+                        let response = crate::http::sanitize_response(response, &item.secret);
+                        let ok = (200..300).contains(&response.status);
+                        let error = if ok {
+                            String::new()
+                        } else {
+                            HttpDeny::RequestFailed.text().to_string()
+                        };
+                        if !ok {
+                            self.inner.borrow_mut().note(&error);
+                        }
+                        (ok, Some(response.status), response.body, error)
+                    }
+                    Ok(Err(())) | Err(_) => {
+                        let text = HttpDeny::RequestFailed.text().to_string();
+                        self.inner.borrow_mut().note(&text);
+                        (false, None, String::new(), text)
+                    }
+                };
+                let secret = item.secret;
+                self.run_lua(
+                    || deliver(&self.lua, &callback, ok, status, &body, &error, &secret),
+                    false,
+                );
+            }
+        }
+        self.drop_inflight();
+    }
+
     fn finish(&self, result: mlua::Result<()>) {
+        if self.limit.aborted.load(Ordering::Relaxed) {
+            let line = self.limit.timeout_line.load(Ordering::Relaxed);
+            self.inner.borrow_mut().notices.push(Notice {
+                text: timeout_text(line),
+                line: (line >= 0).then_some(line as usize),
+            });
+            return;
+        }
         if self.inner.borrow().unauthorized {
             self.inner.borrow_mut().unauthorized = false;
             self.inner.borrow_mut().notices.push(Notice {
@@ -504,19 +614,29 @@ fn sandbox(lua: &Lua) -> Result<(), String> {
 }
 
 fn install_hook(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
+    // 计数是 1：超时一旦置位，下一条指令（包括 `pcall` 返回之后）也会报错。
+    // 时间只在每 4096 步看一次，避免每条指令都读时钟。
     lua.set_hook(
-        HookTriggers::new().every_nth_instruction(HOOK_INSTRUCTIONS),
-        move |_lua, debug| {
+        HookTriggers::new().every_nth_instruction(1),
+        move |lua, debug| {
+            if limit.aborted.load(Ordering::Relaxed) {
+                return Err(mlua::Error::runtime("脚本超时"));
+            }
+            let step = limit.steps.fetch_add(1, Ordering::Relaxed);
             let deadline = limit.deadline_ms.load(Ordering::Relaxed);
-            if deadline == 0 {
+            if deadline == 0 || !step.is_multiple_of(HOOK_INSTRUCTIONS) {
                 return Ok(VmState::Continue);
             }
-            let now = limit.start.elapsed().as_millis() as u64;
-            if now < deadline {
+            let timed_out = limit.start.elapsed().as_millis() as u64 >= deadline;
+            let used = lua.used_memory();
+            let over_memory =
+                used.saturating_add(MEMORY_HEADROOM) >= MEMORY_CAP || used >= MEMORY_CAP;
+            if !timed_out && !over_memory {
                 return Ok(VmState::Continue);
             }
             let line = debug.current_line().unwrap_or(0) as i64;
             limit.timeout_line.store(line, Ordering::Relaxed);
+            limit.aborted.store(true, Ordering::Relaxed);
             Err(mlua::Error::runtime("脚本超时"))
         },
     )
@@ -865,6 +985,11 @@ fn bind_http(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
     Ok(())
 }
 
+enum Gate {
+    Deny(&'static str),
+    Send { outgoing: Outgoing, secret: String },
+}
+
 fn http_request(
     lua: &Lua,
     inner: &Rc<RefCell<Inner>>,
@@ -885,69 +1010,69 @@ fn http_request(
         url,
         secret,
     };
-    let (outgoing, deny) = {
+    let gate = {
         let inner = inner.borrow();
-        let declared = request.secret.as_ref().is_some_and(|secret| {
-            inner
-                .manifest
-                .secrets
-                .iter()
-                .any(|item| item.id == secret.id)
-        });
-        let value = if let Some(secret) = &request.secret {
-            if declared {
-                match inner.store.borrow().read(&inner.manifest.id, &secret.id) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return deliver(lua, &callback, false, None, "", "请求失败");
-                    }
-                }
-            } else {
-                None
+        decide(&inner, &request)
+    };
+    match gate {
+        Gate::Deny(text) => {
+            inner.borrow_mut().note(text);
+            deliver(lua, &callback, false, None, "", text, "")
+        }
+        Gate::Send { outgoing, secret } => {
+            let transport = Arc::clone(&inner.borrow().transport);
+            let (tx, rx) = mpsc::channel();
+            thread::Builder::new()
+                .name("toolhost-http".to_string())
+                .spawn(move || {
+                    let _ = tx.send(transport.get(&outgoing));
+                })
+                .map_err(|_| mlua::Error::runtime("请求失败"))?;
+            let key = lua.create_registry_value(callback)?;
+            let mut inner = inner.borrow_mut();
+            inner.http_sends += 1;
+            inner.inflight.push(Inflight {
+                rx,
+                callback: key,
+                secret,
+            });
+            Ok(())
+        }
+    }
+}
+
+fn decide(inner: &Inner, request: &HttpRequest) -> Gate {
+    let declared = request.secret.as_ref().is_some_and(|secret| {
+        inner
+            .manifest
+            .secrets
+            .iter()
+            .any(|item| item.id == secret.id)
+    });
+    let value = if let Some(secret) = &request.secret {
+        if declared {
+            match inner.store.borrow().read(&inner.manifest.id, &secret.id) {
+                Ok(value) => value,
+                Err(_) => return Gate::Deny(HttpDeny::RequestFailed.text()),
             }
         } else {
             None
-        };
-        match prepare(
-            &request,
-            &inner.manifest.domains,
-            value.as_deref(),
-            declared || request.secret.is_none(),
-        ) {
-            Ok(outgoing) => (Some(outgoing), None),
-            Err(deny) => (None, Some(deny)),
         }
+    } else {
+        None
     };
-    if let Some(deny) = deny {
-        let text = deny.text();
-        inner.borrow_mut().note(text);
-        return deliver(lua, &callback, false, None, "", text);
-    }
-    let outgoing = outgoing.expect("已允许的请求");
-    let transport = Rc::clone(&inner.borrow().transport);
-    let response = transport.get(&outgoing);
-    inner.borrow_mut().http_sends += 1;
-    match response {
-        Ok(response) => {
-            let ok = (200..300).contains(&response.status);
-            let error = if ok { "" } else { "请求失败" };
-            if !ok {
-                inner.borrow_mut().note("请求失败");
-            }
-            deliver(
-                lua,
-                &callback,
-                ok,
-                Some(response.status),
-                &response.body,
-                error,
-            )
-        }
-        Err(()) => {
-            let text = HttpDeny::RequestFailed.text();
-            inner.borrow_mut().note(text);
-            deliver(lua, &callback, false, None, "", text)
-        }
+    let secret_text = value.clone().unwrap_or_default();
+    match prepare(
+        request,
+        &inner.manifest.domains,
+        value.as_deref(),
+        declared || request.secret.is_none(),
+    ) {
+        Ok(outgoing) => Gate::Send {
+            outgoing,
+            secret: secret_text,
+        },
+        Err(deny) => Gate::Deny(deny.text()),
     }
 }
 
@@ -958,15 +1083,18 @@ fn deliver(
     status: Option<u16>,
     body: &str,
     error: &str,
+    secret: &str,
 ) -> mlua::Result<()> {
+    let body = crate::http::redact_secret(body, secret);
+    let error = crate::http::redact_secret(error, secret);
     let result = lua.create_table()?;
     result.set("ok", ok)?;
     if let Some(status) = status {
         result.set("status", status)?;
     }
-    result.set("body", body.to_string())?;
+    result.set("body", body)?;
     if !ok {
-        result.set("error", error.to_string())?;
+        result.set("error", error)?;
     }
     callback.call::<()>(result)
 }
