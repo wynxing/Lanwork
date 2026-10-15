@@ -178,7 +178,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         );
     }
     let icons = icons.unwrap_or_else(|| Arc::new(Mutex::new(IconCache::shell())));
-    crate::web_icons::install(store.data_dir());
+    crate::web_icons::install(&store.data_dir());
     if let Some(shelves) = &shelves {
         shelf_float::install(
             shelves.clone(),

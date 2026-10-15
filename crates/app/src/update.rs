@@ -81,7 +81,7 @@ pub(crate) fn spawn_pending_install() -> Result<(), ()> {
         return Err(());
     };
     let Some(marker) =
-        install_failure_marker(store.cache_dir(), store.data_dir(), &std::env::temp_dir())
+        install_failure_marker(store.cache_dir(), &store.data_dir(), &std::env::temp_dir())
     else {
         let _ = std::fs::remove_file(&pending.installer);
         return Err(());
@@ -114,7 +114,7 @@ pub(crate) fn install_spawn_failed() {
 
 fn consume_install_failure(store: &Store) -> Option<String> {
     let marker =
-        install_failure_marker(store.cache_dir(), store.data_dir(), &std::env::temp_dir())?;
+        install_failure_marker(store.cache_dir(), &store.data_dir(), &std::env::temp_dir())?;
     if !marker.is_file() {
         return None;
     }
@@ -190,7 +190,7 @@ fn begin_install() {
     };
     let Some(path) = download_path(
         &std::env::temp_dir(),
-        store.data_dir(),
+        &store.data_dir(),
         store.cache_dir(),
         update.version,
     ) else {

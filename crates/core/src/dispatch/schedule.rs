@@ -197,7 +197,8 @@ pub struct PollReport {
 }
 
 fn save_catalog(store: &crate::storage::Store, apps: &mut dyn AppLookup) -> Result<(), String> {
-    save_user_catalog(&store.user_apps_path(), &apps.user_catalog())
+    let catalog = apps.user_catalog();
+    store.with_write_lock(|| save_user_catalog(&store.user_apps_path(), &catalog))
 }
 
 impl Dispatch {

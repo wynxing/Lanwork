@@ -223,7 +223,6 @@ fn geometry_of(value: &Value) -> Option<FloatGeometry> {
 }
 
 fn write(store: &Store, cache: &mut Cache, record: &FloatWindowRecord) -> Result<(), TodoError> {
-    let path = store.data_dir().join(FLOAT_FILE);
     let on_disk = OnDisk {
         schema_version: crate::storage::SCHEMA_VERSION,
         geometry: record.geometry,
@@ -234,6 +233,7 @@ fn write(store: &Store, cache: &mut Cache, record: &FloatWindowRecord) -> Result
         serde_json::to_vec(&on_disk).map_err(|_| TodoError::Storage(StorageError::Encode))?;
     bytes.push(b'\n');
     store.with_write_lock(|| {
+        let path = store.data_dir().join(FLOAT_FILE);
         atomic_write(&path, &bytes).map_err(|source| {
             TodoError::Storage(StorageError::io(IoAction::Replace, &path, source))
         })
