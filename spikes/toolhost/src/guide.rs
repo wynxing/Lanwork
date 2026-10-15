@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn crlf_guide_still_yields_pomodoro() {
-        let crlf = GUIDE.replace('\n', "\r\n");
+        let crlf = GUIDE.replace("\r\n", "\n").replace('\n', "\r\n");
         let (manifest, script) = example_in(&crlf, "## 示例：番茄钟").expect("番茄钟示例");
         assert!(manifest.contains("id = \"lanwork.pomodoro\""));
         assert!(script.contains("function on_timer"));
