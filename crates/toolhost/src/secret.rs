@@ -59,7 +59,7 @@ pub enum CredentialPersist {
 }
 
 #[cfg(windows)]
-pub use wincred::{credential_delete, credential_list_targets, credential_read, credential_write};
+pub use wincred::{credential_delete, credential_list_targets, credential_write};
 
 #[cfg(windows)]
 mod wincred {
