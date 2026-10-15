@@ -16,6 +16,8 @@ pub use host::{Durations, Options, Session, TodoItem};
 pub use http::{RustlsTransport, install_ring};
 pub use manifest::{Origin, materialize};
 pub use measure::{MeasureReport, idle_cpu_percent, memory_note, process_memory};
+#[cfg(windows)]
+pub use secret::WindowsCredentialStore;
 pub use secret::{MemorySecretStore, SecretStore, spike_target_name};
 pub use shell::{attach_for_test, click, green_pixels, platform_lock, refresh, run_window};
 
