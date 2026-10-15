@@ -32,6 +32,7 @@ pub use paths::{
     BOOTSTRAP_FILE, DataDirSource, ENV_DATA_DIR, ResolveInput, ResolvedPaths, absolute_lexical,
     cache_dir, maydolist_dir, resolve, resolve_from_process, write_bootstrap,
 };
+pub(crate) use paths::{is_same_or_under, reject_maydolist};
 pub use schema::{ExampleDocument, SCHEMA_VERSION, is_supported_schema};
 pub use store::{
     Batch, CollectionKind, DocumentId, LoadCollection, LoadedFile, QuarantineInfo, Store,
@@ -41,7 +42,8 @@ pub use store::{
 pub(crate) use atomic::atomic_write;
 pub(crate) use fsutil::{
     DirEntry as FsDirEntry, create_dir_all as fs_create_dir_all, exists as fs_exists,
-    read as fs_read, read_dir as fs_read_dir, remove_file as fs_remove_file,
+    file_len as fs_file_len, read as fs_read, read_dir as fs_read_dir,
+    remove_file as fs_remove_file,
 };
 
 /// 导入结束后，已打开的服务从磁盘重新载入内存。

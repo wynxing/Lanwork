@@ -197,7 +197,6 @@ fn parse_time(text: &str) -> Option<u16> {
 }
 
 fn write(store: &Store, sent: &BTreeSet<SentKey>) -> Result<(), TodoError> {
-    let path = store.data_dir().join(SENT_FILE);
     let entries: Vec<_> = sent
         .iter()
         .map(|key| {
@@ -215,6 +214,7 @@ fn write(store: &Store, sent: &BTreeSet<SentKey>) -> Result<(), TodoError> {
     .map_err(|_| TodoError::Storage(StorageError::Encode))?;
     bytes.push(b'\n');
     store.with_write_lock(|| {
+        let path = store.data_dir().join(SENT_FILE);
         atomic_write(&path, &bytes).map_err(|source| {
             TodoError::Storage(StorageError::io(IoAction::Replace, &path, source))
         })

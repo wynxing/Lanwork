@@ -939,7 +939,7 @@ mod tests {
             ]),
             calls: Vec::new(),
         };
-        let cache = WebIconCache::new(store.data_dir());
+        let cache = WebIconCache::new(&store.data_dir());
         let image = load_web_icon(page_url, &cache, &mut source, &mut TagDecode).unwrap();
         assert_eq!(image.pixels, vec![9, 8, 7, 255]);
         assert_eq!(source.calls, vec![page_url.to_owned(), icon_url.to_owned()]);
@@ -977,7 +977,7 @@ mod tests {
             pages: HashMap::new(),
             calls: Vec::new(),
         };
-        let cache = WebIconCache::new(store.data_dir());
+        let cache = WebIconCache::new(&store.data_dir());
         let image = load_web_icon(
             "https://example.com/missing",
             &cache,
@@ -1015,7 +1015,7 @@ mod tests {
             bytes_at("https://example.com/favicon.ico", b"PNGOK", "image/x-icon"),
         );
         let (_temp, store) = store();
-        let cache = WebIconCache::new(store.data_dir());
+        let cache = WebIconCache::new(&store.data_dir());
         let image = load_web_icon(page_url, &cache, &mut source, &mut TagDecode).unwrap();
         assert_eq!(image.width, 1);
         assert!(
@@ -1047,7 +1047,7 @@ mod tests {
             calls: Vec::new(),
         };
         let (_temp, store) = store();
-        let cache = WebIconCache::new(store.data_dir());
+        let cache = WebIconCache::new(&store.data_dir());
         assert!(load_web_icon(page_url, &cache, &mut source, &mut TagDecode).is_none());
         assert!(!cache.dir().exists());
     }
@@ -1056,7 +1056,7 @@ mod tests {
     fn corrupt_cache_is_discarded_and_fetched_again() {
         let page_url = "https://example.com/a";
         let (_temp, store) = store();
-        let cache = WebIconCache::new(store.data_dir());
+        let cache = WebIconCache::new(&store.data_dir());
         let key = icon_cache_key(page_url).unwrap();
         std::fs::create_dir_all(cache.dir()).unwrap();
         let path = cache.path_for(&key).unwrap();
@@ -1103,7 +1103,7 @@ mod tests {
             calls: Vec::new(),
         };
         let (_temp, store) = store();
-        let cache = WebIconCache::new(store.data_dir());
+        let cache = WebIconCache::new(&store.data_dir());
         assert!(
             load_web_icon("HTTP://Example.COM/a/", &cache, &mut source, &mut TagDecode).is_none()
         );

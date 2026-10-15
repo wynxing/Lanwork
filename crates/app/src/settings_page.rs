@@ -1,6 +1,6 @@
 //! 面板的设置页。左边四个分类，右边是当前分类。
 //! 常规：开机启动、热角、搜索条热键、主题、网页搜索引擎。
-//! 待办：安静时段、「稍后」天数。数据：当前数据目录，以及备份、导出、导入的名称。
+//! 待办：安静时段、「稍后」天数。数据：当前数据目录、更换并迁移，以及备份、导出、导入的名称。
 //! 其他：关于与更新、隐藏的应用。
 //!
 //! 决定在 `lanwork_core::panel` 和 `lanwork_core::shell`：先写 `config.json`，成功后才写注册表、
@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
+use lanwork_core::backup::{self, MigrateError};
 use lanwork_core::config::{
     CLOCK_FORMAT_ERROR, ConfigCommands, QuietHours, SNOOZE_DAYS_ERROR, default_quiet_hours,
     parse_clock,
@@ -25,7 +26,7 @@ use lanwork_core::panel::{
     settings_rows, startup_error_text, theme_at, theme_titles, web_engine_at, web_engine_titles,
 };
 use lanwork_core::shell::{EndReason, HotkeyRecording, HotkeyRole, Recorded};
-use lanwork_core::storage::Store;
+use lanwork_core::storage::{ENV_DATA_DIR, Store};
 use lanwork_core::todos::{DEFAULT_DEFER_DAYS, MAX_DEFER_DAYS, MIN_DEFER_DAYS};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -57,6 +58,8 @@ pub(crate) struct SettingsPage {
     apps: Option<Arc<Dispatch>>,
     hidden_keys: RefCell<Vec<String>>,
     field_reset: Cell<i32>,
+    /// 迁移在后台线程里跑。完成之前界面仍显示原来的目录。
+    migrating: Cell<bool>,
 }
 
 impl SettingsPage {
@@ -88,6 +91,7 @@ impl SettingsPage {
         data.on_choose_section(|index| {
             with_settings(move |page, ui| page.choose_section(ui, index));
         });
+        data.on_choose_data_dir(|| with_settings(SettingsPage::choose_data_dir));
         data.on_update_clicked(crate::update::on_clicked);
         crate::update::push_into(ui);
         data.on_restore_hidden(|index| {
@@ -108,6 +112,7 @@ impl SettingsPage {
             apps,
             hidden_keys: RefCell::new(Vec::new()),
             field_reset: Cell::new(0),
+            migrating: Cell::new(false),
         };
         page.push(ui);
         page
@@ -181,10 +186,80 @@ impl SettingsPage {
         data.set_quiet_end(rows.quiet_end.into());
         data.set_snooze_days(rows.snooze_days.into());
         data.set_data_dir(self.store.data_dir().display().to_string().into());
+        if !self.migrating.get() {
+            data.set_data_dir_action("更换".into());
+            data.set_data_dir_enabled(true);
+        }
         let reset = self.field_reset.get().wrapping_add(1);
         self.field_reset.set(reset);
         data.set_field_reset(reset);
         self.push_hidden(ui);
+    }
+
+    /// 选择文件夹。取消就什么也不做。选中之后才开始迁移，路径要等切换成功才换。
+    fn choose_data_dir(&mut self, ui: &Panel) {
+        if self.migrating.get() {
+            return;
+        }
+        self.cancel_recording(ui);
+        let Some(hwnd) = crate::bar_win::hwnd_of(ui.window()) else {
+            self.finish(ui, Err("不能选择文件夹".to_owned()));
+            return;
+        };
+        match crate::folder_pick::pick_folder(hwnd) {
+            Ok(None) => {}
+            Ok(Some(path)) => self.begin_migrate(ui, path),
+            Err(message) => self.finish(ui, Err(message)),
+        }
+    }
+
+    fn begin_migrate(&mut self, ui: &Panel, target: std::path::PathBuf) {
+        self.migrating.set(true);
+        self.show_progress(ui, "正在复制");
+        let store = self.store.clone();
+        let env_blocks = std::env::var(ENV_DATA_DIR)
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty());
+        let spawned = std::thread::Builder::new()
+            .name("lanwork-migrate".to_owned())
+            .spawn(move || {
+                let result = backup::migrate_data_dir(&store, &target, env_blocks, |progress| {
+                    let text = backup::progress_text(progress);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        with_settings(move |page, ui| page.show_progress(ui, &text));
+                    });
+                });
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_settings(move |page, ui| page.finish_migrate(ui, result));
+                });
+            });
+        if spawned.is_err() {
+            self.migrating.set(false);
+            self.finish(ui, Err("不能开始迁移，仍使用原来的目录".to_owned()));
+        }
+    }
+
+    fn show_progress(&self, ui: &Panel, text: &str) {
+        let data = ui.global::<SettingsPageData>();
+        data.set_data_dir_action(text.into());
+        data.set_data_dir_enabled(false);
+    }
+
+    fn finish_migrate(&mut self, ui: &Panel, result: Result<std::path::PathBuf, MigrateError>) {
+        self.migrating.set(false);
+        match result {
+            Ok(dir) => {
+                self.store
+                    .log_info(&format!("数据目录已切换：{}", dir.display()));
+                ui.set_error(self.hotkey_error().unwrap_or_default().into());
+            }
+            Err(err) => {
+                let message = err.to_string();
+                self.store.log_warn(&format!("设置页：{message}"));
+                ui.set_error(message.into());
+            }
+        }
+        self.push(ui);
     }
 
     fn push_hidden(&self, ui: &Panel) {

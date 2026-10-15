@@ -118,7 +118,8 @@ enum Phase {
 }
 
 struct Inner {
-    data_dir: PathBuf,
+    /// 迁移在写锁内换成新目录。读的时候克隆，避免和切换互相踩。
+    data_dir: Mutex<PathBuf>,
     cache_dir: PathBuf,
     user_profile: PathBuf,
     local_app_data: PathBuf,
@@ -143,7 +144,7 @@ pub struct Store {
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Store")
-            .field("data_dir", &self.inner.data_dir)
+            .field("data_dir", &self.inner.data_dir_path())
             .field("cache_dir", &self.inner.cache_dir)
             .finish()
     }
@@ -168,7 +169,7 @@ impl Store {
             .map_err(|source| Error::io(IoAction::CreateDir, data_dir.join("logs"), source))?;
         Ok(Self {
             inner: Arc::new(Inner {
-                data_dir,
+                data_dir: Mutex::new(data_dir),
                 cache_dir: paths.cache_dir,
                 user_profile: paths.user_profile,
                 local_app_data: paths.local_app_data,
@@ -183,8 +184,8 @@ impl Store {
         })
     }
 
-    pub fn data_dir(&self) -> &Path {
-        &self.inner.data_dir
+    pub fn data_dir(&self) -> PathBuf {
+        self.inner.data_dir_path()
     }
 
     pub fn cache_dir(&self) -> &Path {
@@ -192,12 +193,12 @@ impl Store {
     }
 
     pub fn backups_dir(&self) -> PathBuf {
-        self.inner.data_dir.join("backups")
+        self.data_dir().join("backups")
     }
 
     /// 便携应用、别名和隐藏名单。路径固定为数据目录下的 `user-apps.json`。
     pub fn user_apps_path(&self) -> PathBuf {
-        self.inner.data_dir.join("user-apps.json")
+        self.data_dir().join("user-apps.json")
     }
 
     pub fn log_path(&self) -> &Path {
@@ -222,15 +223,35 @@ impl Store {
     }
 
     pub fn import_pending_path(&self) -> PathBuf {
-        self.inner.data_dir.join("import.pending")
+        self.data_dir().join("import.pending")
     }
 
     pub fn collection_dir(&self, kind: CollectionKind) -> PathBuf {
-        collection_dir(&self.inner.data_dir, kind)
+        let dir = self.inner.data_dir_path();
+        collection_dir(&dir, kind)
     }
 
     pub fn document_path(&self, doc: &DocumentId) -> Result<PathBuf, Error> {
-        document_path(&self.inner.data_dir, doc)
+        let dir = self.inner.data_dir_path();
+        document_path(&dir, doc)
+    }
+
+    pub(crate) fn user_profile(&self) -> &Path {
+        &self.inner.user_profile
+    }
+
+    pub(crate) fn local_app_data(&self) -> &Path {
+        &self.inner.local_app_data
+    }
+
+    /// 启动失败之后不能迁移。其他阶段与普通写入相同。
+    pub(crate) fn ensure_can_write(&self) -> Result<(), Error> {
+        self.inner.ensure_writable()
+    }
+
+    /// 把已打开的存储指到新目录。调用方必须正持有写锁。不写引导文件，不发布变更。
+    pub(crate) fn adopt_data_dir(&self, data_dir: PathBuf) {
+        *lock_mutex(&self.inner.data_dir) = data_dir;
     }
 
     pub fn is_ready(&self) -> bool {
@@ -544,6 +565,10 @@ impl Inner {
         }
     }
 
+    fn data_dir_path(&self) -> PathBuf {
+        lock_mutex(&self.data_dir).clone()
+    }
+
     fn ensure_ready(&self) -> Result<(), Error> {
         if *lock_mutex(&self.phase) == Phase::Ready {
             Ok(())
@@ -594,7 +619,8 @@ impl Inner {
     }
 
     fn read_json<T: DeserializeOwned>(&self, doc: &DocumentId) -> Result<Option<T>, Error> {
-        let path = document_path(&self.data_dir, doc)?;
+        let data_dir = self.data_dir_path();
+        let path = document_path(&data_dir, doc)?;
         if !fsutil::exists(&path) {
             return Ok(None);
         }
@@ -613,7 +639,8 @@ impl Inner {
         &self,
         kind: CollectionKind,
     ) -> Result<LoadCollection<T>, Error> {
-        let dir = collection_dir(&self.data_dir, kind);
+        let data_dir = self.data_dir_path();
+        let dir = collection_dir(&data_dir, kind);
         if !fsutil::exists(&dir) {
             return Ok(LoadCollection {
                 files: Vec::new(),
@@ -661,7 +688,8 @@ impl Inner {
     }
 
     fn prepare_write(&self, doc: &DocumentId) -> Result<PathBuf, Error> {
-        let path = document_path(&self.data_dir, doc)?;
+        let data_dir = self.data_dir_path();
+        let path = document_path(&data_dir, doc)?;
         reject_maydolist(&path, &self.user_profile)?;
         if let Some(parent) = path.parent() {
             fsutil::create_dir_all(parent)

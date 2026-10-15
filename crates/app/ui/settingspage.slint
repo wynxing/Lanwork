@@ -6,6 +6,7 @@
 // 左栏宽 132。分类从 y=8 起，步长 40，行高 36。第 i 行中心相对本页是 8+40*i+18。
 // 右栏从 x=132 起，内边距左 16、上 8，行高 48，标签宽 120。
 // 控件左缘相对窗口是 132+16+120=268。第 i 行中心相对本页是 8+48*i+24。
+// 数据页「更换」贴在行的右边，右边距 16。按钮宽是文字宽加 20。
 
 import { Btn, Field, Ink, Segments, ToggleSwitch } from "widgets.slint";
 
@@ -29,6 +30,8 @@ export global SettingsPageData {
     in property <string> snooze-days;
     in property <int> field-reset;
     in property <string> data-dir;
+    in property <string> data-dir-action: "更换";
+    in property <bool> data-dir-enabled: true;
     in property <string> version-text: "0.2.0";
     in property <string> update-status;
     in property <bool> update-status-error: false;
@@ -47,6 +50,7 @@ export global SettingsPageData {
     callback commit-quiet-end(string);
     callback commit-snooze(string);
     callback choose-section(int);
+    callback choose-data-dir();
     callback update-clicked();
 
     in property <[SettingsHiddenApp]> hidden-apps;
@@ -302,9 +306,22 @@ component DataPage inherits Rectangle {
             name: "数据目录";
             c: root.c;
 
+            // 「更换」贴在行的右边。路径在标签和按钮之间，放不下就省略。
+            // 迁移进行中按钮改成进度，并且不可点。路径要等切换完成后才换。
+            dir-button := Btn {
+                x: parent.width - self.width;
+                y: (parent.height - self.height) / 2;
+                text: SettingsPageData.data-dir-action;
+                enabled: SettingsPageData.data-dir-enabled;
+                c: root.c;
+                clicked => {
+                    SettingsPageData.choose-data-dir();
+                }
+            }
+
             Text {
                 x: 120px;
-                width: parent.width - 120px;
+                width: parent.width - 120px - dir-button.width - 8px;
                 height: parent.height - 1px;
                 text: SettingsPageData.data-dir;
                 color: root.c.secondary;

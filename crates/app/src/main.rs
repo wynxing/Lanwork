@@ -35,6 +35,8 @@ mod float_dock;
 mod float_frame;
 #[cfg(windows)]
 mod float_group;
+#[cfg(windows)]
+mod folder_pick;
 mod frame_policy;
 #[cfg(windows)]
 mod host;

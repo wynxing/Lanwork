@@ -166,6 +166,26 @@ fn quiet_hours_and_the_other_sections_keep_their_own_controls() {
 }
 
 #[test]
+fn the_data_directory_button_asks_to_choose_and_does_not_change_the_path() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    let chooses = Rc::new(Cell::new(0));
+    {
+        let chooses = Rc::clone(&chooses);
+        data.on_choose_data_dir(move || chooses.set(chooses.get() + 1));
+    }
+    open_section(&ui, 2.0);
+    let path = data.get_data_dir();
+    // 行贴右。「更换」大约 52 逻辑像素宽，点它的中间。
+    click(&ui, WIDTH as f32 - 16.0 - 26.0, row_center(0.0));
+    assert_eq!(chooses.get(), 1);
+    assert_eq!(data.get_data_dir(), path, "点更换不自己改路径");
+    data.set_data_dir_enabled(false);
+    click(&ui, WIDTH as f32 - 16.0 - 26.0, row_center(0.0));
+    assert_eq!(chooses.get(), 1, "迁移进行中不再发出请求");
+}
+
+#[test]
 fn the_update_button_sits_on_the_other_section() {
     let (ui, _window) = open(false);
     let data = ui.global::<SettingsPageData>();

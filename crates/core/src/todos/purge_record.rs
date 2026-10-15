@@ -41,25 +41,29 @@ pub(crate) fn read(store: &Store) -> Result<BTreeSet<String>, TodoError> {
 }
 
 pub(crate) fn write(store: &Store, ids: &BTreeSet<String>) -> Result<(), TodoError> {
-    let path = store.data_dir().join(PURGE_PENDING_FILE);
     let file = PurgePendingFile {
         schema_version: SCHEMA_VERSION,
         ids: ids.clone(),
     };
     let bytes = serde_json::to_vec(&file).map_err(|_| TodoError::Storage(StorageError::Encode))?;
-    atomic_write(&path, &bytes)
-        .map_err(|source| TodoError::Storage(StorageError::io(IoAction::Replace, path, source)))
+    store.with_write_lock(|| {
+        let path = store.data_dir().join(PURGE_PENDING_FILE);
+        atomic_write(&path, &bytes)
+            .map_err(|source| TodoError::Storage(StorageError::io(IoAction::Replace, path, source)))
+    })
 }
 
 pub(crate) fn remove(store: &Store) -> Result<(), TodoError> {
-    let path = store.data_dir().join(PURGE_PENDING_FILE);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(TodoError::Storage(StorageError::io(
-            IoAction::Remove,
-            path,
-            source,
-        ))),
-    }
+    store.with_write_lock(|| {
+        let path = store.data_dir().join(PURGE_PENDING_FILE);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(TodoError::Storage(StorageError::io(
+                IoAction::Remove,
+                path,
+                source,
+            ))),
+        }
+    })
 }

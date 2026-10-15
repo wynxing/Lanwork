@@ -113,24 +113,27 @@ pub(crate) fn inspect_files(files: &[StoredFile]) -> Result<PackageOverview, Bac
 
 /// 磁盘上的白名单数据文件，不解析 JSON。供导入时删除包里没有的文件。
 pub(crate) fn list_data_files(store: &Store) -> Result<Vec<(String, PathBuf)>, BackupError> {
-    let mut names = Vec::new();
-    if storage::fs_exists(&store.data_dir().join("config.json")) {
-        names.push("config.json".to_owned());
-    }
-    if storage::fs_exists(&store.user_apps_path()) {
-        names.push("user-apps.json".to_owned());
-    }
-    if storage::fs_exists(&store.data_dir().join("todo-float.json")) {
-        names.push("todo-float.json".to_owned());
-    }
-    push_dir_names(&mut names, store, "todos")?;
-    push_dir_names(&mut names, store, "notes")?;
-    push_dir_names(&mut names, store, "shelves")?;
     let mut found = Vec::new();
-    for name in names {
+    for name in data_file_names(&store.data_dir())? {
         found.push((name.clone(), disk_path(store, &name)?));
     }
     Ok(found)
+}
+
+/// 导出白名单里实际存在的相对路径。迁移和导入删除用同一份名单。
+pub(crate) fn data_file_names(data_dir: &Path) -> Result<Vec<String>, BackupError> {
+    let mut names = Vec::new();
+    for name in ["config.json", "user-apps.json", "todo-float.json"] {
+        if storage::fs_exists(&join(data_dir, name)) {
+            names.push(name.to_owned());
+        }
+    }
+    for relative in ["todos", "notes", "shelves"] {
+        for (name, _) in dir_files(data_dir, relative)? {
+            names.push(name);
+        }
+    }
+    Ok(names)
 }
 
 pub(crate) fn disk_path(store: &Store, name: &str) -> Result<PathBuf, BackupError> {
@@ -385,7 +388,7 @@ fn push_optional(files: &mut Vec<StoredFile>, name: &str, path: &Path) -> Result
 }
 
 fn push_dir(files: &mut Vec<StoredFile>, store: &Store, relative: &str) -> Result<(), BackupError> {
-    for (name, path) in dir_files(store, relative)? {
+    for (name, path) in dir_files(&store.data_dir(), relative)? {
         files.push(StoredFile {
             name,
             bytes: read_file(&path)?,
@@ -394,19 +397,8 @@ fn push_dir(files: &mut Vec<StoredFile>, store: &Store, relative: &str) -> Resul
     Ok(())
 }
 
-fn push_dir_names(
-    names: &mut Vec<String>,
-    store: &Store,
-    relative: &str,
-) -> Result<(), BackupError> {
-    for (name, _) in dir_files(store, relative)? {
-        names.push(name);
-    }
-    Ok(())
-}
-
-fn dir_files(store: &Store, relative: &str) -> Result<Vec<(String, PathBuf)>, BackupError> {
-    let dir = join(store.data_dir(), relative);
+fn dir_files(data_dir: &Path, relative: &str) -> Result<Vec<(String, PathBuf)>, BackupError> {
+    let dir = join(data_dir, relative);
     if !storage::fs_exists(&dir) {
         return Ok(Vec::new());
     }
