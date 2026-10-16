@@ -479,6 +479,8 @@ pub(crate) fn release_topmost(hwnd: HWND) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
     }
+    // SetWindowPos 会把边框和磨砂清掉。登记过的悬浮窗在这里按当前状态重设，和置顶之后一样。
+    crate::float_frame::after_topmost(key);
 }
 
 pub(crate) fn unwatch_topmost(hwnd: HWND) {

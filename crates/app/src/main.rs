@@ -67,6 +67,8 @@ mod remind;
 #[cfg(windows)]
 mod searchbar;
 #[cfg(windows)]
+mod session_close;
+#[cfg(windows)]
 mod settings_page;
 #[cfg(windows)]
 mod shelf_dnd;
@@ -235,10 +237,85 @@ mod tests {
         assert!(source.contains("set_skip_taskbar"));
         assert!(source.contains("float_frame::sync"));
         assert!(source.contains("release_topmost"));
+        assert!(source.contains("refresh_backdrop"));
+        assert!(source.contains("preserve_file"));
+        assert!(source.contains("GeometryUnreadable") || source.contains("keep_file_on_open"));
+        assert!(source.contains("write_failure_text"));
+        assert!(source.contains("quit_in_progress"));
+        assert!(source.contains("Timer::single_shot"));
         assert!(!source.contains("float_group"));
         assert!(!source.contains("floatStack"));
-        assert!(!include_str!("note_float.rs").contains("FloatShell"));
-        assert!(!include_str!("shelf_float.rs").contains("FloatShell"));
-        assert!(!include_str!("todo_float.rs").contains("FloatShell"));
+        let notes = include_str!("note_float.rs");
+        let shelves = include_str!("shelf_float.rs");
+        let todos = include_str!("todo_float.rs");
+        assert!(!notes.contains("FloatShell"));
+        assert!(!shelves.contains("FloatShell"));
+        assert!(!todos.contains("FloatShell"));
+        assert!(!notes.contains("request_quit"));
+        assert!(!shelves.contains("request_quit"));
+        assert!(!todos.contains("request_quit"));
+        for (name, source) in [("便签", notes), ("收纳", shelves), ("待办", todos)] {
+            let close = source
+                .split("on_close_requested")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{name} 没有 WM_CLOSE"));
+            let close = close.split("on_strip_clicked").next().unwrap();
+            assert!(
+                close.contains("quit_in_progress") && close.contains("Timer::single_shot"),
+                "{name} 的 WM_CLOSE 要推迟，退出进行中不记成已关"
+            );
+            let click = source
+                .split("on_close_clicked")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{name} 没有关闭按钮"));
+            let click = click.split("on_close_requested").next().unwrap();
+            assert!(
+                !click.contains("quit_in_progress"),
+                "{name} 的关闭按钮仍是马上关"
+            );
+        }
+        let bar = include_str!("bar_win.rs");
+        let release = bar
+            .split("pub(crate) fn release_topmost")
+            .nth(1)
+            .expect("release_topmost");
+        let release = release.split("pub(crate) fn ").next().unwrap();
+        assert!(
+            release.contains("float_frame::after_topmost"),
+            "取消钉住后要像置顶那样重设边框和磨砂"
+        );
+        let search = include_str!("searchbar.rs");
+        let panel = include_str!("panel.rs");
+        assert!(!search.contains("request_quit"));
+        assert!(!panel.contains("request_quit"));
+        assert!(panel.contains("on_close_panel"));
+        let search_close = search
+            .split("on_close_requested")
+            .nth(1)
+            .expect("搜索条关闭");
+        assert!(
+            search_close.contains("Bar::hide"),
+            "搜索条 Alt+F4 只收起，并保留未提交的 /note"
+        );
+        let panel_close = panel.split("on_close_requested").nth(1).expect("面板关闭");
+        assert!(
+            panel_close.contains("Controller::hide"),
+            "面板 Alt+F4 只收起"
+        );
+        let session = include_str!("session_close.rs");
+        assert!(session.contains("Winit Thread Event Target"));
+        assert!(session.contains("request_quit"));
+        let query = session
+            .split("message == WM_QUERYENDSESSION")
+            .nth(1)
+            .expect("注销询问");
+        let before_sync = query.split("request_quit()").next().unwrap();
+        assert!(
+            before_sync.contains("Timer::single_shot"),
+            "隐藏目标窗口的注销询问要投递退出后马上返回"
+        );
+        assert!(include_str!("platform.rs").contains("external_close_requests_quit"));
+        assert!(host.contains("session_close::install"));
+        assert!(host.contains("EXITING"));
     }
 }

@@ -139,6 +139,23 @@ impl QuitGate {
     }
 }
 
+/// `WM_CLOSE`。主窗口关闭，以及 `taskkill`（不带 `/F`）投递给每个顶层窗口的消息。
+pub const WM_CLOSE: u32 = 0x0010;
+/// 注销或关机前的询问。返回非 0 才允许系统继续。
+pub const WM_QUERYENDSESSION: u32 = 0x0011;
+/// 注销或关机已经决定。`wparam` 为 0 表示询问被取消，进程留着。
+pub const WM_ENDSESSION: u32 = 0x0016;
+
+/// 外部要求结束进程。走和托盘「退出」相同的路径。关掉单个悬浮窗不是这一种。
+#[must_use]
+pub fn external_close_requests_quit(message: u32, wparam: usize) -> bool {
+    match message {
+        WM_CLOSE | WM_QUERYENDSESSION => true,
+        WM_ENDSESSION => wparam != 0,
+        _ => false,
+    }
+}
+
 /// 便签窗口里的保存问题解决之后接着退出。
 ///
 /// 这个调用来自窗口自己的回调，那时面板和悬浮窗的表还被借用着，当场再去保存会借用失败而不退出。
@@ -222,5 +239,17 @@ mod tests {
         assert_eq!(RENDERER_ORDER, ["femtovg", "software"]);
         assert_eq!(quit_decision(0), QuitDecision::Exit);
         assert_eq!(quit_decision(1), QuitDecision::Stay);
+    }
+
+    #[test]
+    fn external_close_and_session_end_request_quit() {
+        assert!(external_close_requests_quit(WM_CLOSE, 0));
+        assert!(external_close_requests_quit(WM_QUERYENDSESSION, 0));
+        assert!(external_close_requests_quit(WM_ENDSESSION, 1));
+        assert!(
+            !external_close_requests_quit(WM_ENDSESSION, 0),
+            "询问被取消时不退出"
+        );
+        assert!(!external_close_requests_quit(0x0012, 1));
     }
 }

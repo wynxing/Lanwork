@@ -3,7 +3,7 @@
 //!
 //! 面板在 `panel`，设置页在 `settings_page`，搜索条在 `searchbar`，热角轮询在 `hotcorner`。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -226,6 +226,9 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     }
     crate::update::start(store.clone());
     crate::remind::install(todos.clone(), config.clone(), store.clone(), installed);
+
+    // 事件循环起来之后，给 winit 的隐藏目标窗口装上外部关闭。搜索条和面板的 WM_CLOSE 在各自的 install 里。
+    let _ = slint::invoke_from_event_loop(crate::session_close::install);
 
     // 搜索条收起时所有窗口都隐藏，事件循环不能因此结束。
     let run = slint::run_event_loop_until_quit().map_err(|err| err.to_string());
@@ -507,11 +510,27 @@ thread_local! {
 static QUIT: QuitGate = QuitGate::new();
 static OVERDUE: AtomicU32 = AtomicU32::new(0);
 static UPDATE_DOT: AtomicBool = AtomicBool::new(false);
+/// 已经决定结束进程。安装助手起不来时清掉，用户可以再退出一次。
+static EXITING: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static QUIT_RUNNING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// 退出已经请求，或正在把进程停掉。推迟的悬浮窗关闭用它避免把 `open` 写成假。
+pub(crate) fn quit_in_progress() -> bool {
+    EXITING.load(Ordering::Acquire) || QUIT.is_requested()
+}
 
 /// 先保存便签窗口里没写盘的修改。都写成了才结束进程；有写不成的，留下，等用户在那个窗口里
 /// 重试、放弃修改或选定冲突版本，之后由 [`continue_quit`] 接着退出。
 /// 已经核对过的安装包会在真正退出前交给助手。
+/// 托盘「退出」、隐藏事件目标窗口和热键窗口收到的 `WM_CLOSE`（含不带 `/F` 的 `taskkill`）、
+/// 注销和关机都走这里。搜索条和面板的 Alt+F4 只收起那一扇，不走这里。
 pub(crate) fn request_quit() {
+    if EXITING.load(Ordering::Acquire) {
+        return;
+    }
     QUIT.request();
     attempt_quit();
 }
@@ -526,15 +545,29 @@ pub(crate) fn continue_quit() {
 }
 
 fn attempt_quit() {
+    let busy = QUIT_RUNNING.with(|cell| {
+        if cell.get() {
+            true
+        } else {
+            cell.set(true);
+            false
+        }
+    });
+    if busy {
+        return;
+    }
     let unsaved = panel::flush_notes_for_quit() + note_float::flush_for_quit();
     match quit_decision(unsaved) {
         QuitDecision::Exit => {
+            EXITING.store(true, Ordering::Release);
             shelf_float::save_for_quit();
             todo_float::save_for_quit();
             float_shell::save_for_quit();
             if crate::update::spawn_pending_install().is_err() {
+                EXITING.store(false, Ordering::Release);
                 QUIT.clear();
                 crate::update::install_spawn_failed();
+                QUIT_RUNNING.with(|cell| cell.set(false));
                 return;
             }
             QUIT.clear();
@@ -546,6 +579,7 @@ fn attempt_quit() {
         }
         QuitDecision::Stay => {}
     }
+    QUIT_RUNNING.with(|cell| cell.set(false));
 }
 
 /// `received_ns` 是平台线程收到热键消息时的单调时间，热召回从这里算起。
