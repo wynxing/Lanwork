@@ -64,6 +64,8 @@ pub(crate) struct SettingsPage {
     /// 已经校验过、还等用户确认的导入包。
     pending_import: RefCell<Option<PathBuf>>,
     import_overview: RefCell<String>,
+    /// 恢复或迁移前关掉的工具窗口。导入成功后不重开；迁移后从新目录重开。
+    held_windows: RefCell<Vec<String>>,
 }
 
 enum Hold {
@@ -132,6 +134,7 @@ impl SettingsPage {
             busy: Cell::new(false),
             pending_import: RefCell::new(None),
             import_overview: RefCell::new(String::new()),
+            held_windows: RefCell::new(Vec::new()),
         };
         page.push(ui);
         page
@@ -234,6 +237,14 @@ impl SettingsPage {
     }
 
     fn begin_migrate(&mut self, ui: &Panel, target: std::path::PathBuf) {
+        let open = match crate::float_shell::quiesce_for_migrate() {
+            Ok(ids) => ids,
+            Err(message) => {
+                self.finish(ui, Err(message));
+                return;
+            }
+        };
+        *self.held_windows.borrow_mut() = open;
         self.hold(ui, Hold::Migrate("正在复制"));
         let store = self.store.clone();
         let env_blocks = std::env::var(ENV_DATA_DIR)
@@ -254,8 +265,21 @@ impl SettingsPage {
             });
         if spawned.is_err() {
             self.busy.set(false);
+            self.reopen_migrated_windows();
             self.finish(ui, Err("不能开始迁移，仍使用原来的目录".to_owned()));
         }
+    }
+
+    fn reopen_migrated_windows(&self) {
+        let open = std::mem::take(&mut *self.held_windows.borrow_mut());
+        let ids = backup::reopen_after_migrate(&open);
+        crate::float_shell::resume_tools(&ids);
+    }
+
+    fn settle_import_windows(&self, success: bool) {
+        let open = std::mem::take(&mut *self.held_windows.borrow_mut());
+        let ids = backup::reopen_after_import(&open, success);
+        crate::float_shell::resume_tools(&ids);
     }
 
     fn show_progress(&self, ui: &Panel, text: &str) {
@@ -265,6 +289,7 @@ impl SettingsPage {
 
     fn finish_migrate(&mut self, ui: &Panel, result: Result<std::path::PathBuf, MigrateError>) {
         self.busy.set(false);
+        self.reopen_migrated_windows();
         match result {
             Ok(dir) => {
                 self.store
@@ -459,6 +484,7 @@ impl SettingsPage {
             return;
         };
         self.cancel_recording(ui);
+        *self.held_windows.borrow_mut() = crate::float_shell::quiesce_for_import();
         self.hold(ui, Hold::Import);
         let store = self.store.clone();
         let apps = self.apps.clone();
@@ -480,6 +506,7 @@ impl SettingsPage {
             });
         if spawned.is_err() {
             self.busy.set(false);
+            self.settle_import_windows(false);
             self.finish(ui, Err("不能开始导入".to_owned()));
         }
     }
@@ -492,9 +519,11 @@ impl SettingsPage {
     ) {
         self.busy.set(false);
         if let Err(message) = result {
+            self.settle_import_windows(false);
             self.finish(ui, Err(message));
             return;
         }
+        self.settle_import_windows(true);
         self.pending_import.borrow_mut().take();
         self.import_overview.borrow_mut().clear();
         self.store.log_info("设置页：导入完成");

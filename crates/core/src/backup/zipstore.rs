@@ -81,7 +81,35 @@ pub(crate) fn write_stored(files: &[StoredFile]) -> Result<Vec<u8>, BackupError>
     Ok(out)
 }
 
+/// 整个压缩包的未压缩总量，也是读入前按文件长度拒绝的上限。
+pub(crate) const PACKAGE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// 工具以外的单个条目。工具条目用更小的 [`lanwork_toolhost::TOOL_MAX_ENTRY`]。
+pub(crate) const PACKAGE_MAX_ENTRY: u64 = 8 * 1024 * 1024;
+
 pub(crate) fn read_stored(data: &[u8]) -> Result<Vec<StoredFile>, BackupError> {
+    if data.len() as u64 > PACKAGE_MAX_BYTES {
+        return Err(BackupError::Rejected("压缩包过大"));
+    }
+    let listed = list_central(data)?;
+    check_declared_sizes(&listed)?;
+    let mut files = Vec::with_capacity(listed.len());
+    for entry in listed {
+        let file = read_local(data, entry.local_offset as usize, &entry.name, entry.meta)?;
+        if !read_len_allowed(&entry.name, file.bytes.len() as u64) {
+            return Err(BackupError::Rejected("文件过大"));
+        }
+        files.push(file);
+    }
+    Ok(files)
+}
+
+struct ListedEntry {
+    name: String,
+    local_offset: u32,
+    meta: LocalMeta,
+}
+
+fn list_central(data: &[u8]) -> Result<Vec<ListedEntry>, BackupError> {
     let eocd = find_eocd(data)?;
     let disk = read_u16(data, eocd + 4)?;
     let cd_disk = read_u16(data, eocd + 6)?;
@@ -102,7 +130,7 @@ pub(crate) fn read_stored(data: &[u8]) -> Result<Vec<StoredFile>, BackupError> {
     if cd_end > data.len() || cd_end > eocd {
         return Err(BackupError::Rejected("压缩包无法读取"));
     }
-    let mut files = Vec::with_capacity(entries as usize);
+    let mut listed = Vec::with_capacity(entries as usize);
     let mut cursor = cd_start;
     for _ in 0..entries {
         if read_u32(data, cursor)? != CENTRAL {
@@ -128,24 +156,83 @@ pub(crate) fn read_stored(data: &[u8]) -> Result<Vec<StoredFile>, BackupError> {
         cursor = name_at
             .checked_add(name_len + extra_len + comment_len)
             .ok_or(BackupError::Rejected("压缩包无法读取"))?;
-        let file = read_local(
-            data,
-            local_offset as usize,
-            &name,
-            LocalMeta {
+        listed.push(ListedEntry {
+            name,
+            local_offset,
+            meta: LocalMeta {
                 flags,
                 method,
                 crc,
                 compressed,
                 uncompressed,
             },
-        )?;
-        files.push(file);
+        });
     }
     if cursor != cd_end {
         return Err(BackupError::Rejected("压缩包无法读取"));
     }
-    Ok(files)
+    Ok(listed)
+}
+
+/// 只看中央目录里声明的大小，此时还没有为条目分配缓冲区。
+fn check_declared_sizes(listed: &[ListedEntry]) -> Result<(), BackupError> {
+    let mut total = 0u64;
+    let mut tools: std::collections::BTreeMap<&str, (u64, usize)> =
+        std::collections::BTreeMap::new();
+    for entry in listed {
+        let size = u64::from(entry.meta.uncompressed);
+        if !read_len_allowed(&entry.name, size) {
+            return Err(BackupError::Rejected("文件过大"));
+        }
+        total = total
+            .checked_add(size)
+            .ok_or(BackupError::Rejected("压缩包过大"))?;
+        if total > PACKAGE_MAX_BYTES {
+            return Err(BackupError::Rejected("压缩包过大"));
+        }
+        if let Some(id) = tool_id(&entry.name) {
+            let slot = tools.entry(id).or_insert((0, 0));
+            slot.0 = slot
+                .0
+                .checked_add(size)
+                .ok_or(BackupError::Rejected("文件过大"))?;
+            slot.1 += 1;
+            if slot.0 > lanwork_toolhost::TOOL_MAX_BYTES as u64
+                || slot.1 > lanwork_toolhost::TOOL_MAX_FILES
+            {
+                return Err(BackupError::Rejected(
+                    if slot.1 > lanwork_toolhost::TOOL_MAX_FILES {
+                        "文件过多"
+                    } else {
+                        "文件过大"
+                    },
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn entry_cap(name: &str) -> u64 {
+    if tool_id(name).is_some() {
+        lanwork_toolhost::TOOL_MAX_ENTRY as u64
+    } else {
+        PACKAGE_MAX_ENTRY
+    }
+}
+
+fn read_len_allowed(name: &str, len: u64) -> bool {
+    len <= entry_cap(name)
+}
+
+fn tool_id(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("tools/")?;
+    let (id, rel) = rest.split_once('/')?;
+    if id.is_empty() || rel.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
 }
 
 struct LocalMeta {
@@ -198,7 +285,11 @@ fn read_local(
     let data_at = name_at
         .checked_add(name_len + extra_len)
         .ok_or(BackupError::Rejected("压缩包无法读取"))?;
-    let bytes = slice(data, data_at, uncompressed as usize)?.to_vec();
+    let declared = uncompressed as usize;
+    if !read_len_allowed(name, declared as u64) {
+        return Err(BackupError::Rejected("文件过大"));
+    }
+    let bytes = slice(data, data_at, declared)?.to_vec();
     if crc32(&bytes) != crc {
         return Err(BackupError::Rejected("压缩包无法读取"));
     }
@@ -308,5 +399,131 @@ mod tests {
         // central method follows the local payload. Rebuild is easier: flip both method fields by scanning.
         // The writer puts method 0. Patching only the local header makes central and local disagree.
         assert!(read_stored(&bytes).is_err());
+    }
+
+    #[test]
+    fn read_length_uses_the_tool_cap_for_tool_entries() {
+        assert!(read_len_allowed("notes/n.json", PACKAGE_MAX_ENTRY));
+        assert!(!read_len_allowed("notes/n.json", PACKAGE_MAX_ENTRY + 1));
+        let tool_cap = lanwork_toolhost::TOOL_MAX_ENTRY as u64;
+        assert!(read_len_allowed("tools/example.quota/main.lua", tool_cap));
+        assert!(!read_len_allowed(
+            "tools/example.quota/main.lua",
+            tool_cap + 1
+        ));
+    }
+
+    #[test]
+    fn declared_size_over_the_cap_is_rejected_before_the_payload() {
+        let mut bytes = write_stored(&[StoredFile {
+            name: "notes/n.json".to_owned(),
+            bytes: b"{}".to_vec(),
+        }])
+        .unwrap();
+        patch_central_sizes(
+            &mut bytes,
+            "notes/n.json",
+            1,
+            (PACKAGE_MAX_ENTRY as u32) + 1,
+        );
+        match read_stored(&bytes) {
+            Err(err) => assert!(err.to_string().contains("文件过大"), "{err}"),
+            Ok(_) => panic!("应当拒绝"),
+        }
+    }
+
+    #[test]
+    fn declared_package_total_over_the_cap_is_rejected() {
+        let mut files = Vec::new();
+        for index in 0..9 {
+            files.push(StoredFile {
+                name: format!("notes/n{index}.json"),
+                bytes: b"{}".to_vec(),
+            });
+        }
+        let mut bytes = write_stored(&files).unwrap();
+        for file in &files {
+            patch_central_sizes(
+                &mut bytes,
+                &file.name,
+                1,
+                u32::try_from(PACKAGE_MAX_ENTRY).unwrap(),
+            );
+        }
+        match read_stored(&bytes) {
+            Err(err) => assert!(err.to_string().contains("压缩包过大"), "{err}"),
+            Ok(_) => panic!("应当拒绝"),
+        }
+    }
+
+    #[test]
+    fn a_tool_entry_over_the_per_file_cap_is_rejected() {
+        let bytes = vec![b'a'; lanwork_toolhost::TOOL_MAX_ENTRY + 1];
+        let zip = write_stored(&[StoredFile {
+            name: "tools/example.quota/main.lua".to_owned(),
+            bytes,
+        }])
+        .unwrap();
+        match read_stored(&zip) {
+            Err(err) => assert!(err.to_string().contains("文件过大"), "{err}"),
+            Ok(_) => panic!("应当拒绝"),
+        }
+    }
+
+    #[test]
+    fn tool_declared_total_and_file_count_are_capped() {
+        let mut files = Vec::new();
+        for index in 0..5 {
+            files.push(StoredFile {
+                name: format!("tools/example.quota/f{index}.lua"),
+                bytes: b"x".to_vec(),
+            });
+        }
+        let mut bytes = write_stored(&files).unwrap();
+        for file in &files {
+            patch_central_sizes(&mut bytes, &file.name, 1, 2_000_000);
+        }
+        match read_stored(&bytes) {
+            Err(err) => assert!(err.to_string().contains("文件过大"), "{err}"),
+            Ok(_) => panic!("应当拒绝"),
+        }
+
+        let mut many = Vec::new();
+        for index in 0..=lanwork_toolhost::TOOL_MAX_FILES {
+            many.push(StoredFile {
+                name: format!("tools/example.quota/n{index}.txt"),
+                bytes: b"x".to_vec(),
+            });
+        }
+        match read_stored(&write_stored(&many).unwrap()) {
+            Err(err) => assert!(err.to_string().contains("文件过多"), "{err}"),
+            Ok(_) => panic!("应当拒绝"),
+        }
+    }
+
+    fn patch_central_sizes(data: &mut [u8], name: &str, compressed: u32, uncompressed: u32) {
+        let mut index = 0;
+        while index + 46 < data.len() {
+            if data[index..index + 4] != [0x50, 0x4b, 0x01, 0x02] {
+                index += 1;
+                continue;
+            }
+            let name_len = u16::from_le_bytes([data[index + 28], data[index + 29]]) as usize;
+            let extra = u16::from_le_bytes([data[index + 30], data[index + 31]]) as usize;
+            let comment = u16::from_le_bytes([data[index + 32], data[index + 33]]) as usize;
+            let start = index + 46;
+            let end = start + name_len;
+            if data
+                .get(start..end)
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                == Some(name)
+            {
+                data[index + 20..index + 24].copy_from_slice(&compressed.to_le_bytes());
+                data[index + 24..index + 28].copy_from_slice(&uncompressed.to_le_bytes());
+                return;
+            }
+            index = end + extra + comment;
+        }
+        panic!("missing {name}");
     }
 }

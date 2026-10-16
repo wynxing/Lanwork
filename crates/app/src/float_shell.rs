@@ -2,10 +2,11 @@
 //!
 //! 应用页的「悬浮窗」走 [`open_tool`]，打开窗口后运行已安装工具。不自动开始计时组件。
 //! 隐藏命令 `lanwork --float-shell-demo` 仍打开一个带「示例」的窗口，不跑清单。
-//! 记录在数据目录的 `tool-windows/<id>.json`。不进叠页，也不进导出白名单。
-//! 启用开关关掉的工具，即使记录里 `open` 为真，启动时也不再打开。
+//! 记录在数据目录的 `tool-windows/<id>.json`。不进叠页。已安装工具的记录进入导出和备份，不含 `open`。
+//! `lanwork.float-shell-demo` 不进入包。启用开关关掉的工具，即使记录里 `open` 为真，启动时也不再打开。
+//! 恢复和更换数据目录前先关掉窗口。停住期间不把 `open` 写回去。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
@@ -55,6 +56,7 @@ struct Shells {
 
 thread_local! {
     static SHELLS: RefCell<Option<Shells>> = const { RefCell::new(None) };
+    static FREEZE_PERSIST: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(crate) fn install(store: Store, todos: TodoCommands, config: ConfigCommands) {
@@ -130,6 +132,9 @@ pub(crate) fn on_todos_changed() {
 
 pub(crate) fn save_for_quit() {
     crate::tool_runtime::detach_all();
+    if !lanwork_core::backup::persist_open_allowed(persist_frozen()) {
+        return;
+    }
     SHELLS.with(|cell| {
         let Ok(mut slot) = cell.try_borrow_mut() else {
             return;
@@ -144,6 +149,81 @@ pub(crate) fn save_for_quit() {
             }
         }
     });
+}
+
+/// 恢复前关掉开着的工具窗口，并且不再把 `open` 写回去。返回关掉前开着的 id。
+pub(crate) fn quiesce_for_import() -> Vec<String> {
+    set_persist_frozen(true);
+    dismiss_open()
+}
+
+/// 更换数据目录前先把存储写盘，再关掉窗口且不改 `open`。写盘失败时窗口保持原样。
+pub(crate) fn quiesce_for_migrate() -> Result<Vec<String>, String> {
+    crate::tool_runtime::flush_all()?;
+    set_persist_frozen(true);
+    Ok(dismiss_open())
+}
+
+/// 清掉停住，并打开这些窗口。导入成功时名单是空的；迁移后是切换前开着的。
+pub(crate) fn resume_tools(ids: &[String]) {
+    set_persist_frozen(false);
+    for id in ids {
+        if let Err(message) = open(id, None) {
+            let id = id.clone();
+            with_shells(move |shells| {
+                shells
+                    .store
+                    .log_warn(&format!("工具悬浮窗没有重新打开：{id}：{message}"));
+            });
+        }
+    }
+}
+
+fn persist_frozen() -> bool {
+    FREEZE_PERSIST.with(Cell::get)
+}
+
+fn set_persist_frozen(frozen: bool) {
+    FREEZE_PERSIST.with(|cell| cell.set(frozen));
+}
+
+fn dismiss_open() -> Vec<String> {
+    let windows = SHELLS.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return Vec::new();
+        };
+        let Some(shells) = slot.as_mut() else {
+            return Vec::new();
+        };
+        let ids: Vec<String> = shells
+            .windows
+            .iter()
+            .filter(|(_, window)| !window.closed)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut taken = Vec::new();
+        for id in ids {
+            if let Some(window) = shells.windows.remove(&id) {
+                taken.push(window);
+            }
+        }
+        taken
+    });
+    let ids = windows.iter().map(|window| window.id.clone()).collect();
+    for window in windows {
+        dismiss(window);
+    }
+    ids
+}
+
+fn dismiss(mut window: ShellWindow) {
+    crate::tool_runtime::detach(&window.id);
+    window.closed = true;
+    window.timer.stop();
+    if let Some(hwnd) = window.hwnd() {
+        bar_win::unwatch_topmost(hwnd);
+    }
+    let _ = window.ui.hide();
 }
 
 fn restore_open() {
@@ -707,7 +787,10 @@ impl ShellWindow {
     }
 
     fn persist(&self, store: &Store) {
-        if !self.writable || self.preserve_file {
+        if !lanwork_core::backup::persist_open_allowed(persist_frozen())
+            || !self.writable
+            || self.preserve_file
+        {
             return;
         }
         let saved = self.session.saved();

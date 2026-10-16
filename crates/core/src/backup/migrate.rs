@@ -526,6 +526,12 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            dir.join("tool-windows")
+                .join("lanwork.float-shell-demo.json"),
+            b"{\"schemaVersion\":1,\"open\":true}\n",
+        )
+        .unwrap();
+        std::fs::write(
             dir.join("tool-enabled.json"),
             b"{\"schemaVersion\":1,\"disabled\":[]}\n",
         )
@@ -599,6 +605,7 @@ mod tests {
             "tools/.incoming-example.quota/leak.txt",
             "tools/.previous-example.quota/leak.txt",
             "tools/.hold-example.quota.0/leak.txt",
+            "tool-windows/lanwork.float-shell-demo.json",
         ] {
             assert!(
                 !super::join(&target, name).exists(),
@@ -654,6 +661,27 @@ mod tests {
         writer.join().unwrap();
         assert!(target.join("notes").join("later.json").is_file());
         assert!(!old.join("notes").join("later.json").exists());
+    }
+
+    #[test]
+    fn tool_storage_written_after_the_switch_lands_in_the_new_directory() {
+        let temp = TempDir::new();
+        let store = open(temp.path());
+        seed(&store);
+        let old = store.data_dir();
+        let target = temp.path().join("next");
+        run(&store, &target).unwrap();
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("note".to_owned(), "after-switch".to_owned());
+        crate::panel::write_tool_storage(&store.data_dir(), "example.quota", &entries).unwrap();
+        let written =
+            std::fs::read_to_string(target.join("tool-storage/example.quota.json")).unwrap();
+        assert!(written.contains("after-switch"));
+        assert!(
+            !std::fs::read_to_string(old.join("tool-storage/example.quota.json"))
+                .unwrap()
+                .contains("after-switch")
+        );
     }
 
     fn run_until(

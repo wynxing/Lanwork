@@ -26,6 +26,7 @@ pub use host::{
 pub use http::{
     HttpResponse, HttpTransport, Outgoing, RustlsTransport, TransportError, install_ring,
 };
+pub use id::{imported_prefix_forbidden, valid_id};
 pub use manifest::{Manifest, load_dir, materialize};
 pub use package::{
     FOLDER_SENTINEL, Grant, MAX_ENTRIES as TOOL_MAX_FILES, MAX_ENTRY as TOOL_MAX_ENTRY,

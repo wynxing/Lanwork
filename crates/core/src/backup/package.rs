@@ -72,7 +72,15 @@ pub(crate) fn collect(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
         let path = disk_path(store, &name)?;
         let bytes = read_file(&path)?;
         let kind = classify(&name)?;
-        let bytes = if tools::is_sidecar(kind) {
+        let bytes = if matches!(kind, Kind::ToolEnabled) {
+            match tools::export_enabled(&bytes) {
+                Some(bytes) => bytes,
+                None => {
+                    store.log_warn(&tools::skip_line("未导出", &name));
+                    continue;
+                }
+            }
+        } else if tools::is_sidecar(kind) {
             match tools::normalize_sidecar(kind, &bytes) {
                 Some(bytes) => bytes,
                 None => {
@@ -153,6 +161,9 @@ pub(crate) fn inspect_files(files: &[StoredFile]) -> Result<PackageOverview, Bac
                 BackupError::Rejected(message) => BackupError::entry(&file.name, message),
                 other => other,
             })?;
+        }
+        if matches!(kind, Kind::ToolEnabled) {
+            tools::reject_disallowed_enabled(&file.name, &file.bytes)?;
         }
         if matches!(kind, Kind::Manifest) {
             manifest = Some(file);
@@ -444,8 +455,16 @@ fn kind_from_collection(name: &str) -> Result<Kind, BackupError> {
         "todos" => Ok(Kind::Todo),
         "notes" => Ok(Kind::Note),
         "shelves" => Ok(Kind::Shelf),
-        "tool-storage" => Ok(Kind::ToolStorage),
-        "tool-windows" => Ok(Kind::ToolWindow),
+        "tool-storage" | "tool-windows" => {
+            if !tools::tool_id_allowed(id) {
+                return Err(BackupError::entry(name, "压缩包含有不允许的路径"));
+            }
+            if dir == "tool-storage" {
+                Ok(Kind::ToolStorage)
+            } else {
+                Ok(Kind::ToolWindow)
+            }
+        }
         "github/cache" => Ok(Kind::LegacyCache),
         _ => Err(BackupError::entry(name, "压缩包含有不允许的路径")),
     }
@@ -537,6 +556,14 @@ mod export_list_tests {
         std::fs::write(dir.join("tool-storage").join("example.quota.json"), b"{}\n").unwrap();
         std::fs::create_dir_all(dir.join("tool-windows")).unwrap();
         std::fs::write(dir.join("tool-windows").join("example.quota.json"), b"{}\n").unwrap();
+        std::fs::write(
+            dir.join("tool-windows")
+                .join("lanwork.float-shell-demo.json"),
+            b"{}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("tool-storage").join(".hidden.json"), b"{}\n").unwrap();
+        std::fs::write(dir.join("tool-windows").join(".hidden.json"), b"{}\n").unwrap();
         let names = data_file_names(&dir).unwrap();
         for expected in [
             "config.json",
@@ -551,6 +578,8 @@ mod export_list_tests {
         assert!(names.iter().all(|name| !name.contains(".incoming-")));
         assert!(names.iter().all(|name| !name.contains(".previous-")));
         assert!(names.iter().all(|name| !name.contains(".hold-")));
+        assert!(names.iter().all(|name| !name.contains("lanwork.")));
+        assert!(names.iter().all(|name| !name.contains("/.hidden.json")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

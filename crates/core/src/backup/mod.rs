@@ -7,6 +7,7 @@
 
 mod command;
 mod error;
+mod hold;
 mod migrate;
 mod package;
 mod service;
@@ -15,6 +16,7 @@ mod zipstore;
 
 pub use command::BackupCommands;
 pub use error::BackupError;
+pub use hold::{persist_open_allowed, reopen_after_import, reopen_after_migrate};
 pub use migrate::{MigrateError, MigratePhase, MigrateProgress, migrate_data_dir, progress_text};
 pub use package::{PackageOverview, overview_text};
 pub use service::{BackupKind, LaunchBackup, ListedBackup};

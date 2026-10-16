@@ -105,11 +105,10 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
 
     let (storage, persist) = match read_tool_storage(&services.store.data_dir(), id) {
         Ok(map) => {
-            let data_dir = services.store.data_dir();
             let tool_id = id.to_owned();
             let store = services.store.clone();
             let persist: Option<lanwork_toolhost::StoragePersist> = Some(Rc::new(move |entries| {
-                write_tool_storage(&data_dir, &tool_id, entries).map_err(|err| {
+                write_tool_storage(&store.data_dir(), &tool_id, entries).map_err(|err| {
                     store.log_warn(&format!("工具存储没有写下：{err}"));
                     "写盘失败".to_string()
                 })
@@ -204,6 +203,17 @@ pub(crate) fn detach_all() {
     for id in ids {
         detach(&id);
     }
+}
+
+/// 把开着的工具的存储再写一次。更换数据目录前调用，失败时不切换。
+pub(crate) fn flush_all() -> Result<(), String> {
+    RUNNING.with(|slot| {
+        let map = slot.borrow();
+        for running in map.values() {
+            running.session.flush_storage()?;
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn click(id: &str, row: &str) {

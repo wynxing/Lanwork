@@ -244,8 +244,8 @@ fn restore_backup(store: &Store, path: &Path) -> Result<(), BackupError> {
     Ok(())
 }
 
-/// `exact` 为真时按包内字节写回，供导入失败后的 `import-` 备份使用。
-/// 为假时整理侧车，并按导入规则重写工具副本。
+/// `exact` 为真时按包内字节写回，供导入失败后的 `import-` 备份使用。不清除密钥。
+/// 为假时整理侧车，并按导入规则重写工具副本。校验失败的工具留下本机副本和侧车。
 fn apply(
     store: &Store,
     files: &[StoredFile],
@@ -255,6 +255,7 @@ fn apply(
     let mut events = Vec::new();
     let mut copies: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>> =
         std::collections::BTreeMap::new();
+    let mut sidecars = Vec::new();
     for file in files {
         if file.name == "manifest.json" || package::is_legacy_github(&file.name) {
             continue;
@@ -267,34 +268,48 @@ fn apply(
             continue;
         }
         let kind = package::classify(&file.name)?;
-        let bytes = if exact || !tools::is_sidecar(kind) {
-            file.bytes.clone()
-        } else {
-            match tools::normalize_sidecar(kind, &file.bytes) {
-                Some(bytes) => bytes,
-                None => {
-                    store.log_warn(&tools::skip_line("未恢复", &file.name));
-                    continue;
-                }
-            }
-        };
+        if !exact && tools::is_sidecar(kind) {
+            sidecars.push(file);
+            continue;
+        }
         let path = package::disk_path(store, &file.name)?;
         if let Some(parent) = path.parent() {
             storage::fs_create_dir_all(parent)
                 .map_err(|_| BackupError::io("无法创建目录", parent))?;
         }
-        storage::atomic_write(&path, &bytes).map_err(|_| BackupError::io("无法写入", &path))?;
+        storage::atomic_write(&path, &file.bytes)
+            .map_err(|_| BackupError::io("无法写入", &path))?;
         keep.insert(file.name.clone());
         if let Some(event) = change_for(&file.name) {
             events.push(event);
         }
     }
-    let (names, restored) = if exact {
-        tools::write_raw_copies(store, copies)?
+    let (names, restored, skipped, clear_secrets) = if exact {
+        let (names, restored) = tools::write_raw_copies(store, copies)?;
+        (
+            names,
+            restored,
+            std::collections::BTreeSet::new(),
+            Vec::new(),
+        )
     } else {
-        tools::restore_copies(store, copies)?
+        let restored = tools::restore_copies(store, copies)?;
+        (
+            restored.keep,
+            restored.restored,
+            restored.skipped,
+            restored.clear_secrets,
+        )
     };
     keep.extend(names);
+    if !exact {
+        let data_dir = store.data_dir();
+        for id in &skipped {
+            keep.extend(tools::files_under_tool(&data_dir, id)?);
+            keep.extend(tools::existing_sidecars(&data_dir, id));
+        }
+        tools::write_restored_sidecars(store, &sidecars, &restored, &skipped, &mut keep)?;
+    }
     for (name, path) in package::list_data_files(store)? {
         if !keep.contains(&name) {
             storage::fs_remove_file(&path).map_err(|_| BackupError::io("无法删除", &path))?;
@@ -303,7 +318,12 @@ fn apply(
             }
         }
     }
-    tools::finish_tools(&store.data_dir(), &restored)?;
+    let mut kept_tools = restored;
+    kept_tools.extend(skipped);
+    tools::finish_tools(&store.data_dir(), &kept_tools)?;
+    if !exact {
+        tools::clear_product_secrets(&clear_secrets)?;
+    }
     Ok(events)
 }
 
@@ -330,6 +350,10 @@ fn change_for(name: &str) -> Option<EntityChanged> {
 }
 
 fn read_zip(path: &Path) -> Result<Vec<StoredFile>, BackupError> {
+    let len = storage::fs_file_len(path).map_err(|_| BackupError::io("无法读取", path))?;
+    if len > zipstore::PACKAGE_MAX_BYTES {
+        return Err(BackupError::Rejected("压缩包过大"));
+    }
     let bytes = storage::fs_read(path).map_err(|_| BackupError::io("无法读取", path))?;
     zipstore::read_stored(&bytes)
 }
@@ -916,6 +940,297 @@ text = "没有数据"
                 .unwrap()
                 .contains("old-note")
         );
+        let capture = tools::SecretCapture::begin();
+        super::apply(&store, &files, true).unwrap();
+        assert!(
+            capture.ids().is_empty(),
+            "原样写回不清除密钥：{:?}",
+            capture.ids()
+        );
+    }
+
+    #[test]
+    fn a_zip_longer_than_the_package_cap_is_rejected_before_reading() {
+        let (temp, store) = store();
+        let path = temp.path().join("huge.zip");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(super::super::zipstore::PACKAGE_MAX_BYTES + 1)
+            .unwrap();
+        let err = BackupService::open(store).import(&path, 1).unwrap_err();
+        assert!(err.to_string().contains("压缩包过大"), "{err}");
+    }
+
+    #[test]
+    fn sidecar_ids_use_the_tool_id_rules() {
+        let (temp, store) = store();
+        std::fs::write(
+            store.data_dir().join("config.json"),
+            b"{\"schemaVersion\":1}\n",
+        )
+        .unwrap();
+        let window = br#"{"schemaVersion":1,"floatWindow":{"x":1,"y":2,"width":200,"height":120}}"#;
+        for name in [
+            "tool-windows/lanwork.float-shell-demo.json",
+            "tool-storage/.hidden.json",
+            "tool-windows/.hidden.json",
+        ] {
+            let package = evil(
+                &temp,
+                vec![
+                    super::StoredFile {
+                        name: "manifest.json".to_owned(),
+                        bytes: package_manifest(0),
+                    },
+                    super::StoredFile {
+                        name: name.to_owned(),
+                        bytes: window.to_vec(),
+                    },
+                ],
+            );
+            let err = BackupService::open(store.clone())
+                .import(&package, 2)
+                .unwrap_err();
+            assert!(err.to_string().contains("不允许的路径"), "{name}: {err}");
+        }
+        let enabled = evil(
+            &temp,
+            vec![
+                super::StoredFile {
+                    name: "manifest.json".to_owned(),
+                    bytes: package_manifest(0),
+                },
+                super::StoredFile {
+                    name: "tool-enabled.json".to_owned(),
+                    bytes: br#"{"schemaVersion":1,"disabled":["lanwork.float-shell-demo"]}"#
+                        .to_vec(),
+                },
+            ],
+        );
+        let err = BackupService::open(store.clone())
+            .import(&enabled, 3)
+            .unwrap_err();
+        assert!(err.to_string().contains("不允许的路径"), "{err}");
+        assert!(store.data_dir().join("config.json").is_file());
+        assert!(!store.data_dir().join("tool-windows").exists());
+
+        std::fs::create_dir_all(store.data_dir().join("tool-windows")).unwrap();
+        std::fs::write(
+            store
+                .data_dir()
+                .join("tool-windows/lanwork.float-shell-demo.json"),
+            window,
+        )
+        .unwrap();
+        std::fs::write(
+            store.data_dir().join("tool-enabled.json"),
+            br#"{"schemaVersion":1,"disabled":["example.quota","lanwork.float-shell-demo"]}"#,
+        )
+        .unwrap();
+        let packed = super::super::package::collect(&store).unwrap();
+        assert!(packed.iter().all(|file| {
+            !file.name.contains("lanwork.")
+                && !file.bytes.windows(8).any(|window| window == b"lanwork.")
+        }));
+        let enabled = packed
+            .iter()
+            .find(|file| file.name == "tool-enabled.json")
+            .unwrap();
+        let text = String::from_utf8(enabled.bytes.clone()).unwrap();
+        assert!(text.contains("example.quota"));
+        assert!(!text.contains("lanwork."));
+    }
+
+    #[test]
+    fn a_skipped_tool_keeps_its_local_copy_and_an_absent_tool_is_replaced() {
+        let (temp, store) = store();
+        let data = store.data_dir();
+        write_local_tool(
+            &data,
+            "example.bad",
+            b"local-bad-manifest",
+            b"local-bad-entry",
+        );
+        write_local_tool(
+            &data,
+            "example.gone",
+            b"local-gone-manifest",
+            b"local-gone-entry",
+        );
+        for id in ["example.bad", "example.gone"] {
+            std::fs::create_dir_all(data.join("tool-storage")).unwrap();
+            std::fs::write(
+                data.join(format!("tool-storage/{id}.json")),
+                format!(r#"{{"schemaVersion":1,"entries":{{"note":"keep-{id}"}}}}"#),
+            )
+            .unwrap();
+            std::fs::create_dir_all(data.join("tool-windows")).unwrap();
+            std::fs::write(
+                data.join(format!("tool-windows/{id}.json")),
+                format!(r#"{{"schemaVersion":1,"open":true,"mark":"keep-{id}"}}"#),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            data.join("tool-enabled.json"),
+            br#"{"schemaVersion":1,"disabled":["example.bad","example.gone"]}"#,
+        )
+        .unwrap();
+        let capture = tools::SecretCapture::begin();
+        let mut files = quota_files("剩余额度", "function on_load() end\n");
+        files.push(super::StoredFile {
+            name: "tools/example.bad/manifest.toml".to_owned(),
+            bytes: b"not-a-manifest".to_vec(),
+        });
+        files.push(super::StoredFile {
+            name: "tool-storage/example.bad.json".to_owned(),
+            bytes: br#"{"schemaVersion":1,"entries":{"note":"from-package"}}"#.to_vec(),
+        });
+        files.push(super::StoredFile {
+            name: "tool-storage/example.quota.json".to_owned(),
+            bytes: br#"{"schemaVersion":1,"entries":{"note":"quota-storage"}}"#.to_vec(),
+        });
+        files.push(super::StoredFile {
+            name: "tool-windows/example.quota.json".to_owned(),
+            bytes: br#"{"schemaVersion":1,"open":true,"floatWindow":{"x":8,"y":9,"width":200,"height":120}}"#.to_vec(),
+        });
+        files.push(super::StoredFile {
+            name: "tool-enabled.json".to_owned(),
+            bytes: br#"{"schemaVersion":1,"disabled":["example.quota"]}"#.to_vec(),
+        });
+        let package = temp.path().join("skip.zip");
+        std::fs::write(
+            &package,
+            super::super::zipstore::write_stored(&files).unwrap(),
+        )
+        .unwrap();
+        BackupService::open(store.clone())
+            .import(&package, 4)
+            .unwrap();
+        assert_eq!(
+            capture.ids(),
+            vec!["example.quota".to_owned()],
+            "只有新恢复的工具清密钥，跳过的 example.bad 不清：{:?}",
+            capture.ids()
+        );
+        assert_eq!(
+            std::fs::read(data.join("tools/example.bad/manifest.toml")).unwrap(),
+            b"local-bad-manifest"
+        );
+        assert!(
+            std::fs::read_to_string(data.join("tool-storage/example.bad.json"))
+                .unwrap()
+                .contains("keep-example.bad")
+        );
+        assert!(
+            std::fs::read_to_string(data.join("tool-windows/example.bad.json"))
+                .unwrap()
+                .contains("keep-example.bad")
+        );
+        assert!(!data.join("tools/example.gone").exists());
+        assert!(!data.join("tool-storage/example.gone.json").exists());
+        assert!(!data.join("tool-windows/example.gone.json").exists());
+        assert!(
+            std::fs::read_to_string(data.join("tools/example.quota/main.lua"))
+                .unwrap()
+                .contains("on_load")
+        );
+        assert!(
+            std::fs::read_to_string(data.join("tool-storage/example.quota.json"))
+                .unwrap()
+                .contains("quota-storage")
+        );
+        let window = std::fs::read_to_string(data.join("tool-windows/example.quota.json")).unwrap();
+        assert!(window.contains("\"x\":8"));
+        assert!(!window.contains("\"open\":true"));
+        let enabled = std::fs::read_to_string(data.join("tool-enabled.json")).unwrap();
+        assert!(enabled.contains("example.quota"));
+        assert!(enabled.contains("example.bad"));
+        assert!(!enabled.contains("example.gone"));
+    }
+
+    #[test]
+    fn secrets_clear_only_when_the_manifest_or_entry_changes() {
+        let (temp, store) = store();
+        let entry = "function on_load() end\n";
+        let changed = "function on_load() end\n--changed\n";
+        let first = temp.path().join("first.zip");
+        std::fs::write(
+            &first,
+            super::super::zipstore::write_stored(&quota_files("剩余额度", entry)).unwrap(),
+        )
+        .unwrap();
+        let capture = tools::SecretCapture::begin();
+        BackupService::open(store.clone())
+            .import(&first, 11)
+            .unwrap();
+        assert_eq!(capture.ids(), vec!["example.quota".to_owned()]);
+        drop(capture);
+
+        let capture = tools::SecretCapture::begin();
+        BackupService::open(store.clone())
+            .import(&first, 12)
+            .unwrap();
+        assert!(capture.ids().is_empty(), "{:?}", capture.ids());
+        drop(capture);
+
+        let next = temp.path().join("entry.zip");
+        std::fs::write(
+            &next,
+            super::super::zipstore::write_stored(&quota_files("剩余额度", changed)).unwrap(),
+        )
+        .unwrap();
+        let capture = tools::SecretCapture::begin();
+        BackupService::open(store.clone())
+            .import(&next, 13)
+            .unwrap();
+        assert_eq!(capture.ids(), vec!["example.quota".to_owned()]);
+        drop(capture);
+
+        let manifest_only = temp.path().join("manifest.zip");
+        std::fs::write(
+            &manifest_only,
+            super::super::zipstore::write_stored(&quota_files("另一句", changed)).unwrap(),
+        )
+        .unwrap();
+        let capture = tools::SecretCapture::begin();
+        BackupService::open(store.clone())
+            .import(&manifest_only, 14)
+            .unwrap();
+        assert_eq!(capture.ids(), vec!["example.quota".to_owned()]);
+        drop(capture);
+
+        let capture = tools::SecretCapture::begin();
+        BackupService::open(store)
+            .import(&manifest_only, 15)
+            .unwrap();
+        assert!(capture.ids().is_empty(), "{:?}", capture.ids());
+    }
+
+    fn quota_files(description: &str, entry: &str) -> Vec<super::StoredFile> {
+        vec![
+            super::StoredFile {
+                name: "manifest.json".to_owned(),
+                bytes: package_manifest(0),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/manifest.toml".to_owned(),
+                bytes: format!(
+                    "id = \"example.quota\"\nname = \"API 额度\"\ndescription = \"{description}\"\nentry = \"main.lua\"\nservices = [\"storage\"]\n\n[[component]]\nid = \"summary\"\ncomponent = \"text\"\ntext = \"没有数据\"\n"
+                )
+                .into_bytes(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/main.lua".to_owned(),
+                bytes: entry.as_bytes().to_vec(),
+            },
+        ]
+    }
+
+    fn write_local_tool(data: &std::path::Path, id: &str, manifest: &[u8], entry: &[u8]) {
+        let dir = data.join("tools").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+        std::fs::write(dir.join("main.lua"), entry).unwrap();
     }
 
     #[test]

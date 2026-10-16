@@ -806,7 +806,12 @@ fn export_and_import_keep_tool_data_and_leave_secrets_behind() {
     write_rel(
         &fx.store,
         "tool-enabled.json",
-        r#"{"schemaVersion":1,"disabled":["example.quota"],"token":"enabled-extra-marker"}"#,
+        r#"{"schemaVersion":1,"disabled":["example.quota","lanwork.float-shell-demo"],"token":"enabled-extra-marker"}"#,
+    );
+    write_rel(
+        &fx.store,
+        "tool-windows/lanwork.float-shell-demo.json",
+        r#"{"schemaVersion":1,"open":true,"floatWindow":{"x":1,"y":1,"width":200,"height":120}}"#,
     );
     write_rel(&fx.store, "credentials.json", "credential-marker-77");
     for scratch in [
@@ -841,6 +846,7 @@ fn export_and_import_keep_tool_data_and_leave_secrets_behind() {
     assert!(!packed.contains(".incoming-"));
     assert!(!packed.contains(".previous-"));
     assert!(!packed.contains(".hold-"));
+    assert!(!packed.contains("lanwork.float-shell-demo"));
     let log = std::fs::read_to_string(fx.store.log_path()).unwrap_or_default();
     assert!(log.contains("工具未导出"));
     assert!(log.contains("example.bad"));
