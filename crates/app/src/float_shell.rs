@@ -1,7 +1,7 @@
 //! 工具悬浮窗。外壳负责置顶、拖动、贴边和记忆，内容由调用方放进槽里。
 //!
-//! 应用页的「悬浮窗」走 [`open_tool`]，只打开窗口，不跑清单，也不开始计时。
-//! 隐藏命令 `lanwork --float-shell-demo` 仍打开一个带「示例」的窗口。
+//! 应用页的「悬浮窗」走 [`open_tool`]，打开窗口后运行已安装工具。不自动开始计时组件。
+//! 隐藏命令 `lanwork --float-shell-demo` 仍打开一个带「示例」的窗口，不跑清单。
 //! 记录在数据目录的 `tool-windows/<id>.json`。不进叠页，也不进导出白名单。
 //! 启用开关关掉的工具，即使记录里 `open` 为真，启动时也不再打开。
 
@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
+use lanwork_core::config::ConfigCommands;
 use lanwork_core::panel::{
     EnabledBytes, PxBox, ScanSkip, ScreenBounds, ShellBytes, ShellRecord, geometry_for_open,
     read_enabled, read_record, record_relative, scan_records, shell_default_origin,
@@ -16,6 +17,7 @@ use lanwork_core::panel::{
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
+use lanwork_core::todos::TodoCommands;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle};
 use windows::Win32::Foundation::HWND;
@@ -55,7 +57,8 @@ thread_local! {
     static SHELLS: RefCell<Option<Shells>> = const { RefCell::new(None) };
 }
 
-pub(crate) fn install(store: Store) {
+pub(crate) fn install(store: Store, todos: TodoCommands, config: ConfigCommands) {
+    crate::tool_runtime::install(store.clone(), todos, config);
     bar_win::add_move_hook(on_move);
     SHELLS.with(|cell| {
         *cell.borrow_mut() = Some(Shells {
@@ -97,7 +100,7 @@ pub(crate) fn schedule_demo() {
     });
 }
 
-/// 打开这个工具的悬浮窗。已经开着时只把焦点给它。不设置示例文字，也不开始计时。
+/// 打开这个工具的悬浮窗。已经开着时只把焦点给它。不自动开始计时组件。
 pub(crate) fn open_tool(tool_id: &str) -> Result<(), String> {
     open(tool_id, None)
 }
@@ -108,7 +111,12 @@ pub(crate) fn close_tool(tool_id: &str) {
     with_window(&tool_id, ShellWindow::request_close);
 }
 
+pub(crate) fn on_todos_changed() {
+    crate::tool_runtime::on_todos_changed();
+}
+
 pub(crate) fn save_for_quit() {
+    crate::tool_runtime::detach_all();
     SHELLS.with(|cell| {
         let Ok(mut slot) = cell.try_borrow_mut() else {
             return;
@@ -355,6 +363,11 @@ impl Shells {
         };
         window.persist(&self.store);
         self.windows.insert(tool_id.to_owned(), window);
+        if tool_id != DEMO_ID
+            && let Some(window) = self.windows.get(tool_id)
+        {
+            crate::tool_runtime::attach(tool_id, window.ui.clone_strong());
+        }
         Ok(())
     }
 }
@@ -376,6 +389,13 @@ fn wire(ui: &FloatShell, tool_id: &str) {
     ui.on_drag_requested({
         let id = id.clone();
         move || with_window(&id, |window, _| window.drag())
+    });
+    ui.on_row_clicked({
+        let id = id.clone();
+        move |row| {
+            let row = row.to_string();
+            crate::tool_runtime::click(&id, &row);
+        }
     });
     ui.window().on_close_requested({
         let id = id.clone();
@@ -656,6 +676,7 @@ impl ShellWindow {
         if self.closed {
             return;
         }
+        crate::tool_runtime::detach(&self.id);
         self.preserve_file = false;
         self.closed = true;
         self.timer.stop();

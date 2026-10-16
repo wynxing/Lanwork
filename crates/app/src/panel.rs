@@ -76,6 +76,11 @@ pub(crate) fn with_shelves(action: impl FnOnce(&mut ShelvesPage, &Panel) + 'stat
     with_panel(move |panel| action(&mut panel.shelves, &panel.ui));
 }
 
+/// 应用页换了分类或打开确认框之后，重新计算放下区域。
+pub(crate) fn refresh_drop() {
+    with_panel(|panel| panel.sync_drop());
+}
+
 /// 搜索条改了隐藏名单之后，设置页如果在，就重画那一节。
 pub(crate) fn refresh_hidden_apps() {
     with_settings(|page, ui| page.refresh_hidden(ui));
@@ -395,10 +400,17 @@ impl Controller {
                 .log_warn("面板按键子类没有装上，设置页不能录入热键");
         }
         if let Some(hwnd) = self.hwnd() {
+            let state = Arc::clone(&self.drop_state);
             match shelf_dnd::register(
                 hwnd,
                 Arc::clone(&self.drop_state),
-                Arc::new(shelves_page::dropped),
+                Arc::new(move |incoming| {
+                    if state.files_only() {
+                        crate::apps_page::dropped(incoming);
+                    } else {
+                        shelves_page::dropped(incoming);
+                    }
+                }),
             ) {
                 Ok(registration) => self.drop_registration = Some(registration),
                 Err(message) => self
@@ -572,10 +584,12 @@ impl Controller {
         self.sync_drop();
     }
 
-    /// 放下目标只在面板显示、收纳标签打开时接受，区域是收纳页在窗口里的位置。
+    /// 收纳标签接受文件和网址。应用页的「自定义」在没有确认框时只接受一个文件夹或 zip。
     fn sync_drop(&self) {
-        let accepting = self.visible && self.tab == PanelTab::Shelves;
-        self.drop_state.set_accepting(accepting);
+        let shelves = self.visible && self.tab == PanelTab::Shelves;
+        let apps = self.visible && self.tab == PanelTab::Apps && self.apps.accepts_drop();
+        self.drop_state.set_files_only(apps);
+        self.drop_state.set_accepting(shelves || apps);
         self.drop_state.set_zone(DropZone {
             x: self.ui.get_shelf_zone_x(),
             y: self.ui.get_shelf_zone_y(),

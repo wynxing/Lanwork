@@ -6,7 +6,8 @@
 //! 协程不放入。钩子按 Lua 线程安装，协程是另一条线程，超时钩子管不到。
 //! `require` 和多个 Lua 文件是否允许仍待定。
 //! `timer.after` 的最短秒数待定，这次任意正数都可以登记。
-//! 待办由调用方注入。这一步不打开数据目录，也不调用 `TodoCommands`。
+//! 待办由调用方注入。完成一条时，若调用方提供了回调，就交给那个回调；否则只改注入的列表。
+//! 这个模块不打开数据目录。`storage` 的落盘也由调用方的回调完成。
 //! `notify.send` 在 `Options.quiet` 为真时不弹出，只记入待补发。安静时段是否成立由调用方判断。
 //!
 //! 内存字节上限仍待定。这里的 `MEMORY_CAP` 只是临时天花板，超过后与超时一样中止这次回调，不是产品规则。
@@ -45,6 +46,10 @@ const STRING_REP_CAP: usize = 1024 * 1024;
 /// 10 万个元素的默认排序仍落在 1 秒内；再大就拒绝这次调用。
 const SORT_LEN_CAP: i64 = 100_000;
 const HTTP_BUDGET: Duration = Duration::from_secs(5);
+/// 键和值的上限仍待定。有落盘回调时才应用，避免把过大的文本写进数据目录。
+const STORAGE_KEY_MAX: usize = 256;
+const STORAGE_VALUE_MAX: usize = 256 * 1024;
+const STORAGE_COUNT_MAX: usize = 256;
 /// 回调里再发请求会再等一轮。不停地一轮接一轮，规格没有写。最多 8 轮，避免宿主停不下来。
 const HTTP_DRAIN_ROUNDS: u32 = 8;
 const SERVICE_NAMES: &[&str] = &["timer", "notify", "storage", "todo", "http", "secret"];
@@ -131,6 +136,11 @@ pub struct Snapshot {
     pub status: String,
 }
 
+/// 把整份存储写到调用方的文件。失败时这次 `set` 不改内存。
+pub type StoragePersist = Rc<dyn Fn(&BTreeMap<String, String>) -> Result<(), String>>;
+/// 完成一条待办。`Err` 的文字原样返回给脚本。
+pub type TodoComplete = Rc<dyn Fn(&str) -> Result<(), String>>;
+
 pub struct Options {
     pub todos: Vec<TodoItem>,
     pub durations: Durations,
@@ -139,6 +149,13 @@ pub struct Options {
     pub transport: Arc<dyn HttpTransport>,
     /// 连接加读取的等待。产品上的秒数仍待定。
     pub http_budget: Duration,
+    /// 打开时已经保存的文本。没有落盘回调时，`set` 只改内存。
+    pub storage: BTreeMap<String, String>,
+    /// 每次成功写入整份映射。失败时这次 `set` 不改内存，并记下「写盘失败」。
+    pub persist_storage: Option<StoragePersist>,
+    /// 把完成交给待办存储。`Ok` 表示完成或已经完成。`Err` 的文字原样返回给脚本。
+    /// 找不到时调用方应返回「找不到待办」。没有这个回调时只改注入的列表。
+    pub complete_todo: Option<TodoComplete>,
 }
 
 impl Default for Options {
@@ -150,6 +167,9 @@ impl Default for Options {
             store: Rc::new(RefCell::new(crate::secret::MemorySecretStore::default())),
             transport: Arc::new(DenyTransport),
             http_budget: HTTP_BUDGET,
+            storage: BTreeMap::new(),
+            persist_storage: None,
+            complete_todo: None,
         }
     }
 }
@@ -229,6 +249,8 @@ struct Inner {
     transport: Arc<dyn HttpTransport>,
     http_sends: u32,
     inflight: Vec<Inflight>,
+    persist_storage: Option<StoragePersist>,
+    complete_todo: Option<TodoComplete>,
 }
 
 struct Inflight {
@@ -297,7 +319,7 @@ impl Session {
             todos: options.todos,
             durations: options.durations,
             quiet: options.quiet,
-            storage: BTreeMap::new(),
+            storage: options.storage,
             timers: Vec::new(),
             next_timer: 1,
             unauthorized: false,
@@ -306,6 +328,8 @@ impl Session {
             transport: options.transport,
             http_sends: 0,
             inflight: Vec::new(),
+            persist_storage: options.persist_storage,
+            complete_todo: options.complete_todo,
         }));
         lua.set_app_data(Rc::clone(&inner));
         bind(&lua, Rc::clone(&inner))?;
@@ -496,43 +520,87 @@ impl Session {
             }
             for item in batch {
                 let response = item.rx.recv_timeout(self.http_budget);
-                let callback = self.lua.registry_value::<Function>(&item.callback).ok();
-                self.lua.remove_registry_value(item.callback).ok();
-                let Some(callback) = callback else {
-                    continue;
-                };
-                let (ok, status, body, error) = match response {
-                    Ok(Ok(response)) => {
-                        if response_leaks(&response, &item.secret, item.header_value.as_deref()) {
-                            let text = HttpDeny::RequestFailed.text().to_string();
-                            self.inner.borrow_mut().note(&text);
-                            (false, Some(response.status), String::new(), text)
-                        } else {
-                            let ok = (200..300).contains(&response.status);
-                            let error = if ok {
-                                String::new()
-                            } else {
-                                HttpDeny::RequestFailed.text().to_string()
-                            };
-                            if !ok {
-                                self.inner.borrow_mut().note(&error);
-                            }
-                            (ok, Some(response.status), response.body, error)
-                        }
-                    }
-                    Ok(Err(_)) | Err(_) => {
-                        let text = HttpDeny::RequestFailed.text().to_string();
-                        self.inner.borrow_mut().note(&text);
-                        (false, None, String::new(), text)
-                    }
-                };
-                self.run_lua(
-                    || deliver(&self.lua, &callback, ok, status, &body, &error),
-                    false,
-                );
+                self.settle_http(item, response);
             }
         }
         self.drop_inflight();
+    }
+
+    /// 取已经回来的响应。还在等的留在队列里，不阻塞。
+    pub fn poll_http(&self) {
+        let batch = std::mem::take(&mut self.inner.borrow_mut().inflight);
+        let mut waiting = Vec::new();
+        let mut ready = Vec::new();
+        for item in batch {
+            match item.rx.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => waiting.push(item),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    ready.push((item, Err(mpsc::RecvTimeoutError::Disconnected)));
+                }
+                Ok(response) => ready.push((item, Ok(response))),
+            }
+        }
+        {
+            let mut inner = self.inner.borrow_mut();
+            let fresh = std::mem::take(&mut inner.inflight);
+            inner.inflight = waiting;
+            inner.inflight.extend(fresh);
+        }
+        for (item, response) in ready {
+            self.settle_http(item, response);
+        }
+    }
+
+    fn settle_http(
+        &self,
+        item: Inflight,
+        response: Result<
+            Result<crate::http::HttpResponse, crate::http::TransportError>,
+            mpsc::RecvTimeoutError,
+        >,
+    ) {
+        let callback = self.lua.registry_value::<Function>(&item.callback).ok();
+        self.lua.remove_registry_value(item.callback).ok();
+        let Some(callback) = callback else {
+            return;
+        };
+        let (ok, status, body, error) = match response {
+            Ok(Ok(response)) => {
+                if response_leaks(&response, &item.secret, item.header_value.as_deref()) {
+                    let text = HttpDeny::RequestFailed.text().to_string();
+                    self.inner.borrow_mut().note(&text);
+                    (false, Some(response.status), String::new(), text)
+                } else {
+                    let ok = (200..300).contains(&response.status);
+                    let error = if ok {
+                        String::new()
+                    } else {
+                        HttpDeny::RequestFailed.text().to_string()
+                    };
+                    if !ok {
+                        self.inner.borrow_mut().note(&error);
+                    }
+                    (ok, Some(response.status), response.body, error)
+                }
+            }
+            Ok(Err(_)) | Err(_) => {
+                let text = HttpDeny::RequestFailed.text().to_string();
+                self.inner.borrow_mut().note(&text);
+                (false, None, String::new(), text)
+            }
+        };
+        self.run_lua(
+            || deliver(&self.lua, &callback, ok, status, &body, &error),
+            false,
+        );
+    }
+
+    pub fn take_popped(&self) -> Vec<Notification> {
+        std::mem::take(&mut self.inner.borrow_mut().popped)
+    }
+
+    pub fn take_deferred(&self) -> Vec<Notification> {
+        std::mem::take(&mut self.inner.borrow_mut().deferred)
     }
 
     fn finish(&self, result: mlua::Result<()>) {
@@ -1235,8 +1303,23 @@ fn bind_storage(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
         .set(
             "set",
             lua.create_function(move |_, (key, value): (String, String)| {
-                set_inner.borrow_mut().storage.insert(key, value);
-                Ok(true)
+                let persist = set_inner.borrow().persist_storage.clone();
+                let Some(persist) = persist else {
+                    set_inner.borrow_mut().storage.insert(key, value);
+                    return Ok((Some(true), None::<String>));
+                };
+                let mut next = set_inner.borrow().storage.clone();
+                if storage_rejected(&next, &key, &value) {
+                    set_inner.borrow_mut().note("写盘失败");
+                    return Ok((None::<bool>, Some("写盘失败".to_string())));
+                }
+                next.insert(key, value);
+                if persist(&next).is_err() {
+                    set_inner.borrow_mut().note("写盘失败");
+                    return Ok((None::<bool>, Some("写盘失败".to_string())));
+                }
+                set_inner.borrow_mut().storage = next;
+                Ok((Some(true), None::<String>))
             })
             .map_err(|err| err.to_string())?,
         )
@@ -1245,6 +1328,14 @@ fn bind_storage(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
         .set("storage", storage)
         .map_err(|err| err.to_string())?;
     Ok(())
+}
+
+fn storage_rejected(map: &BTreeMap<String, String>, key: &str, value: &str) -> bool {
+    if key.chars().count() > STORAGE_KEY_MAX || value.len() > STORAGE_VALUE_MAX {
+        return true;
+    }
+    let extra = usize::from(!map.contains_key(key));
+    map.len().saturating_add(extra) > STORAGE_COUNT_MAX
 }
 
 fn bind_todo(
@@ -1291,6 +1382,23 @@ fn bind_todo(
         todo.set(
             "complete",
             lua.create_function(move |_, id: String| {
+                let callback = complete_inner.borrow().complete_todo.clone();
+                if let Some(callback) = callback {
+                    return match callback(&id) {
+                        Ok(()) => {
+                            if let Some(item) = complete_inner
+                                .borrow_mut()
+                                .todos
+                                .iter_mut()
+                                .find(|item| item.id == id && !item.trashed)
+                            {
+                                item.completed = true;
+                            }
+                            Ok((Some(true), None::<String>))
+                        }
+                        Err(message) => Ok((None::<bool>, Some(message))),
+                    };
+                }
                 let mut inner = complete_inner.borrow_mut();
                 let Some(item) = inner
                     .todos

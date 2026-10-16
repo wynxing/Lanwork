@@ -276,3 +276,36 @@ fn the_more_menu_lists_the_items_it_is_given_and_import_is_a_separate_card() {
     );
     assert_eq!(imports.get(), 1);
 }
+
+#[test]
+fn the_import_card_lists_permissions_and_the_update_note_is_kept() {
+    let ui = open();
+    let data = ui.global::<AppsPageData>();
+    data.set_dialog_kind(SharedString::from("perm"));
+    data.set_dialog_update(true);
+    data.set_dialog_confirm(true);
+    data.set_dialog_name(SharedString::from("API 额度"));
+    data.set_dialog_detail(SharedString::from("服务商接口的剩余额度"));
+    data.set_dialog_lines(ModelRc::new(VecModel::from(vec![
+        SharedString::from("访问 api.example.com"),
+        SharedString::from("使用你填写的 API 密钥"),
+    ])));
+    data.set_dialog_note(SharedString::from("保留数据"));
+    data.set_dialog_open(true);
+    settle(&ui);
+    assert!(data.get_dialog_shown());
+    assert_eq!(data.get_dialog_kicker().as_str(), "更新");
+    assert_eq!(data.get_dialog_note_text().as_str(), "保留数据");
+    assert!(data.get_confirm_shown());
+    assert_eq!(data.get_confirm_label().as_str(), "确认");
+    assert_eq!(data.get_dialog_line().as_str(), "访问 api.example.com");
+    assert!(!data.get_danger_shown());
+
+    data.set_dialog_kind(SharedString::from("uninstall"));
+    data.set_dialog_confirm(false);
+    data.set_dialog_update(false);
+    data.set_dialog_note(SharedString::from("会删除这个工具的存储和密钥。"));
+    settle(&ui);
+    assert!(data.get_danger_shown());
+    assert!(!data.get_confirm_shown());
+}

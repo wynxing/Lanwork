@@ -87,6 +87,10 @@ mod toast;
 #[cfg(windows)]
 mod todo_float;
 #[cfg(windows)]
+mod tool_pick;
+#[cfg(windows)]
+mod tool_runtime;
+#[cfg(windows)]
 mod update;
 #[cfg(windows)]
 mod update_http;

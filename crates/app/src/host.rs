@@ -189,7 +189,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         );
     }
     todo_float::install(todos.clone(), store.clone());
-    float_shell::install(store.clone());
+    float_shell::install(store.clone(), todos.clone(), config.clone());
     float_shell::schedule_restore();
     if std::env::args()
         .skip(1)
@@ -385,6 +385,7 @@ fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
                 panel::on_todos_changed();
                 shelf_float::on_todos_changed();
                 todo_float::on_todos_changed();
+                float_shell::on_todos_changed();
             });
         }
     });

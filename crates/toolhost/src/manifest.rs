@@ -56,6 +56,8 @@ pub struct Manifest {
     pub domains: Vec<String>,
     pub secrets: Vec<SecretDecl>,
     pub widgets: Vec<WidgetDecl>,
+    /// 入口脚本相对工具文件夹的路径。不含 `..`。
+    pub entry: String,
     pub script: String,
 }
 
@@ -136,6 +138,7 @@ pub fn parse(text: &str, origin: Origin) -> Result<(Manifest, String), String> {
             domains,
             secrets,
             widgets,
+            entry: entry.clone(),
             script: String::new(),
         },
         entry,

@@ -1,7 +1,7 @@
 //! 面板「应用」页里不画窗口的决定：分类、卡片、空状态、菜单项和启用状态。
 //!
-//! 可见行为见 `docs/tools.md`「应用页」。导入、卸载、更新和查看权限的流程不在这里。
-//! 番茄钟迁移也不在这里。还没有已安装工具时，列表是空的。
+//! 可见行为见 `docs/tools.md`「应用页」。导入确认和卸载的句子在 `tool_install`。
+//! 番茄钟迁移不在这里。没有 `tools/` 时，列表是空的。
 //! 启用状态写在数据目录的 `tool-enabled.json`。安装副本的路径规格还没定，
 //! 这份文件名因此也还不是产品规则，并且不进导出白名单。
 
@@ -92,10 +92,10 @@ pub enum EnabledBytes {
     Corrupt,
 }
 
-/// 这一步没有安装目录，也没有内置番茄钟。返回空列表。
+/// 已安装的自定义工具。内置番茄钟还没有迁过来，所以内置列表仍是空的。
 #[must_use]
-pub fn installed_tools(_data_dir: &Path) -> Vec<ListedTool> {
-    Vec::new()
+pub fn installed_tools(data_dir: &Path) -> Vec<ListedTool> {
+    super::tool_install::list_custom(data_dir)
 }
 
 /// 当前分类下的卡片，顺序与 `tools` 相同。

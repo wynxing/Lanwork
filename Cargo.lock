@@ -2774,6 +2774,7 @@ dependencies = [
 name = "lanwork-toolhost"
 version = "0.4.0"
 dependencies = [
+ "flate2",
  "mlua",
  "rcgen",
  "rustls",

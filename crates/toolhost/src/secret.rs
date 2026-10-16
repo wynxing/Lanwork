@@ -14,6 +14,19 @@ pub fn spike_target_name(tool_id: &str, secret_id: &str) -> String {
     format!("Lanwork.Spike.ToolHost/{tool_id}/{secret_id}")
 }
 
+/// 产品里建议使用的目标名。规格仍待定。
+///
+/// 不是安全测试的 `Lanwork.Spike.ToolHost/`，也不是隐藏命令的 `Lanwork.ToolHost.Verify/`。
+/// 持久级别规格也没定。产品存储用本机级，这样注销后密钥还在，卸载才删得掉。
+pub fn product_target_name(tool_id: &str, secret_id: &str) -> String {
+    format!("Lanwork.Tool/{tool_id}/{secret_id}")
+}
+
+/// `CredEnumerateW` 用的前缀，末尾有斜线，避免前缀撞上另一个工具 id。
+pub fn product_target_prefix(tool_id: &str) -> String {
+    format!("Lanwork.Tool/{tool_id}/")
+}
+
 pub trait SecretStore {
     fn put(&mut self, tool_id: &str, secret_id: &str, value: &str) -> Result<(), String>;
     fn read(&self, tool_id: &str, secret_id: &str) -> Result<Option<String>, String>;
@@ -226,3 +239,62 @@ mod wincred {
 
 #[cfg(windows)]
 pub use wincred::WindowsCredentialStore;
+
+/// 已安装工具的密钥。目标名见 [`product_target_name`]。卸载时按前缀删掉。
+#[cfg(windows)]
+pub struct ProductCredentialStore;
+
+#[cfg(windows)]
+impl SecretStore for ProductCredentialStore {
+    fn put(&mut self, tool_id: &str, secret_id: &str, value: &str) -> Result<(), String> {
+        wincred::credential_write(
+            &product_target_name(tool_id, secret_id),
+            value,
+            CredentialPersist::LocalMachine,
+        )
+    }
+
+    fn read(&self, tool_id: &str, secret_id: &str) -> Result<Option<String>, String> {
+        wincred::credential_read(&product_target_name(tool_id, secret_id))
+    }
+
+    fn remove(&mut self, tool_id: &str, secret_id: &str) -> Result<(), String> {
+        wincred::credential_delete(&product_target_name(tool_id, secret_id))
+    }
+}
+
+/// 删掉这个工具在凭据管理器里的全部产品密钥。没有条目时成功。
+///
+/// 非 Windows 上没有凭据管理器，调用成功且什么都不做。
+pub fn delete_product_secrets(tool_id: &str) -> Result<(), String> {
+    let prefix = product_target_prefix(tool_id);
+    #[cfg(windows)]
+    {
+        let targets = wincred::credential_list_targets(&prefix)?;
+        for target in targets {
+            if target.starts_with(&prefix) {
+                wincred::credential_delete(&target)?;
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = prefix;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::{product_target_name, spike_target_name};
+
+    #[test]
+    fn product_target_is_separate_from_the_spike_prefix() {
+        let name = product_target_name("example.api-quota", "api_key");
+        assert_eq!(name, "Lanwork.Tool/example.api-quota/api_key");
+        assert!(!name.contains("secret-value"));
+        assert_ne!(name, spike_target_name("example.api-quota", "api_key"));
+        assert!(!name.starts_with("Lanwork.Spike"));
+        assert!(!name.starts_with("Lanwork.ToolHost.Verify"));
+    }
+}

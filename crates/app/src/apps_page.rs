@@ -1,21 +1,27 @@
-//! 面板的「应用」页。分类、卡片、启用开关，以及用悬浮窗外壳打开窗口。
+//! 面板的「应用」页。分类、卡片、启用开关，导入、更新、卸载和查看权限。
 //!
-//! 已安装工具这一步还没有：导入是下一步，番茄钟迁移更后。列表为空时按规格显示空状态。
-//! 「导入+」和「⋯」里的项按规格出现。点击它们不开始导入、更新、卸载或查看权限。
-//! 「悬浮窗」只打开窗口，不跑清单，也不开始计时。
+//! 「悬浮窗」打开外壳，并在里面运行已安装工具的清单。不自动开始计时组件。
 //! 启用状态写在数据目录的 `tool-enabled.json`。这份文件名规格还没定，不进导出白名单。
+//! 安装副本的路径也还没定，这一版用 `tools/<工具 id>/`。
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use lanwork_core::panel::{
-    EnabledBytes, ToolOrigin, installed_tools, is_enabled, menu_items, read_enabled, set_disabled,
-    show_import, visible_cards, write_enabled,
+    EnabledBytes, INVALID_PACKAGE, ToolOrigin, UNINSTALL_BODY, UPDATE_NOTE, install_copy,
+    installed_tools, is_enabled, menu_items, read_enabled, remove_installed, set_disabled,
+    show_import, tool_dir, visible_cards, write_enabled,
 };
 use lanwork_core::storage::Store;
+use lanwork_toolhost::{
+    Grant, StagedPackage, decode_grant, delete_product_secrets, encode_grant, grant_lines,
+    inspect_path, permission_lines,
+};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::float_shell;
-use crate::panel::with_apps;
+use crate::panel::{self, with_apps};
+use crate::shelf_dnd::IncomingDrop;
 use crate::{AppToolCard, AppsPageData, Panel};
 
 pub(crate) struct AppsPage {
@@ -24,6 +30,14 @@ pub(crate) struct AppsPage {
     disabled: BTreeSet<String>,
     /// 文件读不了，或不认识的 schema。不把原文覆盖掉。
     unreadable: bool,
+    flow: Flow,
+}
+
+enum Flow {
+    None,
+    Import(Box<StagedPackage>),
+    Uninstall { id: String },
+    View,
 }
 
 impl AppsPage {
@@ -34,6 +48,7 @@ impl AppsPage {
             origin: ToolOrigin::Builtin,
             disabled: BTreeSet::new(),
             unreadable: false,
+            flow: Flow::None,
         }
     }
 
@@ -46,6 +61,23 @@ impl AppsPage {
         let data = ui.global::<AppsPageData>();
         data.set_menu_open(false);
         data.set_menu_index(-1);
+    }
+
+    /// 「自定义」且没有确认框时，才接受拖入的文件夹或 zip。
+    pub(crate) fn accepts_drop(&self) -> bool {
+        self.origin == ToolOrigin::Custom && matches!(self.flow, Flow::None)
+    }
+
+    pub(crate) fn import_paths(&mut self, ui: &Panel, paths: Vec<PathBuf>) {
+        if !matches!(self.flow, Flow::None) {
+            return;
+        }
+        let [path] = paths.as_slice() else {
+            self.store.log_warn("一次只能导入一个工具包");
+            ui.set_error(INVALID_PACKAGE.into());
+            return;
+        };
+        self.stage_path(ui, path);
     }
 
     fn reload(&mut self, ui: &Panel) {
@@ -92,6 +124,7 @@ impl AppsPage {
         self.origin = origin;
         self.dismiss(ui);
         self.push(ui);
+        panel::refresh_drop();
     }
 
     fn open_float(&self, ui: &Panel, id: &str) {
@@ -155,6 +188,234 @@ impl AppsPage {
         data.set_menu_index(index);
         data.set_menu_open(true);
     }
+
+    fn menu_chosen(&mut self, ui: &Panel, index: i32) {
+        let tools = installed_tools(&self.store.data_dir());
+        let disabled = if self.unreadable {
+            &BTreeSet::new()
+        } else {
+            &self.disabled
+        };
+        let cards = visible_cards(self.origin, &tools, disabled);
+        let menu_index = ui.global::<AppsPageData>().get_menu_index();
+        let Some(card) = usize::try_from(menu_index)
+            .ok()
+            .and_then(|index| cards.get(index))
+        else {
+            self.dismiss(ui);
+            return;
+        };
+        let items = menu_items(card.origin);
+        let Some(label) = usize::try_from(index)
+            .ok()
+            .and_then(|index| items.get(index).copied())
+        else {
+            self.dismiss(ui);
+            return;
+        };
+        let id = card.id.clone();
+        let name = card.name.clone();
+        self.dismiss(ui);
+        if !matches!(self.flow, Flow::None) {
+            return;
+        }
+        match label {
+            "更新" => self.pick(ui),
+            "卸载" => self.show_uninstall(ui, &id, &name),
+            "查看权限" => self.show_view(ui, &id),
+            _ => {}
+        }
+    }
+
+    fn pick(&mut self, ui: &Panel) {
+        if !matches!(self.flow, Flow::None) {
+            return;
+        }
+        let Some(hwnd) = crate::bar_win::hwnd_of(ui.window()) else {
+            self.store.log_warn("面板没有窗口句柄，不能选择工具包");
+            ui.set_error(INVALID_PACKAGE.into());
+            return;
+        };
+        match crate::tool_pick::pick_package(hwnd) {
+            Ok(None) => {}
+            Ok(Some(path)) => self.stage_path(ui, &path),
+            Err(message) => {
+                self.store.log_warn(&message);
+                ui.set_error(INVALID_PACKAGE.into());
+            }
+        }
+    }
+
+    fn stage_path(&mut self, ui: &Panel, path: &std::path::Path) {
+        if !matches!(self.flow, Flow::None) {
+            return;
+        }
+        match inspect_path(path) {
+            Ok(staged) => self.show_import(ui, staged),
+            Err(err) => {
+                self.store
+                    .log_warn(&format!("工具包没有通过：{}", err.detail()));
+                ui.set_error(err.to_string().into());
+            }
+        }
+    }
+
+    fn show_import(&mut self, ui: &Panel, staged: StagedPackage) {
+        let update = installed_tools(&self.store.data_dir())
+            .iter()
+            .any(|tool| tool.id == staged.manifest.id);
+        let lines = string_model(&permission_lines(&staged.manifest));
+        let data = ui.global::<AppsPageData>();
+        data.set_dialog_kind("perm".into());
+        data.set_dialog_update(update);
+        data.set_dialog_confirm(true);
+        data.set_dialog_name(staged.manifest.name.as_str().into());
+        data.set_dialog_detail(staged.manifest.description.as_str().into());
+        data.set_dialog_lines(lines);
+        data.set_dialog_note(if update { UPDATE_NOTE } else { "" }.into());
+        data.set_dialog_open(true);
+        self.flow = Flow::Import(Box::new(staged));
+        self.dismiss(ui);
+        panel::refresh_drop();
+    }
+
+    fn show_uninstall(&mut self, ui: &Panel, id: &str, name: &str) {
+        let data = ui.global::<AppsPageData>();
+        data.set_dialog_kind("uninstall".into());
+        data.set_dialog_update(false);
+        data.set_dialog_confirm(false);
+        data.set_dialog_name(name.into());
+        data.set_dialog_detail(SharedString::new());
+        data.set_dialog_lines(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
+        data.set_dialog_note(UNINSTALL_BODY.into());
+        data.set_dialog_open(true);
+        self.flow = Flow::Uninstall { id: id.to_owned() };
+        panel::refresh_drop();
+    }
+
+    fn show_view(&mut self, ui: &Panel, id: &str) {
+        let tools = installed_tools(&self.store.data_dir());
+        let Some(card) = tools.iter().find(|tool| tool.id == id) else {
+            return;
+        };
+        let Some(dir) = tool_dir(&self.store.data_dir(), id) else {
+            ui.set_error(INVALID_PACKAGE.into());
+            return;
+        };
+        let bytes = match std::fs::read(dir.join(lanwork_core::panel::GRANT_FILE)) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.store.log_warn(&format!("权限记录没有读到：{err}"));
+                ui.set_error(INVALID_PACKAGE.into());
+                return;
+            }
+        };
+        let Some(grant) = decode_grant(&bytes) else {
+            self.store.log_warn("权限记录读不了");
+            ui.set_error(INVALID_PACKAGE.into());
+            return;
+        };
+        let data = ui.global::<AppsPageData>();
+        data.set_dialog_kind("perm".into());
+        data.set_dialog_update(false);
+        data.set_dialog_confirm(false);
+        data.set_dialog_name(card.name.as_str().into());
+        data.set_dialog_detail(card.description.as_str().into());
+        data.set_dialog_lines(string_model(&grant_lines(&grant)));
+        data.set_dialog_note(SharedString::new());
+        data.set_dialog_open(true);
+        self.flow = Flow::View;
+        panel::refresh_drop();
+    }
+
+    fn confirm(&mut self, ui: &Panel) {
+        match std::mem::replace(&mut self.flow, Flow::None) {
+            Flow::Import(staged) => self.commit_import(ui, *staged),
+            Flow::Uninstall { id } => self.commit_uninstall(ui, &id),
+            Flow::View | Flow::None => self.close_dialog(ui),
+        }
+    }
+
+    fn cancel(&mut self, ui: &Panel) {
+        self.flow = Flow::None;
+        self.close_dialog(ui);
+    }
+
+    fn commit_import(&mut self, ui: &Panel, staged: StagedPackage) {
+        let id = staged.manifest.id.clone();
+        let update = installed_tools(&self.store.data_dir())
+            .iter()
+            .any(|tool| tool.id == id);
+        let grant = Grant::from_manifest(&staged.manifest);
+        match install_copy(
+            &self.store.data_dir(),
+            &id,
+            &staged.manifest.name,
+            &staged.manifest.description,
+            &staged.files,
+            &encode_grant(&grant),
+        ) {
+            Ok(()) => {}
+            Err(err) => {
+                self.store.log_warn(&format!("工具没有装上：{err}"));
+                ui.set_error(INVALID_PACKAGE.into());
+                self.close_dialog(ui);
+                return;
+            }
+        }
+        if !update {
+            let mut next = self.disabled.clone();
+            if set_disabled(&mut next, &id, true)
+                && let Err(err) = write_enabled(&self.store.data_dir(), &next)
+            {
+                self.store.log_warn(&format!("启用状态没有写下：{err}"));
+                ui.set_error(err.to_string().into());
+            }
+        }
+        ui.set_error(SharedString::new());
+        self.close_dialog(ui);
+        self.reload(ui);
+    }
+
+    fn commit_uninstall(&mut self, ui: &Panel, id: &str) {
+        float_shell::close_tool(id);
+        if let Err(err) = delete_product_secrets(id) {
+            self.store.log_warn(&format!("密钥没有删掉：{err}"));
+            ui.set_error(err.into());
+            self.close_dialog(ui);
+            return;
+        }
+        if let Err(err) = remove_installed(&self.store.data_dir(), id) {
+            self.store.log_warn(&format!("工具没有卸掉：{err}"));
+            ui.set_error(err.to_string().into());
+            self.close_dialog(ui);
+            return;
+        }
+        let mut next = self.disabled.clone();
+        if set_disabled(&mut next, id, true) {
+            if let Err(err) = write_enabled(&self.store.data_dir(), &next) {
+                self.store.log_warn(&format!("启用状态没有写下：{err}"));
+            } else {
+                self.disabled = next;
+            }
+        }
+        ui.set_error(SharedString::new());
+        self.close_dialog(ui);
+        self.reload(ui);
+    }
+
+    fn close_dialog(&mut self, ui: &Panel) {
+        let data = ui.global::<AppsPageData>();
+        data.set_dialog_open(false);
+        data.set_dialog_confirm(false);
+        data.set_dialog_update(false);
+        panel::refresh_drop();
+    }
+}
+
+fn string_model(lines: &[String]) -> ModelRc<SharedString> {
+    let rows: Vec<SharedString> = lines.iter().map(|line| line.as_str().into()).collect();
+    ModelRc::new(VecModel::from(rows))
 }
 
 fn to_row(card: &lanwork_core::panel::ToolCard) -> AppToolCard {
@@ -193,19 +454,32 @@ fn wire(ui: &Panel) {
     });
     data.on_open_menu(|index| with_apps(move |page, ui| page.open_menu(ui, index)));
     data.on_close_menu(|| with_apps(|page, ui| page.dismiss(ui)));
-    data.on_menu_chosen(|_index| with_apps(|page, ui| page.dismiss(ui)));
-    data.on_import_clicked(|| {
-        // 选择文件夹、确认和安装是下一步。这里不打开对话框，也不加说明。
+    data.on_menu_chosen(|index| with_apps(move |page, ui| page.menu_chosen(ui, index)));
+    data.on_import_clicked(|| with_apps(|page, ui| page.pick(ui)));
+    data.on_cancel_dialog(|| with_apps(|page, ui| page.cancel(ui)));
+    data.on_confirm_dialog(|| with_apps(|page, ui| page.confirm(ui)));
+}
+
+pub(crate) fn dropped(incoming: IncomingDrop) {
+    let IncomingDrop::Paths(paths) = incoming else {
+        return;
+    };
+    let _ = slint::invoke_from_event_loop(move || {
+        with_apps(move |page, ui| page.import_paths(ui, paths));
     });
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_page_only_opens_a_window_and_leaves_the_flows_for_later() {
+    fn import_confirms_before_install_and_the_float_runs_the_tool() {
         let source = include_str!("apps_page.rs");
         assert!(source.contains("float_shell::open_tool"));
         assert!(source.contains("float_shell::close_tool"));
-        assert!(source.contains("不打开对话框"));
+        assert!(source.contains("inspect_path"));
+        assert!(source.contains("install_copy"));
+        assert!(source.contains("delete_product_secrets"));
+        assert!(source.contains("保留数据") || source.contains("UPDATE_NOTE"));
+        assert!(!source.contains("不打开对话框"));
     }
 }

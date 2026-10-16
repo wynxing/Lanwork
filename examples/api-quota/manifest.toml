@@ -1,0 +1,21 @@
+id = "example.api-quota"
+name = "API 额度"
+description = "服务商接口的剩余额度"
+entry = "main.lua"
+services = ["timer", "http", "secret"]
+
+[http]
+domains = ["api.example.com"]
+
+[[secret]]
+id = "api_key"
+label = "API 密钥"
+
+[[component]]
+id = "summary"
+component = "text"
+text = "没有数据"
+
+[[component]]
+id = "used"
+component = "progress"

@@ -12,21 +12,31 @@ mod host;
 mod http;
 mod id;
 mod manifest;
+mod package;
 mod pattern;
 mod secret;
 
 pub mod probe;
 
 pub use guide::{pomodoro, quota, write_example};
-pub use host::{Durations, Notice, Notification, Options, Session, TodoItem, WidgetViewKind};
+pub use host::{
+    Durations, Notice, Notification, Options, Session, StoragePersist, TodoComplete, TodoItem,
+    WidgetView, WidgetViewKind,
+};
 pub use http::{
     HttpResponse, HttpTransport, Outgoing, RustlsTransport, TransportError, install_ring,
 };
-pub use manifest::{Manifest, Origin, materialize};
-pub use secret::{MemorySecretStore, SecretStore, spike_target_name};
+pub use manifest::{Manifest, Origin, load_dir, materialize};
+pub use package::{
+    FOLDER_SENTINEL, Grant, PackageError, PickedSource, StagedPackage, decode_grant, encode_grant,
+    grant_lines, inspect_path, inspect_zip_bytes, permission_lines, resolve_selection,
+};
+pub use secret::{
+    MemorySecretStore, SecretStore, delete_product_secrets, product_target_name, spike_target_name,
+};
 
 #[cfg(windows)]
-pub use secret::WindowsCredentialStore;
+pub use secret::{ProductCredentialStore, WindowsCredentialStore};
 
 #[cfg(test)]
 mod tests;
