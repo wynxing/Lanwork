@@ -408,7 +408,14 @@ impl Floats {
 fn wire(ui: &TodoFloat) {
     ui.on_close_clicked(|| with_window(|window, _| window.request_close()));
     ui.window().on_close_requested(|| {
-        with_window(|window, _| window.request_close());
+        // 下一轮再关。`taskkill` 会给每个窗口投递 `WM_CLOSE`；若这里先记成已关，
+        // 随后的正常退出就盖掉下次重开。退出已经开始时不再关。点关闭仍是马上关。
+        slint::Timer::single_shot(Duration::ZERO, || {
+            if crate::host::quit_in_progress() {
+                return;
+            }
+            with_window(|window, _| window.request_close());
+        });
         CloseRequestResponse::KeepWindowShown
     });
     ui.on_strip_clicked(|| with_window(|window, _| window.on_strip()));

@@ -26,7 +26,7 @@ use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
 use lanwork_core::todos::{ListKind, NewTodo, TodoCommands, TodoItem, TodoList};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, ModelRc, VecModel};
 
 use crate::apps_page::AppsPage;
 use crate::bar_win;
@@ -116,6 +116,12 @@ pub(crate) fn install(
             _ => {}
         }
         EventResult::Propagate
+    });
+    // Alt+F4 只收起面板，与关闭按钮相同，不结束进程。
+    // 外部 `taskkill`、注销和关机由隐藏的事件目标窗口和热键窗口处理。
+    ui.window().on_close_requested(|| {
+        with_panel(Controller::hide);
+        CloseRequestResponse::KeepWindowShown
     });
 
     let ready = ui.clone_strong();

@@ -10,9 +10,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use lanwork_core::panel::{
-    EnabledBytes, PxBox, ScanSkip, ShellBytes, ShellRecord, read_enabled, read_record,
-    record_relative, scan_records, shell_default_origin, shell_logical_size, should_reopen,
-    write_record,
+    EnabledBytes, PxBox, ScanSkip, ScreenBounds, ShellBytes, ShellRecord, geometry_for_open,
+    read_enabled, read_record, record_relative, scan_records, shell_default_origin,
+    shell_logical_size, should_reopen, write_failure_text, write_record,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
@@ -41,6 +41,8 @@ struct ShellWindow {
     pinned: Option<bool>,
     closed: bool,
     writable: bool,
+    /// `floatWindow` 读不出。合成的贴边矩形只用于显示，用户改窗口之前不写回。
+    preserve_file: bool,
 }
 
 struct Shells {
@@ -77,6 +79,7 @@ pub(crate) fn apply_theme(dark: bool) {
 }
 
 /// 下一轮事件循环再打开 `open` 为真、并且启用开关开着的窗口。坏记录跳过，不改文件。
+/// `floatWindow` 读不出时仍打开，贴边留下，这次也不改文件。
 pub(crate) fn schedule_restore() {
     slint::Timer::single_shot(Duration::ZERO, restore_open);
 }
@@ -228,19 +231,20 @@ fn rgb(value: u32) -> slint::Color {
     slint::Color::from_rgb_u8(r, g, b)
 }
 
-fn primary_work() -> (WorkArea, u32) {
+fn primary_screen() -> (WorkArea, WorkArea, u32) {
     if let Some(reading) = bar_win::primary_reading() {
-        return (reading.work, reading.dpi);
+        return (reading.bounds, reading.work, reading.dpi);
     }
-    bar_win::cursor_monitor().unwrap_or((
-        WorkArea {
-            left: 0,
-            top: 0,
-            right: 1920,
-            bottom: 1080,
-        },
-        lanwork_core::shell::BASE_DPI,
-    ))
+    if let Some(reading) = bar_win::cursor_reading() {
+        return (reading.bounds, reading.work, reading.dpi);
+    }
+    let desktop = WorkArea {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1080,
+    };
+    (desktop, desktop, lanwork_core::shell::BASE_DPI)
 }
 
 impl Shells {
@@ -255,14 +259,22 @@ impl Shells {
             }
             self.windows.remove(tool_id);
         }
-        let (record, writable) = match read_record(&self.store.data_dir(), tool_id) {
-            Ok(ShellBytes::Record(record)) => (record, true),
-            Ok(ShellBytes::UnsupportedSchema) => {
-                return Err("外壳记录的 schemaVersion 不受支持".to_owned());
-            }
-            Ok(ShellBytes::Corrupt) => return Err("外壳记录读不了".to_owned()),
+        let bytes = match read_record(&self.store.data_dir(), tool_id) {
+            Ok(bytes) => bytes,
             Err(err) => return Err(err.to_string()),
         };
+        let preserve_file = bytes.keep_file_on_open();
+        let Some(record) = bytes.openable() else {
+            return Err(match bytes {
+                ShellBytes::UnsupportedSchema => "外壳记录的 schemaVersion 不受支持".to_owned(),
+                _ => "外壳记录读不了".to_owned(),
+            });
+        };
+        if preserve_file {
+            self.store.log_warn(&format!(
+                "工具悬浮窗的位置读不了，贴边仍用记下的，这次不改文件：{tool_id}"
+            ));
+        }
         let ui = FloatShell::new().map_err(|err| format!("外壳没有创建：{err}"))?;
         ui.set_dark(self.dark);
         ui.set_solid_color(rgb(solid_rgb(self.dark)));
@@ -272,7 +284,7 @@ impl Shells {
         }
         wire(&ui, tool_id);
 
-        let (work, dpi) = primary_work();
+        let (bounds, work, dpi) = primary_screen();
         let (logical_width, logical_height) = shell_logical_size(declared);
         let width = u32::try_from(to_physical(logical_width, dpi)).unwrap_or(logical_width);
         let height = u32::try_from(to_physical(logical_height, dpi)).unwrap_or(logical_height);
@@ -282,8 +294,20 @@ impl Shells {
             i32::try_from(height).unwrap_or(i32::MAX),
             dpi,
         );
+        let geometry = geometry_for_open(
+            &record,
+            preserve_file,
+            (width, height),
+            ScreenBounds {
+                left: bounds.left,
+                top: bounds.top,
+                right: bounds.right,
+                bottom: bounds.bottom,
+                dpi,
+            },
+        );
         let session = float_dock::session_for_open(
-            record.geometry,
+            geometry,
             record.dock,
             PxBox {
                 x,
@@ -326,7 +350,8 @@ impl Shells {
             origin: Some((visible.x, visible.y)),
             pinned: record.pinned,
             closed: false,
-            writable,
+            writable: true,
+            preserve_file,
         };
         window.persist(&self.store);
         self.windows.insert(tool_id.to_owned(), window);
@@ -355,7 +380,15 @@ fn wire(ui: &FloatShell, tool_id: &str) {
     ui.window().on_close_requested({
         let id = id.clone();
         move || {
-            with_window(&id, ShellWindow::request_close);
+            // 下一轮再关。`taskkill` 会给每个窗口投递 `WM_CLOSE`；若这里先写成 `open: false`，
+            // 随后的正常退出就记不住窗口开着。退出已经开始时这一轮关掉不再写。
+            let id = id.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if crate::host::quit_in_progress() {
+                    return;
+                }
+                with_window(&id, ShellWindow::request_close);
+            });
             CloseRequestResponse::KeepWindowShown
         }
     });
@@ -460,6 +493,8 @@ impl ShellWindow {
         }
         self.pinned = Some(!self.ui.get_pinned());
         self.apply_pin(store);
+        self.refresh_backdrop();
+        self.preserve_file = false;
         self.persist(store);
     }
 
@@ -497,6 +532,7 @@ impl ShellWindow {
         let Some(visible) = self.session.absorb_size(origin, width, height) else {
             return;
         };
+        self.preserve_file = false;
         self.place(visible);
         self.persist(store);
     }
@@ -567,6 +603,7 @@ impl ShellWindow {
         if self.closed {
             return;
         }
+        self.preserve_file = false;
         let motion = self.session.strip_click();
         self.follow(motion, store);
     }
@@ -593,6 +630,7 @@ impl ShellWindow {
                 .begin_drag((rect.x, rect.y), (rect.width, rect.height));
             return;
         }
+        self.preserve_file = false;
         let motion = self.session.end_drag(rect);
         let generation = self.session.hold_generation();
         self.follow(motion, store);
@@ -618,6 +656,7 @@ impl ShellWindow {
         if self.closed {
             return;
         }
+        self.preserve_file = false;
         self.closed = true;
         self.timer.stop();
         self.persist(store);
@@ -634,7 +673,7 @@ impl ShellWindow {
     }
 
     fn persist(&self, store: &Store) {
-        if !self.writable {
+        if !self.writable || self.preserve_file {
             return;
         }
         let saved = self.session.saved();
@@ -644,8 +683,12 @@ impl ShellWindow {
             pinned: self.pinned,
             open: !self.closed,
         };
-        if let Err(err) = write_record(&store.data_dir(), &self.id, &record) {
-            store.log_warn(&format!("工具悬浮窗没有记下：{err}"));
+        match write_record(&store.data_dir(), &self.id, &record) {
+            Ok(()) => self.ui.set_error(slint::SharedString::default()),
+            Err(err) => {
+                store.log_warn(&format!("工具悬浮窗没有记下：{err}"));
+                self.ui.set_error(write_failure_text(&err).into());
+            }
         }
     }
 }

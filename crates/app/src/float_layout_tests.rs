@@ -850,6 +850,18 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     assert_eq!(shell.get_content_height(), height - TITLE_STRIP);
     assert_eq!(shell.get_marker_text(), "示例");
     assert!(!shell.get_strip_open());
+    assert!(!shell.get_error_drawn(), "没有错误时不占一行");
+    shell.set_error("保存失败：磁盘".into());
+    slint::platform::update_timers_and_animations();
+    assert!(shell.get_error_drawn());
+    assert_eq!(shell.get_error_text(), "保存失败：磁盘");
+    assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
+    assert_eq!(shell.get_content_y(), TITLE_STRIP);
+    assert_eq!(shell.get_content_height(), height - TITLE_STRIP - 24.0);
+    shell.set_error("".into());
+    slint::platform::update_timers_and_animations();
+    assert!(!shell.get_error_drawn());
+    assert_eq!(shell.get_content_height(), height - TITLE_STRIP);
 
     let pins = Rc::new(Cell::new(0));
     let closes = Rc::new(Cell::new(0));

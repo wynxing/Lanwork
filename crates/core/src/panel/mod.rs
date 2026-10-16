@@ -28,8 +28,9 @@ pub use apps_page::{
 pub use float_shell::{
     BackupSlice, DEFAULT_LOGICAL_HEIGHT, DEFAULT_LOGICAL_WIDTH, ExportSlice, MARGIN_LOGICAL,
     RECORD_DIR, ScanSkip, ShellBytes, ShellGesture, ShellRecord, ShellSession, StoredShell,
-    backup_json, backup_slice, decode, encode, export_json, export_slice, read_record,
-    record_relative, scan_records, shell_default_origin, shell_logical_size, write_record,
+    backup_json, backup_slice, decode, encode, export_json, export_slice, geometry_for_open,
+    read_record, record_relative, scan_records, shell_default_origin, shell_logical_size,
+    write_failure_text, write_record,
 };
 pub use float_snap::{
     ANIM_STEPS, DRAG_MOVE_LOGICAL, DockInput, DockState, HANDLE_LENGTH_LOGICAL,

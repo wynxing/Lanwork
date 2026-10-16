@@ -29,7 +29,7 @@ use lanwork_core::shell::{
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
-use slint::{ComponentHandle, Model as _, ModelRc, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, Model as _, ModelRc, VecModel};
 
 use crate::bar_win;
 use crate::{BarMenuItem, BarRow, SearchBar};
@@ -119,6 +119,12 @@ pub(crate) fn install(
             with_bar(Bar::blur);
         }
         EventResult::Propagate
+    });
+    // Alt+F4 只收起搜索条，不结束进程。未提交的 `/note` 由 `Bar::hide` 留在输入框。
+    // 外部 `taskkill`、注销和关机由隐藏的事件目标窗口和热键窗口处理。
+    ui.window().on_close_requested(|| {
+        with_bar(Bar::hide);
+        CloseRequestResponse::KeepWindowShown
     });
 
     let ready = ui.clone_strong();
