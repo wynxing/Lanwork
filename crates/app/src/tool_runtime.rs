@@ -182,6 +182,15 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
     });
 }
 
+/// 卸掉正在跑的会话，再用同一扇窗口装上新副本和新授权。
+///
+/// 不新建窗口。位置、大小、贴边和钉住留在外壳上。
+pub(crate) fn reload(id: &str, ui: FloatShell) {
+    detach(id);
+    ui.set_error(slint::SharedString::default());
+    attach(id, ui);
+}
+
 pub(crate) fn detach(id: &str) {
     let Some(running) = RUNNING.with(|slot| slot.borrow_mut().remove(id)) else {
         return;

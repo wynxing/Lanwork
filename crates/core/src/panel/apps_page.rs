@@ -130,13 +130,18 @@ pub fn show_import(origin: ToolOrigin) -> bool {
     origin == ToolOrigin::Custom
 }
 
-/// 内置只有「查看权限」。自定义是「更新」「卸载」「查看权限」。
+/// 内置是「查看权限」。自定义是「更新」「卸载」「查看权限」。
+/// 声明了密钥时，这两类都在最后加上「填写密钥」。
 #[must_use]
-pub fn menu_items(origin: ToolOrigin) -> &'static [&'static str] {
-    match origin {
-        ToolOrigin::Builtin => &["查看权限"],
-        ToolOrigin::Custom => &["更新", "卸载", "查看权限"],
+pub fn menu_items(origin: ToolOrigin, has_secrets: bool) -> Vec<&'static str> {
+    let mut items = match origin {
+        ToolOrigin::Builtin => vec!["查看权限"],
+        ToolOrigin::Custom => vec!["更新", "卸载", "查看权限"],
+    };
+    if has_secrets {
+        items.push("填写密钥");
     }
+    items
 }
 
 /// 名称去掉首尾空白后的第一个 Unicode 标量。没有可见字时是空字符串。
@@ -319,7 +324,7 @@ mod tests {
         assert_eq!(builtin.len(), 1);
         assert_eq!(builtin[0].name, "番茄钟");
         assert!(builtin[0].enabled);
-        assert_eq!(menu_items(builtin[0].origin), ["查看权限"]);
+        assert_eq!(menu_items(builtin[0].origin, false), ["查看权限"]);
         let custom = visible_cards(ToolOrigin::Custom, &tools, &disabled);
         assert_eq!(
             custom
@@ -331,9 +336,22 @@ mod tests {
         assert!(custom[0].enabled);
         assert!(!custom[1].enabled);
         assert_eq!(custom[0].description, "API 额度的说明");
-        assert_eq!(menu_items(custom[0].origin), ["更新", "卸载", "查看权限"]);
-        assert!(!menu_items(ToolOrigin::Builtin).contains(&"更新"));
-        assert!(!menu_items(ToolOrigin::Builtin).contains(&"卸载"));
+        assert_eq!(
+            menu_items(custom[0].origin, false),
+            ["更新", "卸载", "查看权限"]
+        );
+        assert_eq!(
+            menu_items(ToolOrigin::Custom, true),
+            ["更新", "卸载", "查看权限", "填写密钥"]
+        );
+        assert_eq!(
+            menu_items(ToolOrigin::Builtin, true),
+            ["查看权限", "填写密钥"]
+        );
+        assert!(!menu_items(ToolOrigin::Builtin, true).contains(&"更新"));
+        assert!(!menu_items(ToolOrigin::Builtin, true).contains(&"卸载"));
+        assert!(!menu_items(ToolOrigin::Builtin, false).contains(&"填写密钥"));
+        assert!(!menu_items(ToolOrigin::Custom, false).contains(&"填写密钥"));
     }
 
     #[test]

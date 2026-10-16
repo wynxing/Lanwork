@@ -308,4 +308,43 @@ fn the_import_card_lists_permissions_and_the_update_note_is_kept() {
     settle(&ui);
     assert!(data.get_danger_shown());
     assert!(!data.get_confirm_shown());
+
+    let saves = Rc::new(Cell::new(0));
+    let clears = Rc::new(Cell::new(0));
+    {
+        let saves = Rc::clone(&saves);
+        data.on_save_secrets(move || saves.set(saves.get() + 1));
+        let clears = Rc::clone(&clears);
+        data.on_clear_secrets(move || clears.set(clears.get() + 1));
+    }
+    data.set_dialog_kind(SharedString::from("secret"));
+    data.set_dialog_confirm(false);
+    data.set_dialog_update(false);
+    data.set_dialog_name(SharedString::from("API 额度"));
+    data.set_dialog_lines(ModelRc::new(VecModel::from(vec![SharedString::from(
+        "API 密钥",
+    )])));
+    data.set_dialog_note(SharedString::from(""));
+    data.set_dialog_open(true);
+    settle(&ui);
+    assert!(data.get_dialog_shown());
+    assert!(data.get_secret_shown());
+    assert!(data.get_secret_masked());
+    assert_eq!(data.get_secret_label().as_str(), "API 密钥");
+    assert!(data.get_save_shown());
+    assert!(data.get_clear_shown());
+    assert!(!data.get_confirm_shown());
+    assert!(!data.get_danger_shown());
+    click(
+        &ui,
+        data.get_save_x() + data.get_save_w() / 2.0,
+        data.get_save_y() + data.get_save_h() / 2.0,
+    );
+    click(
+        &ui,
+        data.get_clear_x() + data.get_clear_w() / 2.0,
+        data.get_clear_y() + data.get_clear_h() / 2.0,
+    );
+    assert_eq!(saves.get(), 1);
+    assert_eq!(clears.get(), 1);
 }

@@ -111,6 +111,19 @@ pub(crate) fn close_tool(tool_id: &str) {
     with_window(&tool_id, ShellWindow::request_close);
 }
 
+/// 这扇窗还开着时，用新副本和新授权重载脚本。位置、大小、贴边和钉住不动。
+pub(crate) fn reload_tool(tool_id: &str) {
+    let tool_id = tool_id.to_owned();
+    with_window(&tool_id, move |window, _| {
+        if window.closed {
+            return;
+        }
+        let ui = window.ui.clone_strong();
+        let id = window.id.clone();
+        crate::tool_runtime::reload(&id, ui);
+    });
+}
+
 pub(crate) fn on_todos_changed() {
     crate::tool_runtime::on_todos_changed();
 }

@@ -2,8 +2,8 @@
 //!
 //! 副本放在数据目录的 `tools/<工具 id>/`，存储放在 `tool-storage/<工具 id>.json`。
 //! 这两条路径规格仍待定，这里只是这一版的放法，不写成产品规则。
-//! 窗口记录仍在 `tool-windows/`，卸载不删除它。启用状态仍在 `tool-enabled.json`。
-//! 密钥不在这里。这个模块不读清单，卡片名称来自安装时写下的 `card.json`。
+//! 窗口记录在 `tool-windows/<工具 id>.json`。卸载时把这份记录一起删掉。
+//! 启用状态仍在 `tool-enabled.json`。密钥不在这里。这个模块不读清单，卡片名称来自安装时写下的 `card.json`。
 
 use std::collections::BTreeMap;
 use std::io;
@@ -26,6 +26,8 @@ pub const UPDATE_NOTE: &str = "保留数据";
 pub const UNINSTALL_BODY: &str = "会删除这个工具的存储和密钥。";
 pub const INVALID_PACKAGE: &str = "清单无效";
 pub const UNAUTHORIZED: &str = "未授权";
+/// 从某一张卡片的「更新」选到的包，id 不是这张卡片。
+pub const WRONG_UPDATE: &str = "不是这个工具的更新包";
 
 const STORAGE_READ_LIMIT: u64 = 8 * 1024 * 1024;
 
@@ -148,9 +150,9 @@ pub fn recover_previous(data_dir: &Path) -> Vec<String> {
     warnings
 }
 
-/// 删除副本、半成品和换下来的旧目录，以及存储。
+/// 删除副本、半成品和换下来的旧目录、存储，以及 `tool-windows/<id>.json`。
 ///
-/// 不删除 `tool-windows/<id>.json`，也不删除密钥。
+/// 不删除 `tool-windows` 目录本身，也不删除密钥。
 pub fn remove_installed(data_dir: &Path, id: &str) -> io::Result<()> {
     check_id(id)?;
     let tools = data_dir.join(TOOLS_DIR);
@@ -179,6 +181,12 @@ pub fn remove_installed(data_dir: &Path, id: &str) -> io::Result<()> {
     let storage = storage_path(data_dir, id);
     if storage.exists() {
         std::fs::remove_file(storage)?;
+    }
+    if let Some(relative) = super::float_shell::record_relative(id) {
+        let record = data_dir.join(relative);
+        if record.exists() {
+            std::fs::remove_file(record)?;
+        }
     }
     Ok(())
 }
@@ -511,11 +519,14 @@ mod tests {
         let windows = dir.join("tool-windows");
         std::fs::create_dir_all(&windows).unwrap();
         std::fs::write(windows.join("example.quota.json"), b"{}\n").unwrap();
+        std::fs::write(windows.join("example.other.json"), b"{}\n").unwrap();
         remove_installed(&dir, "example.quota").unwrap();
         assert!(list_custom(&dir).is_empty());
         assert!(!dir.join("tools/example.quota").exists());
         assert!(!storage_path(&dir, "example.quota").exists());
-        assert!(windows.join("example.quota.json").is_file());
+        assert!(!windows.join("example.quota.json").exists());
+        assert!(windows.join("example.other.json").is_file());
+        assert!(windows.is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -551,6 +562,7 @@ mod tests {
         assert_eq!(UNINSTALL_BODY, "会删除这个工具的存储和密钥。");
         assert_eq!(INVALID_PACKAGE, "清单无效");
         assert_eq!(UNAUTHORIZED, "未授权");
+        assert_eq!(WRONG_UPDATE, "不是这个工具的更新包");
     }
 
     #[test]

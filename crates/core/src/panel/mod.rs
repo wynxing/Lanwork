@@ -62,8 +62,8 @@ pub use note_select::{
 };
 pub use tool_install::{
     CARD_FILE, GRANT_FILE, INVALID_PACKAGE, Installed, STORAGE_DIR, TOOLS_DIR, UNAUTHORIZED,
-    UNINSTALL_BODY, UPDATE_NOTE, install_copy, list_custom, read_tool_storage, recover_previous,
-    remove_installed, storage_path, tool_dir, write_tool_storage,
+    UNINSTALL_BODY, UPDATE_NOTE, WRONG_UPDATE, install_copy, list_custom, read_tool_storage,
+    recover_previous, remove_installed, storage_path, tool_dir, write_tool_storage,
 };
 
 pub use settings_page::{
