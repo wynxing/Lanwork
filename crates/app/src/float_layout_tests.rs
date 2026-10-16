@@ -17,7 +17,8 @@ use lanwork_core::panel::{
 };
 
 use crate::{
-    NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData, StackTab, TodoFloat,
+    FloatShell, FloatShellProbe, NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData,
+    StackTab, TodoFloat,
 };
 
 struct Headless(Rc<MinimalSoftwareWindow>);
@@ -816,4 +817,119 @@ fn page_dots_are_soft_colors_left_aligned_and_the_current_one_is_solid() {
         center_y,
     );
     assert_eq!(hit.get(), 8, "点第 9 页");
+}
+
+#[test]
+fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
+    window.set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
+
+    let shell = FloatShell::new().expect("tool shell");
+    shell
+        .window()
+        .set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
+    shell.set_marker("示例".into());
+    shell.show().expect("show");
+    slint::platform::update_timers_and_animations();
+
+    #[allow(clippy::cast_precision_loss)]
+    let height = WINDOW_HEIGHT as f32;
+    assert!(shell.get_pinned());
+    assert!(shell.get_above_ordinary(), "没记下钉住时在最上层");
+    assert!(shell.get_pin_drawn());
+    assert!(shell.get_close_drawn());
+    assert!(!shell.get_source_drawn(), "不画来源行");
+    assert_eq!(shell.get_drag_band(), TITLE_STRIP);
+    assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
+    assert_eq!(shell.get_pin_y(), 0.0);
+    assert_eq!(shell.get_close_x(), 320.0 - 28.0);
+    assert_eq!(shell.get_close_y(), 0.0);
+    assert!(shell.get_content_open());
+    assert_eq!(shell.get_content_y(), TITLE_STRIP);
+    assert_eq!(shell.get_content_height(), height - TITLE_STRIP);
+    assert_eq!(shell.get_marker_text(), "示例");
+    assert!(!shell.get_strip_open());
+
+    let pins = Rc::new(Cell::new(0));
+    let closes = Rc::new(Cell::new(0));
+    let drags = Rc::new(Cell::new(0));
+    shell.on_pin_clicked({
+        let pins = Rc::clone(&pins);
+        move || pins.set(pins.get() + 1)
+    });
+    shell.on_close_clicked({
+        let closes = Rc::clone(&closes);
+        move || closes.set(closes.get() + 1)
+    });
+    shell.on_drag_requested({
+        let drags = Rc::clone(&drags);
+        move || drags.set(drags.get() + 1)
+    });
+    click(&shell, 16.0, 14.0);
+    click(&shell, shell.get_pin_x() + 14.0, 14.0);
+    click(&shell, shell.get_close_x() + 14.0, 14.0);
+    assert_eq!((drags.get(), pins.get(), closes.get()), (1, 1, 1));
+
+    shell.set_pinned(false);
+    slint::platform::update_timers_and_animations();
+    assert!(!shell.get_above_ordinary(), "钉住关掉后离开最上层");
+
+    shell.set_dock_edge("top".into());
+    slint::platform::update_timers_and_animations();
+    assert!(shell.get_strip_open());
+    assert!(
+        shell.get_strip_x() + shell.get_strip_width() <= shell.get_pin_x(),
+        "上沿把手不盖住钉住"
+    );
+
+    shell.set_dock_edge("left".into());
+    slint::platform::update_timers_and_animations();
+    assert_eq!(shell.get_strip_width(), logical(HANDLE_THICKNESS_LOGICAL));
+    assert_eq!(shell.get_strip_height(), logical(HANDLE_LENGTH_LOGICAL));
+    let strips = Rc::new(Cell::new(0));
+    shell.on_strip_clicked({
+        let strips = Rc::clone(&strips);
+        move || strips.set(strips.get() + 1)
+    });
+    click(
+        &shell,
+        shell.get_strip_x() + shell.get_strip_width() / 2.0,
+        shell.get_strip_y() + shell.get_strip_height() / 2.0,
+    );
+    assert_eq!(strips.get(), 1, "点展开时的把手");
+
+    shell.set_thin(true);
+    shell.set_collapsed(true);
+    shell.window().set_size(slint::PhysicalSize::new(
+        HANDLE_THICKNESS_LOGICAL,
+        HANDLE_LENGTH_LOGICAL,
+    ));
+    slint::platform::update_timers_and_animations();
+    assert!(!shell.get_content_open());
+    assert!(!shell.get_pin_drawn());
+    assert!(!shell.get_close_drawn());
+    assert!(shell.get_collapsed_handle_open());
+    assert_eq!(shell.get_drag_band(), 0.0);
+
+    let collapsed_drags = Rc::new(Cell::new(0));
+    shell.on_drag_requested({
+        let collapsed_drags = Rc::clone(&collapsed_drags);
+        move || collapsed_drags.set(collapsed_drags.get() + 1)
+    });
+    click(
+        &shell,
+        logical(HANDLE_THICKNESS_LOGICAL) / 2.0,
+        logical(HANDLE_LENGTH_LOGICAL) / 2.0,
+    );
+    assert_eq!(collapsed_drags.get(), 1, "收起的把手按下就拖");
+
+    let source = include_str!("../ui/float_shell.slint");
+    assert!(source.contains("resize-border-width: thin ? 0px : 6px;"));
+    assert!(source.contains("min-width: thin ? 1px : min(200px, limit-width);"));
+    assert!(source.contains("min-height: thin ? 1px : min(120px, limit-height);"));
+    assert!(!source.contains("FloatSource"));
+    assert!(source.contains("source-drawn: false"));
+
+    let _probe = FloatShellProbe::new().expect("内容槽能放进子元素");
 }

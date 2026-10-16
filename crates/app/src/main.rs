@@ -38,6 +38,8 @@ mod float_frame;
 #[cfg(windows)]
 mod float_group;
 #[cfg(windows)]
+mod float_shell;
+#[cfg(windows)]
 mod folder_pick;
 mod frame_policy;
 #[cfg(windows)]
@@ -180,6 +182,7 @@ mod tests {
             ("notefloat.slint", include_str!("../ui/notefloat.slint")),
             ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
             ("todofloat.slint", include_str!("../ui/todofloat.slint")),
+            ("float_shell.slint", include_str!("../ui/float_shell.slint")),
         ] {
             assert!(source.contains(icon), "{name} 没有窗口图标");
         }
@@ -219,5 +222,23 @@ mod tests {
         ] {
             assert!(source.contains("preedit-text"), "{name} ignores preedit");
         }
+    }
+
+    #[test]
+    fn the_float_shell_demo_starts_with_the_app_and_stays_out_of_the_stack() {
+        let host = include_str!("host.rs");
+        assert!(host.contains("--float-shell-demo"));
+        assert!(host.contains("float_shell::schedule_restore"));
+        assert!(host.contains("float_shell::schedule_demo"));
+        assert!(host.contains("float_shell::save_for_quit"));
+        let source = include_str!("float_shell.rs");
+        assert!(source.contains("set_skip_taskbar"));
+        assert!(source.contains("float_frame::sync"));
+        assert!(source.contains("release_topmost"));
+        assert!(!source.contains("float_group"));
+        assert!(!source.contains("floatStack"));
+        assert!(!include_str!("note_float.rs").contains("FloatShell"));
+        assert!(!include_str!("shelf_float.rs").contains("FloatShell"));
+        assert!(!include_str!("todo_float.rs").contains("FloatShell"));
     }
 }
