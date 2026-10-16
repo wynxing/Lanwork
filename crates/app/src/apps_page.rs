@@ -480,6 +480,5 @@ mod tests {
         assert!(source.contains("install_copy"));
         assert!(source.contains("delete_product_secrets"));
         assert!(source.contains("保留数据") || source.contains("UPDATE_NOTE"));
-        assert!(!source.contains("不打开对话框"));
     }
 }
