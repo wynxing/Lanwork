@@ -1,6 +1,6 @@
 # 应用页与自定义悬浮窗工具
 
-本文规定「应用」页、工具悬浮窗外壳，以及自定义工具的可见行为和宿主模型。与 [product.md](product.md) 已经写明的规则冲突时，以 product.md 为准。番茄钟的计时规则以 product.md「番茄钟」为准，issue #59。清单字段、组件和 Lua 调用的写法见 [tool-dev-guide.md](tool-dev-guide.md)。实现状态见 [roadmap.md](roadmap.md)。应用页还没有代码。悬浮窗外壳可用 `lanwork --float-shell-demo` 打开。宿主在 `crates/toolhost`（包名 `lanwork-toolhost`），没有界面。窗口验证程序在 `spikes/toolhost`。
+本文规定「应用」页、工具悬浮窗外壳，以及自定义工具的可见行为和宿主模型。与 [product.md](product.md) 已经写明的规则冲突时，以 product.md 为准。番茄钟的计时规则以 product.md「番茄钟」为准，issue #59。清单字段、组件和 Lua 调用的写法见 [tool-dev-guide.md](tool-dev-guide.md)。实现状态见 [roadmap.md](roadmap.md)。应用页有代码，未在 Windows 上验收。已安装工具这一步还是空的：导入、卸载、更新、查看权限和番茄钟迁移还没有。悬浮窗外壳可用 `lanwork --float-shell-demo` 打开。宿主在 `crates/toolhost`（包名 `lanwork-toolhost`），没有界面。窗口验证程序在 `spikes/toolhost`。
 
 通过标准在 [roadmap.md](roadmap.md)「技术验证」的「工具宿主」。窗口验证程序在 `spikes/toolhost`，不进产品界面。2026-10-15 该项通过。凭据管理器界面待用户用 `lanwork --toolhost-cred write|list|clear` 确认。内存和 CPU 的数字上限仍待定，不宣称已经达到。
 
@@ -256,7 +256,7 @@
 
 导出再导入之后，工具副本、启用状态、窗口的位置、大小、贴边、钉住和该工具的存储还在。大小、贴边、钉住随备份走。副本和启用状态是否随备份走，待定。密钥不在导出里，也不在备份里。点番茄钟卡片的「悬浮窗」只打开窗口，不自动开始计时；没有当前待办时窗口显示「没有当前待办」。
 
-上面两项里，应用页、导入和番茄钟窗口是产品验收，还没有在 Windows 上执行，这几处界面也还没有代码。悬浮窗外壳已有代码，可用 `lanwork --float-shell-demo` 打开。2026-10-16 用户在 Windows 上手测外壳通过（main `e0a797d`）。技术验证「工具宿主」已通过，见 [roadmap.md](roadmap.md)。凭据管理器界面待用户用 `lanwork --toolhost-cred write|list|clear` 确认。
+上面两项里，应用页、导入和番茄钟窗口是产品验收，还没有在 Windows 上执行。应用页已有代码，未在 Windows 上验收。导入、卸载、更新、查看权限、番茄钟迁移和把启用状态写入导出白名单还没有。悬浮窗外壳已有代码，可用 `lanwork --float-shell-demo` 打开。2026-10-16 用户在 Windows 上手测外壳通过（main `e0a797d`）。技术验证「工具宿主」已通过，见 [roadmap.md](roadmap.md)。凭据管理器界面待用户用 `lanwork --toolhost-cred write|list|clear` 确认。
 
 ## 待定
 

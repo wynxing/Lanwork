@@ -1,0 +1,536 @@
+// 面板的应用页。顶上是「内置」「自定义」，下面是工具卡片。
+// 版式沿用已审过的预览和面板：浅底、细描边、没有色块按钮。数据和动作在 Rust。
+// 开关只显示 enabled，点击时请求相反的值，不自己翻转。
+//
+// 几何写进 AppsPageData，布局测试读取。坐标是面板窗口里的逻辑像素。
+
+import { Btn, Ink, ToggleSwitch } from "widgets.slint";
+
+export struct AppToolCard {
+    tool-id: string,
+    name: string,
+    detail: string,
+    mark: string,
+    has-icon: bool,
+    icon: image,
+    enabled: bool,
+    builtin: bool,
+}
+
+export global AppsPageData {
+    // 0 内置，1 自定义。
+    in-out property <int> category: 0;
+    in property <bool> show-import: false;
+    in property <[AppToolCard]> tools;
+    in-out property <bool> menu-open: false;
+    in-out property <int> menu-index: -1;
+    in property <[string]> menu-items;
+    in-out property <length> menu-anchor-x: 0px;
+    in-out property <length> menu-anchor-y: 0px;
+    in-out property <length> menu-anchor-w: 0px;
+    in-out property <length> menu-anchor-h: 0px;
+
+    // 布局测试读取的窗口坐标。
+    in-out property <length> builtin-x: 0px;
+    in-out property <length> builtin-y: 0px;
+    in-out property <length> builtin-w: 0px;
+    in-out property <length> builtin-h: 0px;
+    in-out property <length> custom-x: 0px;
+    in-out property <length> custom-y: 0px;
+    in-out property <length> custom-w: 0px;
+    in-out property <length> custom-h: 0px;
+    in-out property <bool> empty-shown: false;
+    in-out property <length> empty-x: 0px;
+    in-out property <length> empty-y: 0px;
+    in-out property <string> empty-text: "";
+    in-out property <bool> import-shown: false;
+    in-out property <length> import-x: 0px;
+    in-out property <length> import-y: 0px;
+    in-out property <length> import-w: 0px;
+    in-out property <length> import-h: 0px;
+    in-out property <length> card-x: 0px;
+    in-out property <length> card-y: 0px;
+    in-out property <length> card-w: 0px;
+    in-out property <length> card-h: 0px;
+    in-out property <string> card-name: "";
+    in-out property <string> card-detail: "";
+    in-out property <string> card-mark: "";
+    in-out property <bool> mark-shown: false;
+    in-out property <bool> icon-shown: false;
+    in-out property <length> open-x: 0px;
+    in-out property <length> open-y: 0px;
+    in-out property <length> open-w: 0px;
+    in-out property <length> open-h: 0px;
+    in-out property <bool> open-enabled: false;
+    in-out property <length> switch-x: 0px;
+    in-out property <length> switch-y: 0px;
+    in-out property <length> switch-w: 0px;
+    in-out property <length> switch-h: 0px;
+    in-out property <bool> switch-checked: false;
+    in-out property <length> more-x: 0px;
+    in-out property <length> more-y: 0px;
+    in-out property <length> more-w: 0px;
+    in-out property <length> more-h: 0px;
+    in-out property <bool> menu-shown: false;
+    in-out property <length> menu-x: 0px;
+    in-out property <length> menu-y: 0px;
+    in-out property <length> menu-w: 0px;
+    in-out property <length> menu-h: 0px;
+    in-out property <string> menu-first: "";
+    // 布局测试在画出一帧后加一，让几何再写一次。界面本身不使用。
+    in-out property <int> layout-tick: 0;
+
+    callback select-category(int);
+    callback open-float(string);
+    callback toggle-enabled(string, bool);
+    callback open-menu(int);
+    callback close-menu();
+    callback menu-chosen(int);
+    callback import-clicked();
+}
+
+component ToolCard inherits Rectangle {
+    in property <AppToolCard> card;
+    in property <int> index;
+    in property <bool> report: false;
+    in property <Ink> c;
+    in property <bool> dark;
+
+    // 预览是实心白卡片。暗色用和收纳菜单同一块底，避免亮色卡片贴在暗色面板上。
+    property <color> fill: dark ? #2b2b2b : #ffffff;
+
+    height: 72px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: c.divider;
+    background: fill;
+
+    icon-box := Rectangle {
+        x: 12px;
+        y: (parent.height - 32px) / 2;
+        width: 32px;
+        height: 32px;
+        border-radius: 6px;
+        background: c.selection;
+        clip: true;
+
+        if card.has-icon: Image {
+            width: 100%;
+            height: 100%;
+            source: card.icon;
+            image-fit: contain;
+        }
+
+        if !card.has-icon: Text {
+            width: 100%;
+            height: 100%;
+            text: card.mark;
+            color: c.ink;
+            font-size: 14px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    more := Rectangle {
+        x: parent.width - 12px - 30px;
+        y: (parent.height - 30px) / 2;
+        width: 30px;
+        height: 30px;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: c.divider;
+        background: more-touch.has-hover ? c.hover : transparent;
+
+        Rectangle {
+            x: (parent.width - 12px) / 2;
+            y: (parent.height - 2px) / 2;
+            width: 2px;
+            height: 2px;
+            border-radius: 1px;
+            background: c.secondary;
+        }
+
+        Rectangle {
+            x: (parent.width - 2px) / 2;
+            y: (parent.height - 2px) / 2;
+            width: 2px;
+            height: 2px;
+            border-radius: 1px;
+            background: c.secondary;
+        }
+
+        Rectangle {
+            x: (parent.width - 12px) / 2 + 10px;
+            y: (parent.height - 2px) / 2;
+            width: 2px;
+            height: 2px;
+            border-radius: 1px;
+            background: c.secondary;
+        }
+
+        more-touch := TouchArea {
+            clicked => {
+                AppsPageData.menu-anchor-x = more.absolute-position.x;
+                AppsPageData.menu-anchor-y = more.absolute-position.y;
+                AppsPageData.menu-anchor-w = more.width;
+                AppsPageData.menu-anchor-h = more.height;
+                if AppsPageData.menu-open && AppsPageData.menu-index == root.index {
+                    AppsPageData.close-menu();
+                } else {
+                    AppsPageData.open-menu(root.index);
+                }
+            }
+        }
+    }
+
+    sw := ToggleSwitch {
+        x: more.x - 8px - self.width;
+        y: (parent.height - self.height) / 2;
+        checked: card.enabled;
+        c: root.c;
+        label: card.name;
+        toggled(next) => {
+            AppsPageData.toggle-enabled(card.tool-id, next);
+        }
+    }
+
+    open-btn := Btn {
+        x: sw.x - 8px - self.width;
+        y: (parent.height - self.height) / 2;
+        text: "悬浮窗";
+        enabled: card.enabled;
+        c: root.c;
+        clicked => {
+            AppsPageData.open-float(card.tool-id);
+        }
+    }
+
+    Text {
+        x: 56px;
+        y: 16px;
+        width: max(0px, open-btn.x - 16px - 56px);
+        text: card.name;
+        color: c.ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        height: 20px;
+        overflow: elide;
+    }
+
+    Text {
+        x: 56px;
+        y: 38px;
+        width: max(0px, open-btn.x - 16px - 56px);
+        text: card.detail;
+        color: c.secondary;
+        font-size: 12px;
+        vertical-alignment: center;
+        height: 18px;
+        overflow: elide;
+    }
+
+    property <int> tick: AppsPageData.layout-tick;
+    changed tick => { root.publish(); }
+    changed x => { root.publish(); }
+    changed y => { root.publish(); }
+    changed width => { root.publish(); }
+
+    function publish() {
+        if !root.report {
+            return;
+        }
+        AppsPageData.card-x = root.absolute-position.x;
+        AppsPageData.card-y = root.absolute-position.y;
+        AppsPageData.card-w = root.width;
+        AppsPageData.card-h = root.height;
+        AppsPageData.card-name = card.name;
+        AppsPageData.card-detail = card.detail;
+        AppsPageData.card-mark = card.mark;
+        AppsPageData.mark-shown = !card.has-icon && card.mark != "";
+        AppsPageData.icon-shown = card.has-icon;
+        AppsPageData.open-x = open-btn.absolute-position.x;
+        AppsPageData.open-y = open-btn.absolute-position.y;
+        AppsPageData.open-w = open-btn.width;
+        AppsPageData.open-h = open-btn.height;
+        AppsPageData.open-enabled = card.enabled;
+        AppsPageData.switch-x = sw.absolute-position.x;
+        AppsPageData.switch-y = sw.absolute-position.y;
+        AppsPageData.switch-w = sw.width;
+        AppsPageData.switch-h = sw.height;
+        AppsPageData.switch-checked = card.enabled;
+        AppsPageData.more-x = more.absolute-position.x;
+        AppsPageData.more-y = more.absolute-position.y;
+        AppsPageData.more-w = more.width;
+        AppsPageData.more-h = more.height;
+    }
+}
+
+component ImportCard inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> dark;
+
+    property <color> fill: dark ? #2b2b2b : #ffffff;
+
+    height: 72px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: c.divider;
+    background: fill;
+
+    Rectangle {
+        x: 12px;
+        y: (parent.height - 32px) / 2;
+        width: 32px;
+        height: 32px;
+        border-radius: 6px;
+        background: c.selection;
+
+        Path {
+            x: 9px;
+            y: 9px;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 14;
+            viewbox-height: 14;
+            fill: transparent;
+            stroke: c.secondary;
+            stroke-width: 1.4px;
+            commands: "M7 2v10 M2 7h10";
+        }
+    }
+
+    Text {
+        x: 56px;
+        width: parent.width - 68px;
+        height: parent.height;
+        text: "导入+";
+        color: c.ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    TouchArea {
+        clicked => {
+            AppsPageData.import-clicked();
+        }
+    }
+
+    property <int> tick: AppsPageData.layout-tick;
+    changed tick => { root.publish(); }
+    changed x => { root.publish(); }
+    changed y => { root.publish(); }
+    changed width => { root.publish(); }
+
+    function publish() {
+        AppsPageData.import-x = root.absolute-position.x;
+        AppsPageData.import-y = root.absolute-position.y;
+        AppsPageData.import-w = root.width;
+        AppsPageData.import-h = root.height;
+    }
+}
+
+component CategoryTab inherits Rectangle {
+    in property <string> name;
+    in property <bool> on;
+    in property <Ink> c;
+    callback chosen();
+
+    width: label.preferred-width + 24px;
+    background: !on && touch.has-hover ? c.hover : transparent;
+    border-radius: 6px;
+
+    label := Text {
+        x: 12px;
+        height: parent.height;
+        text: root.name;
+        color: on ? c.accent : c.secondary;
+        font-size: 14px;
+        font-weight: on ? 600 : 400;
+        vertical-alignment: center;
+    }
+
+    if on: Rectangle {
+        x: 12px;
+        y: parent.height - 3px;
+        width: parent.width - 24px;
+        height: 2px;
+        border-radius: 1px;
+        background: c.accent;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.chosen();
+        }
+    }
+}
+
+export component AppsPage inherits Rectangle {
+    in property <Ink> c;
+    in property <bool> dark;
+
+    property <length> category-height: 40px;
+    property <length> menu-item-h: 32px;
+    property <length> menu-pad: 4px;
+    property <length> menu-width: 168px;
+    property <length> menu-block: menu-pad * 2 + AppsPageData.menu-items.length * menu-item-h;
+    property <bool> menu-drawn: AppsPageData.menu-open && AppsPageData.menu-items.length > 0;
+    // 锚点是「⋯」在窗口里的位置。菜单右缘对齐按钮，优先画在按钮下面。
+    property <length> menu-local-x: AppsPageData.menu-anchor-x - self.absolute-position.x;
+    property <length> menu-local-y: AppsPageData.menu-anchor-y - self.absolute-position.y;
+    property <length> menu-draw-x: min(max(8px, menu-local-x + AppsPageData.menu-anchor-w - menu-width), max(8px, self.width - menu-width - 8px));
+    property <length> menu-below: menu-local-y + AppsPageData.menu-anchor-h + 4px;
+    property <length> menu-draw-y: menu-below + menu-block + 8px > self.height && menu-local-y > menu-block ? max(8px, menu-local-y - 4px - menu-block) : min(menu-below, max(8px, self.height - menu-block - 8px));
+
+    // preferred-height 把列表里的卡片建出来，否则卡片的坐标不会写进 AppsPageData。
+    property <length> geom: builtin-tab.absolute-position.x + builtin-tab.width + custom-tab.absolute-position.x + custom-tab.width + empty-label.absolute-position.y + (empty-label.visible ? 1px : 0px) + column.preferred-height + (import-card.visible ? import-card.absolute-position.y + import-card.width : 0px) + root.width + root.height + (menu-drawn ? menu-box.absolute-position.x + menu-box.absolute-position.y + menu-block : 0px) + AppsPageData.tools.length * 1px + AppsPageData.category * 1px + AppsPageData.layout-tick * 1px;
+
+    changed geom => {
+        AppsPageData.builtin-x = builtin-tab.absolute-position.x;
+        AppsPageData.builtin-y = builtin-tab.absolute-position.y;
+        AppsPageData.builtin-w = builtin-tab.width;
+        AppsPageData.builtin-h = builtin-tab.height;
+        AppsPageData.custom-x = custom-tab.absolute-position.x;
+        AppsPageData.custom-y = custom-tab.absolute-position.y;
+        AppsPageData.custom-w = custom-tab.width;
+        AppsPageData.custom-h = custom-tab.height;
+        AppsPageData.empty-shown = empty-label.visible;
+        AppsPageData.empty-x = empty-label.absolute-position.x;
+        AppsPageData.empty-y = empty-label.absolute-position.y;
+        AppsPageData.empty-text = empty-label.text;
+        AppsPageData.import-shown = import-card.visible;
+        AppsPageData.menu-shown = menu-drawn;
+        AppsPageData.menu-x = menu-box.absolute-position.x;
+        AppsPageData.menu-y = menu-box.absolute-position.y;
+        AppsPageData.menu-w = menu-drawn ? menu-width : 0px;
+        AppsPageData.menu-h = menu-drawn ? menu-block : 0px;
+        AppsPageData.menu-first = AppsPageData.menu-items.length > 0 ? AppsPageData.menu-items[0] : "";
+    }
+
+    HorizontalLayout {
+        x: 8px;
+        y: 0px;
+        height: category-height;
+        spacing: 4px;
+
+        builtin-tab := CategoryTab {
+            name: "内置";
+            on: AppsPageData.category == 0;
+            c: root.c;
+            chosen => {
+                AppsPageData.select-category(0);
+            }
+        }
+
+        custom-tab := CategoryTab {
+            name: "自定义";
+            on: AppsPageData.category == 1;
+            c: root.c;
+            chosen => {
+                AppsPageData.select-category(1);
+            }
+        }
+    }
+
+    Rectangle {
+        x: 0px;
+        y: category-height;
+        width: parent.width;
+        height: 1px;
+        background: c.divider;
+    }
+
+    empty-label := Text {
+        x: 16px;
+        y: category-height + 1px + 12px;
+        visible: AppsPageData.tools.length == 0;
+        text: "没有工具";
+        color: c.secondary;
+        font-size: 14px;
+    }
+
+    flick := Flickable {
+        x: 0px;
+        y: category-height + 1px + (AppsPageData.tools.length == 0 ? 40px : 12px);
+        width: parent.width;
+        height: parent.height - self.y;
+        content-height: max(self.height, column.preferred-height);
+
+        column := VerticalLayout {
+            width: parent.width;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 8px;
+
+            for card[index] in AppsPageData.tools: ToolCard {
+                card: card;
+                index: index;
+                report: index == 0;
+                c: root.c;
+                dark: root.dark;
+            }
+
+            import-card := ImportCard {
+                visible: AppsPageData.show-import;
+                c: root.c;
+                dark: root.dark;
+            }
+        }
+    }
+
+    TouchArea {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        visible: menu-drawn;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                AppsPageData.close-menu();
+            }
+        }
+    }
+
+    menu-box := Rectangle {
+        x: menu-draw-x;
+        y: menu-draw-y;
+        width: menu-width;
+        height: menu-block;
+        visible: menu-drawn;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: c.divider;
+        background: dark ? #2b2b2b : #fafafa;
+
+        TouchArea { }
+
+        for item[index] in AppsPageData.menu-items: Rectangle {
+            x: menu-pad;
+            y: menu-pad + index * menu-item-h;
+            width: parent.width - menu-pad * 2;
+            height: menu-item-h;
+            border-radius: 6px;
+            background: row-touch.has-hover ? c.selection : transparent;
+
+            Text {
+                x: 12px;
+                width: parent.width - 24px;
+                height: parent.height;
+                text: item;
+                color: c.ink;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            row-touch := TouchArea {
+                clicked => {
+                    AppsPageData.menu-chosen(index);
+                }
+            }
+        }
+    }
+}

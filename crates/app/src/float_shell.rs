@@ -1,16 +1,18 @@
 //! 工具悬浮窗。外壳负责置顶、拖动、贴边和记忆，内容由调用方放进槽里。
 //!
-//! 这一步没有应用页入口。隐藏命令 `lanwork --float-shell-demo` 打开一个带「示例」的窗口。
+//! 应用页的「悬浮窗」走 [`open_tool`]，只打开窗口，不跑清单，也不开始计时。
+//! 隐藏命令 `lanwork --float-shell-demo` 仍打开一个带「示例」的窗口。
 //! 记录在数据目录的 `tool-windows/<id>.json`。不进叠页，也不进导出白名单。
+//! 启用开关关掉的工具，即使记录里 `open` 为真，启动时也不再打开。
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use lanwork_core::panel::{
-    PxBox, ScanSkip, ScreenBounds, ShellBytes, ShellRecord, geometry_for_open, read_record,
-    record_relative, scan_records, shell_default_origin, shell_logical_size, write_failure_text,
-    write_record,
+    EnabledBytes, PxBox, ScanSkip, ScreenBounds, ShellBytes, ShellRecord, geometry_for_open,
+    read_enabled, read_record, record_relative, scan_records, shell_default_origin,
+    shell_logical_size, should_reopen, write_failure_text, write_record,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
@@ -76,7 +78,7 @@ pub(crate) fn apply_theme(dark: bool) {
     });
 }
 
-/// 下一轮事件循环再打开 `open` 为真的窗口。读不了的记录跳过，不改文件。
+/// 下一轮事件循环再打开 `open` 为真、并且启用开关开着的窗口。坏记录跳过，不改文件。
 /// `floatWindow` 读不出时仍打开，贴边留下，这次也不改文件。
 pub(crate) fn schedule_restore() {
     slint::Timer::single_shot(Duration::ZERO, restore_open);
@@ -93,6 +95,17 @@ pub(crate) fn schedule_demo() {
             });
         }
     });
+}
+
+/// 打开这个工具的悬浮窗。已经开着时只把焦点给它。不设置示例文字，也不开始计时。
+pub(crate) fn open_tool(tool_id: &str) -> Result<(), String> {
+    open(tool_id, None)
+}
+
+/// 关掉这个工具的悬浮窗。没开着时没有动作。位置和大小仍按外壳自己的规则记下。
+pub(crate) fn close_tool(tool_id: &str) {
+    let tool_id = tool_id.to_owned();
+    with_window(&tool_id, ShellWindow::request_close);
 }
 
 pub(crate) fn save_for_quit() {
@@ -125,9 +138,10 @@ fn restore_open() {
                 for skip in &skipped {
                     shells.store.log_warn(&skip_line(skip));
                 }
+                let disabled = disabled_ids(&shells.store);
                 stored
                     .into_iter()
-                    .filter(|item| item.record.open)
+                    .filter(|item| should_reopen(item.record.open, !disabled.contains(&item.id)))
                     .map(|item| item.id)
                     .collect()
             }
@@ -184,6 +198,24 @@ fn with_window(id: &str, action: impl FnOnce(&mut ShellWindow, &Store) + 'static
             action(window, &store);
         }
     });
+}
+
+fn disabled_ids(store: &lanwork_core::storage::Store) -> BTreeSet<String> {
+    match read_enabled(&store.data_dir()) {
+        Ok(EnabledBytes::Known(set)) => set,
+        Ok(EnabledBytes::Corrupt) => {
+            store.log_warn("启用状态读不了");
+            BTreeSet::new()
+        }
+        Ok(EnabledBytes::Unsupported) => {
+            store.log_warn("启用状态的 schemaVersion 不受支持");
+            BTreeSet::new()
+        }
+        Err(err) => {
+            store.log_warn(&format!("启用状态没有读到：{err}"));
+            BTreeSet::new()
+        }
+    }
 }
 
 fn skip_line(skip: &ScanSkip) -> String {

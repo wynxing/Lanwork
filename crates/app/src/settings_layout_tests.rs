@@ -32,7 +32,7 @@ fn open(dark: bool) -> (Panel, Rc<MinimalSoftwareWindow>) {
     window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
     let ui = Panel::new().expect("panel");
     ui.set_dark(dark);
-    ui.set_tab(3);
+    ui.set_tab(4);
     let data = ui.global::<SettingsPageData>();
     let titles = |items: &[&str]| {
         let titles: Vec<slint::SharedString> = items.iter().copied().map(Into::into).collect();

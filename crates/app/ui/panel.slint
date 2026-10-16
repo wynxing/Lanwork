@@ -3,6 +3,7 @@
 
 import { ListView, Palette } from "std-widgets.slint";
 import { Btn, Check, Chip, Field, Ink, Segments } from "widgets.slint";
+import { AppsPage } from "appspage.slint";
 import { NotesPage, NotesPageData } from "notespage.slint";
 import { SettingsPage } from "settingspage.slint";
 import { ShelvesPage, ShelvesPageData } from "shelvespage.slint";
@@ -379,8 +380,17 @@ export component Panel inherits Window {
                 background: c.divider;
             }
 
-            // 标签内容。
-            if root.tab == 3: SettingsPage {
+            // 标签内容。待办 0、便签 1、收纳 2、应用 3、设置 4。
+            if root.tab == 3: AppsPage {
+                x: 0px;
+                y: title-height + 1px;
+                width: parent.width;
+                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                c: root.c;
+                dark: root.dark;
+            }
+
+            if root.tab == 4: SettingsPage {
                 x: 0px;
                 y: title-height + 1px;
                 width: parent.width;

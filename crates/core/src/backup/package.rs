@@ -428,3 +428,24 @@ fn join(root: &Path, relative: &str) -> PathBuf {
     }
     path
 }
+
+#[cfg(test)]
+mod export_list_tests {
+    use super::data_file_names;
+
+    #[test]
+    fn tool_enabled_file_stays_out_of_the_export_list() {
+        let dir = std::env::temp_dir().join(format!("lanwork-export-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), b"{}\n").unwrap();
+        std::fs::write(dir.join("tool-enabled.json"), b"{}\n").unwrap();
+        let names = data_file_names(&dir).unwrap();
+        assert!(names.iter().any(|name| name == "config.json"));
+        assert!(
+            !names.iter().any(|name| name == "tool-enabled.json"),
+            "启用状态这一步不进导出白名单"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

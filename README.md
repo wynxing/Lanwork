@@ -131,7 +131,7 @@
 | 方向 | 现状 |
 | --- | --- |
 | 🤖 **外部 AI** | 本机 MCP，默认关闭，在设置里打开。只改待办和便签。规格见 [docs/external-ai.md](docs/external-ai.md)。还没有代码 |
-| 🧩 **应用页与自定义工具** | 面板上的「应用」标签，分类是「内置」和「自定义」。悬浮窗外壳加 TOML 清单和沙箱 Lua。番茄钟是内置工具。规格见 [docs/tools.md](docs/tools.md)。产品界面还没有。宿主在 `crates/toolhost`。窗口验证程序在 `spikes/toolhost`。技术验证「工具宿主」已通过，凭据管理器界面待用户用 `--toolhost-cred` 确认。一键把网页收进收纳的浏览器扩展也还没有，先做 Chrome |
+| 🧩 **应用页与自定义工具** | 面板上的「应用」标签，分类是「内置」和「自定义」。悬浮窗外壳加 TOML 清单和沙箱 Lua。番茄钟是内置工具。规格见 [docs/tools.md](docs/tools.md)。应用页有代码，未在 Windows 上验收；已安装工具还是空的，导入、卸载、更新、查看权限和番茄钟迁移还没有。宿主在 `crates/toolhost`。窗口验证程序在 `spikes/toolhost`。技术验证「工具宿主」已通过，凭据管理器界面待用户用 `--toolhost-cred` 确认。一键把网页收进收纳的浏览器扩展也还没有，先做 Chrome |
 
 不做的事：「今日」聚合页、GitHub PR/Issue 追踪、由搜索词自动创建待办、云同步、文件内容搜索。完整清单见 [产品规格](docs/product.md)「明确不做」。
 
@@ -254,7 +254,7 @@ cargo run -p hotcorner -- probe --out probe.json
 | [架构](docs/architecture.md) | Slint、Rust、数据与性能测量。技术验证结论见实现状态。它描述目标，不是现有代码的地图 |
 | [实现状态](docs/roadmap.md) | 哪些界面已有代码、哪些没有，以及技术验证记录 |
 | [外部 AI](docs/external-ai.md) | 本机 MCP。排在 v0.4.0 之后，还没有代码 |
-| [应用页与自定义工具](docs/tools.md) | 悬浮窗工具。原先的扩展页已并入。排在 v0.4.0 之后，产品界面还没有。宿主在 `crates/toolhost`。窗口验证见 `spikes/toolhost`。技术验证「工具宿主」已通过，凭据管理器界面待用户用 `--toolhost-cred` 确认。开发说明见 [docs/tool-dev-guide.md](docs/tool-dev-guide.md) |
+| [应用页与自定义工具](docs/tools.md) | 悬浮窗工具。原先的扩展页已并入。排在 v0.4.0 之后。应用页有代码，未在 Windows 上验收；导入、卸载、更新、查看权限和番茄钟迁移还没有。宿主在 `crates/toolhost`。窗口验证见 `spikes/toolhost`。技术验证「工具宿主」已通过，凭据管理器界面待用户用 `--toolhost-cred` 确认。开发说明见 [docs/tool-dev-guide.md](docs/tool-dev-guide.md) |
 | [测量模板](docs/measurements/TEMPLATE.md) | 空白模板，不是实测。技术验证结论在实现状态 |
 
 <a id="credits"></a>
