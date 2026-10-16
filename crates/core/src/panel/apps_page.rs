@@ -1,7 +1,7 @@
-//! 面板「应用」页里不画窗口的决定：分类、卡片、空状态、菜单项和启用状态。
+//! 面板「应用」页里不画窗口的决定：卡片、菜单项和启用状态。
 //!
 //! 可见行为见 `docs/tools.md`「应用页」。导入确认和卸载的句子在 `tool_install`。
-//! 番茄钟迁移不在这里。没有 `tools/` 时，列表是空的。
+//! 没有 `tools/` 时，列表是空的，界面只留「导入+」。
 //! 启用状态写在数据目录的 `tool-enabled.json`。安装副本的路径规格还没定，
 //! 这份文件名因此也还不是产品规则，并且不进导出白名单。
 
@@ -17,66 +17,27 @@ use crate::storage::{SCHEMA_VERSION, atomic_write, is_supported_schema, validate
 /// 数据目录里的启用状态。只记关掉的工具 id。缺了这份文件，或某个 id 不在里面，就是启用。
 pub const ENABLED_FILE: &str = "tool-enabled.json";
 
-pub const EMPTY_LABEL: &str = "没有工具";
 pub const IMPORT_LABEL: &str = "导入+";
 pub const FLOAT_LABEL: &str = "悬浮窗";
-pub const CATEGORY_BUILTIN: &str = "内置";
-pub const CATEGORY_CUSTOM: &str = "自定义";
 
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-/// 卡片属于哪一类。只有这两类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolOrigin {
-    Builtin,
-    Custom,
-}
-
-impl ToolOrigin {
-    #[must_use]
-    pub fn index(self) -> i32 {
-        match self {
-            Self::Builtin => 0,
-            Self::Custom => 1,
-        }
-    }
-
-    #[must_use]
-    pub fn from_index(index: i32) -> Option<Self> {
-        match index {
-            0 => Some(Self::Builtin),
-            1 => Some(Self::Custom),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Builtin => CATEGORY_BUILTIN,
-            Self::Custom => CATEGORY_CUSTOM,
-        }
-    }
-}
-
-/// 已经安装、可以列在应用页上的工具。这一步的产品目录还是空的。
+/// 已经安装、可以列在应用页上的工具。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedTool {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub origin: ToolOrigin,
     /// 工具文件夹里的 `icon.png`。没有这个文件时是 `None`。
     pub icon_path: Option<PathBuf>,
 }
 
-/// 当前分类下的一张卡片。图标路径只在内容是 PNG 时保留。
+/// 应用页上的一张工具卡片。图标路径只在内容是 PNG 时保留。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCard {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub origin: ToolOrigin,
     pub enabled: bool,
     pub mark: String,
     pub icon_path: Option<PathBuf>,
@@ -92,27 +53,21 @@ pub enum EnabledBytes {
     Corrupt,
 }
 
-/// 已安装的自定义工具。内置番茄钟还没有迁过来，所以内置列表仍是空的。
+/// 已安装的工具，顺序与数据目录里的目录名相同。
 #[must_use]
 pub fn installed_tools(data_dir: &Path) -> Vec<ListedTool> {
-    super::tool_install::list_custom(data_dir)
+    super::tool_install::list_installed(data_dir)
 }
 
-/// 当前分类下的卡片，顺序与 `tools` 相同。
+/// 全部工具卡片，顺序与 `tools` 相同。「导入+」不在这份列表里，由界面加在最后。
 #[must_use]
-pub fn visible_cards(
-    origin: ToolOrigin,
-    tools: &[ListedTool],
-    disabled: &BTreeSet<String>,
-) -> Vec<ToolCard> {
+pub fn visible_cards(tools: &[ListedTool], disabled: &BTreeSet<String>) -> Vec<ToolCard> {
     tools
         .iter()
-        .filter(|tool| tool.origin == origin)
         .map(|tool| ToolCard {
             id: tool.id.clone(),
             name: tool.name.clone(),
             description: tool.description.clone(),
-            origin: tool.origin,
             enabled: is_enabled(disabled, &tool.id),
             mark: name_mark(&tool.name),
             icon_path: tool
@@ -124,20 +79,11 @@ pub fn visible_cards(
         .collect()
 }
 
-/// 「导入+」只在「自定义」。
+/// 每张卡片的「⋯」都是「更新」「卸载」「查看权限」。
+/// 声明了密钥时，最后再加上「填写密钥」。
 #[must_use]
-pub fn show_import(origin: ToolOrigin) -> bool {
-    origin == ToolOrigin::Custom
-}
-
-/// 内置是「查看权限」。自定义是「更新」「卸载」「查看权限」。
-/// 声明了密钥时，这两类都在最后加上「填写密钥」。
-#[must_use]
-pub fn menu_items(origin: ToolOrigin, has_secrets: bool) -> Vec<&'static str> {
-    let mut items = match origin {
-        ToolOrigin::Builtin => vec!["查看权限"],
-        ToolOrigin::Custom => vec!["更新", "卸载", "查看权限"],
-    };
+pub fn menu_items(has_secrets: bool) -> Vec<&'static str> {
+    let mut items = vec!["更新", "卸载", "查看权限"];
     if has_secrets {
         items.push("填写密钥");
     }
@@ -277,86 +223,50 @@ struct OnDisk<'a> {
 mod tests {
     use super::*;
 
-    fn tool(id: &str, name: &str, origin: ToolOrigin) -> ListedTool {
+    fn tool(id: &str, name: &str) -> ListedTool {
         ListedTool {
             id: id.to_owned(),
             name: name.to_owned(),
             description: format!("{name}的说明"),
-            origin,
             icon_path: None,
         }
     }
 
     #[test]
-    fn categories_are_only_builtin_then_custom() {
-        assert_eq!(
-            [ToolOrigin::Builtin, ToolOrigin::Custom].map(ToolOrigin::title),
-            ["内置", "自定义"]
-        );
-        assert_eq!(ToolOrigin::from_index(0), Some(ToolOrigin::Builtin));
-        assert_eq!(ToolOrigin::from_index(1), Some(ToolOrigin::Custom));
-        assert_eq!(ToolOrigin::from_index(2), None);
-    }
-
-    #[test]
-    fn empty_builtin_has_no_import_and_empty_custom_keeps_import() {
-        let disabled = BTreeSet::new();
-        let builtin = visible_cards(ToolOrigin::Builtin, &[], &disabled);
-        let custom = visible_cards(ToolOrigin::Custom, &[], &disabled);
-        assert!(builtin.is_empty());
-        assert!(custom.is_empty());
-        assert!(!show_import(ToolOrigin::Builtin));
-        assert!(show_import(ToolOrigin::Custom));
-        assert_eq!(EMPTY_LABEL, "没有工具");
+    fn empty_list_has_no_cards_and_import_label_stays() {
+        let cards = visible_cards(&[], &BTreeSet::new());
+        assert!(cards.is_empty());
         assert_eq!(IMPORT_LABEL, "导入+");
+        assert_eq!(FLOAT_LABEL, "悬浮窗");
     }
 
     #[test]
-    fn cards_follow_the_selected_category_and_keep_order() {
+    fn cards_keep_install_order_and_share_one_menu() {
         let tools = vec![
-            tool("lanwork.pomodoro", "番茄钟", ToolOrigin::Builtin),
-            tool("example.quota", "API 额度", ToolOrigin::Custom),
-            tool("example.daily", "日报", ToolOrigin::Custom),
+            tool("example.quota", "API 额度"),
+            tool("example.daily", "日报"),
         ];
         let mut disabled = BTreeSet::new();
         assert!(set_disabled(&mut disabled, "example.daily", false));
-        let builtin = visible_cards(ToolOrigin::Builtin, &tools, &disabled);
-        assert_eq!(builtin.len(), 1);
-        assert_eq!(builtin[0].name, "番茄钟");
-        assert!(builtin[0].enabled);
-        assert_eq!(menu_items(builtin[0].origin, false), ["查看权限"]);
-        let custom = visible_cards(ToolOrigin::Custom, &tools, &disabled);
+        let cards = visible_cards(&tools, &disabled);
         assert_eq!(
-            custom
+            cards
                 .iter()
                 .map(|card| card.name.as_str())
                 .collect::<Vec<_>>(),
             ["API 额度", "日报"]
         );
-        assert!(custom[0].enabled);
-        assert!(!custom[1].enabled);
-        assert_eq!(custom[0].description, "API 额度的说明");
-        assert_eq!(
-            menu_items(custom[0].origin, false),
-            ["更新", "卸载", "查看权限"]
-        );
-        assert_eq!(
-            menu_items(ToolOrigin::Custom, true),
-            ["更新", "卸载", "查看权限", "填写密钥"]
-        );
-        assert_eq!(
-            menu_items(ToolOrigin::Builtin, true),
-            ["查看权限", "填写密钥"]
-        );
-        assert!(!menu_items(ToolOrigin::Builtin, true).contains(&"更新"));
-        assert!(!menu_items(ToolOrigin::Builtin, true).contains(&"卸载"));
-        assert!(!menu_items(ToolOrigin::Builtin, false).contains(&"填写密钥"));
-        assert!(!menu_items(ToolOrigin::Custom, false).contains(&"填写密钥"));
+        assert!(cards[0].enabled);
+        assert!(!cards[1].enabled);
+        assert_eq!(cards[0].description, "API 额度的说明");
+        assert_eq!(menu_items(false), ["更新", "卸载", "查看权限"]);
+        assert_eq!(menu_items(true), ["更新", "卸载", "查看权限", "填写密钥"]);
+        assert!(!menu_items(false).contains(&"填写密钥"));
     }
 
     #[test]
     fn mark_uses_the_first_scalar_after_trim_and_png_rejects_other_bytes() {
-        assert_eq!(name_mark("  番茄钟"), "番");
+        assert_eq!(name_mark("  日报"), "日");
         assert_eq!(name_mark(" API 额度 "), "A");
         assert_eq!(name_mark("   "), "");
         assert!(is_png(b"\x89PNG\r\n\x1a\nrest"));
@@ -373,13 +283,13 @@ mod tests {
         assert!(usable_icon(&png));
         assert!(!usable_icon(&jpeg));
         assert!(!usable_icon(&dir.join("missing.png")));
-        let mut listed = tool("example.quota", "  API 额度", ToolOrigin::Custom);
+        let mut listed = tool("example.quota", "  API 额度");
         listed.icon_path = Some(jpeg);
-        let cards = visible_cards(ToolOrigin::Custom, &[listed.clone()], &BTreeSet::new());
+        let cards = visible_cards(&[listed.clone()], &BTreeSet::new());
         assert_eq!(cards[0].mark, "A");
         assert!(cards[0].icon_path.is_none());
         listed.icon_path = Some(png);
-        let cards = visible_cards(ToolOrigin::Custom, &[listed], &BTreeSet::new());
+        let cards = visible_cards(&[listed], &BTreeSet::new());
         assert!(cards[0].icon_path.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }

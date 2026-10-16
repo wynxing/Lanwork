@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-use crate::manifest::{Manifest, Origin, SecretDecl, load_dir, parse};
+use crate::manifest::{Manifest, SecretDecl, load_dir, parse};
 
 /// 系统文件对话框里用来选中当前文件夹的占位名。不是产品界面上的句子。
 pub const FOLDER_SENTINEL: &str = "Folder Selection.";
@@ -148,7 +148,7 @@ fn inspect_dir(dir: &Path) -> Result<StagedPackage, PackageError> {
         .map_err(|_| PackageError::invalid("工具文件夹打不开"))?;
     let manifest_path = contained(&root, Path::new("manifest.toml"))?;
     let manifest_bytes = read_capped(&manifest_path, MAX_ENTRY)?;
-    let loaded = load_dir(&root, Origin::Imported).map_err(PackageError::invalid)?;
+    let loaded = load_dir(&root).map_err(PackageError::invalid)?;
     let script_path = contained(&root, Path::new(&loaded.entry))?;
     let script = read_capped(&script_path, MAX_ENTRY)?;
     if std::str::from_utf8(&script).is_err() {
@@ -177,7 +177,7 @@ fn stage_from_files(files: Vec<(String, Vec<u8>)>) -> Result<StagedPackage, Pack
         .ok_or_else(|| PackageError::invalid("没有清单"))?;
     let text = std::str::from_utf8(&manifest_bytes)
         .map_err(|_| PackageError::invalid("清单不是 UTF-8"))?;
-    let (mut manifest, entry) = parse(text, Origin::Imported).map_err(PackageError::invalid)?;
+    let (mut manifest, entry) = parse(text).map_err(PackageError::invalid)?;
     let script_name = join_prefix(&prefix, &entry.replace('\\', "/"));
     let script = files
         .iter()

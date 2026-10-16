@@ -51,7 +51,7 @@ fn reserved_windows_name(id: &str) -> bool {
     )
 }
 
-/// 导入的工具不能用这个前缀。比较区分大小写：规格写的是 `lanwork.`。
+/// 保留前缀。工具 id 不能以 `lanwork.` 开头。比较区分大小写：规格写的是 `lanwork.`。
 /// 忽略大小写算不算，待定。
 pub fn imported_prefix_forbidden(id: &str) -> bool {
     id.starts_with("lanwork.")

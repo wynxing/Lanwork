@@ -16,12 +16,6 @@ const SERVICES: &[&str] = &[
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Origin {
-    Builtin,
-    Imported,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WidgetKind {
     Text,
     Button,
@@ -61,11 +55,11 @@ pub struct Manifest {
     pub script: String,
 }
 
-pub fn load_dir(dir: &Path, origin: Origin) -> Result<Manifest, String> {
+pub fn load_dir(dir: &Path) -> Result<Manifest, String> {
     let manifest_path = dir.join("manifest.toml");
     let text = std::fs::read(&manifest_path).map_err(|err| format!("读不到清单：{err}"))?;
     let text = std::str::from_utf8(&text).map_err(|_| "清单不是 UTF-8".to_string())?;
-    let (manifest, entry) = parse(text, origin)?;
+    let (manifest, entry) = parse(text)?;
     let script_path = entry_file(dir, &entry)?;
     let script = std::fs::read(&script_path).map_err(|err| format!("读不到入口脚本：{err}"))?;
     let script = std::str::from_utf8(&script).map_err(|_| "入口脚本不是 UTF-8".to_string())?;
@@ -75,7 +69,7 @@ pub fn load_dir(dir: &Path, origin: Origin) -> Result<Manifest, String> {
     })
 }
 
-pub fn parse(text: &str, origin: Origin) -> Result<(Manifest, String), String> {
+pub fn parse(text: &str) -> Result<(Manifest, String), String> {
     let value: toml::Value = toml::from_str(text).map_err(|_| "清单无法解析".to_string())?;
     let table = value.as_table().ok_or("清单无法解析")?;
     require_keys(
@@ -100,8 +94,8 @@ pub fn parse(text: &str, origin: Origin) -> Result<(Manifest, String), String> {
             "id 不是单个路径分量".to_string()
         });
     }
-    if origin == Origin::Imported && imported_prefix_forbidden(id) {
-        return Err("导入的 id 不能以 lanwork. 开头".to_string());
+    if imported_prefix_forbidden(id) {
+        return Err("id 不能以 lanwork. 开头".to_string());
     }
 
     let name = trimmed_line(required_str(table, "name")?, "名称")?;

@@ -20,36 +20,10 @@ fn default_schema_version() -> u32 {
 use super::error::ConfigError;
 use super::hotkey::{Hotkey, default_search_hotkey, parse_hotkey};
 
-/// 番茄钟工作时长的下限和上限，单位是分钟。产品规格写明 1 至 120。
-pub const MIN_WORK_MINUTES: u32 = 1;
-pub const MAX_WORK_MINUTES: u32 = 120;
-pub const DEFAULT_WORK_MINUTES: u32 = 25;
-
-/// 休息时长和长休息时长的下限和上限，单位是分钟。产品规格写明 1 至 60。
-pub const MIN_BREAK_MINUTES: u32 = 1;
-pub const MAX_BREAK_MINUTES: u32 = 60;
-pub const DEFAULT_BREAK_MINUTES: u32 = 5;
-pub const DEFAULT_LONG_BREAK_MINUTES: u32 = 15;
-
-const WORK_RANGE: &str = "工作时长只接受 1 至 120 分钟";
-const BREAK_RANGE: &str = "休息时长只接受 1 至 60 分钟";
-const LONG_BREAK_RANGE: &str = "长休息时长只接受 1 至 60 分钟";
 pub const SNOOZE_DAYS_ERROR: &str = "处理模式顺延天数只接受 1 至 30";
 
 fn default_snooze_days() -> u32 {
     DEFAULT_DEFER_DAYS
-}
-
-fn default_work_minutes() -> u32 {
-    DEFAULT_WORK_MINUTES
-}
-
-fn default_break_minutes() -> u32 {
-    DEFAULT_BREAK_MINUTES
-}
-
-fn default_long_break_minutes() -> u32 {
-    DEFAULT_LONG_BREAK_MINUTES
 }
 
 /// 热角。默认右上。关闭表示不触发。
@@ -116,15 +90,6 @@ pub struct Config {
     pub launch_at_startup: bool,
     #[serde(rename = "processSnoozeDays", default = "default_snooze_days")]
     pub process_snooze_days: u32,
-    #[serde(rename = "pomodoroWorkMinutes", default = "default_work_minutes")]
-    pub pomodoro_work_minutes: u32,
-    #[serde(rename = "pomodoroBreakMinutes", default = "default_break_minutes")]
-    pub pomodoro_break_minutes: u32,
-    #[serde(
-        rename = "pomodoroLongBreakMinutes",
-        default = "default_long_break_minutes"
-    )]
-    pub pomodoro_long_break_minutes: u32,
     /// 网页搜索结果用的搜索引擎：`google`、`bing` 或 `baidu`。缺省 `google`。
     #[serde(rename = "webSearchEngine", default)]
     pub web_search_engine: WebSearchEngine,
@@ -149,9 +114,6 @@ impl Default for Config {
             theme: Theme::System,
             launch_at_startup: false,
             process_snooze_days: DEFAULT_DEFER_DAYS,
-            pomodoro_work_minutes: DEFAULT_WORK_MINUTES,
-            pomodoro_break_minutes: DEFAULT_BREAK_MINUTES,
-            pomodoro_long_break_minutes: DEFAULT_LONG_BREAK_MINUTES,
             web_search_engine: WebSearchEngine::Google,
             search_bar_origin: None,
         }
@@ -206,24 +168,6 @@ pub fn normalize(mut config: Config) -> Result<Config, ConfigError> {
         MIN_DEFER_DAYS,
         MAX_DEFER_DAYS,
         SNOOZE_DAYS_ERROR,
-    )?;
-    check_range(
-        config.pomodoro_work_minutes,
-        MIN_WORK_MINUTES,
-        MAX_WORK_MINUTES,
-        WORK_RANGE,
-    )?;
-    check_range(
-        config.pomodoro_break_minutes,
-        MIN_BREAK_MINUTES,
-        MAX_BREAK_MINUTES,
-        BREAK_RANGE,
-    )?;
-    check_range(
-        config.pomodoro_long_break_minutes,
-        MIN_BREAK_MINUTES,
-        MAX_BREAK_MINUTES,
-        LONG_BREAK_RANGE,
     )?;
     Ok(config)
 }

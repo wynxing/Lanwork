@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use lanwork_toolhost::{
-    HttpTransport, MemorySecretStore, Options, Origin, Outgoing, SecretStore, Session, TodoItem,
-};
+use lanwork_toolhost::{HttpTransport, MemorySecretStore, Options, Outgoing, SecretStore, Session};
 
 use crate::shell;
 
@@ -53,19 +51,6 @@ fn tool(id: &str, components: &str) -> String {
     )
 }
 
-fn todo(id: &str, title: &str, current: bool) -> TodoItem {
-    TodoItem {
-        id: id.to_string(),
-        list_id: "inbox".to_string(),
-        title: title.to_string(),
-        completed: false,
-        due: None,
-        current,
-        trashed: false,
-        conflict: false,
-    }
-}
-
 struct Recorded {
     body: String,
 }
@@ -86,27 +71,28 @@ impl HttpTransport for Recorded {
 #[test]
 fn shell_draws_text_button_timer_and_progress() {
     let _guard = shell::platform_lock();
-    let dir = Scratch::new("shell-pomo");
-    crate::write_example(&dir, "pomodoro").unwrap();
-    let mut options = Options::default();
-    options.todos.push(todo("t1", "写报告", true));
-    let session = Rc::new(Session::open(&dir, Origin::Builtin, options).unwrap());
+    let dir = Scratch::new("shell-timer");
+    write_tool(
+        &dir,
+        &tool(
+            "example.timer",
+            "[[component]]\nid = \"title\"\ncomponent = \"text\"\ntext = \"示例\"\n\n[[component]]\nid = \"clock\"\ncomponent = \"timer\"\n\n[[component]]\nid = \"go\"\ncomponent = \"button\"\nlabel = \"开始\"\n",
+        ),
+        "function on_load()\n  ui.text(\"title\", \"示例\")\n  ui.timer(\"clock\", 30)\nend\nfunction on_click(id)\n  if id == \"go\" then\n    ui.button(\"go\", \"已点\")\n  end\nend\n",
+    );
+    let session = Rc::new(Session::open(&dir, Options::default()).unwrap());
     session.on_load();
     let ui = shell::attach_for_test(Rc::clone(&session));
-    assert_eq!(ui.get_row_count(), 6);
-    for (index, kind) in ["text", "text", "timer", "button", "button", "button"]
-        .into_iter()
-        .enumerate()
-    {
+    assert_eq!(ui.get_row_count(), 3);
+    for (index, kind) in ["text", "timer", "button"].into_iter().enumerate() {
         assert_eq!(ui.invoke_row_kind(index as i32), kind);
     }
-    assert_eq!(ui.invoke_row_caption(0).as_str(), "写报告");
-    assert_eq!(ui.invoke_row_caption(1).as_str(), "工作");
-    assert_eq!(ui.invoke_row_caption(2).as_str(), "1500");
-    assert_eq!(ui.invoke_row_label(3).as_str(), "继续");
-    let y = ui.get_drag_height() + 3.0 * ui.get_row_stride() + 22.0;
+    assert_eq!(ui.invoke_row_caption(0).as_str(), "示例");
+    assert_eq!(ui.invoke_row_caption(1).as_str(), "30");
+    assert_eq!(ui.invoke_row_label(2).as_str(), "开始");
+    let y = ui.get_drag_height() + 2.0 * ui.get_row_stride() + 22.0;
     shell::click(&ui, 60.0, y);
-    assert_eq!(ui.invoke_row_label(3).as_str(), "暂停");
+    assert_eq!(ui.invoke_row_label(2).as_str(), "已点");
     drop(ui);
 
     let dir = Scratch::new("shell-quota");
@@ -124,7 +110,7 @@ fn shell_draws_text_button_timer_and_progress() {
         transport,
         ..Options::default()
     };
-    let session = Rc::new(Session::open(&dir, Origin::Imported, options).unwrap());
+    let session = Rc::new(Session::open(&dir, options).unwrap());
     session.on_load();
     let ui = shell::attach_for_test(Rc::clone(&session));
     assert_eq!(ui.invoke_row_kind(0).as_str(), "text");
@@ -142,7 +128,7 @@ fn shell_draws_text_button_timer_and_progress() {
         ),
         "function on_load()\n  ui.progress(\"used\", 1)\nend\n",
     );
-    let session = Rc::new(Session::open(&dir, Origin::Imported, Options::default()).unwrap());
+    let session = Rc::new(Session::open(&dir, Options::default()).unwrap());
     session.on_load();
     let ui = shell::attach_for_test(session);
     let full = shell::green_pixels(&ui);

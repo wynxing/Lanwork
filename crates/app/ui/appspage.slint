@@ -1,4 +1,4 @@
-// 面板的应用页。顶上是「内置」「自定义」，下面是工具卡片。
+// 面板的应用页。工具卡片排成一列，「导入+」在最后。
 // 版式沿用已审过的预览和面板：浅底、细描边、没有色块按钮。数据和动作在 Rust。
 // 开关只显示 enabled，点击时请求相反的值，不自己翻转。
 //
@@ -14,13 +14,9 @@ export struct AppToolCard {
     has-icon: bool,
     icon: image,
     enabled: bool,
-    builtin: bool,
 }
 
 export global AppsPageData {
-    // 0 内置，1 自定义。
-    in-out property <int> category: 0;
-    in property <bool> show-import: false;
     in property <[AppToolCard]> tools;
     in-out property <bool> menu-open: false;
     in-out property <int> menu-index: -1;
@@ -31,18 +27,6 @@ export global AppsPageData {
     in-out property <length> menu-anchor-h: 0px;
 
     // 布局测试读取的窗口坐标。
-    in-out property <length> builtin-x: 0px;
-    in-out property <length> builtin-y: 0px;
-    in-out property <length> builtin-w: 0px;
-    in-out property <length> builtin-h: 0px;
-    in-out property <length> custom-x: 0px;
-    in-out property <length> custom-y: 0px;
-    in-out property <length> custom-w: 0px;
-    in-out property <length> custom-h: 0px;
-    in-out property <bool> empty-shown: false;
-    in-out property <length> empty-x: 0px;
-    in-out property <length> empty-y: 0px;
-    in-out property <string> empty-text: "";
     in-out property <bool> import-shown: false;
     in-out property <length> import-x: 0px;
     in-out property <length> import-y: 0px;
@@ -117,7 +101,6 @@ export global AppsPageData {
     in-out property <length> field-w: 0px;
     in-out property <length> field-h: 0px;
 
-    callback select-category(int);
     callback open-float(string);
     callback toggle-enabled(string, bool);
     callback open-menu(int);
@@ -419,47 +402,10 @@ component ImportCard inherits Rectangle {
     }
 }
 
-component CategoryTab inherits Rectangle {
-    in property <string> name;
-    in property <bool> on;
-    in property <Ink> c;
-    callback chosen();
-
-    width: label.preferred-width + 24px;
-    background: !on && touch.has-hover ? c.hover : transparent;
-    border-radius: 6px;
-
-    label := Text {
-        x: 12px;
-        height: parent.height;
-        text: root.name;
-        color: on ? c.accent : c.secondary;
-        font-size: 14px;
-        font-weight: on ? 600 : 400;
-        vertical-alignment: center;
-    }
-
-    if on: Rectangle {
-        x: 12px;
-        y: parent.height - 3px;
-        width: parent.width - 24px;
-        height: 2px;
-        border-radius: 1px;
-        background: c.accent;
-    }
-
-    touch := TouchArea {
-        clicked => {
-            root.chosen();
-        }
-    }
-}
-
 export component AppsPage inherits Rectangle {
     in property <Ink> c;
     in property <bool> dark;
 
-    property <length> category-height: 40px;
     property <length> menu-item-h: 32px;
     property <length> menu-pad: 4px;
     property <length> menu-width: 168px;
@@ -476,22 +422,10 @@ export component AppsPage inherits Rectangle {
     property <bool> perm-open: AppsPageData.dialog-open && AppsPageData.dialog-kind == "perm";
     property <bool> uninstall-open: AppsPageData.dialog-open && AppsPageData.dialog-kind == "uninstall";
     property <bool> secret-open: AppsPageData.dialog-open && AppsPageData.dialog-kind == "secret";
-    property <length> geom: builtin-tab.absolute-position.x + builtin-tab.width + custom-tab.absolute-position.x + custom-tab.width + empty-label.absolute-position.y + (empty-label.visible ? 1px : 0px) + column.preferred-height + (import-card.visible ? import-card.absolute-position.y + import-card.width : 0px) + root.width + root.height + (menu-drawn ? menu-box.absolute-position.x + menu-box.absolute-position.y + menu-block : 0px) + AppsPageData.tools.length * 1px + AppsPageData.category * 1px + AppsPageData.layout-tick * 1px + (perm-open ? perm-box.height : 0px) + (uninstall-open ? uninstall-box.height : 0px) + (secret-open ? secret-box.height : 0px);
+    property <length> geom: column.preferred-height + import-card.absolute-position.y + import-card.width + root.width + root.height + (menu-drawn ? menu-box.absolute-position.x + menu-box.absolute-position.y + menu-block : 0px) + AppsPageData.tools.length * 1px + AppsPageData.layout-tick * 1px + (perm-open ? perm-box.height : 0px) + (uninstall-open ? uninstall-box.height : 0px) + (secret-open ? secret-box.height : 0px);
 
     changed geom => {
-        AppsPageData.builtin-x = builtin-tab.absolute-position.x;
-        AppsPageData.builtin-y = builtin-tab.absolute-position.y;
-        AppsPageData.builtin-w = builtin-tab.width;
-        AppsPageData.builtin-h = builtin-tab.height;
-        AppsPageData.custom-x = custom-tab.absolute-position.x;
-        AppsPageData.custom-y = custom-tab.absolute-position.y;
-        AppsPageData.custom-w = custom-tab.width;
-        AppsPageData.custom-h = custom-tab.height;
-        AppsPageData.empty-shown = empty-label.visible;
-        AppsPageData.empty-x = empty-label.absolute-position.x;
-        AppsPageData.empty-y = empty-label.absolute-position.y;
-        AppsPageData.empty-text = empty-label.text;
-        AppsPageData.import-shown = import-card.visible;
+        AppsPageData.import-shown = true;
         AppsPageData.menu-shown = menu-drawn;
         AppsPageData.menu-x = menu-box.absolute-position.x;
         AppsPageData.menu-y = menu-box.absolute-position.y;
@@ -527,51 +461,9 @@ export component AppsPage inherits Rectangle {
         AppsPageData.secret-generation = AppsPageData.secret-generation + 1;
     }
 
-    HorizontalLayout {
-        x: 8px;
-        y: 0px;
-        height: category-height;
-        spacing: 4px;
-
-        builtin-tab := CategoryTab {
-            name: "内置";
-            on: AppsPageData.category == 0;
-            c: root.c;
-            chosen => {
-                AppsPageData.select-category(0);
-            }
-        }
-
-        custom-tab := CategoryTab {
-            name: "自定义";
-            on: AppsPageData.category == 1;
-            c: root.c;
-            chosen => {
-                AppsPageData.select-category(1);
-            }
-        }
-    }
-
-    Rectangle {
-        x: 0px;
-        y: category-height;
-        width: parent.width;
-        height: 1px;
-        background: c.divider;
-    }
-
-    empty-label := Text {
-        x: 16px;
-        y: category-height + 1px + 12px;
-        visible: AppsPageData.tools.length == 0;
-        text: "没有工具";
-        color: c.secondary;
-        font-size: 14px;
-    }
-
     flick := Flickable {
         x: 0px;
-        y: category-height + 1px + (AppsPageData.tools.length == 0 ? 40px : 12px);
+        y: 12px;
         width: parent.width;
         height: parent.height - self.y;
         content-height: max(self.height, column.preferred-height);
@@ -591,7 +483,6 @@ export component AppsPage inherits Rectangle {
             }
 
             import-card := ImportCard {
-                visible: AppsPageData.show-import;
                 c: root.c;
                 dark: root.dark;
             }

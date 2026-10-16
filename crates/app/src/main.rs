@@ -293,11 +293,11 @@ mod tests {
         assert!(apps.contains("ProductCredentialStore"));
         assert!(apps.contains("update_target"));
         let page = include_str!("../ui/appspage.slint");
-        assert!(page.contains("text: \"没有工具\""));
+        assert!(!page.contains("text: \"没有工具\""));
         assert!(page.contains("text: \"导入+\""));
         assert!(page.contains("text: \"悬浮窗\""));
-        assert!(page.contains("name: \"内置\""));
-        assert!(page.contains("name: \"自定义\""));
+        assert!(!page.contains("name: \"内置\""));
+        assert!(!page.contains("name: \"自定义\""));
         assert!(page.contains("input-type: InputType.password"));
         assert!(page.contains("input.text = \"\""));
         assert!(page.contains("if secret-open: Flickable"));

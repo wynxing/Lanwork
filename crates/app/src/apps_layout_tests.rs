@@ -89,7 +89,6 @@ fn card(id: &str, name: &str, detail: &str, mark: &str, enabled: bool) -> AppToo
         has_icon: false,
         icon: slint::Image::default(),
         enabled,
-        builtin: true,
     }
 }
 
@@ -100,46 +99,20 @@ fn set_tools(ui: &Panel, cards: Vec<AppToolCard>) {
 }
 
 #[test]
-fn empty_builtin_has_no_import_and_custom_keeps_the_import_card() {
+fn empty_page_shows_only_the_import_card() {
     let ui = open();
     let data = ui.global::<AppsPageData>();
-    data.set_category(0);
-    data.set_show_import(false);
     set_tools(&ui, Vec::new());
-    assert!(data.get_empty_shown());
-    assert_eq!(data.get_empty_text().as_str(), "没有工具");
-    assert!(!data.get_import_shown(), "内置没有导入+");
-    assert!(data.get_builtin_w() > 0.0);
-    assert!(data.get_custom_x() > data.get_builtin_x());
-    assert_eq!(data.get_builtin_h(), 40.0);
-
-    let categories = Rc::new(RefCell::new(Vec::new()));
-    {
-        let categories = Rc::clone(&categories);
-        data.on_select_category(move |index| categories.borrow_mut().push(index));
-    }
-    click(
-        &ui,
-        data.get_custom_x() + data.get_custom_w() / 2.0,
-        data.get_custom_y() + data.get_custom_h() / 2.0,
-    );
-    assert_eq!(categories.borrow().as_slice(), [1]);
-    data.set_category(1);
-    data.set_show_import(true);
-    settle(&ui);
-    assert!(data.get_empty_shown());
-    assert_eq!(data.get_empty_text().as_str(), "没有工具");
-    assert!(data.get_import_shown(), "自定义没有工具时导入+仍在");
+    assert!(data.get_import_shown());
     assert!(data.get_import_h() > 0.0);
-    assert!(data.get_import_y() > data.get_empty_y());
+    assert!(data.get_import_y() > 0.0);
+    assert_eq!(data.get_card_name().as_str(), "");
 }
 
 #[test]
 fn a_card_shows_name_detail_mark_and_the_float_button_follows_the_switch() {
     let ui = open();
     let data = ui.global::<AppsPageData>();
-    data.set_category(0);
-    data.set_show_import(false);
     set_tools(
         &ui,
         vec![card(
@@ -150,8 +123,8 @@ fn a_card_shows_name_detail_mark_and_the_float_button_follows_the_switch() {
             true,
         )],
     );
-    assert!(!data.get_empty_shown());
-    assert!(!data.get_import_shown());
+    assert!(data.get_import_shown());
+    assert!(data.get_import_y() > data.get_card_y());
     assert_eq!(data.get_card_name().as_str(), "API 额度");
     assert_eq!(data.get_card_detail().as_str(), "服务商接口的剩余额度");
     assert_eq!(data.get_card_mark().as_str(), "A");
@@ -215,7 +188,6 @@ fn a_card_shows_name_detail_mark_and_the_float_button_follows_the_switch() {
 fn the_more_menu_lists_the_items_it_is_given_and_import_is_a_separate_card() {
     let ui = open();
     let data = ui.global::<AppsPageData>();
-    data.set_show_import(true);
     set_tools(
         &ui,
         vec![card("example.quota", "API 额度", "剩余额度", "额", true)],
@@ -263,7 +235,8 @@ fn the_more_menu_lists_the_items_it_is_given_and_import_is_a_separate_card() {
 
     data.set_menu_open(true);
     settle(&ui);
-    click(&ui, 24.0, data.get_empty_y());
+    // 标题栏在 y 48 以上。点卡片左侧的页边，菜单在右侧，这一下落在页面里、菜单外。
+    click(&ui, 8.0, data.get_card_y() + 8.0);
     assert!(closed.get() >= 1, "点菜单外关掉菜单");
     data.set_menu_open(false);
     settle(&ui);

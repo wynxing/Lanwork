@@ -32,17 +32,12 @@ fn fence(section: &str, lang: &str) -> Result<String, String> {
     Ok(body[..end].trim_end_matches('\n').to_string())
 }
 
-pub fn pomodoro() -> Result<(String, String), String> {
-    example("## 示例：番茄钟")
-}
-
 pub fn quota() -> Result<(String, String), String> {
     example("## 示例：额度")
 }
 
 pub fn write_example(dir: &std::path::Path, which: &str) -> Result<(), String> {
     let (manifest, script) = match which {
-        "pomodoro" => pomodoro()?,
         "quota" => quota()?,
         _ => return Err(format!("没有这个示例：{which}")),
     };
@@ -54,11 +49,11 @@ mod tests {
     use super::{GUIDE, example_in};
 
     #[test]
-    fn crlf_guide_still_yields_pomodoro() {
+    fn crlf_guide_still_yields_quota() {
         let crlf = GUIDE.replace("\r\n", "\n").replace('\n', "\r\n");
-        let (manifest, script) = example_in(&crlf, "## 示例：番茄钟").expect("番茄钟示例");
-        assert!(manifest.contains("id = \"lanwork.pomodoro\""));
-        assert!(script.contains("function on_timer"));
+        let (manifest, script) = example_in(&crlf, "## 示例：额度").expect("额度示例");
+        assert!(manifest.contains("id = \"example.api-quota\""));
+        assert!(script.contains("function on_load"));
         assert!(!manifest.contains('\r'));
         assert!(!script.contains('\r'));
     }

@@ -17,7 +17,7 @@ use lanwork_core::panel::{
 use lanwork_core::storage::Store;
 use lanwork_core::todos::{TodoCommands, TodoError};
 use lanwork_toolhost::{
-    Origin, ProductCredentialStore, RustlsTransport, Session, WidgetViewKind, decode_grant,
+    ProductCredentialStore, RustlsTransport, Session, WidgetViewKind, decode_grant,
 };
 use slint::{ModelRc, VecModel};
 
@@ -84,7 +84,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
         ui.set_error(UNAUTHORIZED.into());
         return;
     };
-    let loaded = match lanwork_toolhost::load_dir(&dir, Origin::Imported) {
+    let loaded = match lanwork_toolhost::load_dir(&dir) {
         Ok(manifest) if grant.allows(&manifest) => manifest,
         Ok(_) => {
             services
@@ -145,7 +145,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
         Err(err) => services.store.log_warn(&format!("工具的网络不可用：{err}")),
     }
 
-    let session = match Session::open(&dir, Origin::Imported, options) {
+    let session = match Session::open(&dir, options) {
         Ok(session) => session,
         Err(message) => {
             services

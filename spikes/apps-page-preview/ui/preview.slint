@@ -313,8 +313,8 @@ export component AppsPreview inherits Window {
     default-font-size: 14px;
     background: #f3f3f3;
 
-    // builtin、custom、empty、menu、import、uninstall、error。
-    in property <string> scene: "builtin";
+    // list、empty、menu、import、uninstall、error。
+    in property <string> scene: "list";
     in property <length> frame-width: 760px;
     in property <length> frame-height: 560px;
 
@@ -333,16 +333,14 @@ export component AppsPreview inherits Window {
     property <color> page: #f3f3f3;
 
     property <bool> is-error: scene == "error";
-    property <bool> is-builtin: scene == "builtin";
     property <bool> is-empty: scene == "empty";
-    property <bool> show-tools: scene == "custom" || scene == "menu" || scene == "import" || scene == "uninstall";
+    property <bool> show-tools: scene == "list" || scene == "menu" || scene == "import" || scene == "uninstall";
     property <bool> menu-open: scene == "menu";
     property <bool> import-open: scene == "import";
     property <bool> uninstall-open: scene == "uninstall";
 
     property <length> title-height: 48px;
-    property <length> category-height: 40px;
-    property <length> content-y: title-height + 1px + category-height + 1px;
+    property <length> content-y: title-height + 1px;
 
     if !is-error: Rectangle {
         x: 0px;
@@ -427,83 +425,15 @@ export component AppsPreview inherits Window {
             background: divider;
         }
 
-        // 分类。只有「内置」和「自定义」，用和标题标签同一套下划线。
-        Rectangle {
-            x: 0px;
-            y: title-height + 1px;
-            width: parent.width;
-            height: category-height;
-
-            HorizontalLayout {
-                x: 8px;
-                height: parent.height;
-                spacing: 4px;
-
-                PageTab {
-                    name: "内置";
-                    on: is-builtin;
-                    ink: secondary;
-                    accent: accent;
-                }
-
-                PageTab {
-                    name: "自定义";
-                    on: !is-builtin;
-                    ink: secondary;
-                    accent: accent;
-                }
-            }
-        }
-
-        Rectangle {
-            x: 0px;
-            y: title-height + 1px + category-height;
-            width: parent.width;
-            height: 1px;
-            background: divider;
-        }
-
         Rectangle {
             y: content-y;
             width: parent.width;
             height: parent.height - content-y;
 
-            if is-empty: Text {
-                x: 16px;
-                y: 12px;
-                text: "没有工具";
-                color: secondary;
-                font-size: 14px;
-            }
-
-            if is-builtin: VerticalLayout {
+            if is-empty: VerticalLayout {
                 y: 12px;
                 width: parent.width;
                 height: parent.height - 12px;
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 8px;
-                alignment: start;
-
-                ToolCard {
-                    mark: "番";
-                    name: "番茄钟";
-                    detail: "当前待办的计时";
-                    switched: true;
-                    ink: ink;
-                    secondary: secondary;
-                    divider: divider;
-                    selection: selection;
-                    surface: surface;
-                    critical: critical;
-                    tertiary: tertiary;
-                }
-            }
-
-            if is-empty: VerticalLayout {
-                y: 40px;
-                width: parent.width;
-                height: parent.height - 40px;
                 padding-left: 16px;
                 padding-right: 16px;
                 spacing: 8px;
