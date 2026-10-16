@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::notes::{FloatDock, FloatGeometry};
+use crate::notes::{DockEdge, FloatDock, FloatGeometry};
 use crate::shell::{WorkArea, to_physical};
 use crate::storage::is_supported_schema;
 
@@ -45,9 +45,30 @@ pub struct ShellRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellBytes {
     Record(ShellRecord),
+    /// `floatWindow` 这个字段在，但坐标读不出来。贴边、钉住和 `open` 仍用文件里的值。
+    /// 几何是 `None`。调用方打开时不要把合成的位置写回这份文件。
+    GeometryUnreadable(ShellRecord),
     /// `schemaVersion` 高于当前版本，或不是数字。调用方留着原文，不要写回去。
     UnsupportedSchema,
     Corrupt,
+}
+
+impl ShellBytes {
+    /// 能按这份记录打开窗口。坏 JSON 和更高的 schema 不行。
+    /// `floatWindow` 读不出时记录仍在，几何是 `None`，贴边等其他字段还在。
+    #[must_use]
+    pub fn openable(self) -> Option<ShellRecord> {
+        match self {
+            Self::Record(record) | Self::GeometryUnreadable(record) => Some(record),
+            Self::UnsupportedSchema | Self::Corrupt => None,
+        }
+    }
+
+    /// 这次打开不要覆盖原文件。读不出的 `floatWindow` 留在磁盘上，直到用户改窗口。
+    #[must_use]
+    pub fn keep_file_on_open(self) -> bool {
+        matches!(self, Self::GeometryUnreadable(_))
+    }
 }
 
 /// 第 6 步导出要用的字段。位置、尺寸、贴边、钉住分开，缺的保持缺。
@@ -147,7 +168,8 @@ impl ShellSession {
         self.dock.is_some_and(|dock| dock.collapsed)
     }
 
-    /// 调用方已经有一块矩形时放进来。没有记下位置时出现在哪里仍待定，这里不造一块。
+    /// 调用方已经有一块矩形时放进来。
+    /// 没有记下位置时的默认位置是 [`shell_default_origin`]：主屏工作区右下角，留 [`MARGIN_LOGICAL`] 逻辑像素。这里不另造一块。
     pub fn place(&mut self, expanded: PxBox) {
         self.expanded = Some(expanded);
     }
@@ -262,6 +284,48 @@ pub fn shell_default_origin(work: WorkArea, width_px: i32, height_px: i32, dpi: 
     (x.max(work.left), y.max(work.top))
 }
 
+/// 打开时放进贴边会话的几何。
+///
+/// `floatWindow` 不在时，返回记下的几何，可以是 `None`，调用方再用 [`shell_default_origin`]。
+/// 字段在但读不出时，有贴边就造一块贴在 `screen` 外边上的展开矩形，让 `saved.and(dock)` 留住贴边；
+/// 没有贴边时返回 `None`。这块矩形只用于这一次显示，[`ShellBytes::keep_file_on_open`] 为真时不要写回。
+#[must_use]
+pub fn geometry_for_open(
+    record: &ShellRecord,
+    geometry_unreadable: bool,
+    size: (u32, u32),
+    screen: ScreenBounds,
+) -> Option<FloatGeometry> {
+    if geometry_unreadable {
+        return record
+            .dock
+            .map(|dock| edge_anchor(dock, size.0, size.1, screen));
+    }
+    record.geometry
+}
+
+/// 写盘失败时窗口上的那一行。原文保留由原子替换保证，这里只给界面用。
+#[must_use]
+pub fn write_failure_text(err: &impl std::fmt::Display) -> String {
+    format!("保存失败：{err}")
+}
+
+fn edge_anchor(dock: FloatDock, width: u32, height: u32, screen: ScreenBounds) -> FloatGeometry {
+    let width = width.max(1);
+    let height = height.max(1);
+    let (x, y) = match dock.edge {
+        DockEdge::Left => (screen.left, dock.offset),
+        DockEdge::Right => (screen.right.saturating_sub_unsigned(width), dock.offset),
+        DockEdge::Top => (dock.offset, screen.top),
+    };
+    FloatGeometry {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
 /// `tool-windows/<id>.json`。id 不是单个路径分量时返回 `None`。
 #[must_use]
 pub fn record_relative(tool_id: &str) -> Option<PathBuf> {
@@ -335,13 +399,17 @@ pub fn scan_records(data_dir: &Path) -> io::Result<(Vec<StoredShell>, Vec<ScanSk
                 continue;
             }
         };
-        match decode(&bytes) {
-            ShellBytes::Record(record) => stored.push(StoredShell {
+        let decoded = decode(&bytes);
+        if let Some(record) = decoded.openable() {
+            stored.push(StoredShell {
                 id: id.to_owned(),
                 record,
-            }),
-            ShellBytes::Corrupt => skipped.push(ScanSkip::Corrupt(id.to_owned())),
+            });
+            continue;
+        }
+        match decoded {
             ShellBytes::UnsupportedSchema => skipped.push(ScanSkip::Unsupported(id.to_owned())),
+            _ => skipped.push(ScanSkip::Corrupt(id.to_owned())),
         }
     }
     stored.sort_by(|left, right| left.id.cmp(&right.id));
@@ -403,12 +471,23 @@ pub fn decode(bytes: &[u8]) -> ShellBytes {
         Some(Value::Bool(open)) => *open,
         Some(_) => return ShellBytes::Corrupt,
     };
-    ShellBytes::Record(ShellRecord {
-        geometry: obj.get("floatWindow").and_then(geometry_of),
-        dock: obj.get("floatDock").and_then(FloatDock::from_json),
+    let dock = obj.get("floatDock").and_then(FloatDock::from_json);
+    let record = ShellRecord {
+        geometry: None,
+        dock,
         pinned,
         open,
-    })
+    };
+    match obj.get("floatWindow") {
+        None => ShellBytes::Record(record),
+        Some(value) => match geometry_of(value) {
+            Some(geometry) => ShellBytes::Record(ShellRecord {
+                geometry: Some(geometry),
+                ..record
+            }),
+            None => ShellBytes::GeometryUnreadable(record),
+        },
+    }
 }
 
 /// 导出用的 JSON。尺寸、贴边、钉住和位置都在；缺的不写。
@@ -977,5 +1056,184 @@ mod tests {
         assert!(skipped.contains(&ScanSkip::Unsupported("future".to_owned())));
         assert!(write_record(&dir, "CON", &open).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_float_window_keeps_the_dock_and_is_not_treated_as_missing() {
+        let raw = br#"{"schemaVersion":1,"floatWindow":{"x":"no"},"floatDock":{"edge":"left","offset":80,"collapsed":true},"floatPinned":false,"open":true}"#;
+        let decoded = decode(raw);
+        assert!(decoded.keep_file_on_open());
+        let record = decoded.openable().expect("贴边还能用");
+        assert!(record.geometry.is_none());
+        assert_eq!(record.dock, Some(dock(true)));
+        assert_eq!(record.pinned, Some(false));
+        assert!(record.open);
+
+        let missing = decode(
+            br#"{"schemaVersion":1,"floatDock":{"edge":"left","offset":80,"collapsed":false},"open":true}"#,
+        );
+        assert!(!missing.keep_file_on_open(), "字段不在时仍按没记过位置");
+        assert!(matches!(missing, ShellBytes::Record(_)));
+
+        assert_eq!(
+            decode(br#"{"schemaVersion":1,"floatWindow":"no","floatPinned":"yes"}"#),
+            ShellBytes::Corrupt,
+            "钉住不是布尔时整份仍拒绝"
+        );
+
+        let (display, primary) = bottom_taskbar();
+        let size = (320u32, 360u32);
+        let anchored = geometry_for_open(&record, true, size, display).expect("贴在左边");
+        let kept = settle_float(
+            DockState {
+                expanded: PxBox {
+                    x: anchored.x,
+                    y: anchored.y,
+                    width: anchored.width,
+                    height: anchored.height,
+                },
+                dock: record.dock,
+            },
+            &[display],
+            &[primary],
+            primary,
+        );
+        assert_eq!(kept.dock, record.dock, "合成矩形贴在外边上，贴边留下");
+
+        let (x, y) = shell_default_origin(primary.area, 320, 360, 96);
+        let dropped = settle_float(
+            DockState {
+                expanded: PxBox {
+                    x,
+                    y,
+                    width: 320,
+                    height: 360,
+                },
+                dock: record.dock,
+            },
+            &[display],
+            &[primary],
+            primary,
+        );
+        assert!(
+            dropped.dock.is_none(),
+            "没有几何时若当成缺字段，默认右下角会丢掉左边贴边"
+        );
+
+        let right = FloatDock {
+            edge: DockEdge::Right,
+            offset: 40,
+            collapsed: false,
+        };
+        let top = FloatDock {
+            edge: DockEdge::Top,
+            offset: 50,
+            collapsed: false,
+        };
+        for dock in [right, top] {
+            let record = ShellRecord {
+                dock: Some(dock),
+                open: true,
+                ..ShellRecord::default()
+            };
+            let geometry = geometry_for_open(&record, true, size, display).unwrap();
+            let settled = settle_float(
+                DockState {
+                    expanded: PxBox {
+                        x: geometry.x,
+                        y: geometry.y,
+                        width: geometry.width,
+                        height: geometry.height,
+                    },
+                    dock: Some(dock),
+                },
+                &[display],
+                &[primary],
+                primary,
+            );
+            assert_eq!(settled.dock, Some(dock));
+        }
+
+        let no_dock = ShellRecord {
+            open: true,
+            ..ShellRecord::default()
+        };
+        assert!(geometry_for_open(&no_dock, true, size, display).is_none());
+    }
+
+    #[test]
+    fn unreadable_geometry_is_scanned_for_reopen_and_a_failed_write_keeps_the_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "lanwork-shell-bad-geo-{}-{}",
+            std::process::id(),
+            RECORD_DIR
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let id = "lanwork.float-shell-demo";
+        let path = dir.join(record_relative(id).unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = br#"{"schemaVersion":1,"floatWindow":{"x":1,"y":2},"floatDock":{"edge":"right","offset":12,"collapsed":false},"open":true}"#;
+        std::fs::write(&path, original).unwrap();
+
+        let read = read_record(&dir, id).unwrap();
+        assert!(read.keep_file_on_open());
+        let record = read.openable().unwrap();
+        assert_eq!(record.dock.unwrap().edge, DockEdge::Right);
+        let (stored, skipped) = scan_records(&dir).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].record.open);
+        assert!(stored[0].record.dock.is_some());
+        assert!(skipped.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        let err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "磁盘");
+        assert_eq!(write_failure_text(&err), "保存失败：磁盘");
+
+        lock_record(&path);
+        let write_err = write_record(&dir, id, &full_record());
+        unlock_record(&path);
+        let write_err = write_err.expect_err("占用或只读时替换失败");
+        assert!(write_failure_text(&write_err).starts_with("保存失败："));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!path.with_extension("json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn lock_record(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = path.parent().unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn unlock_record(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = path.parent().unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn record_lock() -> &'static std::sync::Mutex<Option<std::fs::File>> {
+        static LOCK: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+        &LOCK
+    }
+
+    #[cfg(windows)]
+    fn lock_record(path: &std::path::Path) {
+        use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ = 1。不带 FILE_SHARE_DELETE，替换必须失败，原文件留下。
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(path)
+            .unwrap();
+        *record_lock().lock().unwrap() = Some(file);
+    }
+
+    #[cfg(windows)]
+    fn unlock_record(_path: &std::path::Path) {
+        *record_lock().lock().unwrap() = None;
     }
 }

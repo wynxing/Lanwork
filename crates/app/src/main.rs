@@ -67,6 +67,8 @@ mod remind;
 #[cfg(windows)]
 mod searchbar;
 #[cfg(windows)]
+mod session_close;
+#[cfg(windows)]
 mod settings_page;
 #[cfg(windows)]
 mod shelf_dnd;
@@ -235,10 +237,40 @@ mod tests {
         assert!(source.contains("set_skip_taskbar"));
         assert!(source.contains("float_frame::sync"));
         assert!(source.contains("release_topmost"));
+        assert!(source.contains("refresh_backdrop"));
+        assert!(source.contains("preserve_file"));
+        assert!(source.contains("GeometryUnreadable") || source.contains("keep_file_on_open"));
+        assert!(source.contains("write_failure_text"));
+        assert!(source.contains("quit_in_progress"));
+        assert!(source.contains("Timer::single_shot"));
         assert!(!source.contains("float_group"));
         assert!(!source.contains("floatStack"));
-        assert!(!include_str!("note_float.rs").contains("FloatShell"));
-        assert!(!include_str!("shelf_float.rs").contains("FloatShell"));
-        assert!(!include_str!("todo_float.rs").contains("FloatShell"));
+        let notes = include_str!("note_float.rs");
+        let shelves = include_str!("shelf_float.rs");
+        let todos = include_str!("todo_float.rs");
+        assert!(!notes.contains("FloatShell"));
+        assert!(!shelves.contains("FloatShell"));
+        assert!(!todos.contains("FloatShell"));
+        assert!(!notes.contains("request_quit"));
+        assert!(!shelves.contains("request_quit"));
+        assert!(!todos.contains("request_quit"));
+        let bar = include_str!("bar_win.rs");
+        let release = bar
+            .split("pub(crate) fn release_topmost")
+            .nth(1)
+            .expect("release_topmost");
+        let release = release.split("pub(crate) fn ").next().unwrap();
+        assert!(
+            release.contains("float_frame::after_topmost"),
+            "取消钉住后要像置顶那样重设边框和磨砂"
+        );
+        assert!(include_str!("searchbar.rs").contains("request_quit"));
+        assert!(include_str!("panel.rs").contains("on_close_panel"));
+        assert!(include_str!("panel.rs").contains("request_quit"));
+        assert!(include_str!("session_close.rs").contains("Winit Thread Event Target"));
+        assert!(include_str!("session_close.rs").contains("request_quit"));
+        assert!(include_str!("platform.rs").contains("external_close_requests_quit"));
+        assert!(host.contains("session_close::install"));
+        assert!(host.contains("EXITING"));
     }
 }

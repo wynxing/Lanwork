@@ -29,7 +29,7 @@ use lanwork_core::shell::{
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
-use slint::{ComponentHandle, Model as _, ModelRc, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, Model as _, ModelRc, VecModel};
 
 use crate::bar_win;
 use crate::{BarMenuItem, BarRow, SearchBar};
@@ -119,6 +119,10 @@ pub(crate) fn install(
             with_bar(Bar::blur);
         }
         EventResult::Propagate
+    });
+    ui.window().on_close_requested(|| {
+        crate::host::request_quit();
+        CloseRequestResponse::KeepWindowShown
     });
 
     let ready = ui.clone_strong();

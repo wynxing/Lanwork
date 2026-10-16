@@ -81,7 +81,7 @@
 | 快速收集（搜索条内） | [product.md](product.md)「快速收集」 | 无。便签快速收集（`/note`，#37）仍计划中；待办快速收集（`+`，#22、#36）已放弃，核心已合入的前缀与日期解析代码保留；面板搜索框已放弃。 |
 | 番茄钟 | [product.md](product.md)「番茄钟」 | 计时规则已写入。窗口是应用页里的内置工具，格式见 [tools.md](tools.md)。产品界面没有代码。宿主在 `crates/toolhost`。窗口验证程序 `spikes/toolhost` 跑了开发说明里的示例。可以停用，不能卸载。卡片上的「悬浮窗」只打开窗口，不自动开始计时。没有当前待办时仍可打开，窗口显示「没有当前待办」。2026-10-15 用户在 DESKTOP-7C3P6OG 上看过 main `01da2ed` 的 spike 悬浮窗，显示正常。产品窗口还没有 |
 | 外部 AI（本机 MCP） | [external-ai.md](external-ai.md) | 无。排在 v0.2.0 之后 |
-| 应用页与自定义悬浮窗工具 | [tools.md](tools.md) | 应用页、导入和番茄钟窗口还没有。外壳在 `lanwork_core::panel::float_shell` 与 `crates/app/ui/float_shell.slint`，隐藏命令 `lanwork --float-shell-demo` 可打开。记录在 `tool-windows/<工具 id>.json`，还不进导出白名单。便签、收纳、待办悬浮窗未迁入。宿主在 `crates/toolhost`，没有界面。窗口验证程序在 `spikes/toolhost`，技术验证「工具宿主」已通过。凭据管理器界面待用户用 `lanwork --toolhost-cred` 确认。开发说明见 [tool-dev-guide.md](tool-dev-guide.md)。原先的扩展页已并入，见 [extensions.md](extensions.md)。设置不另设「应用」页。便携应用、别名和手动刷新的界面入口仍待定 |
+| 应用页与自定义悬浮窗工具 | [tools.md](tools.md) | 应用页、导入和番茄钟窗口还没有。外壳在 `lanwork_core::panel::float_shell` 与 `crates/app/ui/float_shell.slint`，隐藏命令 `lanwork --float-shell-demo` 可打开。2026-10-16 用户在 Windows 上手测外壳通过（main `e0a797d`）。记录在 `tool-windows/<工具 id>.json`，还不进导出白名单。便签、收纳、待办悬浮窗未迁入。宿主在 `crates/toolhost`，没有界面。窗口验证程序在 `spikes/toolhost`，技术验证「工具宿主」已通过。凭据管理器界面待用户用 `lanwork --toolhost-cred` 确认。开发说明见 [tool-dev-guide.md](tool-dev-guide.md)。原先的扩展页已并入，见 [extensions.md](extensions.md)。设置不另设「应用」页。便携应用、别名和手动刷新的界面入口仍待定 |
 | 收纳网页引用 | [product.md](product.md)「收纳」 | 有代码，未在 Windows 上验收。排在 v0.2.0 之后。2026-10-13 写入规格。面板收纳页和收纳悬浮窗接受拖入的锁图标和页面链接。后台获取网站图标，失败留空，缓存不进导出和备份。搜索结果归入「收纳」组，不再单独成「网页」组。一键浏览器扩展更晚，先做 Chrome，还没有代码 |
 
 不存在第二份产品范围。新增界面时先改产品规格，再改本表。

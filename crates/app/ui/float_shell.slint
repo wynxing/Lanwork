@@ -32,6 +32,8 @@ export component FloatShell inherits Window {
     in property <string> dock-edge: "";
     // 布局测试和调试窗口用来确认内容槽里能放文字。空字符串时不显示，不是产品文案。
     in property <string> marker: "";
+    // 写盘失败时的一行。空字符串不占高度。外观沿用收纳悬浮窗的错误行，规格没有另定。
+    in property <string> error: "";
 
     callback drag-requested();
     callback strip-clicked();
@@ -75,6 +77,9 @@ export component FloatShell inherits Window {
     out property <bool> collapsed-handle-open: collapsed-handle.visible;
     out property <length> collapsed-handle-width: collapsed-handle.width;
     out property <length> collapsed-handle-height: collapsed-handle.height;
+    property <length> error-h: !root.collapsed && root.error != "" ? 24px : 0px;
+    out property <bool> error-drawn: error-line.visible;
+    out property <string> error-text: error-line.text;
 
     background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
@@ -166,7 +171,7 @@ export component FloatShell inherits Window {
         x: 0px;
         y: 28px;
         width: parent.width;
-        height: parent.height - 28px;
+        height: parent.height - 28px - root.error-h;
 
         @children
 
@@ -177,6 +182,19 @@ export component FloatShell inherits Window {
             text: root.marker;
             color: c.ink;
         }
+    }
+
+    error-line := Text {
+        visible: root.error-h > 0px;
+        x: 12px;
+        y: parent.height - root.error-h;
+        width: parent.width - 24px;
+        height: root.error-h;
+        text: root.error;
+        color: c.critical;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
     }
 
     collapsed-handle := EdgeHandle {

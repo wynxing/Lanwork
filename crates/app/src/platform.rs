@@ -15,8 +15,9 @@ use std::time::Duration;
 use lanwork_core::config::{ConfigCommands, Hotkey};
 use lanwork_core::dispatch::{Monotonic, SystemClock};
 use lanwork_core::shell::{
-    EndReport, HotkeyBinding, HotkeyPort, HotkeyRole, RegisteredHotkey, desired_bindings,
-    is_immersive_color_set, restore_hotkeys, role_of, save_search_hotkey, suspend_hotkeys,
+    EndReport, HotkeyBinding, HotkeyPort, HotkeyRole, RegisteredHotkey, WM_QUERYENDSESSION,
+    desired_bindings, external_close_requests_quit, is_immersive_color_set, restore_hotkeys,
+    role_of, save_search_hotkey, suspend_hotkeys,
 };
 use windows::Win32::Foundation::{
     GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM,
@@ -488,6 +489,15 @@ unsafe extern "system" fn wndproc(
             // SAFETY: 在这个窗口过程所在的线程上投递 WM_QUIT。
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
+        }
+        message if external_close_requests_quit(message, wparam.0) => {
+            // 平台线程不能等界面线程，否则注销时的 SendMessage 会和界面线程互相等。
+            let _ = slint::invoke_from_event_loop(crate::host::request_quit);
+            if message == WM_QUERYENDSESSION {
+                LRESULT(1)
+            } else {
+                LRESULT(0)
+            }
         }
         _ => {
             // SAFETY: 未处理的消息交给系统默认过程。hwnd 是这次回调收到的窗口。
