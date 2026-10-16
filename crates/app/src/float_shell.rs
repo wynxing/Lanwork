@@ -284,7 +284,7 @@ impl Shells {
             self.store
                 .log_warn(&format!("工具悬浮窗初始化未排队：{err}"));
         }
-        let mut window = ShellWindow {
+        let window = ShellWindow {
             id: tool_id.to_owned(),
             ui,
             session,
