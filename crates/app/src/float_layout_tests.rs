@@ -17,7 +17,8 @@ use lanwork_core::panel::{
 };
 
 use crate::{
-    NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData, StackTab, TodoFloat,
+    FloatShell, FloatShellProbe, NoteFloat, ShelfFloat, ShelfLinkRow, ShelfRefRow, ShelvesPageData,
+    StackTab, TodoFloat,
 };
 
 struct Headless(Rc<MinimalSoftwareWindow>);
@@ -816,4 +817,100 @@ fn page_dots_are_soft_colors_left_aligned_and_the_current_one_is_solid() {
         center_y,
     );
     assert_eq!(hit.get(), 8, "点第 9 页");
+}
+
+#[test]
+fn the_tool_shell_slot_is_empty_chrome_until_the_unspecified_controls_are_placed() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
+    window.set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
+
+    let shell = FloatShell::new().expect("tool shell");
+    shell.window().set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
+    shell.set_marker("换成内容".into());
+    shell.show().expect("show");
+    slint::platform::update_timers_and_animations();
+
+    assert!(shell.get_above_ordinary(), "始终在其他普通窗口之上");
+    assert!(!shell.get_pin_drawn(), "钉住控件的位置还没定，不画");
+    assert!(!shell.get_source_drawn(), "来源行还没定，不画");
+    assert!(!shell.get_close_drawn(), "关闭控件的位置还没定，不画");
+    assert_eq!(shell.get_drag_band(), 0.0, "拖动条高度还没定，默认不画");
+    assert!(shell.get_content_open());
+    assert_eq!(shell.get_content_x(), 0.0);
+    assert_eq!(shell.get_content_y(), 0.0);
+    assert_eq!(shell.get_content_width(), 320.0);
+    #[allow(clippy::cast_precision_loss)]
+    let height = WINDOW_HEIGHT as f32;
+    assert_eq!(shell.get_content_height(), height);
+    assert_eq!(shell.get_marker_text(), "换成内容");
+    assert!(!shell.get_strip_open(), "没贴边时没有把手");
+    assert!(!shell.get_collapsed_handle_open());
+
+    shell.set_drag_height(28.0);
+    slint::platform::update_timers_and_animations();
+    assert_eq!(
+        shell.get_content_y(),
+        28.0,
+        "调用方给定拖动条高度后，内容在其下"
+    );
+    assert_eq!(shell.get_content_height(), height - 28.0);
+
+    shell.set_drag_height(0.0);
+    shell.set_dock_edge("left".into());
+    slint::platform::update_timers_and_animations();
+    assert!(shell.get_strip_open());
+    assert_eq!(shell.get_strip_width(), logical(HANDLE_THICKNESS_LOGICAL));
+    assert_eq!(shell.get_strip_height(), logical(HANDLE_LENGTH_LOGICAL));
+    assert_eq!(shell.get_grip_width(), shell.get_strip_width());
+    assert_eq!(shell.get_grip_height(), shell.get_strip_height());
+    assert_eq!(shell.get_strip_x(), 0.0);
+    assert_eq!(
+        shell.get_strip_y(),
+        (height - logical(HANDLE_LENGTH_LOGICAL)) / 2.0
+    );
+
+    let strips = Rc::new(Cell::new(0));
+    shell.on_strip_clicked({
+        let strips = Rc::clone(&strips);
+        move || strips.set(strips.get() + 1)
+    });
+    click(
+        &shell,
+        shell.get_strip_x() + shell.get_strip_width() / 2.0,
+        shell.get_strip_y() + shell.get_strip_height() / 2.0,
+    );
+    assert_eq!(strips.get(), 1, "点展开时的把手");
+
+    shell.set_collapsed(true);
+    shell.window().set_size(slint::PhysicalSize::new(
+        HANDLE_THICKNESS_LOGICAL,
+        HANDLE_LENGTH_LOGICAL,
+    ));
+    slint::platform::update_timers_and_animations();
+    assert!(!shell.get_content_open(), "收起后内容槽不显示");
+    assert!(shell.get_collapsed_handle_open());
+    assert_eq!(
+        shell.get_collapsed_handle_width(),
+        logical(HANDLE_THICKNESS_LOGICAL)
+    );
+    assert_eq!(
+        shell.get_collapsed_handle_height(),
+        logical(HANDLE_LENGTH_LOGICAL)
+    );
+    assert!(!shell.get_strip_open(), "收起后不再另画展开把手");
+
+    let drags = Rc::new(Cell::new(0));
+    shell.on_drag_requested({
+        let drags = Rc::clone(&drags);
+        move || drags.set(drags.get() + 1)
+    });
+    click(
+        &shell,
+        logical(HANDLE_THICKNESS_LOGICAL) / 2.0,
+        logical(HANDLE_LENGTH_LOGICAL) / 2.0,
+    );
+    assert_eq!(drags.get(), 1, "收起的把手按下就拖");
+
+    let _probe = FloatShellProbe::new().expect("内容槽能放进子元素");
 }
