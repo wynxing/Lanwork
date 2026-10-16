@@ -1,4 +1,4 @@
-//! 面板的「应用」页。分类、卡片、启用开关，导入、更新、卸载、查看权限和填写密钥。
+//! 面板的「应用」页。卡片、启用开关，导入、更新、卸载、查看权限和填写密钥。
 //!
 //! 「悬浮窗」打开外壳，并在里面运行已安装工具的清单。不自动开始计时组件。
 //! 启用状态写在数据目录的 `tool-enabled.json`。这份文件名规格还没定，不进导出白名单。
@@ -8,9 +8,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use lanwork_core::panel::{
-    EnabledBytes, INVALID_PACKAGE, Installed, ToolOrigin, UNINSTALL_BODY, UPDATE_NOTE,
-    WRONG_UPDATE, install_copy, installed_tools, is_enabled, menu_items, read_enabled,
-    remove_installed, set_disabled, show_import, tool_dir, visible_cards, write_enabled,
+    EnabledBytes, INVALID_PACKAGE, Installed, UNINSTALL_BODY, UPDATE_NOTE, WRONG_UPDATE,
+    install_copy, installed_tools, is_enabled, menu_items, read_enabled, remove_installed,
+    set_disabled, tool_dir, visible_cards, write_enabled,
 };
 use lanwork_core::storage::Store;
 use lanwork_toolhost::{
@@ -27,7 +27,6 @@ use crate::{AppToolCard, AppsPageData, Panel};
 
 pub(crate) struct AppsPage {
     store: Store,
-    origin: ToolOrigin,
     disabled: BTreeSet<String>,
     /// 文件读不了，或不认识的 schema。不把原文覆盖掉。
     unreadable: bool,
@@ -50,7 +49,6 @@ impl AppsPage {
         wire(ui);
         Self {
             store,
-            origin: ToolOrigin::Builtin,
             disabled: BTreeSet::new(),
             unreadable: false,
             flow: Flow::None,
@@ -69,9 +67,9 @@ impl AppsPage {
         data.set_menu_index(-1);
     }
 
-    /// 「自定义」且没有确认框时，才接受拖入的文件夹或 zip。
+    /// 没有确认框时，接受拖入的文件夹或 zip。
     pub(crate) fn accepts_drop(&self) -> bool {
-        self.origin == ToolOrigin::Custom && matches!(self.flow, Flow::None)
+        matches!(self.flow, Flow::None)
     }
 
     pub(crate) fn import_paths(&mut self, ui: &Panel, paths: Vec<PathBuf>) {
@@ -117,21 +115,9 @@ impl AppsPage {
         } else {
             &self.disabled
         };
-        let cards = visible_cards(self.origin, &tools, disabled);
+        let cards = visible_cards(&tools, disabled);
         let rows: Vec<AppToolCard> = cards.iter().map(to_row).collect();
-        data.set_category(self.origin.index());
-        data.set_show_import(show_import(self.origin));
         data.set_tools(ModelRc::new(VecModel::from(rows)));
-    }
-
-    fn select_category(&mut self, ui: &Panel, index: i32) {
-        let Some(origin) = ToolOrigin::from_index(index) else {
-            return;
-        };
-        self.origin = origin;
-        self.dismiss(ui);
-        self.push(ui);
-        panel::refresh_drop();
     }
 
     fn open_float(&self, ui: &Panel, id: &str) {
@@ -177,7 +163,7 @@ impl AppsPage {
         } else {
             &self.disabled
         };
-        let cards = visible_cards(self.origin, &tools, disabled);
+        let cards = visible_cards(&tools, disabled);
         let Some(card) = usize::try_from(index)
             .ok()
             .and_then(|index| cards.get(index))
@@ -187,7 +173,7 @@ impl AppsPage {
             return;
         };
         let labels: Vec<SharedString> = self
-            .menu_for(card.origin, &card.id)
+            .menu_for(&card.id)
             .into_iter()
             .map(Into::into)
             .collect();
@@ -203,7 +189,7 @@ impl AppsPage {
         } else {
             &self.disabled
         };
-        let cards = visible_cards(self.origin, &tools, disabled);
+        let cards = visible_cards(&tools, disabled);
         let menu_index = ui.global::<AppsPageData>().get_menu_index();
         let Some(card) = usize::try_from(menu_index)
             .ok()
@@ -212,7 +198,7 @@ impl AppsPage {
             self.dismiss(ui);
             return;
         };
-        let items = self.menu_for(card.origin, &card.id);
+        let items = self.menu_for(&card.id);
         let Some(label) = usize::try_from(index)
             .ok()
             .and_then(|index| items.get(index).copied())
@@ -550,15 +536,11 @@ fn to_row(card: &lanwork_core::panel::ToolCard) -> AppToolCard {
         has_icon,
         icon,
         enabled: card.enabled,
-        builtin: card.origin == ToolOrigin::Builtin,
     }
 }
 
 fn wire(ui: &Panel) {
     let data = ui.global::<AppsPageData>();
-    data.on_select_category(|index| {
-        with_apps(move |page, ui| page.select_category(ui, index));
-    });
     data.on_open_float(|id| {
         let id = id.to_string();
         with_apps(move |page, ui| page.open_float(ui, &id));
@@ -582,8 +564,8 @@ fn wire(ui: &Panel) {
 }
 
 impl AppsPage {
-    fn menu_for(&self, origin: ToolOrigin, id: &str) -> Vec<&'static str> {
-        menu_items(origin, self.has_secrets(id))
+    fn menu_for(&self, id: &str) -> Vec<&'static str> {
+        menu_items(self.has_secrets(id))
     }
 
     fn has_secrets(&self, id: &str) -> bool {

@@ -1,6 +1,6 @@
 //! 面板里不调用窗口 API 的决定：标签、定位目标、窗口尺寸与位置，待办页的列表、行和输入解析，
 //! 便签页的列表、多选、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，收纳页的分组、引用和拖放判定，
-//! 应用页的分类、卡片和启用状态，以及工具悬浮窗外壳的位置、大小、贴边、钉住和是否开着。
+//! 应用页的卡片和启用状态，以及工具悬浮窗外壳的位置、大小、贴边、钉住和是否开着。
 //!
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
@@ -21,10 +21,9 @@ mod tool_install;
 mod triage;
 
 pub use apps_page::{
-    CATEGORY_BUILTIN, CATEGORY_CUSTOM, EMPTY_LABEL, ENABLED_FILE, EnabledBytes, FLOAT_LABEL,
-    IMPORT_LABEL, ListedTool, ToolCard, ToolOrigin, decode_enabled, encode_enabled,
-    installed_tools, is_enabled, is_png, menu_items, name_mark, read_enabled, set_disabled,
-    should_reopen, show_import, usable_icon, visible_cards, write_enabled,
+    ENABLED_FILE, EnabledBytes, FLOAT_LABEL, IMPORT_LABEL, ListedTool, ToolCard, decode_enabled,
+    encode_enabled, installed_tools, is_enabled, is_png, menu_items, name_mark, read_enabled,
+    set_disabled, should_reopen, usable_icon, visible_cards, write_enabled,
 };
 pub use float_shell::{
     BackupSlice, DEFAULT_LOGICAL_HEIGHT, DEFAULT_LOGICAL_WIDTH, ExportSlice, MARGIN_LOGICAL,
@@ -62,7 +61,7 @@ pub use note_select::{
 };
 pub use tool_install::{
     CARD_FILE, GRANT_FILE, INVALID_PACKAGE, Installed, STORAGE_DIR, TOOLS_DIR, UNAUTHORIZED,
-    UNINSTALL_BODY, UPDATE_NOTE, WRONG_UPDATE, install_copy, list_custom, read_tool_storage,
+    UNINSTALL_BODY, UPDATE_NOTE, WRONG_UPDATE, install_copy, list_installed, read_tool_storage,
     recover_previous, remove_installed, storage_path, tool_dir, write_tool_storage,
 };
 

@@ -32,7 +32,7 @@ use mlua::{
 };
 
 use crate::http::{HttpDeny, HttpRequest, HttpTransport, Outgoing, SecretAttach, prepare};
-use crate::manifest::{Manifest, Origin, WidgetDecl, WidgetKind, load_dir};
+use crate::manifest::{Manifest, WidgetDecl, WidgetKind, load_dir};
 use crate::secret::SecretStore;
 
 const CALLBACK_MS: u64 = 1000;
@@ -65,34 +65,6 @@ pub struct TodoItem {
     pub trashed: bool,
     /// 为真时 `todo.complete` 返回「待办保存冲突」，不改这条。
     pub conflict: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Durations {
-    pub work_min: u32,
-    pub break_min: u32,
-    pub long_min: u32,
-}
-
-impl Durations {
-    pub const DEFAULT: Self = Self {
-        work_min: 25,
-        break_min: 5,
-        long_min: 15,
-    };
-
-    pub fn check(self) -> Result<(), String> {
-        if !(1..=120).contains(&self.work_min) {
-            return Err("工作时长只接受 1 至 120 分钟".to_string());
-        }
-        if !(1..=60).contains(&self.break_min) {
-            return Err("休息时长只接受 1 至 60 分钟".to_string());
-        }
-        if !(1..=60).contains(&self.long_min) {
-            return Err("长休息时长只接受 1 至 60 分钟".to_string());
-        }
-        Ok(())
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,7 +115,6 @@ pub type TodoComplete = Rc<dyn Fn(&str) -> Result<(), String>>;
 
 pub struct Options {
     pub todos: Vec<TodoItem>,
-    pub durations: Durations,
     pub quiet: bool,
     pub store: Rc<RefCell<dyn SecretStore>>,
     pub transport: Arc<dyn HttpTransport>,
@@ -162,7 +133,6 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             todos: Vec::new(),
-            durations: Durations::DEFAULT,
             quiet: false,
             store: Rc::new(RefCell::new(crate::secret::MemorySecretStore::default())),
             transport: Arc::new(DenyTransport),
@@ -238,7 +208,6 @@ struct Inner {
     popped: Vec<Notification>,
     deferred: Vec<Notification>,
     todos: Vec<TodoItem>,
-    durations: Durations,
     quiet: bool,
     storage: BTreeMap<String, String>,
     timers: Vec<ServiceTimer>,
@@ -268,9 +237,8 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn open(dir: &std::path::Path, origin: Origin, options: Options) -> Result<Self, String> {
-        options.durations.check()?;
-        let manifest = load_dir(dir, origin).map_err(|reason| {
+    pub fn open(dir: &std::path::Path, options: Options) -> Result<Self, String> {
+        let manifest = load_dir(dir).map_err(|reason| {
             if reason.starts_with("读不到") || reason.starts_with("工具文件夹") {
                 reason
             } else if reason.contains("入口脚本")
@@ -317,7 +285,6 @@ impl Session {
             popped: Vec::new(),
             deferred: Vec::new(),
             todos: options.todos,
-            durations: options.durations,
             quiet: options.quiet,
             storage: options.storage,
             timers: Vec::new(),
@@ -1077,7 +1044,6 @@ fn bind(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
     bind_json(lua)?;
     bind_guard(lua, Rc::clone(&inner))?;
     let services = inner.borrow().manifest.services.clone();
-    let tool_id = inner.borrow().manifest.id.clone();
     if services.contains("timer") {
         bind_timer(lua, Rc::clone(&inner))?;
     }
@@ -1102,9 +1068,6 @@ fn bind(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
         lua.globals()
             .set("secret", lua.create_table().map_err(|err| err.to_string())?)
             .map_err(|err| err.to_string())?;
-    }
-    if tool_id == "lanwork.pomodoro" {
-        bind_pomodoro(lua, inner)?;
     }
     Ok(())
 }
@@ -1566,24 +1529,6 @@ fn deliver(
     }
     let _guard = crate::pattern::enter_host(lua)?;
     callback.call::<()>(result)
-}
-
-fn bind_pomodoro(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
-    let pomodoro = lua.create_table().map_err(|err| err.to_string())?;
-    pomodoro
-        .set(
-            "durations",
-            lua.create_function(move |_, (): ()| {
-                let durations = inner.borrow().durations;
-                Ok((durations.work_min, durations.break_min, durations.long_min))
-            })
-            .map_err(|err| err.to_string())?,
-        )
-        .map_err(|err| err.to_string())?;
-    lua.globals()
-        .set("pomodoro", pomodoro)
-        .map_err(|err| err.to_string())?;
-    Ok(())
 }
 
 impl Inner {

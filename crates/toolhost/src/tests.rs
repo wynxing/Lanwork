@@ -6,9 +6,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::host::{Durations, Notification, Options, Session, TodoItem};
+use crate::host::{Options, Session};
 use crate::http::{HttpResponse, HttpTransport, Outgoing, RustlsTransport};
-use crate::manifest::{self, Origin};
+use crate::manifest;
 use crate::secret::{MemorySecretStore, SecretStore};
 
 struct Scratch(PathBuf);
@@ -59,21 +59,8 @@ fn tool(id: &str, services: &str, extra: &str, components: &str) -> String {
     )
 }
 
-fn todo(id: &str, title: &str, current: bool) -> TodoItem {
-    TodoItem {
-        id: id.to_string(),
-        list_id: "inbox".to_string(),
-        title: title.to_string(),
-        completed: false,
-        due: None,
-        current,
-        trashed: false,
-        conflict: false,
-    }
-}
-
-fn open_at(dir: &Path, origin: Origin, options: Options) -> Result<Session, String> {
-    Session::open(dir, origin, options)
+fn open_at(dir: &Path, options: Options) -> Result<Session, String> {
+    Session::open(dir, options)
 }
 
 fn caption(session: &Session, id: &str) -> String {
@@ -81,13 +68,6 @@ fn caption(session: &Session, id: &str) -> String {
         .widget(id)
         .unwrap_or_else(|| panic!("没有组件 {id}"))
         .caption
-}
-
-fn label(session: &Session, id: &str) -> String {
-    session
-        .widget(id)
-        .unwrap_or_else(|| panic!("没有组件 {id}"))
-        .label
 }
 
 struct Recorded {
@@ -117,33 +97,33 @@ fn recorded(body: &str) -> Arc<Recorded> {
 
 #[test]
 fn guide_manifest_and_rejections() {
-    let (text, script) = crate::guide::pomodoro().expect("番茄钟示例");
-    assert!(script.contains("function on_timer"));
-    let (parsed, entry) = manifest::parse(&text, Origin::Builtin).expect("内置清单");
-    assert_eq!(parsed.id, "lanwork.pomodoro");
-    assert_eq!(parsed.name, "番茄钟");
+    let (text, script) = crate::guide::quota().expect("额度示例");
+    assert!(script.contains("function on_load"));
+    let (parsed, entry) = manifest::parse(&text).expect("清单");
+    assert_eq!(parsed.id, "example.api-quota");
+    assert_eq!(parsed.name, "API 额度");
     assert_eq!(entry, "main.lua");
-    assert!(parsed.services.contains("notify"));
-    assert!(parsed.services.contains("todo.read"));
-    assert!(!parsed.services.contains("timer"));
-    assert!(!parsed.services.contains("storage"));
+    assert!(parsed.services.contains("http"));
+    assert!(parsed.services.contains("secret"));
+    assert!(parsed.services.contains("timer"));
     let ids: Vec<_> = parsed
         .widgets
         .iter()
         .map(|widget| widget.id.as_str())
         .collect();
-    assert_eq!(ids, ["title", "status", "clock", "pause", "skip", "done"]);
-    let imported = manifest::parse(&text, Origin::Imported).expect_err("导入前缀");
-    assert!(imported.contains("lanwork."));
-    let dotted = text.replace("id = \"lanwork.pomodoro\"", "id = \".pomodoro\"");
-    let dotted = manifest::parse(&dotted, Origin::Builtin).expect_err("点开头");
+    assert_eq!(ids, ["summary", "used"]);
+    let reserved = text.replace("id = \"example.api-quota\"", "id = \"lanwork.api-quota\"");
+    let reserved = manifest::parse(&reserved).expect_err("保留前缀");
+    assert!(reserved.contains("lanwork."));
+    let dotted = text.replace("id = \"example.api-quota\"", "id = \".quota\"");
+    let dotted = manifest::parse(&dotted).expect_err("点开头");
     assert!(dotted.contains("不能以 . 开头"));
 
     let versioned = text.replace(
         "entry = \"main.lua\"\n",
         "entry = \"main.lua\"\nversion = 1\n",
     );
-    let unknown = manifest::parse(&versioned, Origin::Builtin).expect_err("版本字段");
+    let unknown = manifest::parse(&versioned).expect_err("版本字段");
     assert!(unknown.contains("不认识的字段"));
 
     let ordered = tool(
@@ -152,7 +132,7 @@ fn guide_manifest_and_rejections() {
         "",
         "[[component]]\nid = \"b\"\ncomponent = \"text\"\n\n[[component]]\nid = \"a\"\ncomponent = \"text\"\n",
     );
-    let (ordered, _) = manifest::parse(&ordered, Origin::Imported).expect("顺序");
+    let (ordered, _) = manifest::parse(&ordered).expect("顺序");
     assert_eq!(ordered.widgets[0].id, "b");
     assert_eq!(ordered.widgets[1].id, "a");
 
@@ -163,14 +143,14 @@ fn guide_manifest_and_rejections() {
         "[[component]]\nid = \"x\"\ncomponent = \"web\"\n",
     );
     assert!(
-        manifest::parse(&bad_component, Origin::Imported)
+        manifest::parse(&bad_component)
             .expect_err("组件")
             .contains("不认识的组件")
     );
 
     let bad_service = tool("example.svc", "\"clipboard\"", "", &text_widgets(&["out"]));
     assert!(
-        manifest::parse(&bad_service, Origin::Imported)
+        manifest::parse(&bad_service)
             .expect_err("服务")
             .contains("不认识的服务")
     );
@@ -181,15 +161,11 @@ fn guide_manifest_and_rejections() {
         "[http]\ndomains = [\"127.0.0.1\"]\n",
         &text_widgets(&["out"]),
     );
-    assert!(
-        manifest::parse(&ip, Origin::Imported)
-            .expect_err("ip")
-            .contains("主机名")
-    );
+    assert!(manifest::parse(&ip).expect_err("ip").contains("主机名"));
 
     let no_domains = tool("example.http", "\"http\"", "", &text_widgets(&["out"]));
     assert!(
-        manifest::parse(&no_domains, Origin::Imported)
+        manifest::parse(&no_domains)
             .expect_err("域名")
             .contains("对不齐")
     );
@@ -201,43 +177,17 @@ fn guide_manifest_and_rejections() {
         &text_widgets(&["out"]),
     );
     assert!(
-        manifest::parse(&empty_domains, Origin::Imported)
+        manifest::parse(&empty_domains)
             .expect_err("空域名")
             .contains("没有主机名")
     );
 
     let secret_mismatch = tool("example.key", "\"secret\"", "", &text_widgets(&["out"]));
     assert!(
-        manifest::parse(&secret_mismatch, Origin::Imported)
+        manifest::parse(&secret_mismatch)
             .expect_err("密钥")
             .contains("对不齐")
     );
-}
-
-#[test]
-fn durations_out_of_range_are_rejected() {
-    let dir = Scratch::new("range");
-    let (manifest, script) = crate::guide::pomodoro().unwrap();
-    write_tool(&dir, &manifest, &script);
-    let mut options = Options::default();
-    options.durations.work_min = 0;
-    match open_at(&dir, Origin::Builtin, options) {
-        Err(err) => assert!(err.contains("1 至 120"), "{err}"),
-        Ok(_) => panic!("0 分钟应当拒绝"),
-    }
-
-    let mut options = Options::default();
-    options.durations.break_min = 61;
-    match open_at(&dir, Origin::Builtin, options) {
-        Err(err) => assert!(err.contains("1 至 60"), "{err}"),
-        Ok(_) => panic!("休息超范围应当拒绝"),
-    }
-
-    let mut options = Options::default();
-    options.durations.work_min = 120;
-    options.durations.break_min = 60;
-    options.durations.long_min = 60;
-    open_at(&dir, Origin::Builtin, options).expect("边界内");
 }
 
 #[test]
@@ -270,7 +220,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     session.on_load();
     assert_eq!(caption(&session, "left"), "");
     assert!(caption(&session, "ver").contains("5.4"));
@@ -284,7 +234,7 @@ end
         &tool("example.timeout", "", "", &text_widgets(&["out"])),
         "function on_load()\n  while true do\n  end\nend\n",
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -303,7 +253,7 @@ end
         &tool("example.pcall", "", "", &text_widgets(&["out"])),
         "function on_load()\n  ui.text(\"out\", \"began\")\n  while true do\n    pcall(function()\n      while true do end\n    end)\n  end\nend\n",
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -322,7 +272,7 @@ end
         &tool("example.xpcall", "", "", &text_widgets(&["out"])),
         "function on_load()\n  ui.text(\"out\", \"began\")\n  xpcall(function() while true do end end, function() while true do end end)\n  ui.text(\"out\", \"after\")\nend\n",
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -341,7 +291,7 @@ end
         &tool("example.xpcallh", "", "", &text_widgets(&["out"])),
         "function on_load()\n  ui.text(\"out\", \"began\")\n  xpcall(function() error(\"x\") end, function() while true do end end)\n  ui.text(\"out\", \"after\")\nend\n",
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -370,7 +320,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     session.on_load();
     assert_eq!(caption(&session, "out"), "false:saw:true:5");
     assert!(session.notices().is_empty());
@@ -419,7 +369,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -439,7 +389,7 @@ end
 fn pattern_deadline(name: &str, body: &str) -> Session {
     let dir = Scratch::new(name);
     write_tool(&dir, &tool(name, "", "", &text_widgets(&["out"])), body);
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -552,7 +502,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -594,7 +544,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -674,7 +624,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -725,7 +675,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     assert!(started.elapsed().as_millis() < 2_000);
@@ -758,7 +708,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     session.on_load();
     let notes: Vec<_> = session
         .notices()
@@ -790,7 +740,7 @@ end
     );
     let mut options = Options::default();
     options.transport = transport.clone();
-    let session = open_at(&dir, Origin::Imported, options).expect("打开");
+    let session = open_at(&dir, options).expect("打开");
     session.on_load();
     assert_eq!(session.http_sends(), 0);
     assert!(transport.log.lock().unwrap().is_empty());
@@ -801,137 +751,6 @@ end
             .iter()
             .any(|notice| notice.text == "未授权")
     );
-}
-
-#[test]
-fn pomodoro_example_runs_end_to_end() {
-    let dir = Scratch::new("pomo");
-    crate::guide::write_example(&dir, "pomodoro").unwrap();
-    let short = Durations {
-        work_min: 1,
-        break_min: 1,
-        long_min: 1,
-    };
-
-    let session = open_named(&dir, "写报告", short);
-    session.on_load();
-    assert_eq!(caption(&session, "title"), "写报告");
-    assert_eq!(caption(&session, "status"), "工作");
-    assert_eq!(label(&session, "pause"), "继续");
-    assert_eq!(caption(&session, "clock"), "60");
-    assert!(!session.widget("clock").unwrap().running);
-    session.click("pause");
-    assert_eq!(label(&session, "pause"), "暂停");
-    assert!(session.widget("clock").unwrap().running);
-    session.advance(10.0);
-    assert_eq!(caption(&session, "clock"), "50");
-    session.click("pause");
-    assert_eq!(label(&session, "pause"), "继续");
-    session.advance(10.0);
-    assert_eq!(caption(&session, "clock"), "50");
-    session.click("pause");
-    session.advance(50.0);
-    assert_eq!(caption(&session, "status"), "休息");
-    assert_eq!(caption(&session, "clock"), "60");
-    assert_eq!(
-        session.popped(),
-        vec![Notification {
-            title: "番茄钟".to_string(),
-            body: "到点".to_string(),
-        }]
-    );
-    session.on_unload();
-
-    let session = open_named(&dir, "写报告", short);
-    session.on_load();
-    assert_eq!(caption(&session, "clock"), "60");
-    session.click("done");
-    assert!(session.popped().is_empty());
-    assert_eq!(caption(&session, "status"), "休息");
-    session.click("skip");
-    assert_eq!(caption(&session, "status"), "工作");
-    session.click("done");
-    session.click("skip");
-    session.click("done");
-    session.click("skip");
-    assert_eq!(caption(&session, "status"), "工作");
-    session.click("skip");
-    assert_eq!(caption(&session, "status"), "休息");
-    session.click("skip");
-    session.click("done");
-    assert_eq!(caption(&session, "status"), "长休息");
-    assert!(session.popped().is_empty());
-    session.click("done");
-    assert_eq!(caption(&session, "status"), "长休息");
-
-    let session = open_named(&dir, "写报告", short);
-    session.on_load();
-    session.click("pause");
-    session.advance(15.0);
-    session.set_todos(vec![todo("t1", "改标题", true)]);
-    session.todos_changed();
-    assert_eq!(caption(&session, "title"), "改标题");
-    assert_eq!(caption(&session, "clock"), "45");
-    session.set_todos(vec![todo("other", "另一条", true)]);
-    session.todos_changed();
-    assert_eq!(caption(&session, "status"), "");
-    assert_eq!(label(&session, "pause"), "暂停");
-    assert_eq!(caption(&session, "clock"), "0");
-    assert!(!session.widget("clock").unwrap().running);
-    assert!(session.popped().is_empty());
-
-    let session = open_named(&dir, "写报告", short);
-    session.on_load();
-    session.click("pause");
-    session.advance(10.0);
-    let mut cleared = todo("t1", "写报告", false);
-    cleared.current = false;
-    session.set_todos(vec![cleared]);
-    session.todos_changed();
-    assert_eq!(caption(&session, "clock"), "0");
-    assert_eq!(caption(&session, "title"), "没有当前待办");
-
-    let mut options = Options::default();
-    options.durations = short;
-    let session = open_at(&dir, Origin::Builtin, options).unwrap();
-    session.on_load();
-    assert_eq!(caption(&session, "title"), "没有当前待办");
-    assert_eq!(caption(&session, "clock"), "0");
-    session.click("pause");
-    session.click("skip");
-    session.click("done");
-    assert_eq!(label(&session, "pause"), "继续");
-    assert!(session.popped().is_empty());
-
-    let mut options = Options::default();
-    options.durations = short;
-    options.quiet = true;
-    options.todos.push(todo("t1", "写报告", true));
-    let session = open_at(&dir, Origin::Builtin, options).unwrap();
-    session.on_load();
-    session.click("pause");
-    session.advance(60.0);
-    assert!(session.popped().is_empty());
-    assert_eq!(
-        session.deferred(),
-        vec![Notification {
-            title: "番茄钟".to_string(),
-            body: "到点".to_string(),
-        }]
-    );
-
-    let mut options = Options::default();
-    options.todos.push(todo("t1", "写报告", true));
-    let session = open_at(&dir, Origin::Builtin, options).unwrap();
-    session.on_load();
-    assert_eq!(caption(&session, "clock"), "1500");
-}
-
-fn open_named(dir: &Path, title: &str, durations: Durations) -> Session {
-    let mut options = Options::default();
-    options.durations = durations;
-    options.todos.push(todo("t1", title, true));
-    open_at(dir, Origin::Builtin, options).expect("番茄钟")
 }
 
 #[test]
@@ -948,7 +767,7 @@ fn quota_example_hides_secret_and_limits_hosts() {
     let mut options = Options::default();
     options.store = store;
     options.transport = transport.clone();
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     session.on_load();
     assert_eq!(caption(&session, "summary"), "已用 20 / 100");
     assert!((session.widget("used").unwrap().progress - 0.2).abs() < 1e-9);
@@ -974,7 +793,7 @@ fn quota_example_hides_secret_and_limits_hosts() {
     let transport = recorded("{}");
     let mut options = Options::default();
     options.transport = transport.clone();
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     session.on_load();
     assert_eq!(caption(&session, "summary"), "未填写密钥");
     assert_eq!(session.http_sends(), 0);
@@ -1018,7 +837,7 @@ end
     let mut options = Options::default();
     options.store = store;
     options.transport = transport.clone();
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     session.on_load();
     let text = caption(&session, "out");
     assert!(text.contains("不在范围内"), "{text}");
@@ -1076,7 +895,7 @@ end
     let mut options = Options::default();
     options.store = store;
     options.transport = transport;
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     session.on_load();
     let text = caption(&session, "out");
     assert!(text.starts_with("false||请求失败|200"), "{text}");
@@ -1179,7 +998,7 @@ end
     let mut options = Options::default();
     options.store = store;
     options.transport = transport;
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     session.on_load();
     assert!(
         session
@@ -1242,7 +1061,7 @@ end
     let mut options = Options::default();
     options.transport = transport;
     options.http_budget = Duration::from_millis(200);
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     let started = Instant::now();
     session.on_load();
     let elapsed = started.elapsed();
@@ -1306,7 +1125,7 @@ end
     );
     let mut options = Options::default();
     options.store = Rc::new(RefCell::new(FailingStore));
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     session.on_load();
     assert_eq!(caption(&session, "out"), "请求失败");
     assert_eq!(session.http_sends(), 0);
@@ -1346,7 +1165,7 @@ function on_load()
 end
 "#,
     );
-    let session = open_at(&dir, Origin::Imported, Options::default()).expect("打开");
+    let session = open_at(&dir, Options::default()).expect("打开");
     let started = Instant::now();
     session.on_load();
     assert!(
@@ -1433,7 +1252,7 @@ fn localhost_tls_attaches_secret_header() {
     let mut options = Options::default();
     options.store = store;
     options.transport = Arc::new(RustlsTransport::with_config(client));
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     session.on_load();
     server.join().expect("服务线程");
     let request = seen.lock().unwrap().clone();
@@ -1495,7 +1314,7 @@ end
     let mut options = Options::default();
     options.store = store.clone();
     options.transport = transport.clone();
-    let session = open_at(&dir, Origin::Imported, options).unwrap();
+    let session = open_at(&dir, options).unwrap();
     session.on_load();
     let sent = transport.log.lock().unwrap().clone();
     let expected = format!("Bearer {secret}");

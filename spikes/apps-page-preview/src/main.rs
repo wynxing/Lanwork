@@ -64,20 +64,14 @@ struct Scene {
 
 const SCENES: &[Scene] = &[
     Scene {
-        name: "builtin",
-        file: "builtin.png",
-        width: 760,
-        height: 560,
-    },
-    Scene {
-        name: "custom",
-        file: "custom.png",
+        name: "list",
+        file: "list.png",
         width: 760,
         height: 560,
     },
     Scene {
         name: "empty",
-        file: "custom-empty.png",
+        file: "empty.png",
         width: 760,
         height: 560,
     },

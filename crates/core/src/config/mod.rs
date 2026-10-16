@@ -3,7 +3,9 @@
 //! 不依赖 Slint，也不调用 Win32。热键注册、主题监听、开机启动的注册表项在 `crates/app`。
 //! 字段和缺省见 [`model`]。安静时段的时间格式，以及若干缺省值，产品规格没有写，
 //! 不能从这里推断成产品规则。旧文件里的 `githubRefreshIntervalMs`、`staleDays`、
-//! `sourceSync`、`autoCompleteOnClose` 在读取时忽略，写回时不再写出。
+//! `sourceSync`、`autoCompleteOnClose`，以及已经去掉的
+//! `pomodoroWorkMinutes`、`pomodoroBreakMinutes`、`pomodoroLongBreakMinutes`，
+//! 在读取时忽略，写回时不再写出。
 
 mod command;
 mod error;
@@ -15,11 +17,7 @@ mod service;
 pub use command::ConfigCommands;
 pub use error::ConfigError;
 pub use hotkey::{Hotkey, HotkeyKey, default_search_hotkey, parse_hotkey};
-pub use model::{
-    Config, DEFAULT_BREAK_MINUTES, DEFAULT_LONG_BREAK_MINUTES, DEFAULT_WORK_MINUTES, HotCorner,
-    MAX_BREAK_MINUTES, MAX_WORK_MINUTES, MIN_BREAK_MINUTES, MIN_WORK_MINUTES, SNOOZE_DAYS_ERROR,
-    SearchBarOrigin, Theme, normalize,
-};
+pub use model::{Config, HotCorner, SNOOZE_DAYS_ERROR, SearchBarOrigin, Theme, normalize};
 pub use quiet::{
     CLOCK_FORMAT_ERROR, QuietHours, default_quiet_hours, format_clock, is_quiet_now, parse_clock,
 };
@@ -83,9 +81,6 @@ mod tests {
         assert_eq!(config.theme, Theme::System);
         assert!(!config.launch_at_startup);
         assert_eq!(config.process_snooze_days, 3);
-        assert_eq!(config.pomodoro_work_minutes, 25);
-        assert_eq!(config.pomodoro_break_minutes, 5);
-        assert_eq!(config.pomodoro_long_break_minutes, 15);
         assert_eq!(config.web_search_engine, WebSearchEngine::Google);
         assert!(config.search_bar_origin.is_none());
         assert!(!store.document_path(&DocumentId::Config).unwrap().exists());
@@ -249,26 +244,10 @@ mod tests {
         commands.replace(commands.current()).unwrap();
         let path = store.document_path(&DocumentId::Config).unwrap();
         let before = std::fs::read(&path).unwrap();
-        for (field, message) in [
-            ("process_snooze_days", "处理模式顺延天数只接受 1 至 30"),
-            ("pomodoro_work_minutes", "工作时长只接受 1 至 120 分钟"),
-            ("pomodoro_break_minutes", "休息时长只接受 1 至 60 分钟"),
-            (
-                "pomodoro_long_break_minutes",
-                "长休息时长只接受 1 至 60 分钟",
-            ),
-        ] {
-            let mut next = commands.current();
-            match field {
-                "process_snooze_days" => next.process_snooze_days = 0,
-                "pomodoro_work_minutes" => next.pomodoro_work_minutes = 121,
-                "pomodoro_break_minutes" => next.pomodoro_break_minutes = 0,
-                "pomodoro_long_break_minutes" => next.pomodoro_long_break_minutes = 61,
-                _ => unreachable!(),
-            }
-            let err = commands.replace(next).unwrap_err();
-            assert_eq!(err.to_string(), message);
-        }
+        let mut next = commands.current();
+        next.process_snooze_days = 0;
+        let err = commands.replace(next).unwrap_err();
+        assert_eq!(err.to_string(), "处理模式顺延天数只接受 1 至 30");
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
@@ -378,7 +357,7 @@ mod tests {
     fn removed_github_fields_are_ignored_and_omitted_on_write() {
         let (_temp, store, _) = open();
         let path = store.document_path(&DocumentId::Config).unwrap();
-        let original = br#"{"schemaVersion":1,"theme":"dark","searchHotkey":"Ctrl+Alt+M","githubRefreshIntervalMs":"soon","staleDays":false,"sourceSync":1,"autoCompleteOnClose":"yes","processSnoozeDays":4}"#;
+        let original = br#"{"schemaVersion":1,"theme":"dark","searchHotkey":"Ctrl+Alt+M","githubRefreshIntervalMs":"soon","staleDays":false,"sourceSync":1,"autoCompleteOnClose":"yes","pomodoroWorkMinutes":25,"pomodoroBreakMinutes":5,"pomodoroLongBreakMinutes":15,"processSnoozeDays":4}"#;
         std::fs::write(&path, original).unwrap();
         let commands = ConfigCommands::open(store.clone()).unwrap();
         assert_eq!(commands.fallback(), None);
@@ -402,6 +381,9 @@ mod tests {
             "staleDays",
             "sourceSync",
             "autoCompleteOnClose",
+            "pomodoroWorkMinutes",
+            "pomodoroBreakMinutes",
+            "pomodoroLongBreakMinutes",
         ] {
             assert!(saved.get(key).is_none(), "{key} was written back");
         }

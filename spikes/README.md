@@ -25,12 +25,12 @@ cargo run -p hotcorner --release -- run --scheme poll --interval-ms 100 --monito
 cargo run -p lanwork-apps-preview -- --out shots
 ```
 
-自定义工具的宿主在 `crates/toolhost`，包名 `lanwork-toolhost`。安全测试在这里。窗口验证仍在 `spikes/toolhost`，包名 `lanwork-toolhost-spike`，依赖产品 crate，不进安装包。它读开发说明里的番茄钟和额度示例，不写 `%USERPROFILE%\Documents\Lanwork`，也不读 MayDolist。`run` 开一扇软件渲染的悬浮窗。`measure` 在无桌面的软件窗口上记一帧，再让进程睡一会儿。2026-10-15 的 Windows 11 手测见 [docs/roadmap.md](../docs/roadmap.md)「技术验证」。凭据管理器界面待用户用 `lanwork --toolhost-cred write|list|clear` 确认。内存和 CPU 的数字上限仍待定。
+工具的宿主在 `crates/toolhost`，包名 `lanwork-toolhost`。安全测试在这里。窗口验证仍在 `spikes/toolhost`，包名 `lanwork-toolhost-spike`，依赖产品 crate，不进安装包。它读开发说明里的额度示例，不写 `%USERPROFILE%\Documents\Lanwork`，也不读 MayDolist。`run` 开一扇软件渲染的悬浮窗。`measure` 在无桌面的软件窗口上记一帧，再让进程睡一会儿。2026-10-15 的 Windows 11 手测见 [docs/roadmap.md](../docs/roadmap.md)「技术验证」。凭据管理器界面待用户用 `lanwork --toolhost-cred write|list|clear` 确认。内存和 CPU 的数字上限仍待定。
 
 ```
 cargo test -p lanwork-toolhost-spike
-cargo run -p lanwork-toolhost-spike -- run --example pomodoro
-cargo run -p lanwork-toolhost-spike --release -- measure --example pomodoro --secs 5 --out measure.json
+cargo run -p lanwork-toolhost-spike -- run --example quota
+cargo run -p lanwork-toolhost-spike --release -- measure --example quota --secs 5 --out measure.json
 ```
 
 采样用 `lanwork-sample`，按上面打印的 `pid`。进程名是 `hotcorner.exe`，计数器是 `\Thread(hotcorner*)\Context Switches/sec`。

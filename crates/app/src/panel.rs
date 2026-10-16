@@ -584,7 +584,7 @@ impl Controller {
         self.sync_drop();
     }
 
-    /// 收纳标签接受文件和网址。应用页的「自定义」在没有确认框时只接受一个文件夹或 zip。
+    /// 收纳标签接受文件和网址。应用页在没有确认框时只接受一个文件夹或 zip。
     fn sync_drop(&self) {
         let shelves = self.visible && self.tab == PanelTab::Shelves;
         let apps = self.visible && self.tab == PanelTab::Apps && self.apps.accepts_drop();

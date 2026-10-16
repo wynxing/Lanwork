@@ -1,4 +1,4 @@
-//! 已安装自定义工具的副本和存储。
+//! 已安装工具的副本和存储。
 //!
 //! 副本放在数据目录的 `tools/<工具 id>/`，存储放在 `tool-storage/<工具 id>.json`。
 //! 这两条路径规格仍待定，这里只是这一版的放法，不写成产品规则。
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::apps_page::{ListedTool, ToolOrigin};
+use super::apps_page::ListedTool;
 use crate::storage::{SCHEMA_VERSION, atomic_write, is_supported_schema, validate_id};
 
 /// 安装副本所在的目录名。规格仍待定。
@@ -191,9 +191,9 @@ pub fn remove_installed(data_dir: &Path, id: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// 自定义分类里的工具。跳过以 `.` 开头的临时目录，以及卡片 id 和目录名不一致的目录。
+/// 已安装的工具。跳过以 `.` 开头的临时目录，以及卡片 id 和目录名不一致的目录。
 #[must_use]
-pub fn list_custom(data_dir: &Path) -> Vec<ListedTool> {
+pub fn list_installed(data_dir: &Path) -> Vec<ListedTool> {
     let _ = recover_previous(data_dir);
     let tools = data_dir.join(TOOLS_DIR);
     let Ok(read) = std::fs::read_dir(&tools) else {
@@ -223,7 +223,6 @@ pub fn list_custom(data_dir: &Path) -> Vec<ListedTool> {
             id: card.id,
             name: card.name,
             description: card.description,
-            origin: ToolOrigin::Custom,
             icon_path: icon.is_file().then_some(icon),
         });
     }
@@ -490,11 +489,10 @@ mod tests {
             b"{\"schemaVersion\":1}\n",
         )
         .unwrap();
-        let listed = list_custom(&dir);
+        let listed = list_installed(&dir);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "example.quota");
         assert_eq!(listed[0].name, "API 额度");
-        assert_eq!(listed[0].origin, ToolOrigin::Custom);
         assert!(dir.join("tools/example.quota/helper.lua").is_file());
         let mut stored = BTreeMap::new();
         stored.insert("used".to_string(), "20".to_string());
@@ -508,7 +506,7 @@ mod tests {
             b"{\"schemaVersion\":1}\n",
         )
         .unwrap();
-        assert_eq!(list_custom(&dir)[0].name, "新名称");
+        assert_eq!(list_installed(&dir)[0].name, "新名称");
         assert_eq!(
             read_tool_storage(&dir, "example.quota")
                 .unwrap()
@@ -521,7 +519,7 @@ mod tests {
         std::fs::write(windows.join("example.quota.json"), b"{}\n").unwrap();
         std::fs::write(windows.join("example.other.json"), b"{}\n").unwrap();
         remove_installed(&dir, "example.quota").unwrap();
-        assert!(list_custom(&dir).is_empty());
+        assert!(list_installed(&dir).is_empty());
         assert!(!dir.join("tools/example.quota").exists());
         assert!(!storage_path(&dir, "example.quota").exists());
         assert!(!windows.join("example.quota.json").exists());
@@ -540,7 +538,7 @@ mod tests {
             "{\"schemaVersion\":1,\"id\":\"example.nope\",\"name\":\"别的\",\"description\":\"说明\"}\n",
         )
         .unwrap();
-        assert!(list_custom(&dir).is_empty());
+        assert!(list_installed(&dir).is_empty());
         let err = install_copy(
             &dir,
             "example.quota",
@@ -574,7 +572,7 @@ mod tests {
         let live = dir.join("tools/example.quota");
         let backup = dir.join("tools/.previous-example.quota");
         std::fs::rename(&live, &backup).unwrap();
-        assert_eq!(list_custom(&dir).len(), 1);
+        assert_eq!(list_installed(&dir).len(), 1);
         assert!(live.join("card.json").is_file());
         assert!(!backup.exists());
         std::fs::create_dir_all(dir.join("tools/.incoming-example.quota")).unwrap();
@@ -594,7 +592,7 @@ mod tests {
         let installed = install_copy(&dir, "example.quota", "新名称", "说明", &[], b"{}").unwrap();
         FAIL_OLD_DELETE.with(|flag| flag.set(false));
         assert_eq!(installed, Installed::BackupRemains);
-        assert_eq!(list_custom(&dir)[0].name, "新名称");
+        assert_eq!(list_installed(&dir)[0].name, "新名称");
         assert!(dir.join("tools/.previous-example.quota").is_dir());
         assert!(dir.join("tools/example.quota/card.json").is_file());
         let _ = std::fs::remove_dir_all(&dir);

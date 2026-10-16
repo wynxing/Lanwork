@@ -1,8 +1,8 @@
 # 工具开发说明
 
-本文说明悬浮窗工具的清单、组件、Lua 调用和两份完整示例。可见行为以 [tools.md](tools.md) 为准。待办和番茄钟的规则以 [product.md](product.md) 为准。与 tools.md 冲突时，以 tools.md 为准。宿主在 `crates/toolhost`，没有界面。技术验证「工具宿主」已通过，见 [roadmap.md](roadmap.md)。凭据管理器界面待用户用 `lanwork --toolhost-cred` 确认。
+本文说明悬浮窗工具的清单、组件、Lua 调用和一份完整示例。可见行为以 [tools.md](tools.md) 为准。待办的规则以 [product.md](product.md) 为准。与 tools.md 冲突时，以 tools.md 为准。宿主在 `crates/toolhost`，没有界面。技术验证「工具宿主」已通过，见 [roadmap.md](roadmap.md)。凭据管理器界面待用户用 `lanwork --toolhost-cred` 确认。
 
-示例写成一个文件夹。导入时文件夹和 zip 都接受，也可以拖入「自定义」页，见 tools.md「导入」。
+示例写成一个文件夹。导入时文件夹和 zip 都接受，也可以拖到应用页上，见 tools.md「导入」。
 
 ## 文件夹
 
@@ -23,7 +23,7 @@ my-tool/
 
 | 字段 | 含义 |
 | --- | --- |
-| `id` | 单个路径分量，规则与数据文件的 id 相同。导入的 id 不能以 `lanwork.` 开头。内置番茄钟是 `lanwork.pomodoro` |
+| `id` | 单个路径分量，规则与数据文件的 id 相同。不能以 `lanwork.` 开头。这是保留前缀 |
 | `name` | 卡片上的名称。去掉首尾空白后还要有字 |
 | `description` | 卡片上的一行短说明。不能含换行。去掉首尾空白后还要有字 |
 | `entry` | 入口脚本的相对路径 |
@@ -50,7 +50,7 @@ my-tool/
 | `input` | `text`，可省略 | `ui.input(id)` 读取，`ui.input_set(id, s)` 写入 | `on_input(id, s)` |
 | `toggle` | `label`；`on`，可省略，省略是关 | `ui.toggle(id)` 读取，`ui.toggle_set(id, on)` 写入 | `on_toggle(id, on)` |
 
-`ui.timer(id, seconds)` 把剩余秒数交给宿主。宿主逐秒重画，脚本不用自己每秒改。小于 0 按 0。这次设定会换掉上一次倒数。正在倒数并且走到 0 时调用 `on_timer(id)`。把秒数设成 0，或 `ui.timer_running(id, false)`，都不调用 `on_timer`。`ui.timer_running(id, true)` 从当前剩余秒数继续。显示格式待定。这条回调不受 30 秒刷新下限。
+`ui.timer(id, seconds)` 把剩余秒数交给宿主。宿主逐秒重画，脚本不用自己每秒改。小于 0 按 0。这次设定会换掉上一次倒数。宿主在这次 Lua 调用返回之后才继续倒数。同一回调里先 `ui.timer` 再 `ui.timer_running(id, false)`，返回前不会走到 0。正在倒数并且走到 0 时调用 `on_timer(id)`。把秒数设成 0，或 `ui.timer_running(id, false)`，都不调用 `on_timer`。`ui.timer_running(id, true)` 从当前剩余秒数继续；暂停时冻结剩余秒数，继续时从冻结的值接着走。显示格式待定。这条回调不受 30 秒刷新下限，也不经过 `timer.every`。
 
 `ui.progress` 的 `n` 是 0 到 1。小于 0 按 0，大于 1 按 1。
 
@@ -117,7 +117,7 @@ my-tool/
 | --- | --- |
 | `notify.send(title, body)` | 发一条系统通知。两个参数都是字符串 |
 
-内置工具和导入的工具都遵守安静时段：时段内不弹出；时段结束后，错过的多条按产品规格「待办」合并补发。
+一律遵守安静时段：时段内不弹出；时段结束后，错过的多条按产品规格「待办」合并补发。
 
 ### `storage`
 
@@ -126,7 +126,7 @@ my-tool/
 | `storage.get(key)` | 返回这个工具此前写下的字符串。没有则返回 `nil` |
 | `storage.set(key, value)` | 写下字符串。写盘失败时原文件保留，窗口显示错误，返回 `nil` 和错误字符串 |
 
-`key` 和 `value` 是不含密钥的文本。大小和条数待定。这些文本进入导出和备份。番茄钟不调用这两函数。密钥不进入导出和备份。
+`key` 和 `value` 是不含密钥的文本。大小和条数待定。这些文本进入导出和备份。密钥不进入导出和备份。
 
 ### `todo`
 
@@ -179,16 +179,6 @@ end)
 ### `secret`
 
 没有读取函数。密钥只通过 `http.request` 的 `secret.id` 附带。
-
-### 番茄钟的时长
-
-只注入给 id 为 `lanwork.pomodoro` 的那块状态：
-
-```lua
-local work_min, break_min, long_min = pomodoro.durations()
-```
-
-三个返回值是设置里的分钟数，范围仍按产品规格。这不是第一批服务，其它工具的状态里没有 `pomodoro`。
 
 ## 示例：额度
 
@@ -266,205 +256,3 @@ end
 ```
 
 没填密钥时，`result.error` 是「未填写密钥」，请求不会发出。脚本里没有能把密钥打出来的调用。密钥在卡片「⋯」的「填写密钥」里填写，掩码输入，不回显。关掉再打开是空的。保存写入凭据管理器；空着的行不变。某一行没有写上时提示「「名称」没有写下」，已经写上的行仍然生效。清除删掉已声明的密钥。保存或清除之后，已经打开的窗口会再跑一次 `on_load`。
-
-## 示例：番茄钟
-
-内置工具。计时规则以产品规格「番茄钟」为准。本示例只演示这些规则如何落在清单和 Lua 上。
-
-阶段是工作、休息、长休息。卡片上的「悬浮窗」只打开窗口，不自动开始计时。没有当前待办时这个按钮仍可打开，标题显示「没有当前待办」，不能开始。本示例不自动开始：打开并且存在当前待办时，阶段停在工作，按钮是「继续」，倒数不走；点「继续」才开始这一轮。工作结束并计为一轮后进入休息；已完成的工作满 4 轮时，这一次休息是长休息。休息或长休息结束之后回到工作。跳过进入下一阶段，工作被跳过时不记为完成，因此进入的是普通休息。暂停冻结剩余秒数。产品规格里的「完成」在本示例里只在工作阶段把本轮记为完成并进入休息，不发到点通知。到点才调用 `notify.send`。通知的用字产品规格没有写，示例用名称「番茄钟」和正文「到点」。
-
-按钮是「继续」「跳过」「完成」。点「继续」之后改为「暂停」，再点回到「继续」。这些按钮是否放进窗口，见 tools.md「待定」。休息阶段点「完成」没有动作，这一条也待定。
-
-当前待办换成另一条，或当前标记被清除时，停止计时，剩余显示为 0，不再留着上一条的剩余时间，也不自动开始下一次。倒数由计时组件完成，走到 0 时调用 `on_timer`。不使用 `timer.every`，因此不受「最短 30 秒」的刷新下限。暂停用 `ui.timer_running` 冻结宿主上的剩余秒数。关闭窗口时 `on_unload` 把倒数停掉。不调用 `storage`。
-
-`manifest.toml`：
-
-```toml
-id = "lanwork.pomodoro"
-name = "番茄钟"
-description = "当前待办的计时"
-entry = "main.lua"
-services = ["notify", "todo.read"]
-
-[[component]]
-id = "title"
-component = "text"
-
-[[component]]
-id = "status"
-component = "text"
-
-[[component]]
-id = "clock"
-component = "timer"
-
-[[component]]
-id = "pause"
-component = "button"
-label = "继续"
-
-[[component]]
-id = "skip"
-component = "button"
-label = "跳过"
-
-[[component]]
-id = "done"
-component = "button"
-label = "完成"
-```
-
-`main.lua`：
-
-```lua
-local phase = "work"
-local running = false
-local completed_work = 0
-local started_id = nil
-
-local function current_item()
-  local items = todo.list()
-  for _, item in ipairs(items) do
-    if item.current and not item.completed then
-      return item
-    end
-  end
-  return nil
-end
-
-local function show_title(item)
-  if item then
-    ui.text("title", item.title)
-  else
-    ui.text("title", "没有当前待办")
-  end
-end
-
-local function phase_seconds(name)
-  local work_min, break_min, long_min = pomodoro.durations()
-  if name == "work" then
-    return work_min * 60
-  end
-  if name == "long" then
-    return long_min * 60
-  end
-  return break_min * 60
-end
-
-local function status_text(name)
-  if name == "work" then
-    return "工作"
-  end
-  if name == "long" then
-    return "长休息"
-  end
-  return "休息"
-end
-
-local function enter(name)
-  phase = name
-  running = true
-  ui.text("status", status_text(name))
-  ui.button("pause", "暂停")
-  ui.timer("clock", phase_seconds(name))
-  ui.timer_running("clock", true)
-end
-
-local function stop_session()
-  running = false
-  started_id = nil
-  ui.text("status", "")
-  ui.button("pause", "暂停")
-  ui.timer("clock", 0)
-  ui.timer_running("clock", false)
-end
-
-local function finish_phase(from_timer)
-  if phase == "work" then
-    completed_work = completed_work + 1
-    if completed_work % 4 == 0 then
-      enter("long")
-    else
-      enter("break")
-    end
-  else
-    enter("work")
-  end
-  if from_timer then
-    notify.send("番茄钟", "到点")
-  end
-end
-
-function on_timer(id)
-  if id ~= "clock" or not started_id then
-    return
-  end
-  finish_phase(true)
-end
-
-function on_load()
-  local item = current_item()
-  show_title(item)
-  if not item then
-    ui.timer("clock", 0)
-    ui.timer_running("clock", false)
-    return
-  end
-  started_id = item.id
-  completed_work = 0
-  phase = "work"
-  running = false
-  ui.text("status", status_text("work"))
-  ui.button("pause", "继续")
-  ui.timer("clock", phase_seconds("work"))
-  ui.timer_running("clock", false)
-end
-
-function on_unload()
-  stop_session()
-end
-
-function on_todos_changed()
-  if not started_id then
-    return
-  end
-  local item = current_item()
-  if item and item.id == started_id then
-    show_title(item)
-    return
-  end
-  show_title(item)
-  stop_session()
-end
-
-function on_click(id)
-  if not started_id then
-    return
-  end
-  if id == "pause" then
-    running = not running
-    ui.timer_running("clock", running)
-    if running then
-      ui.button("pause", "暂停")
-    else
-      ui.button("pause", "继续")
-    end
-    return
-  end
-  if id == "skip" then
-    if phase == "work" then
-      enter("break")
-    else
-      enter("work")
-    end
-    return
-  end
-  if id == "done" and phase == "work" then
-    finish_phase(false)
-  end
-end
-```
-
-时长在每次 `enter` 时读取，所以设置里改完之后，下一次进入该阶段用新的分钟数。已经走着的这一段剩余时间不改。这一段要不要立刻改用新时长，产品规格没有写。
-
-宿主在这次 Lua 调用返回之后才继续倒数。同一回调里先 `ui.timer` 再 `ui.timer_running(id, false)`，返回前不会走到 0。暂停时冻结剩余秒数，继续时从冻结的值接着走。走到 0 才进入 `on_timer`。这不经过 `timer.every`，所以可以短于 30 秒。登记短于 30 秒的 `timer.every` 会被拒绝。`timer.after` 的最短秒数待定。

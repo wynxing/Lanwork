@@ -1,15 +1,13 @@
 //! 技术验证入口。`run` 打开软件渲染的悬浮窗。`measure` 在无桌面的软件窗口上记一帧，再让进程睡一会儿。
 //! 不写产品数据目录，也不读 MayDolist。
 
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
 use lanwork_toolhost_spike::{
-    Durations, MeasureReport, MemorySecretStore, Options, Origin, Session, TodoItem,
-    attach_for_test, green_pixels, idle_cpu_percent, memory_note, platform_lock, process_memory,
-    run_window, write_example,
+    MeasureReport, Options, Session, attach_for_test, green_pixels, idle_cpu_percent, memory_note,
+    platform_lock, process_memory, run_window, write_example,
 };
 
 fn main() {
@@ -28,7 +26,7 @@ fn main() {
 }
 
 fn usage() -> String {
-    "用法：lanwork-toolhost-spike run --example pomodoro|quota\n      lanwork-toolhost-spike measure --example pomodoro|quota --secs 5 --out measure.json".to_string()
+    "用法：lanwork-toolhost-spike run --example quota\n      lanwork-toolhost-spike measure --example quota --secs 5 --out measure.json".to_string()
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -38,7 +36,7 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
-    let example = flag(args, "--example").unwrap_or("pomodoro");
+    let example = flag(args, "--example").unwrap_or("quota");
     let dir = scratch("run");
     write_example(&dir, example)?;
     let session = Rc::new(open_example(&dir, example)?);
@@ -46,7 +44,7 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn measure(args: &[String]) -> Result<(), String> {
-    let example = flag(args, "--example").unwrap_or("pomodoro");
+    let example = flag(args, "--example").unwrap_or("quota");
     let secs: f64 = flag(args, "--secs")
         .unwrap_or("5")
         .parse()
@@ -83,25 +81,8 @@ fn measure(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn open_example(dir: &std::path::Path, example: &str) -> Result<Session, String> {
-    let mut options = Options {
-        durations: Durations::DEFAULT,
-        store: Rc::new(RefCell::new(MemorySecretStore::default())),
-        ..Options::default()
-    };
-    if example == "pomodoro" {
-        options.todos.push(TodoItem {
-            id: "demo".to_string(),
-            list_id: "inbox".to_string(),
-            title: "写报告".to_string(),
-            completed: false,
-            due: None,
-            current: true,
-            trashed: false,
-            conflict: false,
-        });
-    }
-    Session::open(dir, Origin::Builtin, options)
+fn open_example(dir: &std::path::Path, _example: &str) -> Result<Session, String> {
+    Session::open(dir, Options::default())
 }
 
 fn scratch(name: &str) -> PathBuf {
