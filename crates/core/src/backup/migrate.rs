@@ -313,15 +313,26 @@ fn has_lanwork_data(dir: &Path) -> Result<bool, MigrateError> {
         "reminder-sent.json",
         "import.pending",
         "github/watchlist.json",
+        "tool-enabled.json",
     ] {
         if storage::fs_exists(&join(dir, name)) {
             return Ok(true);
         }
     }
-    for name in ["github/cache", "backups", "logs", "cache/web-icons"] {
+    for name in [
+        "github/cache",
+        "backups",
+        "logs",
+        "cache/web-icons",
+        "tool-storage",
+        "tool-windows",
+    ] {
         if dir_has_file(&join(dir, name)) {
             return Ok(true);
         }
+    }
+    if nested_has_file(&join(dir, "tools"), 0) {
+        return Ok(true);
     }
     for name in ["", "todos", "notes", "shelves"] {
         if has_corrupt(&join(dir, name)) {
@@ -329,6 +340,26 @@ fn has_lanwork_data(dir: &Path) -> Result<bool, MigrateError> {
         }
     }
     Ok(false)
+}
+
+fn nested_has_file(dir: &Path, depth: u32) -> bool {
+    if depth > 32 {
+        return true;
+    }
+    let Ok(entries) = storage::fs_read_dir(dir) else {
+        return false;
+    };
+    for entry in entries {
+        if entry.is_file {
+            return true;
+        }
+        let real_dir =
+            std::fs::symlink_metadata(&entry.path).is_ok_and(|meta| meta.file_type().is_dir());
+        if real_dir && nested_has_file(&entry.path, depth + 1) {
+            return true;
+        }
+    }
+    false
 }
 
 fn dir_has_file(dir: &Path) -> bool {
@@ -469,6 +500,36 @@ mod tests {
         std::fs::write(dir.join("github").join("watchlist.json"), b"{}").unwrap();
         std::fs::write(dir.join("github").join("cache").join("a.json"), b"{}").unwrap();
         std::fs::write(dir.join("notes").join("x.json.corrupt-1-1"), b"{").unwrap();
+        let tool = dir.join("tools").join("example.quota");
+        std::fs::create_dir_all(&tool).unwrap();
+        std::fs::write(tool.join("manifest.toml"), b"tool-copy\n").unwrap();
+        std::fs::write(tool.join("grant.json"), b"{}\n").unwrap();
+        for scratch in [
+            ".incoming-example.quota",
+            ".previous-example.quota",
+            ".hold-example.quota.0",
+        ] {
+            let path = dir.join("tools").join(scratch);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("leak.txt"), b"scratch").unwrap();
+        }
+        std::fs::create_dir_all(dir.join("tool-storage")).unwrap();
+        std::fs::write(
+            dir.join("tool-storage").join("example.quota.json"),
+            b"{\"schemaVersion\":1,\"entries\":{}}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("tool-windows")).unwrap();
+        std::fs::write(
+            dir.join("tool-windows").join("example.quota.json"),
+            b"{\"schemaVersion\":1,\"open\":true}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("tool-enabled.json"),
+            b"{\"schemaVersion\":1,\"disabled\":[]}\n",
+        )
+        .unwrap();
     }
 
     fn resolved(root: &Path) -> crate::storage::ResolvedPaths {
@@ -508,6 +569,11 @@ mod tests {
             "todo-float.json",
             "notes/n1.json",
             "todo-purge-pending.json",
+            "tools/example.quota/manifest.toml",
+            "tools/example.quota/grant.json",
+            "tool-storage/example.quota.json",
+            "tool-windows/example.quota.json",
+            "tool-enabled.json",
         ] {
             let from = super::join(&old, name);
             let dest = super::join(&target, name);
@@ -530,6 +596,9 @@ mod tests {
             "github/watchlist.json",
             "github/cache/a.json",
             "notes/x.json.corrupt-1-1",
+            "tools/.incoming-example.quota/leak.txt",
+            "tools/.previous-example.quota/leak.txt",
+            "tools/.hold-example.quota.0/leak.txt",
         ] {
             assert!(
                 !super::join(&target, name).exists(),

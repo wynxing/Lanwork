@@ -2714,6 +2714,7 @@ name = "lanwork-core"
 version = "0.4.0"
 dependencies = [
  "criterion",
+ "lanwork-toolhost",
  "serde",
  "serde_json",
  "sha2",

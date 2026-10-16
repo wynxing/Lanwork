@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use super::error::BackupError;
 use super::package::{self, PackageOverview};
+use super::tools;
 use super::zipstore::{self, StoredFile};
 use crate::capture::CivilDate;
 use crate::storage::{self, BootHooks, EntityChanged, EntityKind, ImportPending, Store};
@@ -144,8 +145,19 @@ impl BackupService {
 
     fn write_named(&self, file_name: &str, now_ms: i64) -> Result<PathBuf, BackupError> {
         let (files, _) = self.snapshot(now_ms)?;
+        self.write_package(file_name, &files)
+    }
+
+    /// 导入失败时用来写回的原字节。不走 [`package::collect`] 的再校验。
+    fn write_raw_named(&self, file_name: &str, now_ms: i64) -> Result<PathBuf, BackupError> {
+        let files = package::collect_raw(&self.store)?;
+        let (files, _) = package::with_manifest(files, now_ms)?;
+        self.write_package(file_name, &files)
+    }
+
+    fn write_package(&self, file_name: &str, files: &[StoredFile]) -> Result<PathBuf, BackupError> {
         let path = self.store.backups_dir().join(file_name);
-        write_bytes(&path, &zipstore::write_stored(&files)?)?;
+        write_bytes(&path, &zipstore::write_stored(files)?)?;
         Ok(path)
     }
 
@@ -154,9 +166,9 @@ impl BackupService {
         files: &[StoredFile],
         now_ms: i64,
     ) -> Result<Vec<EntityChanged>, BackupError> {
-        let backup = self.write_named(&format!("import-{now_ms}.zip"), now_ms)?;
+        let backup = self.write_raw_named(&format!("import-{now_ms}.zip"), now_ms)?;
         self.store.write_import_pending_holding_lock(&backup)?;
-        let events = match apply(&self.store, files) {
+        let events = match apply(&self.store, files, false) {
             Ok(events) => events,
             Err(err) => {
                 restore_backup(&self.store, &backup)?;
@@ -228,29 +240,61 @@ fn restore_backup(store: &Store, path: &Path) -> Result<(), BackupError> {
     }
     let files = read_zip(path)?;
     package::inspect_files(&files)?;
-    apply(store, &files)?;
+    apply(store, &files, true)?;
     Ok(())
 }
 
-fn apply(store: &Store, files: &[StoredFile]) -> Result<Vec<EntityChanged>, BackupError> {
+/// `exact` 为真时按包内字节写回，供导入失败后的 `import-` 备份使用。
+/// 为假时整理侧车，并按导入规则重写工具副本。
+fn apply(
+    store: &Store,
+    files: &[StoredFile],
+    exact: bool,
+) -> Result<Vec<EntityChanged>, BackupError> {
     let mut keep = std::collections::BTreeSet::new();
     let mut events = Vec::new();
+    let mut copies: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>> =
+        std::collections::BTreeMap::new();
     for file in files {
         if file.name == "manifest.json" || package::is_legacy_github(&file.name) {
             continue;
         }
+        if let Some((id, rel)) = tools::split_copy(&file.name) {
+            copies
+                .entry(id.to_owned())
+                .or_default()
+                .push((rel.to_owned(), file.bytes.clone()));
+            continue;
+        }
+        let kind = package::classify(&file.name)?;
+        let bytes = if exact || !tools::is_sidecar(kind) {
+            file.bytes.clone()
+        } else {
+            match tools::normalize_sidecar(kind, &file.bytes) {
+                Some(bytes) => bytes,
+                None => {
+                    store.log_warn(&tools::skip_line("未恢复", &file.name));
+                    continue;
+                }
+            }
+        };
         let path = package::disk_path(store, &file.name)?;
         if let Some(parent) = path.parent() {
             storage::fs_create_dir_all(parent)
                 .map_err(|_| BackupError::io("无法创建目录", parent))?;
         }
-        storage::atomic_write(&path, &file.bytes)
-            .map_err(|_| BackupError::io("无法写入", &path))?;
+        storage::atomic_write(&path, &bytes).map_err(|_| BackupError::io("无法写入", &path))?;
         keep.insert(file.name.clone());
         if let Some(event) = change_for(&file.name) {
             events.push(event);
         }
     }
+    let (names, restored) = if exact {
+        tools::write_raw_copies(store, copies)?
+    } else {
+        tools::restore_copies(store, copies)?
+    };
+    keep.extend(names);
     for (name, path) in package::list_data_files(store)? {
         if !keep.contains(&name) {
             storage::fs_remove_file(&path).map_err(|_| BackupError::io("无法删除", &path))?;
@@ -259,6 +303,7 @@ fn apply(store: &Store, files: &[StoredFile]) -> Result<Vec<EntityChanged>, Back
             }
         }
     }
+    tools::finish_tools(&store.data_dir(), &restored)?;
     Ok(events)
 }
 
@@ -656,6 +701,221 @@ mod tests {
         let purge =
             std::fs::read_to_string(store.data_dir().join("todo-purge-pending.json")).unwrap();
         assert!(purge.contains("purge-marker-stay"));
+    }
+
+    fn package_manifest(notes: u64) -> Vec<u8> {
+        format!(
+            "{{\"packageSchemaVersion\":1,\"exportedAt\":1,\"appVersion\":\"test\",\"counts\":{{\"todos\":0,\"notes\":{notes},\"shelves\":0,\"config\":0,\"userApps\":0}}}}\n"
+        )
+        .into_bytes()
+    }
+
+    fn tool_manifest() -> Vec<u8> {
+        r#"
+id = "example.quota"
+name = "API 额度"
+description = "剩余额度"
+entry = "main.lua"
+services = ["storage"]
+
+[[component]]
+id = "summary"
+component = "text"
+text = "没有数据"
+"#
+        .as_bytes()
+        .to_vec()
+    }
+
+    #[test]
+    fn import_skips_a_bad_tool_and_refuses_a_path_that_escapes() {
+        let (temp, store) = store();
+        let note = br#"{"schemaVersion":1,"body":"kept-note"}"#;
+        let mut good = vec![
+            super::StoredFile {
+                name: "manifest.json".to_string(),
+                bytes: package_manifest(1),
+            },
+            super::StoredFile {
+                name: "notes/n.json".to_string(),
+                bytes: note.to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/manifest.toml".to_string(),
+                bytes: tool_manifest(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/main.lua".to_string(),
+                bytes: b"function on_load() end\n".to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/helper.lua".to_string(),
+                bytes: b"helper-secret-marker".to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/grant.json".to_string(),
+                bytes: br#"{"schemaVersion":1,"services":["notify","storage"],"domains":[],"secrets":[],"value":"secret-marker-77"}"#.to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/example.bad/manifest.toml".to_string(),
+                bytes: b"bad-body-marker".to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/.incoming-example.quota/leak.txt".to_string(),
+                bytes: b"scratch-marker-77".to_vec(),
+            },
+        ];
+        good.sort_by(|left, right| left.name.cmp(&right.name));
+        let package = temp.path().join("tools.zip");
+        std::fs::write(
+            &package,
+            super::super::zipstore::write_stored(&good).unwrap(),
+        )
+        .unwrap();
+        BackupService::open(store.clone())
+            .import(&package, 5)
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(store.data_dir().join("notes").join("n.json"))
+                .unwrap()
+                .contains("kept-note")
+        );
+        let grant = std::fs::read(store.data_dir().join("tools/example.quota/grant.json")).unwrap();
+        let grant_text = String::from_utf8(grant).unwrap();
+        assert!(grant_text.contains("storage"));
+        assert!(!grant_text.contains("notify"));
+        assert!(!grant_text.contains("secret-marker-77"));
+        assert!(
+            !store
+                .data_dir()
+                .join("tools/example.quota/helper.lua")
+                .exists()
+        );
+        assert!(!store.data_dir().join("tools/example.bad").exists());
+        assert!(
+            !store
+                .data_dir()
+                .join("tools/.incoming-example.quota")
+                .exists()
+        );
+        let log = std::fs::read_to_string(store.log_path()).unwrap_or_default();
+        assert!(log.contains("工具未恢复"));
+        assert!(log.contains("example.bad"));
+        assert!(!log.contains("bad-body-marker"));
+        assert!(!log.contains("secret-marker-77"));
+        assert!(!log.contains("scratch-marker-77"));
+
+        let escaped = vec![
+            super::StoredFile {
+                name: "manifest.json".to_string(),
+                bytes: package_manifest(1),
+            },
+            super::StoredFile {
+                name: "notes/n.json".to_string(),
+                bytes: note.to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/../../notes/pwn.json".to_string(),
+                bytes: b"pwn-marker".to_vec(),
+            },
+        ];
+        let evil = temp.path().join("evil.zip");
+        std::fs::write(
+            &evil,
+            super::super::zipstore::write_stored(&escaped).unwrap(),
+        )
+        .unwrap();
+        assert!(BackupService::open(store.clone()).import(&evil, 6).is_err());
+        assert!(!store.data_dir().join("notes").join("pwn.json").exists());
+        assert!(
+            std::fs::read_to_string(store.data_dir().join("notes").join("n.json"))
+                .unwrap()
+                .contains("kept-note")
+        );
+    }
+
+    #[test]
+    fn import_rollback_writes_the_original_tool_bytes() {
+        let (_temp, store) = store();
+        let data = store.data_dir();
+        std::fs::create_dir_all(data.join("notes")).unwrap();
+        std::fs::write(
+            data.join("notes/n.json"),
+            br#"{"schemaVersion":1,"body":"old-note"}"#,
+        )
+        .unwrap();
+        let tool = data.join("tools/example.quota");
+        std::fs::create_dir_all(&tool).unwrap();
+        std::fs::write(tool.join("manifest.toml"), tool_manifest()).unwrap();
+        std::fs::write(tool.join("main.lua"), b"function on_load() end\n").unwrap();
+        std::fs::write(tool.join("helper.lua"), b"helper-secret-marker").unwrap();
+        std::fs::write(tool.join("grant.json"), br#"{"value":"secret-marker-77"}"#).unwrap();
+        std::fs::create_dir_all(data.join("tool-windows")).unwrap();
+        std::fs::write(
+            data.join("tool-windows/example.quota.json"),
+            br#"{"schemaVersion":1,"open":true,"floatWindow":{"x":12,"y":4,"width":200,"height":120}}"#,
+        )
+        .unwrap();
+
+        let raw = super::super::package::collect_raw(&store).unwrap();
+        assert!(raw.iter().any(|file| {
+            file.name == "tools/example.quota/helper.lua" && file.bytes == b"helper-secret-marker"
+        }));
+        assert!(raw.iter().any(|file| {
+            file.name == "tools/example.quota/grant.json"
+                && String::from_utf8_lossy(&file.bytes).contains("secret-marker-77")
+        }));
+        assert!(raw.iter().any(|file| {
+            file.name == "tool-windows/example.quota.json"
+                && String::from_utf8_lossy(&file.bytes).contains("\"open\":true")
+        }));
+        let clean = super::super::package::collect(&store).unwrap();
+        assert!(
+            clean
+                .iter()
+                .all(|file| file.bytes != b"helper-secret-marker")
+        );
+        assert!(
+            clean
+                .iter()
+                .all(|file| !String::from_utf8_lossy(&file.bytes).contains("secret-marker-77"))
+        );
+        assert!(
+            clean
+                .iter()
+                .all(|file| { !String::from_utf8_lossy(&file.bytes).contains("\"open\":true") })
+        );
+
+        std::fs::remove_file(tool.join("helper.lua")).unwrap();
+        std::fs::write(tool.join("grant.json"), b"{}\n").unwrap();
+        std::fs::write(tool.join("extra.lua"), b"new-extra").unwrap();
+        std::fs::write(
+            data.join("tool-windows/example.quota.json"),
+            br#"{"schemaVersion":1,"open":false}"#,
+        )
+        .unwrap();
+        let (files, _) = super::super::package::with_manifest(raw, 1).unwrap();
+        super::apply(&store, &files, true).unwrap();
+        assert_eq!(
+            std::fs::read(tool.join("helper.lua")).unwrap(),
+            b"helper-secret-marker"
+        );
+        assert!(
+            std::fs::read_to_string(tool.join("grant.json"))
+                .unwrap()
+                .contains("secret-marker-77")
+        );
+        assert!(
+            std::fs::read_to_string(data.join("tool-windows/example.quota.json"))
+                .unwrap()
+                .contains("\"open\":true")
+        );
+        assert!(!tool.join("extra.lua").exists());
+        assert!(
+            std::fs::read_to_string(data.join("notes/n.json"))
+                .unwrap()
+                .contains("old-note")
+        );
     }
 
     #[test]

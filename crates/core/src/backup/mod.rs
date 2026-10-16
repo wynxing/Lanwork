@@ -10,6 +10,7 @@ mod error;
 mod migrate;
 mod package;
 mod service;
+mod tools;
 mod zipstore;
 
 pub use command::BackupCommands;

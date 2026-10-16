@@ -1,12 +1,15 @@
 //! 导出包的白名单、清单和数据文件集合。
 //!
 //! 包内路径只用 `/`。拒绝 `..` 和绝对路径。JSON 缺少 `schemaVersion` 时按 1。
+//! 工具副本、`tool-storage/`、`tool-enabled.json` 和 `tool-windows/` 在这份名单里。
+//! `tools/` 下以 `.` 开头的临时目录不在。密钥不在名单里。
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
 use super::error::BackupError;
+use super::tools::{self, CopyGroup};
 use super::zipstore::StoredFile;
 use crate::storage::{self, DocumentId, Store};
 
@@ -29,7 +32,7 @@ pub struct PackageOverview {
 }
 
 #[derive(Clone, Copy)]
-enum Kind {
+pub(crate) enum Kind {
     Manifest,
     Config,
     UserApps,
@@ -42,21 +45,63 @@ enum Kind {
     LegacyWatchlist,
     /// 旧包里的 `github/cache/<id>.json`。导入时忽略，不写入。
     LegacyCache,
+    /// `tool-enabled.json`。`counts` 不为它加一项。
+    ToolEnabled,
+    /// `tool-storage/<id>.json`。
+    ToolStorage,
+    /// `tool-windows/<id>.json`。包里不含 `open`。
+    ToolWindow,
+    /// `tools/<id>/` 里的一个文件。内容由导入同一套校验决定写不写。
+    ToolCopy,
 }
 
-/// 按 [`data_file_names`] 收集。这份名单不含 `todo-purge-pending.json`、日志、
-/// `cache/web-icons`、备份目录和 `import.pending`。
+/// 按 [`data_file_names`] 收集，并整理成导出和备份里的那一份。
+///
+/// 这份名单不含 `todo-purge-pending.json`、日志、`cache/web-icons`、备份目录和
+/// `import.pending`。工具副本会再校验，窗口记录去掉 `open`。
 pub(crate) fn collect(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
+    let mut files = Vec::new();
+    let mut copies: std::collections::BTreeMap<String, CopyGroup> =
+        std::collections::BTreeMap::new();
+    for name in data_file_names(&store.data_dir())? {
+        if let Some((id, rel)) = tools::split_copy(&name) {
+            let path = disk_path(store, &name)?;
+            tools::push_copy(&mut copies, id, rel, &path)?;
+            continue;
+        }
+        let path = disk_path(store, &name)?;
+        let bytes = read_file(&path)?;
+        let kind = classify(&name)?;
+        let bytes = if tools::is_sidecar(kind) {
+            match tools::normalize_sidecar(kind, &bytes) {
+                Some(bytes) => bytes,
+                None => {
+                    store.log_warn(&tools::skip_line("未导出", &name));
+                    continue;
+                }
+            }
+        } else {
+            bytes
+        };
+        files.push(StoredFile { name, bytes });
+    }
+    files.extend(tools::export_copies(store, copies));
+    for file in &files {
+        check_entry(&file.name, &file.bytes)?;
+    }
+    files.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(files)
+}
+
+/// 导入前那份 `import-` 备份。白名单文件按磁盘上的字节复制，不重新校验工具，
+/// 也不去掉 `open`。校验失败的 JSON 让这次导入还没开始就停住。
+pub(crate) fn collect_raw(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
     let mut files = Vec::new();
     for name in data_file_names(&store.data_dir())? {
         let path = disk_path(store, &name)?;
-        files.push(StoredFile {
-            name,
-            bytes: read_file(&path)?,
-        });
-    }
-    for file in &files {
-        check_entry(&file.name, &file.bytes)?;
+        let bytes = read_file(&path)?;
+        check_entry(&name, &bytes)?;
+        files.push(StoredFile { name, bytes });
     }
     files.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(files)
@@ -103,13 +148,15 @@ pub(crate) fn inspect_files(files: &[StoredFile]) -> Result<PackageOverview, Bac
             return Err(BackupError::entry(&file.name, "压缩包含有重复路径"));
         }
         let kind = classify(&file.name)?;
-        if matches!(kind, Kind::Manifest) {
-            manifest = Some(file);
-        } else {
+        if !matches!(kind, Kind::Manifest | Kind::ToolCopy) {
             check_document(&file.bytes).map_err(|err| match err {
                 BackupError::Rejected(message) => BackupError::entry(&file.name, message),
                 other => other,
             })?;
+        }
+        if matches!(kind, Kind::Manifest) {
+            manifest = Some(file);
+        } else {
             data.push(file);
         }
     }
@@ -136,16 +183,22 @@ pub(crate) fn list_data_files(store: &Store) -> Result<Vec<(String, PathBuf)>, B
 /// 导出白名单里实际存在的相对路径。迁移和导入删除用同一份名单。
 pub(crate) fn data_file_names(data_dir: &Path) -> Result<Vec<String>, BackupError> {
     let mut names = Vec::new();
-    for name in ["config.json", "user-apps.json", "todo-float.json"] {
+    for name in [
+        "config.json",
+        "user-apps.json",
+        "todo-float.json",
+        "tool-enabled.json",
+    ] {
         if storage::fs_exists(&join(data_dir, name)) {
             names.push(name.to_owned());
         }
     }
-    for relative in ["todos", "notes", "shelves"] {
+    for relative in ["todos", "notes", "shelves", "tool-storage", "tool-windows"] {
         for (name, _) in dir_files(data_dir, relative)? {
             names.push(name);
         }
     }
+    names.extend(tools::copy_names(data_dir)?);
     Ok(names)
 }
 
@@ -158,6 +211,8 @@ pub(crate) fn disk_path(store: &Store, name: &str) -> Result<PathBuf, BackupErro
         Kind::Config => store.document_path(&DocumentId::Config)?,
         Kind::UserApps => store.user_apps_path(),
         Kind::TodoFloat => store.data_dir().join("todo-float.json"),
+        Kind::ToolEnabled => store.data_dir().join("tool-enabled.json"),
+        Kind::ToolStorage | Kind::ToolWindow | Kind::ToolCopy => join(&store.data_dir(), name),
         Kind::Todo => store.document_path(&DocumentId::Todo(id_of(name)?))?,
         Kind::Note => store.document_path(&DocumentId::Note(id_of(name)?))?,
         Kind::Shelf => store.document_path(&DocumentId::Shelf(id_of(name)?))?,
@@ -209,7 +264,11 @@ fn recount_refs(
             Kind::Manifest => return Err(BackupError::entry(&file.name, "压缩包含有重复路径")),
             Kind::Config => overview.config = true,
             Kind::UserApps => overview.user_apps = true,
-            Kind::TodoFloat => {}
+            Kind::TodoFloat
+            | Kind::ToolEnabled
+            | Kind::ToolStorage
+            | Kind::ToolWindow
+            | Kind::ToolCopy => {}
             Kind::LegacyWatchlist => overview.watchlist = true,
             Kind::Todo => overview.todos += 1,
             Kind::Note => overview.notes += 1,
@@ -303,7 +362,9 @@ fn count_field(counts: &Map<String, Value>, name: &str) -> Result<u64, BackupErr
 }
 
 fn check_entry(name: &str, bytes: &[u8]) -> Result<(), BackupError> {
-    classify(name)?;
+    if matches!(classify(name)?, Kind::ToolCopy) {
+        return Ok(());
+    }
     check_document(bytes).map_err(|err| match err {
         BackupError::Rejected(message) => BackupError::entry(name, message),
         other => other,
@@ -327,7 +388,7 @@ fn check_document(bytes: &[u8]) -> Result<(), BackupError> {
     }
 }
 
-fn classify(name: &str) -> Result<Kind, BackupError> {
+pub(crate) fn classify(name: &str) -> Result<Kind, BackupError> {
     if name.is_empty()
         || name.as_bytes().contains(&0)
         || name.contains('\\')
@@ -343,15 +404,32 @@ fn classify(name: &str) -> Result<Kind, BackupError> {
     {
         return Err(BackupError::entry(name, "压缩包含有不允许的路径"));
     }
+    if let Some(rest) = name.strip_prefix("tools/") {
+        return classify_tool_copy(name, rest);
+    }
     let kind = match name {
         MANIFEST => Kind::Manifest,
         "config.json" => Kind::Config,
         "user-apps.json" => Kind::UserApps,
         "todo-float.json" => Kind::TodoFloat,
+        "tool-enabled.json" => Kind::ToolEnabled,
         "github/watchlist.json" => Kind::LegacyWatchlist,
         _ => kind_from_collection(name)?,
     };
     Ok(kind)
+}
+
+fn classify_tool_copy(name: &str, rest: &str) -> Result<Kind, BackupError> {
+    let Some((id, rel)) = rest.split_once('/') else {
+        return Err(BackupError::entry(name, "压缩包含有不允许的路径"));
+    };
+    if rel.is_empty() {
+        return Err(BackupError::entry(name, "压缩包含有不允许的路径"));
+    }
+    if !id.starts_with('.') {
+        storage::validate_id(id).map_err(|_| BackupError::entry(name, "压缩包含有不允许的路径"))?;
+    }
+    Ok(Kind::ToolCopy)
 }
 
 fn kind_from_collection(name: &str) -> Result<Kind, BackupError> {
@@ -366,6 +444,8 @@ fn kind_from_collection(name: &str) -> Result<Kind, BackupError> {
         "todos" => Ok(Kind::Todo),
         "notes" => Ok(Kind::Note),
         "shelves" => Ok(Kind::Shelf),
+        "tool-storage" => Ok(Kind::ToolStorage),
+        "tool-windows" => Ok(Kind::ToolWindow),
         "github/cache" => Ok(Kind::LegacyCache),
         _ => Err(BackupError::entry(name, "压缩包含有不允许的路径")),
     }
@@ -421,7 +501,7 @@ fn read_file(path: &Path) -> Result<Vec<u8>, BackupError> {
     storage::fs_read(path).map_err(|_| BackupError::io("无法读取", path))
 }
 
-fn join(root: &Path, relative: &str) -> PathBuf {
+pub(crate) fn join(root: &Path, relative: &str) -> PathBuf {
     let mut path = root.to_path_buf();
     for part in relative.split('/') {
         path.push(part);
@@ -434,18 +514,43 @@ mod export_list_tests {
     use super::data_file_names;
 
     #[test]
-    fn tool_enabled_file_stays_out_of_the_export_list() {
+    fn tool_files_are_on_the_export_list_and_scratch_dirs_are_not() {
         let dir = std::env::temp_dir().join(format!("lanwork-export-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.json"), b"{}\n").unwrap();
         std::fs::write(dir.join("tool-enabled.json"), b"{}\n").unwrap();
+        let tool = dir.join("tools").join("example.quota");
+        std::fs::create_dir_all(&tool).unwrap();
+        std::fs::write(tool.join("manifest.toml"), b"id\n").unwrap();
+        std::fs::write(tool.join("card.json"), b"{}\n").unwrap();
+        for scratch in [
+            ".incoming-example.quota",
+            ".previous-example.quota",
+            ".hold-example.quota.0",
+        ] {
+            let path = dir.join("tools").join(scratch);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("leak.txt"), b"no").unwrap();
+        }
+        std::fs::create_dir_all(dir.join("tool-storage")).unwrap();
+        std::fs::write(dir.join("tool-storage").join("example.quota.json"), b"{}\n").unwrap();
+        std::fs::create_dir_all(dir.join("tool-windows")).unwrap();
+        std::fs::write(dir.join("tool-windows").join("example.quota.json"), b"{}\n").unwrap();
         let names = data_file_names(&dir).unwrap();
-        assert!(names.iter().any(|name| name == "config.json"));
-        assert!(
-            !names.iter().any(|name| name == "tool-enabled.json"),
-            "启用状态这一步不进导出白名单"
-        );
+        for expected in [
+            "config.json",
+            "tool-enabled.json",
+            "tools/example.quota/manifest.toml",
+            "tools/example.quota/card.json",
+            "tool-storage/example.quota.json",
+            "tool-windows/example.quota.json",
+        ] {
+            assert!(names.iter().any(|name| name == expected), "{expected}");
+        }
+        assert!(names.iter().all(|name| !name.contains(".incoming-")));
+        assert!(names.iter().all(|name| !name.contains(".previous-")));
+        assert!(names.iter().all(|name| !name.contains(".hold-")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

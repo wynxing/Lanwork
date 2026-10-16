@@ -20,11 +20,13 @@ mod todo_page;
 mod tool_install;
 mod triage;
 
+pub(crate) use apps_page::canonical_enabled;
 pub use apps_page::{
     ENABLED_FILE, EnabledBytes, FLOAT_LABEL, IMPORT_LABEL, ListedTool, ToolCard, decode_enabled,
     encode_enabled, installed_tools, is_enabled, is_png, menu_items, name_mark, read_enabled,
     set_disabled, should_reopen, usable_icon, visible_cards, write_enabled,
 };
+pub(crate) use float_shell::archived_window;
 pub use float_shell::{
     BackupSlice, DEFAULT_LOGICAL_HEIGHT, DEFAULT_LOGICAL_WIDTH, ExportSlice, MARGIN_LOGICAL,
     RECORD_DIR, ScanSkip, ShellBytes, ShellGesture, ShellRecord, ShellSession, StoredShell,
@@ -64,6 +66,7 @@ pub use tool_install::{
     UNINSTALL_BODY, UPDATE_NOTE, WRONG_UPDATE, install_copy, list_installed, read_tool_storage,
     recover_previous, remove_installed, storage_path, tool_dir, write_tool_storage,
 };
+pub(crate) use tool_install::{canonical_storage, card_bytes};
 
 pub use settings_page::{
     HOT_CORNER_CHOICES, SettingsRows, StartupChange, THEME_CHOICES, WEB_ENGINE_CHOICES,

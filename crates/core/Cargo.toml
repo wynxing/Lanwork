@@ -11,6 +11,8 @@ build = "build.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
+# 恢复工具副本时复用导入的清单、路径和大小校验。不在这里跑 Lua。
+lanwork-toolhost = { path = "../toolhost" }
 
 # 存储层只引用文件 API（FlushFileBuffers、ReplaceFileW、MoveFileExW）。
 # 应用索引另外引用 Shell、COM、注册表和目录变更。
