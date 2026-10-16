@@ -1,4 +1,5 @@
-//! 工具 id 的路径分量规则，与数据文件 id 相同。
+//! 工具 id 的路径分量规则，与数据文件 id 相同，另外拒绝以 `.` 开头。
+//! 以 `.` 开头会和安装时的 `.previous-`、`.incoming-` 目录混在一起，列表也会跳过。
 //! 实现对照 `lanwork_core` 的 `validate_id`，这个 crate 不依赖它。
 
 pub fn valid_id(id: &str) -> bool {
@@ -6,6 +7,7 @@ pub fn valid_id(id: &str) -> bool {
         || id.len() > 200
         || id == "."
         || id == ".."
+        || id.starts_with('.')
         || id.starts_with(' ')
         || id.ends_with(' ')
         || id.ends_with('.')

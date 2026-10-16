@@ -128,8 +128,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
     let todos = services.todos.clone();
     let complete = Rc::new(move |item_id: &str| match todos.complete_item(item_id) {
         Ok(()) | Err(TodoError::AlreadyComplete) => Ok(()),
-        Err(TodoError::ItemNotFound { .. }) => Err("找不到待办".to_string()),
-        Err(err) => Err(err.to_string()),
+        Err(err) => Err(err.script_complete_message()),
     });
 
     let mut options = lanwork_toolhost::Options {

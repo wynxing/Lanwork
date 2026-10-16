@@ -29,9 +29,18 @@ pub const UNAUTHORIZED: &str = "未授权";
 
 const STORAGE_READ_LIMIT: u64 = 8 * 1024 * 1024;
 
+/// 新副本已经在正式目录。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Installed {
+    Ready,
+    /// 旧目录删不掉，还留在 `tools/.previous-<id>/` 或 `tools/.hold-<id>.N/`。
+    BackupRemains,
+}
+
 /// 把校验过的文件装进数据目录。`files` 的路径相对工具根，只用 `/`。
 ///
-/// 先写入 `tools/.incoming-<id>/`，再换成正式目录。失败时原来的副本还在。
+/// 先写入 `tools/.incoming-<id>/`。正式目录换成新副本之后，才删除旧目录。
+/// 旧目录删不掉时新副本仍然留着，返回 [`Installed::BackupRemains`]。
 /// 不改存储、密钥和窗口记录。
 pub fn install_copy(
     data_dir: &Path,
@@ -40,11 +49,13 @@ pub fn install_copy(
     description: &str,
     files: &[(String, Vec<u8>)],
     grant: &[u8],
-) -> io::Result<()> {
+) -> io::Result<Installed> {
     check_id(id)?;
     let tools = data_dir.join(TOOLS_DIR);
     std::fs::create_dir_all(&tools)?;
-    let incoming = tools.join(format!(".incoming-{id}"));
+    let incoming = scratch_path(&tools, ".incoming-", id);
+    let dest = tools.join(id);
+    let previous = scratch_path(&tools, ".previous-", id);
     if incoming.exists() {
         std::fs::remove_dir_all(&incoming)?;
     }
@@ -67,33 +78,103 @@ pub fn install_copy(
         let _ = std::fs::remove_dir_all(&incoming);
         return Err(err);
     }
-    let dest = tools.join(id);
-    let backup = tools.join(format!(".previous-{id}"));
-    if backup.exists() {
-        std::fs::remove_dir_all(&backup)?;
-    }
-    if dest.exists() {
-        std::fs::rename(&dest, &backup)?;
-    }
-    if let Err(err) = std::fs::rename(&incoming, &dest) {
-        if !dest.exists() && backup.exists() {
-            let _ = std::fs::rename(&backup, &dest);
+    // 正式目录还在时，先把占着 `.previous-` 名字的旧备份挪开，不删除。
+    let parked = if dest.exists() && previous.exists() {
+        let hold = vacant_hold(&tools, id)?;
+        if let Err(err) = std::fs::rename(&previous, &hold) {
+            let _ = std::fs::remove_dir_all(&incoming);
+            return Err(err);
         }
+        Some(hold)
+    } else {
+        None
+    };
+    if dest.exists()
+        && let Err(err) = std::fs::rename(&dest, &previous)
+    {
+        restore_parked(parked.as_deref(), &previous);
         let _ = std::fs::remove_dir_all(&incoming);
         return Err(err);
     }
-    if backup.exists() {
-        std::fs::remove_dir_all(&backup)?;
+    if let Err(err) = std::fs::rename(&incoming, &dest) {
+        if !dest.exists() && previous.exists() {
+            let _ = std::fs::rename(&previous, &dest);
+        }
+        restore_parked(parked.as_deref(), &previous);
+        let _ = std::fs::remove_dir_all(&incoming);
+        return Err(err);
     }
-    Ok(())
+    let mut remains = !discard_tree(&previous);
+    if !discard_holds(&tools, id) {
+        remains = true;
+    }
+    Ok(if remains {
+        Installed::BackupRemains
+    } else {
+        Installed::Ready
+    })
 }
 
-/// 删除副本和存储。不删除 `tool-windows/<id>.json`，也不删除密钥。
+/// 正式目录不在、而 `tools/.previous-<id>/` 还在时，把备份放回正式目录。
+///
+/// 正式目录还在时不动备份。恢复失败的条目留在原处，返回给调用方写日志。
+#[must_use]
+pub fn recover_previous(data_dir: &Path) -> Vec<String> {
+    let tools = data_dir.join(TOOLS_DIR);
+    let Ok(read) = std::fs::read_dir(&tools) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = read
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    let mut warnings = Vec::new();
+    for name in names {
+        let Some(id) = name.strip_prefix(".previous-") else {
+            continue;
+        };
+        if check_id(id).is_err() {
+            continue;
+        }
+        let dest = tools.join(id);
+        if dest.exists() {
+            continue;
+        }
+        let backup = tools.join(&name);
+        if let Err(err) = std::fs::rename(&backup, &dest) {
+            warnings.push(format!("工具副本没有恢复：{id}：{err}"));
+        }
+    }
+    warnings
+}
+
+/// 删除副本、半成品和换下来的旧目录，以及存储。
+///
+/// 不删除 `tool-windows/<id>.json`，也不删除密钥。
 pub fn remove_installed(data_dir: &Path, id: &str) -> io::Result<()> {
     check_id(id)?;
-    let dir = data_dir.join(TOOLS_DIR).join(id);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
+    let tools = data_dir.join(TOOLS_DIR);
+    let dest = tools.join(id);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    if tools.is_dir() {
+        let read = std::fs::read_dir(&tools)?;
+        let mut scratch = Vec::new();
+        for entry in read {
+            let entry = entry?;
+            let Some(name) = entry.file_name().into_string().ok() else {
+                continue;
+            };
+            if is_scratch(&name, id) {
+                scratch.push(entry.path());
+            }
+        }
+        for path in scratch {
+            if path.exists() {
+                std::fs::remove_dir_all(path)?;
+            }
+        }
     }
     let storage = storage_path(data_dir, id);
     if storage.exists() {
@@ -105,6 +186,7 @@ pub fn remove_installed(data_dir: &Path, id: &str) -> io::Result<()> {
 /// 自定义分类里的工具。跳过以 `.` 开头的临时目录，以及卡片 id 和目录名不一致的目录。
 #[must_use]
 pub fn list_custom(data_dir: &Path) -> Vec<ListedTool> {
+    let _ = recover_previous(data_dir);
     let tools = data_dir.join(TOOLS_DIR);
     let Ok(read) = std::fs::read_dir(&tools) else {
         return Vec::new();
@@ -142,7 +224,7 @@ pub fn list_custom(data_dir: &Path) -> Vec<ListedTool> {
 
 #[must_use]
 pub fn tool_dir(data_dir: &Path, id: &str) -> Option<PathBuf> {
-    if validate_id(id).is_err() {
+    if check_id(id).is_err() {
         return None;
     }
     Some(data_dir.join(TOOLS_DIR).join(id))
@@ -180,8 +262,80 @@ pub fn write_tool_storage(
 }
 
 fn check_id(id: &str) -> io::Result<()> {
-    validate_id(id)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "工具 id 不能作为文件名"))
+    if id.starts_with('.') || validate_id(id).is_err() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "工具 id 不能作为文件名",
+        ));
+    }
+    Ok(())
+}
+
+fn scratch_path(tools: &Path, prefix: &str, id: &str) -> PathBuf {
+    tools.join(format!("{prefix}{id}"))
+}
+
+fn is_scratch(name: &str, id: &str) -> bool {
+    name == format!(".previous-{id}")
+        || name == format!(".incoming-{id}")
+        || name == format!(".hold-{id}")
+        || name
+            .strip_prefix(&format!(".hold-{id}."))
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn vacant_hold(tools: &Path, id: &str) -> io::Result<PathBuf> {
+    for index in 0..64 {
+        let path = tools.join(format!(".hold-{id}.{index}"));
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "旧副本太多"))
+}
+
+fn restore_parked(parked: Option<&Path>, previous: &Path) {
+    let Some(parked) = parked else {
+        return;
+    };
+    if !previous.exists() {
+        let _ = std::fs::rename(parked, previous);
+    }
+}
+
+fn discard_tree(path: &Path) -> bool {
+    if !path.exists() {
+        return true;
+    }
+    #[cfg(test)]
+    if FAIL_OLD_DELETE.with(std::cell::Cell::get) {
+        return false;
+    }
+    std::fs::remove_dir_all(path).is_ok()
+}
+
+fn discard_holds(tools: &Path, id: &str) -> bool {
+    let Ok(read) = std::fs::read_dir(tools) else {
+        return true;
+    };
+    let mut ok = true;
+    for entry in read.filter_map(Result::ok) {
+        let Some(name) = entry.file_name().into_string().ok() else {
+            continue;
+        };
+        if !is_scratch(&name, id) || !name.starts_with(".hold-") {
+            continue;
+        }
+        if !discard_tree(&entry.path()) {
+            ok = false;
+        }
+    }
+    ok
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_OLD_DELETE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn write_relative(root: &Path, relative: &str, bytes: &[u8]) -> io::Result<()> {
@@ -397,5 +551,40 @@ mod tests {
         assert_eq!(UNINSTALL_BODY, "会删除这个工具的存储和密钥。");
         assert_eq!(INVALID_PACKAGE, "清单无效");
         assert_eq!(UNAUTHORIZED, "未授权");
+    }
+
+    #[test]
+    fn dot_ids_are_rejected_and_previous_is_restored_when_dest_is_missing() {
+        let dir = scratch("dot");
+        assert!(install_copy(&dir, ".hidden", "名称", "说明", &[], b"{}").is_err());
+        assert!(tool_dir(&dir, ".hidden").is_none());
+        install_copy(&dir, "example.quota", "API 额度", "说明", &[], b"{}").unwrap();
+        let live = dir.join("tools/example.quota");
+        let backup = dir.join("tools/.previous-example.quota");
+        std::fs::rename(&live, &backup).unwrap();
+        assert_eq!(list_custom(&dir).len(), 1);
+        assert!(live.join("card.json").is_file());
+        assert!(!backup.exists());
+        std::fs::create_dir_all(dir.join("tools/.incoming-example.quota")).unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        remove_installed(&dir, "example.quota").unwrap();
+        assert!(!live.exists());
+        assert!(!backup.exists());
+        assert!(!dir.join("tools/.incoming-example.quota").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_backup_delete_keeps_the_new_copy() {
+        let dir = scratch("keep-backup");
+        install_copy(&dir, "example.quota", "旧名称", "说明", &[], b"{}").unwrap();
+        FAIL_OLD_DELETE.with(|flag| flag.set(true));
+        let installed = install_copy(&dir, "example.quota", "新名称", "说明", &[], b"{}").unwrap();
+        FAIL_OLD_DELETE.with(|flag| flag.set(false));
+        assert_eq!(installed, Installed::BackupRemains);
+        assert_eq!(list_custom(&dir)[0].name, "新名称");
+        assert!(dir.join("tools/.previous-example.quota").is_dir());
+        assert!(dir.join("tools/example.quota/card.json").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

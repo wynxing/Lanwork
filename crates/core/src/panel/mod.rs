@@ -61,9 +61,9 @@ pub use note_select::{
     note_select_after_delete, pick_note_row, retain_note_select, select_all_notes,
 };
 pub use tool_install::{
-    CARD_FILE, GRANT_FILE, INVALID_PACKAGE, STORAGE_DIR, TOOLS_DIR, UNAUTHORIZED, UNINSTALL_BODY,
-    UPDATE_NOTE, install_copy, list_custom, read_tool_storage, remove_installed, storage_path,
-    tool_dir, write_tool_storage,
+    CARD_FILE, GRANT_FILE, INVALID_PACKAGE, Installed, STORAGE_DIR, TOOLS_DIR, UNAUTHORIZED,
+    UNINSTALL_BODY, UPDATE_NOTE, install_copy, list_custom, read_tool_storage, recover_previous,
+    remove_installed, storage_path, tool_dir, write_tool_storage,
 };
 
 pub use settings_page::{

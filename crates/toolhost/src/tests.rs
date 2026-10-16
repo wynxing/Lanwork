@@ -135,6 +135,9 @@ fn guide_manifest_and_rejections() {
     assert_eq!(ids, ["title", "status", "clock", "pause", "skip", "done"]);
     let imported = manifest::parse(&text, Origin::Imported).expect_err("导入前缀");
     assert!(imported.contains("lanwork."));
+    let dotted = text.replace("id = \"lanwork.pomodoro\"", "id = \".pomodoro\"");
+    let dotted = manifest::parse(&dotted, Origin::Builtin).expect_err("点开头");
+    assert!(dotted.contains("不能以 . 开头"));
 
     let versioned = text.replace(
         "entry = \"main.lua\"\n",

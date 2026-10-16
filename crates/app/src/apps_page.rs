@@ -8,9 +8,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use lanwork_core::panel::{
-    EnabledBytes, INVALID_PACKAGE, ToolOrigin, UNINSTALL_BODY, UPDATE_NOTE, install_copy,
-    installed_tools, is_enabled, menu_items, read_enabled, remove_installed, set_disabled,
-    show_import, tool_dir, visible_cards, write_enabled,
+    EnabledBytes, INVALID_PACKAGE, Installed, ToolOrigin, UNINSTALL_BODY, UPDATE_NOTE,
+    install_copy, installed_tools, is_enabled, menu_items, read_enabled, remove_installed,
+    set_disabled, show_import, tool_dir, visible_cards, write_enabled,
 };
 use lanwork_core::storage::Store;
 use lanwork_toolhost::{
@@ -355,7 +355,10 @@ impl AppsPage {
             &staged.files,
             &encode_grant(&grant),
         ) {
-            Ok(()) => {}
+            Ok(Installed::Ready) => {}
+            Ok(Installed::BackupRemains) => {
+                self.store.log_warn(&format!("旧副本没有删掉：{id}"));
+            }
             Err(err) => {
                 self.store.log_warn(&format!("工具没有装上：{err}"));
                 ui.set_error(INVALID_PACKAGE.into());

@@ -190,6 +190,9 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     }
     todo_float::install(todos.clone(), store.clone());
     float_shell::install(store.clone(), todos.clone(), config.clone());
+    for line in lanwork_core::panel::recover_previous(&store.data_dir()) {
+        store.log_warn(&line);
+    }
     float_shell::schedule_restore();
     if std::env::args()
         .skip(1)

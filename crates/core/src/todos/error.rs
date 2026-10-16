@@ -62,6 +62,16 @@ pub enum TodoError {
 }
 
 impl TodoError {
+    /// 交给工具脚本的完成失败。存储错误不带数据目录路径。
+    #[must_use]
+    pub fn script_complete_message(&self) -> String {
+        match self {
+            Self::ItemNotFound { .. } => "找不到待办".to_string(),
+            Self::Storage(_) => "写盘失败".to_string(),
+            other => other.to_string(),
+        }
+    }
+
     pub fn pending_topic(&self) -> Option<PendingTopic> {
         match self {
             Self::PendingSpec(topic) => Some(*topic),
@@ -120,5 +130,31 @@ impl std::error::Error for TodoError {
 impl From<StorageError> for TodoError {
     fn from(err: StorageError) -> Self {
         Self::Storage(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::storage::{Error, IoAction};
+
+    use super::TodoError;
+
+    #[test]
+    fn script_complete_message_hides_the_data_directory() {
+        let err = TodoError::Storage(Error::Io {
+            path: PathBuf::from(r"C:\Users\me\AppData\Roaming\Lanwork\todos\inbox.json"),
+            action: IoAction::Replace,
+            source: std::io::Error::other("disk"),
+        });
+        let text = err.script_complete_message();
+        assert_eq!(text, "写盘失败");
+        assert!(!text.contains("Lanwork"));
+        assert!(!text.contains("inbox.json"));
+        let missing = TodoError::ItemNotFound {
+            id: "todo-1".to_string(),
+        };
+        assert_eq!(missing.script_complete_message(), "找不到待办");
     }
 }
