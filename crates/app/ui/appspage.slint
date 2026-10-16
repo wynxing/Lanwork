@@ -109,6 +109,13 @@ export global AppsPageData {
     in-out property <length> clear-y: 0px;
     in-out property <length> clear-w: 0px;
     in-out property <length> clear-h: 0px;
+    // 打开和关闭各加一。输入框据此把 text 置空，避免 for 复用上次的原文。
+    in-out property <int> secret-generation: 0;
+    in-out property <string> secret-value: "";
+    in-out property <length> field-x: 0px;
+    in-out property <length> field-y: 0px;
+    in-out property <length> field-w: 0px;
+    in-out property <length> field-h: 0px;
 
     callback select-category(int);
     callback open-float(string);
@@ -125,10 +132,13 @@ export global AppsPageData {
 }
 
 // 与单行 Field 同一套描边和高度。只给填写密钥用，掩码输入，不回显。
+// generation 变化时把 text 置空。关掉对话框时这一层会被销毁，避免 for 复用上次的原文。
 component SecretInput inherits Rectangle {
     in property <Ink> c;
+    in property <int> generation: 0;
     callback edited(string);
     out property <bool> masked: input.input-type == InputType.password;
+    out property <string> value: input.text;
 
     height: 30px;
     border-radius: 6px;
@@ -136,6 +146,17 @@ component SecretInput inherits Rectangle {
     border-width: 1px;
     border-color: input.has-focus ? c.accent : c.divider;
     clip: true;
+
+    function blank() {
+        input.text = "";
+    }
+
+    init => {
+        root.blank();
+    }
+    changed generation => {
+        root.blank();
+    }
 
     input := TextInput {
         x: 10px;
@@ -497,6 +518,13 @@ export component AppsPage inherits Rectangle {
         AppsPageData.clear-w = clear-btn.width;
         AppsPageData.clear-h = clear-btn.height;
         AppsPageData.secret-masked = secret-open && secret-box.field-masked;
+        if !secret-open {
+            AppsPageData.secret-value = "";
+        }
+    }
+
+    changed secret-open => {
+        AppsPageData.secret-generation = AppsPageData.secret-generation + 1;
     }
 
     HorizontalLayout {
@@ -849,7 +877,8 @@ export component AppsPage inherits Rectangle {
             overflow: elide;
         }
 
-        Flickable {
+        // 关掉时销毁这些输入。visible 只是藏起来，for 会按行数复用，原文会留到下一次。
+        if secret-open: Flickable {
             x: 20px;
             y: 52px;
             width: parent.width - 40px;
@@ -860,6 +889,8 @@ export component AppsPage inherits Rectangle {
                 y: index * row-h;
                 width: parent.width;
                 height: row-h;
+                property <int> tick: AppsPageData.layout-tick;
+                property <string> live: secret-field.value;
 
                 HorizontalLayout {
                     y: 5px;
@@ -880,6 +911,7 @@ export component AppsPage inherits Rectangle {
                     secret-field := SecretInput {
                         horizontal-stretch: 1;
                         c: root.c;
+                        generation: AppsPageData.secret-generation;
                         edited(text) => {
                             AppsPageData.secret-edited(index, text);
                         }
@@ -889,6 +921,24 @@ export component AppsPage inherits Rectangle {
                 init => {
                     if index == 0 {
                         secret-box.field-masked = secret-field.masked;
+                        AppsPageData.secret-value = "";
+                    }
+                }
+
+                changed tick => {
+                    if index == 0 {
+                        AppsPageData.field-x = secret-field.absolute-position.x;
+                        AppsPageData.field-y = secret-field.absolute-position.y;
+                        AppsPageData.field-w = secret-field.width;
+                        AppsPageData.field-h = secret-field.height;
+                        AppsPageData.secret-value = secret-field.value;
+                        secret-box.field-masked = secret-field.masked;
+                    }
+                }
+
+                changed live => {
+                    if index == 0 {
+                        AppsPageData.secret-value = live;
                     }
                 }
             }

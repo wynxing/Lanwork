@@ -945,3 +945,42 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
 
     let _probe = FloatShellProbe::new().expect("内容槽能放进子元素");
 }
+
+#[test]
+fn reloading_rows_keeps_the_window_position_and_size() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
+    let shell = FloatShell::new().expect("tool shell");
+    // 软件渲染的窗口适配器不保存屏幕坐标，set_position 读回来仍是默认值。
+    // 尺寸会留下。重载只换标题和行，这两项都必须与换之前相同。
+    shell.window().set_size(slint::PhysicalSize::new(280, 240));
+    shell.show().expect("show");
+    slint::platform::update_timers_and_animations();
+    let before = shell.window().position();
+    let before_size = shell.window().size();
+    assert_eq!((before_size.width, before_size.height), (280, 240));
+
+    shell.set_heading("API 额度".into());
+    shell.set_rows(ModelRc::new(VecModel::from(vec![crate::ToolRow {
+        kind: "text".into(),
+        id: "summary".into(),
+        caption: "已用 20 / 100".into(),
+        label: "".into(),
+        progress: 0.2,
+    }])));
+    shell.set_error("".into());
+    slint::platform::update_timers_and_animations();
+
+    let after = shell.window().position();
+    let after_size = shell.window().size();
+    assert_eq!(
+        (after.x, after.y),
+        (before.x, before.y),
+        "重载内容不移动窗口"
+    );
+    assert_eq!(
+        (after_size.width, after_size.height),
+        (before_size.width, before_size.height),
+        "重载内容不改变窗口大小"
+    );
+}

@@ -21,6 +21,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::float_shell;
 use crate::panel::{self, with_apps};
+use crate::secret_form::{SecretDraft, save_secret_rows};
 use crate::shelf_dnd::IncomingDrop;
 use crate::{AppToolCard, AppsPageData, Panel};
 
@@ -42,12 +43,6 @@ enum Flow {
     Uninstall { id: String },
     View,
     Secrets { id: String, rows: Vec<SecretDraft> },
-}
-
-struct SecretDraft {
-    id: String,
-    label: String,
-    value: String,
 }
 
 impl AppsPage {
@@ -403,18 +398,21 @@ impl AppsPage {
             return;
         };
         let mut credentials = ProductCredentialStore;
-        for row in &rows {
-            if row.value.is_empty() {
-                continue;
-            }
-            if let Err(err) = credentials.put(&id, &row.id, &row.value) {
-                self.store.log_warn(&format!("密钥没有写下：{err}"));
-                ui.set_error(err.into());
+        match save_secret_rows(&mut credentials, &id, &rows) {
+            Ok(()) => self.finish_secrets(ui, &id),
+            Err(failed) => {
+                self.store.log_warn(&format!(
+                    "密钥没有写下：{}：{}",
+                    failed.label,
+                    failed.detail()
+                ));
+                ui.set_error(failed.message().into());
                 self.close_dialog(ui);
-                return;
+                if failed.wrote {
+                    float_shell::reload_tool(&id);
+                }
             }
         }
-        self.finish_secrets(ui, &id);
     }
 
     fn clear_secrets(&mut self, ui: &Panel) {
