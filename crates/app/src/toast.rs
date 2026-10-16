@@ -59,6 +59,46 @@ pub(crate) fn prepare(store: &Store, installed: bool) {
     }
 }
 
+/// 工具通知。不带 `launch`，点击不会打开待办。
+pub(crate) fn show_text(title: &str, body: &str) -> Result<(), String> {
+    show_lines(title, std::slice::from_ref(&body.to_string()))
+}
+
+pub(crate) fn show_lines(title: &str, lines: &[String]) -> Result<(), String> {
+    show_xml(&text_toast_xml(title, lines))
+}
+
+fn text_toast_xml(title: &str, lines: &[String]) -> String {
+    let mut xml = String::from("<toast><visual><binding template=\"ToastGeneric\"><text>");
+    xml.push_str(&xml_escape(title));
+    xml.push_str("</text>");
+    if lines.is_empty() {
+        xml.push_str("<text></text>");
+    }
+    for line in lines {
+        xml.push_str("<text>");
+        xml.push_str(&xml_escape(line));
+        xml.push_str("</text>");
+    }
+    xml.push_str("</binding></visual></toast>");
+    xml
+}
+
+fn xml_escape(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 pub(crate) fn show_one(item: &DueReminder) -> Result<(), String> {
     let xml = toast_xml(std::slice::from_ref(item)).ok_or("通知没有内容")?;
     show_xml(&xml)

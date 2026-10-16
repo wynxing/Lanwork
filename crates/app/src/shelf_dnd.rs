@@ -60,12 +60,22 @@ pub(crate) type DropSink = Arc<dyn Fn(IncomingDrop) + Send + Sync>;
 pub(crate) struct DropState {
     hwnd: AtomicIsize,
     accepting: AtomicBool,
+    /// 为真时只接受文件，不接受网址。收纳页保持假。
+    files_only: AtomicBool,
     zone: Mutex<DropZone>,
 }
 
 impl DropState {
     pub(crate) fn set_accepting(&self, accepting: bool) {
         self.accepting.store(accepting, Ordering::Release);
+    }
+
+    pub(crate) fn set_files_only(&self, files_only: bool) {
+        self.files_only.store(files_only, Ordering::Release);
+    }
+
+    pub(crate) fn files_only(&self) -> bool {
+        self.files_only.load(Ordering::Acquire)
     }
 
     pub(crate) fn set_zone(&self, zone: DropZone) {
@@ -145,9 +155,14 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
         let web = data.as_ref().is_some_and(offers_web);
         self.has_files.store(files, Ordering::Release);
         self.has_web.store(web, Ordering::Release);
+        let payload = if self.state.files_only() {
+            files
+        } else {
+            files || web
+        };
         write_effect(
             effect,
-            self.state.effect(point, files || web, read_effect(effect)),
+            self.state.effect(point, payload, read_effect(effect)),
         );
         Ok(())
     }
@@ -158,8 +173,13 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
         point: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
-        let payload =
-            self.has_files.load(Ordering::Acquire) || self.has_web.load(Ordering::Acquire);
+        let files = self.has_files.load(Ordering::Acquire);
+        let web = self.has_web.load(Ordering::Acquire);
+        let payload = if self.state.files_only() {
+            files
+        } else {
+            files || web
+        };
         write_effect(
             effect,
             self.state.effect(point, payload, read_effect(effect)),
@@ -180,12 +200,16 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
         point: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
+        let files_only = self.state.files_only();
         let cached_web = self.has_web.swap(false, Ordering::AcqRel);
         self.has_files.store(false, Ordering::Release);
         let files = data.as_ref().is_some_and(has_hdrop);
-        let chosen = self
-            .state
-            .effect(point, files || cached_web, read_effect(effect));
+        let payload = if files_only {
+            files
+        } else {
+            files || cached_web
+        };
+        let chosen = self.state.effect(point, payload, read_effect(effect));
         write_effect(effect, chosen);
         if chosen == EFFECT_NONE {
             return Ok(());
@@ -194,6 +218,13 @@ impl IDropTarget_Impl for ShelfDrop_Impl {
             write_effect(effect, EFFECT_NONE);
             return Ok(());
         };
+        if files_only {
+            match paths_from_data_object(data) {
+                Ok(paths) if !paths.is_empty() => (self.sink)(IncomingDrop::Paths(paths)),
+                _ => write_effect(effect, EFFECT_NONE),
+            }
+            return Ok(());
+        }
         let read = read_web_drop(data);
         if let Some(picked) = read.picked {
             (self.sink)(IncomingDrop::Web {

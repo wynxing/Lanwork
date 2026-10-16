@@ -56,6 +56,8 @@ pub struct Manifest {
     pub domains: Vec<String>,
     pub secrets: Vec<SecretDecl>,
     pub widgets: Vec<WidgetDecl>,
+    /// 入口脚本相对工具文件夹的路径。不含 `..`。
+    pub entry: String,
     pub script: String,
 }
 
@@ -92,7 +94,11 @@ pub fn parse(text: &str, origin: Origin) -> Result<(Manifest, String), String> {
 
     let id = required_str(table, "id")?;
     if !valid_id(id) {
-        return Err("id 不是单个路径分量".to_string());
+        return Err(if id.starts_with('.') {
+            "id 不能以 . 开头".to_string()
+        } else {
+            "id 不是单个路径分量".to_string()
+        });
     }
     if origin == Origin::Imported && imported_prefix_forbidden(id) {
         return Err("导入的 id 不能以 lanwork. 开头".to_string());
@@ -136,6 +142,7 @@ pub fn parse(text: &str, origin: Origin) -> Result<(Manifest, String), String> {
             domains,
             secrets,
             widgets,
+            entry: entry.clone(),
             script: String::new(),
         },
         entry,

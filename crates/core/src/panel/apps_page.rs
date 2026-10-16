@@ -1,7 +1,7 @@
 //! 面板「应用」页里不画窗口的决定：分类、卡片、空状态、菜单项和启用状态。
 //!
-//! 可见行为见 `docs/tools.md`「应用页」。导入、卸载、更新和查看权限的流程不在这里。
-//! 番茄钟迁移也不在这里。还没有已安装工具时，列表是空的。
+//! 可见行为见 `docs/tools.md`「应用页」。导入确认和卸载的句子在 `tool_install`。
+//! 番茄钟迁移不在这里。没有 `tools/` 时，列表是空的。
 //! 启用状态写在数据目录的 `tool-enabled.json`。安装副本的路径规格还没定，
 //! 这份文件名因此也还不是产品规则，并且不进导出白名单。
 
@@ -92,10 +92,10 @@ pub enum EnabledBytes {
     Corrupt,
 }
 
-/// 这一步没有安装目录，也没有内置番茄钟。返回空列表。
+/// 已安装的自定义工具。内置番茄钟还没有迁过来，所以内置列表仍是空的。
 #[must_use]
-pub fn installed_tools(_data_dir: &Path) -> Vec<ListedTool> {
-    Vec::new()
+pub fn installed_tools(data_dir: &Path) -> Vec<ListedTool> {
+    super::tool_install::list_custom(data_dir)
 }
 
 /// 当前分类下的卡片，顺序与 `tools` 相同。
@@ -130,13 +130,18 @@ pub fn show_import(origin: ToolOrigin) -> bool {
     origin == ToolOrigin::Custom
 }
 
-/// 内置只有「查看权限」。自定义是「更新」「卸载」「查看权限」。
+/// 内置是「查看权限」。自定义是「更新」「卸载」「查看权限」。
+/// 声明了密钥时，这两类都在最后加上「填写密钥」。
 #[must_use]
-pub fn menu_items(origin: ToolOrigin) -> &'static [&'static str] {
-    match origin {
-        ToolOrigin::Builtin => &["查看权限"],
-        ToolOrigin::Custom => &["更新", "卸载", "查看权限"],
+pub fn menu_items(origin: ToolOrigin, has_secrets: bool) -> Vec<&'static str> {
+    let mut items = match origin {
+        ToolOrigin::Builtin => vec!["查看权限"],
+        ToolOrigin::Custom => vec!["更新", "卸载", "查看权限"],
+    };
+    if has_secrets {
+        items.push("填写密钥");
     }
+    items
 }
 
 /// 名称去掉首尾空白后的第一个 Unicode 标量。没有可见字时是空字符串。
@@ -319,7 +324,7 @@ mod tests {
         assert_eq!(builtin.len(), 1);
         assert_eq!(builtin[0].name, "番茄钟");
         assert!(builtin[0].enabled);
-        assert_eq!(menu_items(builtin[0].origin), ["查看权限"]);
+        assert_eq!(menu_items(builtin[0].origin, false), ["查看权限"]);
         let custom = visible_cards(ToolOrigin::Custom, &tools, &disabled);
         assert_eq!(
             custom
@@ -331,9 +336,22 @@ mod tests {
         assert!(custom[0].enabled);
         assert!(!custom[1].enabled);
         assert_eq!(custom[0].description, "API 额度的说明");
-        assert_eq!(menu_items(custom[0].origin), ["更新", "卸载", "查看权限"]);
-        assert!(!menu_items(ToolOrigin::Builtin).contains(&"更新"));
-        assert!(!menu_items(ToolOrigin::Builtin).contains(&"卸载"));
+        assert_eq!(
+            menu_items(custom[0].origin, false),
+            ["更新", "卸载", "查看权限"]
+        );
+        assert_eq!(
+            menu_items(ToolOrigin::Custom, true),
+            ["更新", "卸载", "查看权限", "填写密钥"]
+        );
+        assert_eq!(
+            menu_items(ToolOrigin::Builtin, true),
+            ["查看权限", "填写密钥"]
+        );
+        assert!(!menu_items(ToolOrigin::Builtin, true).contains(&"更新"));
+        assert!(!menu_items(ToolOrigin::Builtin, true).contains(&"卸载"));
+        assert!(!menu_items(ToolOrigin::Builtin, false).contains(&"填写密钥"));
+        assert!(!menu_items(ToolOrigin::Custom, false).contains(&"填写密钥"));
     }
 
     #[test]

@@ -276,3 +276,169 @@ fn the_more_menu_lists_the_items_it_is_given_and_import_is_a_separate_card() {
     );
     assert_eq!(imports.get(), 1);
 }
+
+#[test]
+fn the_import_card_lists_permissions_and_the_update_note_is_kept() {
+    let ui = open();
+    let data = ui.global::<AppsPageData>();
+    data.set_dialog_kind(SharedString::from("perm"));
+    data.set_dialog_update(true);
+    data.set_dialog_confirm(true);
+    data.set_dialog_name(SharedString::from("API 额度"));
+    data.set_dialog_detail(SharedString::from("服务商接口的剩余额度"));
+    data.set_dialog_lines(ModelRc::new(VecModel::from(vec![
+        SharedString::from("访问 api.example.com"),
+        SharedString::from("使用你填写的 API 密钥"),
+    ])));
+    data.set_dialog_note(SharedString::from("保留数据"));
+    data.set_dialog_open(true);
+    settle(&ui);
+    assert!(data.get_dialog_shown());
+    assert_eq!(data.get_dialog_kicker().as_str(), "更新");
+    assert_eq!(data.get_dialog_note_text().as_str(), "保留数据");
+    assert!(data.get_confirm_shown());
+    assert_eq!(data.get_confirm_label().as_str(), "确认");
+    assert_eq!(data.get_dialog_line().as_str(), "访问 api.example.com");
+    assert!(!data.get_danger_shown());
+
+    data.set_dialog_kind(SharedString::from("uninstall"));
+    data.set_dialog_confirm(false);
+    data.set_dialog_update(false);
+    data.set_dialog_note(SharedString::from("会删除这个工具的存储和密钥。"));
+    settle(&ui);
+    assert!(data.get_danger_shown());
+    assert!(!data.get_confirm_shown());
+
+    let saves = Rc::new(Cell::new(0));
+    let clears = Rc::new(Cell::new(0));
+    {
+        let saves = Rc::clone(&saves);
+        data.on_save_secrets(move || saves.set(saves.get() + 1));
+        let clears = Rc::clone(&clears);
+        data.on_clear_secrets(move || clears.set(clears.get() + 1));
+    }
+    data.set_dialog_kind(SharedString::from("secret"));
+    data.set_dialog_confirm(false);
+    data.set_dialog_update(false);
+    data.set_dialog_name(SharedString::from("API 额度"));
+    data.set_dialog_lines(ModelRc::new(VecModel::from(vec![SharedString::from(
+        "API 密钥",
+    )])));
+    data.set_dialog_note(SharedString::from(""));
+    data.set_dialog_open(true);
+    settle(&ui);
+    assert!(data.get_dialog_shown());
+    assert!(data.get_secret_shown());
+    assert!(data.get_secret_masked());
+    assert_eq!(data.get_secret_label().as_str(), "API 密钥");
+    assert!(data.get_save_shown());
+    assert!(data.get_clear_shown());
+    assert!(!data.get_confirm_shown());
+    assert!(!data.get_danger_shown());
+    click(
+        &ui,
+        data.get_save_x() + data.get_save_w() / 2.0,
+        data.get_save_y() + data.get_save_h() / 2.0,
+    );
+    click(
+        &ui,
+        data.get_clear_x() + data.get_clear_w() / 2.0,
+        data.get_clear_y() + data.get_clear_h() / 2.0,
+    );
+    assert_eq!(saves.get(), 1);
+    assert_eq!(clears.get(), 1);
+}
+
+fn open_secret(ui: &Panel, label: &str) {
+    let data = ui.global::<AppsPageData>();
+    data.set_dialog_kind(SharedString::from("secret"));
+    data.set_dialog_confirm(false);
+    data.set_dialog_update(false);
+    data.set_dialog_name(SharedString::from("API 额度"));
+    data.set_dialog_lines(ModelRc::new(VecModel::from(vec![SharedString::from(
+        label,
+    )])));
+    data.set_dialog_open(true);
+    settle(ui);
+}
+
+fn type_text(ui: &Panel, text: &str) {
+    for ch in text.chars() {
+        let key = ch.to_string();
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: key.clone().into(),
+        });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+    }
+    settle(ui);
+}
+
+#[test]
+fn secret_fields_are_empty_on_the_next_open_and_do_not_carry_across_tools() {
+    let ui = open();
+    let data = ui.global::<AppsPageData>();
+    let edited = Rc::new(RefCell::new(Vec::new()));
+    {
+        let edited = Rc::clone(&edited);
+        data.on_secret_edited(move |_index, text| {
+            edited.borrow_mut().push(text.to_string());
+        });
+    }
+    open_secret(&ui, "API 密钥");
+    assert!(data.get_field_w() > 0.0, "掩码输入要能点到");
+    click(
+        &ui,
+        data.get_field_x() + data.get_field_w() / 2.0,
+        data.get_field_y() + data.get_field_h() / 2.0,
+    );
+    type_text(&ui, "ab");
+    assert_eq!(data.get_secret_value().as_str(), "ab");
+
+    data.set_dialog_open(false);
+    settle(&ui);
+    edited.borrow_mut().clear();
+    open_secret(&ui, "API 密钥");
+    assert_eq!(data.get_secret_value().as_str(), "", "第二次打开输入是空的");
+    click(
+        &ui,
+        data.get_field_x() + data.get_field_w() / 2.0,
+        data.get_field_y() + data.get_field_h() / 2.0,
+    );
+    type_text(&ui, "c");
+    assert_eq!(data.get_secret_value().as_str(), "c");
+    assert!(
+        edited
+            .borrow()
+            .iter()
+            .all(|text| text != "abc" && !text.contains("ab")),
+        "第二次输入不能带上一次的原文：{:?}",
+        edited.borrow()
+    );
+
+    data.set_dialog_open(false);
+    settle(&ui);
+    edited.borrow_mut().clear();
+    open_secret(&ui, "别的密钥");
+    assert_eq!(data.get_secret_label().as_str(), "别的密钥");
+    assert_eq!(
+        data.get_secret_value().as_str(),
+        "",
+        "另一个工具的输入是空的"
+    );
+    click(
+        &ui,
+        data.get_field_x() + data.get_field_w() / 2.0,
+        data.get_field_y() + data.get_field_h() / 2.0,
+    );
+    type_text(&ui, "q");
+    assert_eq!(data.get_secret_value().as_str(), "q");
+    assert!(
+        edited
+            .borrow()
+            .iter()
+            .all(|text| !text.contains('c') && !text.contains("ab")),
+        "不能把上一个工具的密钥写进来：{:?}",
+        edited.borrow()
+    );
+}

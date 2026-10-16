@@ -17,6 +17,7 @@ mod shelf_dnd;
 mod shelf_page;
 mod shelf_select;
 mod todo_page;
+mod tool_install;
 mod triage;
 
 pub use apps_page::{
@@ -58,6 +59,11 @@ pub use note_page::{
 pub use note_select::{
     NoteMultiSelect, NoteRowMods, NoteRowPick, clear_note_checks, enter_note_select, note_row_mods,
     note_select_after_delete, pick_note_row, retain_note_select, select_all_notes,
+};
+pub use tool_install::{
+    CARD_FILE, GRANT_FILE, INVALID_PACKAGE, Installed, STORAGE_DIR, TOOLS_DIR, UNAUTHORIZED,
+    UNINSTALL_BODY, UPDATE_NOTE, WRONG_UPDATE, install_copy, list_custom, read_tool_storage,
+    recover_previous, remove_installed, storage_path, tool_dir, write_tool_storage,
 };
 
 pub use settings_page::{

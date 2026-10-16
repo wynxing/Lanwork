@@ -4,6 +4,14 @@
 import { Palette } from "std-widgets.slint";
 import { EdgeHandle, Ink } from "widgets.slint";
 
+export struct ToolRow {
+    kind: string,
+    id: string,
+    caption: string,
+    label: string,
+    progress: float,
+}
+
 export component FloatShell inherits Window {
     title: "Lanwork";
     icon: @image-url("../assets/lanwork-256.png");
@@ -32,13 +40,17 @@ export component FloatShell inherits Window {
     in property <string> dock-edge: "";
     // 布局测试和调试窗口用来确认内容槽里能放文字。空字符串时不显示，不是产品文案。
     in property <string> marker: "";
+    // 已安装工具的名称。空字符串时不画，调试窗口保持原来的拖动条。
+    in property <string> heading: "";
     // 写盘失败时的一行。空字符串不占高度。外观沿用收纳悬浮窗的错误行，规格没有另定。
     in property <string> error: "";
+    in property <[ToolRow]> rows;
 
     callback drag-requested();
     callback strip-clicked();
     callback close-clicked();
     callback pin-clicked();
+    callback row-clicked(string);
 
     property <Ink> c: {
         ink: dark ? #ffffff : #1b1b1b,
@@ -95,6 +107,18 @@ export component FloatShell inherits Window {
         y: 0px;
         width: parent.width;
         height: 28px;
+
+        Text {
+            x: 12px;
+            width: parent.width - 72px;
+            height: parent.height;
+            visible: root.heading != "";
+            text: root.heading;
+            color: c.ink;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
 
         TouchArea {
             x: 0px;
@@ -181,6 +205,93 @@ export component FloatShell inherits Window {
             y: 8px;
             text: root.marker;
             color: c.ink;
+        }
+
+        Flickable {
+            visible: root.marker == "" && root.rows.length > 0;
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            content-height: max(self.height, tool-column.preferred-height);
+
+            tool-column := VerticalLayout {
+                width: parent.width;
+                padding: 12px;
+                spacing: 8px;
+
+                for row in root.rows: Rectangle {
+                    height: row.kind == "button" || row.kind == "progress" ? 32px : 24px;
+
+                    if row.kind == "text" || row.kind == "list" || row.kind == "input" || row.kind == "toggle": Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: row.caption;
+                        color: c.ink;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if row.kind == "timer": HorizontalLayout {
+                        spacing: 8px;
+                        height: parent.height;
+
+                        Text {
+                            text: row.label;
+                            color: c.secondary;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: row.caption;
+                            color: c.ink;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if row.kind == "button": Rectangle {
+                        height: 30px;
+                        width: button-label.preferred-width + 20px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: c.divider;
+                        background: button-touch.has-hover ? c.hover : transparent;
+
+                        button-label := Text {
+                            x: 10px;
+                            text: row.label == "" ? row.caption : row.label;
+                            color: c.ink;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
+
+                        button-touch := TouchArea {
+                            clicked => {
+                                root.row-clicked(row.id);
+                            }
+                        }
+                    }
+
+                    if row.kind == "progress": Rectangle {
+                        y: (parent.height - 6px) / 2;
+                        width: parent.width;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: c.selection;
+
+                        Rectangle {
+                            width: parent.width * max(0, min(1, row.progress));
+                            height: parent.height;
+                            border-radius: 3px;
+                            background: c.accent;
+                        }
+                    }
+                }
+            }
         }
     }
 

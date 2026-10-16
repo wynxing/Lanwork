@@ -25,6 +25,8 @@ mod shelves_layout_tests;
 #[cfg(test)]
 mod triage_layout_tests;
 
+mod secret_form;
+
 #[cfg(windows)]
 mod apps_page;
 #[cfg(windows)]
@@ -86,6 +88,10 @@ mod shelves_page;
 mod toast;
 #[cfg(windows)]
 mod todo_float;
+#[cfg(windows)]
+mod tool_pick;
+#[cfg(windows)]
+mod tool_runtime;
 #[cfg(windows)]
 mod update;
 #[cfg(windows)]
@@ -252,16 +258,52 @@ mod tests {
         assert!(!source.contains("floatStack"));
         assert!(source.contains("fn open_tool"));
         assert!(source.contains("fn close_tool"));
+        assert!(source.contains("fn reload_tool"));
+        let reload_tool = source
+            .split("pub(crate) fn reload_tool(")
+            .nth(1)
+            .expect("reload_tool");
+        let reload_tool = reload_tool
+            .split("pub(crate) fn ")
+            .next()
+            .expect("reload_tool body");
+        assert!(
+            !reload_tool.contains("set_position") && !reload_tool.contains("set_size"),
+            "重载不能改窗口位置和大小"
+        );
+        let runtime = include_str!("tool_runtime.rs");
+        let reload = runtime
+            .split("pub(crate) fn reload(")
+            .nth(1)
+            .expect("reload");
+        let reload = reload.split("pub(crate) fn ").next().expect("reload body");
+        assert!(
+            !reload.contains("set_position")
+                && !reload.contains("set_size")
+                && !reload.contains("place("),
+            "重载脚本不能挪动窗口"
+        );
         assert!(source.contains("should_reopen"));
         let apps = include_str!("apps_page.rs");
         assert!(apps.contains("float_shell::open_tool"));
         assert!(apps.contains("float_shell::close_tool"));
+        assert!(apps.contains("float_shell::reload_tool"));
+        assert!(apps.contains("WRONG_UPDATE"));
+        assert!(apps.contains("填写密钥"));
+        assert!(apps.contains("ProductCredentialStore"));
+        assert!(apps.contains("update_target"));
         let page = include_str!("../ui/appspage.slint");
         assert!(page.contains("text: \"没有工具\""));
         assert!(page.contains("text: \"导入+\""));
         assert!(page.contains("text: \"悬浮窗\""));
         assert!(page.contains("name: \"内置\""));
         assert!(page.contains("name: \"自定义\""));
+        assert!(page.contains("input-type: InputType.password"));
+        assert!(page.contains("input.text = \"\""));
+        assert!(page.contains("if secret-open: Flickable"));
+        assert!(page.contains("text: \"保存\""));
+        assert!(page.contains("text: \"清除\""));
+        assert!(page.contains("secret-edited"));
         assert!(!page.contains("扩展"));
         let notes = include_str!("note_float.rs");
         let shelves = include_str!("shelf_float.rs");
