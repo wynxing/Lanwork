@@ -30,6 +30,7 @@ use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 use crate::float_group;
+use crate::float_shell;
 use crate::instance::{self, Claim};
 use crate::note_float;
 use crate::panel;
@@ -188,6 +189,14 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         );
     }
     todo_float::install(todos.clone(), store.clone());
+    float_shell::install(store.clone());
+    float_shell::schedule_restore();
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--float-shell-demo")
+    {
+        float_shell::schedule_demo();
+    }
     float_group::install(notes.clone(), shelves.clone(), todos.clone(), store.clone());
     panel::install(
         panel_ui.clone_strong(),
@@ -478,6 +487,7 @@ pub(crate) fn refresh_theme(config: &ConfigCommands, store: &Store) {
     note_float::apply_theme(dark);
     shelf_float::apply_theme(dark);
     todo_float::apply_theme(dark);
+    float_shell::apply_theme(dark);
 }
 
 pub(crate) fn local_today() -> Option<CivilDate> {
@@ -521,6 +531,7 @@ fn attempt_quit() {
         QuitDecision::Exit => {
             shelf_float::save_for_quit();
             todo_float::save_for_quit();
+            float_shell::save_for_quit();
             if crate::update::spawn_pending_install().is_err() {
                 QUIT.clear();
                 crate::update::install_spawn_failed();

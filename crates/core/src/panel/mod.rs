@@ -1,6 +1,6 @@
 //! 面板里不调用窗口 API 的决定：标签、定位目标、窗口尺寸与位置，待办页的列表、行和输入解析，
 //! 便签页的列表、多选、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，收纳页的分组、引用和拖放判定，
-//! 以及工具悬浮窗外壳的位置、大小、贴边和钉住。
+//! 以及工具悬浮窗外壳的位置、大小、贴边、钉住和是否开着。
 //!
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
@@ -19,8 +19,10 @@ mod todo_page;
 mod triage;
 
 pub use float_shell::{
-    BackupSlice, ExportSlice, ShellBytes, ShellGesture, ShellRecord, ShellSession, backup_json,
-    backup_slice, decode, encode, export_json, export_slice,
+    BackupSlice, DEFAULT_LOGICAL_HEIGHT, DEFAULT_LOGICAL_WIDTH, ExportSlice, MARGIN_LOGICAL,
+    RECORD_DIR, ScanSkip, ShellBytes, ShellGesture, ShellRecord, ShellSession, StoredShell,
+    backup_json, backup_slice, decode, encode, export_json, export_slice, read_record,
+    record_relative, scan_records, shell_default_origin, shell_logical_size, write_record,
 };
 pub use float_snap::{
     ANIM_STEPS, DRAG_MOVE_LOGICAL, DockInput, DockState, HANDLE_LENGTH_LOGICAL,

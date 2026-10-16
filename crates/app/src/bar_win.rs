@@ -35,13 +35,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, GetAncestor,
-    GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IsIconic,
-    IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WINEVENT_OUTOFCONTEXT,
-    WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY,
-    WM_SHOWWINDOW, WM_STYLECHANGING, WM_THEMECHANGED, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX,
-    WS_MINIMIZEBOX, WS_SYSMENU,
+    GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_NOTOPMOST,
+    HWND_TOPMOST, IsIconic, IsWindowVisible, MA_NOACTIVATE, MONITORINFOF_PRIMARY, STYLESTRUCT,
+    SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    WINEVENT_OUTOFCONTEXT, WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
+    WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_STYLECHANGING, WM_THEMECHANGED,
+    WS_EX_NOACTIVATE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
 use windows::core::{BOOL, PCSTR, s, w};
 
@@ -153,6 +153,58 @@ pub(crate) fn monitors() -> Vec<MonitorReading> {
         )
     };
     list
+}
+
+/// 系统标记为主屏的那一块。枚举失败或没有主屏标记时返回 `None`。
+pub(crate) fn primary_reading() -> Option<MonitorReading> {
+    unsafe extern "system" fn collect(
+        monitor: HMONITOR,
+        _: HDC,
+        _: *mut RECT,
+        data: LPARAM,
+    ) -> windows::core::BOOL {
+        let mut info = MONITORINFO {
+            cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).unwrap_or(0),
+            ..Default::default()
+        };
+        // SAFETY: cbSize 已设为结构体大小，指针指向局部变量。
+        if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool()
+            && (info.dwFlags & MONITORINFOF_PRIMARY) != 0
+        {
+            let mut dpi_x = 0u32;
+            let mut dpi_y = 0u32;
+            // SAFETY: 两个输出指针都指向局部变量。
+            let dpi = match unsafe {
+                GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y)
+            } {
+                Ok(()) if dpi_x > 0 => dpi_x,
+                _ => lanwork_core::shell::BASE_DPI,
+            };
+            // SAFETY: data 是下面 EnumDisplayMonitors 传入的 `Option<MonitorReading>` 的地址，
+            // 回调只在那次调用返回之前、在同一线程上执行。
+            let slot = unsafe { &mut *(data.0 as *mut Option<MonitorReading>) };
+            if slot.is_none() {
+                *slot = Some(MonitorReading {
+                    bounds: area_of(info.rcMonitor),
+                    work: area_of(info.rcWork),
+                    dpi,
+                });
+            }
+        }
+        true.into()
+    }
+
+    let mut found: Option<MonitorReading> = None;
+    // SAFETY: 回调只借用 `found`，枚举在本调用内同步结束。
+    let _ = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect),
+            LPARAM(std::ptr::from_mut(&mut found) as isize),
+        )
+    };
+    found
 }
 
 fn area_of(rect: RECT) -> WorkArea {
@@ -409,6 +461,24 @@ pub(crate) fn watch_topmost(hwnd: HWND) -> bool {
     TOPMOST.with(|list| set_flag(list, key, true));
     keep_topmost(key);
     ensure_foreground_hook()
+}
+
+/// 离开最上层。前台钩子不再把这个窗口抬回去。边框样式和拖动观察留着。
+pub(crate) fn release_topmost(hwnd: HWND) {
+    let key = hwnd_key(hwnd);
+    TOPMOST.with(|list| set_flag(list, key, false));
+    // SAFETY: 句柄是本进程的工具悬浮窗。不移动、不改大小、不激活。
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
 }
 
 pub(crate) fn unwatch_topmost(hwnd: HWND) {

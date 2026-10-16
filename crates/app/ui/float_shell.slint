@@ -1,40 +1,70 @@
-// 工具悬浮窗的模板。内容放在内容槽里，调用方替换。
-// 钉住控件的位置、拖动条的高度和外观、关闭控件、来源行，规格都还没定，这里不画。
-// 贴边把手沿用便签悬浮窗的那一块。没有记下位置时的默认大小也不在这里定。
+// 工具悬浮窗外壳。顶部 28px 拖动条，右侧钉住和关闭，风格与便签悬浮窗的关闭相同。
+// 不画来源行。内容放在内容槽里，调用方替换。贴边把手沿用便签悬浮窗的那一块。
 
-import { EdgeHandle } from "widgets.slint";
+import { Palette } from "std-widgets.slint";
+import { EdgeHandle, Ink } from "widgets.slint";
 
 export component FloatShell inherits Window {
     title: "Lanwork";
+    icon: @image-url("../assets/lanwork-256.png");
     no-frame: true;
-    always-on-top: true;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+    preferred-width: 320px;
+    preferred-height: 360px;
+    min-width: thin ? 1px : min(200px, limit-width);
+    min-height: thin ? 1px : min(120px, limit-height);
+    in property <length> limit-width: 100000px;
+    in property <length> limit-height: 100000px;
+    max-width: thin ? 100000px : limit-width;
+    max-height: thin ? 100000px : limit-height;
+    resize-border-width: thin ? 0px : 6px;
+    // 没记过钉住时按开。关掉之后由调用方写成 false。
+    in-out property <bool> pinned: true;
+    always-on-top: root.pinned;
 
-    // 背景颜色规格没写。默认不铺色。
-    in property <bool> paint-fill: false;
-    in property <color> fill: transparent;
     in property <bool> dark;
+    in property <bool> acrylic;
+    in property <color> solid-color: #f3f3f3;
+    in property <bool> thin;
     in property <bool> collapsed: false;
     // ""、"left"、"right"、"top"。
     in property <string> dock-edge: "";
-    // 拖动条高度规格没写。0 表示不画这条。
-    in property <length> drag-height: 0px;
+    // 布局测试和调试窗口用来确认内容槽里能放文字。空字符串时不显示，不是产品文案。
+    in property <string> marker: "";
 
     callback drag-requested();
     callback strip-clicked();
-    // 布局测试用来确认内容槽里能放文字。空字符串时不显示，不是产品文案。
-    in property <string> marker: "";
-    out property <string> marker-text: slot-label.text;
+    callback close-clicked();
+    callback pin-clicked();
 
+    property <Ink> c: {
+        ink: dark ? #ffffff : #1b1b1b,
+        secondary: dark ? #c5c5c5 : #5d5d5d,
+        tertiary: dark ? #9a9a9a : #767676,
+        divider: dark ? #ffffff17 : #00000014,
+        hover: dark ? #ffffff0d : #00000008,
+        selection: dark ? #ffffff14 : #0000000d,
+        field: dark ? #ffffff0a : #ffffff80,
+        accent: dark ? #60cdff : #005fb8,
+        critical: dark ? #ff99a4 : #c42b1c,
+    };
+
+    out property <string> marker-text: slot-label.text;
     out property <bool> above-ordinary: root.always-on-top;
-    out property <bool> pin-drawn: false;
+    out property <bool> pin-drawn: pin-box.visible;
     out property <bool> source-drawn: false;
-    out property <bool> close-drawn: false;
-    out property <length> drag-band: root.drag-height;
+    out property <bool> close-drawn: close-box.visible;
+    out property <length> drag-band: root.collapsed ? 0px : 28px;
     out property <bool> content-open: content.visible;
     out property <length> content-x: content.absolute-position.x;
     out property <length> content-y: content.absolute-position.y;
     out property <length> content-width: content.width;
     out property <length> content-height: content.height;
+    out property <length> pin-x: pin-box.absolute-position.x;
+    out property <length> pin-y: pin-box.absolute-position.y;
+    out property <length> close-x: close-box.absolute-position.x;
+    out property <length> close-y: close-box.absolute-position.y;
     out property <length> strip-x: edge-strip.absolute-position.x;
     out property <length> strip-y: edge-strip.absolute-position.y;
     out property <length> strip-width: edge-strip.width;
@@ -46,17 +76,87 @@ export component FloatShell inherits Window {
     out property <length> collapsed-handle-width: collapsed-handle.width;
     out property <length> collapsed-handle-height: collapsed-handle.height;
 
-    background: paint-fill ? fill : transparent;
+    background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
-    if root.drag-height > 0px && !root.collapsed: TouchArea {
+    init => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark => {
+        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    if !root.collapsed: Rectangle {
         x: 0px;
         y: 0px;
         width: parent.width;
-        height: root.drag-height;
+        height: 28px;
 
-        pointer-event(event) => {
-            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                root.drag-requested();
+        TouchArea {
+            x: 0px;
+            y: 0px;
+            width: parent.width - 56px;
+            height: parent.height;
+
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.drag-requested();
+                }
+            }
+        }
+    }
+
+    pin-box := Rectangle {
+        x: parent.width - 56px;
+        y: 0px;
+        width: 28px;
+        height: 28px;
+        visible: !root.collapsed;
+        background: pin-touch.has-hover ? c.hover : (root.pinned ? c.selection : transparent);
+
+        Path {
+            x: 9px;
+            y: 9px;
+            width: 10px;
+            height: 10px;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            fill: transparent;
+            stroke: root.pinned ? c.accent : c.secondary;
+            stroke-width: 1.2px;
+            commands: "M3 2.5h4 M5 2.5v6 M2.2 5.2h5.6";
+        }
+
+        pin-touch := TouchArea {
+            clicked => {
+                root.pin-clicked();
+            }
+        }
+    }
+
+    close-box := Rectangle {
+        x: parent.width - 28px;
+        y: 0px;
+        width: 28px;
+        height: 28px;
+        visible: !root.collapsed;
+        background: close-touch.has-hover ? c.hover : transparent;
+
+        Path {
+            x: 9px;
+            y: 9px;
+            width: 10px;
+            height: 10px;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            fill: transparent;
+            stroke: c.secondary;
+            stroke-width: 1.2px;
+            commands: "M1 1l8 8 M9 1l-8 8";
+        }
+
+        close-touch := TouchArea {
+            clicked => {
+                root.close-clicked();
             }
         }
     }
@@ -64,22 +164,21 @@ export component FloatShell inherits Window {
     content := Rectangle {
         visible: !root.collapsed;
         x: 0px;
-        y: root.drag-height;
+        y: 28px;
         width: parent.width;
-        height: parent.height - root.drag-height;
+        height: parent.height - 28px;
 
         @children
 
         slot-label := Text {
             visible: root.marker != "";
-            x: 4px;
-            y: 4px;
+            x: 16px;
+            y: 8px;
             text: root.marker;
-            color: #1b1b1b;
+            color: c.ink;
         }
     }
 
-    // 收起时窗口应由调用方收成把手这块。这里只画把手，不另铺一条。
     collapsed-handle := EdgeHandle {
         x: 0px;
         y: 0px;
@@ -93,7 +192,6 @@ export component FloatShell inherits Window {
         }
     }
 
-    // 展开并且贴边时，靠边正中的同一块把手再点一次就收回。
     edge-strip := EdgeHandle {
         x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
         y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
