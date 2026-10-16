@@ -826,7 +826,9 @@ fn the_tool_shell_slot_is_empty_chrome_until_the_unspecified_controls_are_placed
     window.set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
 
     let shell = FloatShell::new().expect("tool shell");
-    shell.window().set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
+    shell
+        .window()
+        .set_size(slint::PhysicalSize::new(320, WINDOW_HEIGHT));
     shell.set_marker("换成内容".into());
     shell.show().expect("show");
     slint::platform::update_timers_and_animations();
