@@ -449,7 +449,15 @@ fn wire(ui: &NoteFloat, note_id: &str) {
     ui.window().on_close_requested({
         let id = id.clone();
         move || {
-            with_window(&id, FloatWindow::request_close);
+            // 下一轮再关。`taskkill` 会给每个窗口投递 `WM_CLOSE`；若这里先记成已关，
+            // 随后的正常退出就盖掉下次重开。退出已经开始时不再关。点关闭仍是马上关。
+            let id = id.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if crate::host::quit_in_progress() {
+                    return;
+                }
+                with_window(&id, FloatWindow::request_close);
+            });
             CloseRequestResponse::KeepWindowShown
         }
     });

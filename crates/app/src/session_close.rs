@@ -74,13 +74,15 @@ unsafe extern "system" fn on_session(
     _data: usize,
 ) -> LRESULT {
     if external_close_requests_quit(message, wparam.0) {
-        // 已经在界面线程上。直接退出，不要再投一圈，否则工具窗口可能先把 `open` 写成假。
+        if message == WM_QUERYENDSESSION {
+            // 注销询问要马上应答。退出投到下一轮，与热键窗口一样不在这次回调里做完。
+            slint::Timer::single_shot(Duration::ZERO, crate::host::request_quit);
+            return LRESULT(1);
+        }
+        // 已经在界面线程上。`WM_CLOSE` 直接退出，不要再投一圈，
+        // 否则悬浮窗可能先把「下次再打开」写成已关。
         crate::host::request_quit();
-        return if message == WM_QUERYENDSESSION {
-            LRESULT(1)
-        } else {
-            LRESULT(0)
-        };
+        return LRESULT(0);
     }
     if message == WM_NCDESTROY {
         // SAFETY: 窗口正在销毁，移除本模块装上的子类。

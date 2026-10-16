@@ -525,7 +525,8 @@ pub(crate) fn quit_in_progress() -> bool {
 /// 先保存便签窗口里没写盘的修改。都写成了才结束进程；有写不成的，留下，等用户在那个窗口里
 /// 重试、放弃修改或选定冲突版本，之后由 [`continue_quit`] 接着退出。
 /// 已经核对过的安装包会在真正退出前交给助手。
-/// 托盘「退出」、主窗口的 `WM_CLOSE`、不带 `/F` 的 `taskkill`、注销和关机都走这里。
+/// 托盘「退出」、隐藏事件目标窗口和热键窗口收到的 `WM_CLOSE`（含不带 `/F` 的 `taskkill`）、
+/// 注销和关机都走这里。搜索条和面板的 Alt+F4 只收起那一扇，不走这里。
 pub(crate) fn request_quit() {
     if EXITING.load(Ordering::Acquire) {
         return;

@@ -120,8 +120,10 @@ pub(crate) fn install(
         }
         EventResult::Propagate
     });
+    // Alt+F4 只收起搜索条，不结束进程。未提交的 `/note` 由 `Bar::hide` 留在输入框。
+    // 外部 `taskkill`、注销和关机由隐藏的事件目标窗口和热键窗口处理。
     ui.window().on_close_requested(|| {
-        crate::host::request_quit();
+        with_bar(Bar::hide);
         CloseRequestResponse::KeepWindowShown
     });
 

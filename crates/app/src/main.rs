@@ -254,6 +254,26 @@ mod tests {
         assert!(!notes.contains("request_quit"));
         assert!(!shelves.contains("request_quit"));
         assert!(!todos.contains("request_quit"));
+        for (name, source) in [("便签", notes), ("收纳", shelves), ("待办", todos)] {
+            let close = source
+                .split("on_close_requested")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{name} 没有 WM_CLOSE"));
+            let close = close.split("on_strip_clicked").next().unwrap();
+            assert!(
+                close.contains("quit_in_progress") && close.contains("Timer::single_shot"),
+                "{name} 的 WM_CLOSE 要推迟，退出进行中不记成已关"
+            );
+            let click = source
+                .split("on_close_clicked")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{name} 没有关闭按钮"));
+            let click = click.split("on_close_requested").next().unwrap();
+            assert!(
+                !click.contains("quit_in_progress"),
+                "{name} 的关闭按钮仍是马上关"
+            );
+        }
         let bar = include_str!("bar_win.rs");
         let release = bar
             .split("pub(crate) fn release_topmost")
@@ -264,11 +284,36 @@ mod tests {
             release.contains("float_frame::after_topmost"),
             "取消钉住后要像置顶那样重设边框和磨砂"
         );
-        assert!(include_str!("searchbar.rs").contains("request_quit"));
-        assert!(include_str!("panel.rs").contains("on_close_panel"));
-        assert!(include_str!("panel.rs").contains("request_quit"));
-        assert!(include_str!("session_close.rs").contains("Winit Thread Event Target"));
-        assert!(include_str!("session_close.rs").contains("request_quit"));
+        let search = include_str!("searchbar.rs");
+        let panel = include_str!("panel.rs");
+        assert!(!search.contains("request_quit"));
+        assert!(!panel.contains("request_quit"));
+        assert!(panel.contains("on_close_panel"));
+        let search_close = search
+            .split("on_close_requested")
+            .nth(1)
+            .expect("搜索条关闭");
+        assert!(
+            search_close.contains("Bar::hide"),
+            "搜索条 Alt+F4 只收起，并保留未提交的 /note"
+        );
+        let panel_close = panel.split("on_close_requested").nth(1).expect("面板关闭");
+        assert!(
+            panel_close.contains("Controller::hide"),
+            "面板 Alt+F4 只收起"
+        );
+        let session = include_str!("session_close.rs");
+        assert!(session.contains("Winit Thread Event Target"));
+        assert!(session.contains("request_quit"));
+        let query = session
+            .split("message == WM_QUERYENDSESSION")
+            .nth(1)
+            .expect("注销询问");
+        let before_sync = query.split("request_quit()").next().unwrap();
+        assert!(
+            before_sync.contains("Timer::single_shot"),
+            "隐藏目标窗口的注销询问要投递退出后马上返回"
+        );
         assert!(include_str!("platform.rs").contains("external_close_requests_quit"));
         assert!(host.contains("session_close::install"));
         assert!(host.contains("EXITING"));
