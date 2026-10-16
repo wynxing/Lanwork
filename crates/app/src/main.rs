@@ -11,6 +11,8 @@ use lanwork_core as _;
 slint::include_modules!();
 
 #[cfg(test)]
+mod apps_layout_tests;
+#[cfg(test)]
 mod float_layout_tests;
 #[cfg(test)]
 mod menu_layout_tests;
@@ -23,6 +25,8 @@ mod shelves_layout_tests;
 #[cfg(test)]
 mod triage_layout_tests;
 
+#[cfg(windows)]
+mod apps_page;
 #[cfg(windows)]
 mod bar_win;
 #[cfg(windows)]
@@ -160,6 +164,7 @@ mod tests {
     fn panel_has_no_today_or_focus_page() {
         let sources = [
             ("panel.slint", include_str!("../ui/panel.slint")),
+            ("appspage.slint", include_str!("../ui/appspage.slint")),
             ("notespage.slint", include_str!("../ui/notespage.slint")),
             ("notefloat.slint", include_str!("../ui/notefloat.slint")),
             ("shelvespage.slint", include_str!("../ui/shelvespage.slint")),
@@ -240,5 +245,18 @@ mod tests {
         assert!(!include_str!("note_float.rs").contains("FloatShell"));
         assert!(!include_str!("shelf_float.rs").contains("FloatShell"));
         assert!(!include_str!("todo_float.rs").contains("FloatShell"));
+        assert!(source.contains("fn open_tool"));
+        assert!(source.contains("fn close_tool"));
+        assert!(source.contains("should_reopen"));
+        let apps = include_str!("apps_page.rs");
+        assert!(apps.contains("float_shell::open_tool"));
+        assert!(apps.contains("float_shell::close_tool"));
+        let page = include_str!("../ui/appspage.slint");
+        assert!(page.contains("text: \"没有工具\""));
+        assert!(page.contains("text: \"导入+\""));
+        assert!(page.contains("text: \"悬浮窗\""));
+        assert!(page.contains("name: \"内置\""));
+        assert!(page.contains("name: \"自定义\""));
+        assert!(!page.contains("扩展"));
     }
 }

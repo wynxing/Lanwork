@@ -1,9 +1,10 @@
 //! 面板里不调用窗口 API 的决定：标签、定位目标、窗口尺寸与位置，待办页的列表、行和输入解析，
 //! 便签页的列表、多选、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，收纳页的分组、引用和拖放判定，
-//! 以及工具悬浮窗外壳的位置、大小、贴边、钉住和是否开着。
+//! 应用页的分类、卡片和启用状态，以及工具悬浮窗外壳的位置、大小、贴边、钉住和是否开着。
 //!
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
+mod apps_page;
 mod float_shell;
 mod float_snap;
 mod float_source;
@@ -18,6 +19,12 @@ mod shelf_select;
 mod todo_page;
 mod triage;
 
+pub use apps_page::{
+    CATEGORY_BUILTIN, CATEGORY_CUSTOM, EMPTY_LABEL, ENABLED_FILE, EnabledBytes, FLOAT_LABEL,
+    IMPORT_LABEL, ListedTool, ToolCard, ToolOrigin, decode_enabled, encode_enabled,
+    installed_tools, is_enabled, is_png, menu_items, name_mark, read_enabled, set_disabled,
+    should_reopen, show_import, usable_icon, visible_cards, write_enabled,
+};
 pub use float_shell::{
     BackupSlice, DEFAULT_LOGICAL_HEIGHT, DEFAULT_LOGICAL_WIDTH, ExportSlice, MARGIN_LOGICAL,
     RECORD_DIR, ScanSkip, ShellBytes, ShellGesture, ShellRecord, ShellSession, StoredShell,
@@ -95,18 +102,25 @@ pub const PANEL_HEIGHT: u32 = 560;
 /// 面板与工作区边缘至少留出的逻辑像素。
 pub const PANEL_MARGIN: u32 = 24;
 
-/// 面板的四个标签，顺序固定。
+/// 面板的五个标签，顺序固定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelTab {
     #[default]
     Todo,
     Notes,
     Shelves,
+    Apps,
     Settings,
 }
 
 impl PanelTab {
-    pub const ALL: [Self; 4] = [Self::Todo, Self::Notes, Self::Shelves, Self::Settings];
+    pub const ALL: [Self; 5] = [
+        Self::Todo,
+        Self::Notes,
+        Self::Shelves,
+        Self::Apps,
+        Self::Settings,
+    ];
 
     #[must_use]
     pub fn title(self) -> &'static str {
@@ -114,6 +128,7 @@ impl PanelTab {
             Self::Todo => "待办",
             Self::Notes => "便签",
             Self::Shelves => "收纳",
+            Self::Apps => "应用",
             Self::Settings => "设置",
         }
     }
@@ -165,9 +180,10 @@ mod tests {
     fn tabs_are_in_the_fixed_order_with_todo_as_default() {
         assert_eq!(
             PanelTab::ALL.map(PanelTab::title),
-            ["待办", "便签", "收纳", "设置"]
+            ["待办", "便签", "收纳", "应用", "设置"]
         );
         assert_eq!(PanelTab::default(), PanelTab::Todo);
+        assert!(PanelTab::ALL.iter().all(|tab| tab.title() != "扩展"));
         for (index, tab) in PanelTab::ALL.iter().enumerate() {
             assert_eq!(tab.index(), index);
             assert_eq!(
@@ -176,7 +192,7 @@ mod tests {
             );
         }
         assert_eq!(PanelTab::from_index(-1), None);
-        assert_eq!(PanelTab::from_index(4), None);
+        assert_eq!(PanelTab::from_index(5), None);
     }
 
     #[test]

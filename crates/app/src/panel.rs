@@ -1,8 +1,9 @@
 //! 面板窗口：标签框架、待办页和定位接口。
 //!
 //! 窗口启动时创建并保持隐藏。待办页调用 `TodoCommands`，规则在服务里，这里只把命令结果
-//! 排成界面要的行。便签页在 `notes_page`，收纳页在 `shelves_page`，设置页在 `settings_page`，
-//! 拖入的 OLE 放下目标登记在这个窗口的句柄上（`shelf_dnd`）。面板搜索框还没有。
+//! 排成界面要的行。便签页在 `notes_page`，收纳页在 `shelves_page`，应用页在 `apps_page`，
+//! 设置页在 `settings_page`，拖入的 OLE 放下目标登记在这个窗口的句柄上（`shelf_dnd`）。
+//! 面板搜索框还没有。
 //! 热角在 `hotcorner`，到点调用 [`show`](crate::panel::show)。
 
 use std::cell::{Cell, RefCell};
@@ -27,6 +28,7 @@ use lanwork_core::todos::{ListKind, NewTodo, TodoCommands, TodoItem, TodoList};
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
+use crate::apps_page::AppsPage;
 use crate::bar_win;
 use crate::host::{local_today, unix_now_ms};
 use crate::keycap;
@@ -62,6 +64,11 @@ pub(crate) fn with_panel(action: impl FnOnce(&mut Controller) + 'static) {
 /// 便签页的动作。和面板共用同一个借用，所以也走 [`with_panel`]。
 pub(crate) fn with_notes(action: impl FnOnce(&mut NotesPage, &Panel) + 'static) {
     with_panel(move |panel| action(&mut panel.notes, &panel.ui));
+}
+
+/// 应用页的动作。和面板共用同一个借用，所以也走 [`with_panel`]。
+pub(crate) fn with_apps(action: impl FnOnce(&mut AppsPage, &Panel) + 'static) {
+    with_panel(move |panel| action(&mut panel.apps, &panel.ui));
 }
 
 /// 收纳页的动作。和面板共用同一个借用，所以也走 [`with_panel`]。
@@ -127,6 +134,7 @@ pub(crate) fn install(
     let controller = Controller {
         notes: NotesPage::new(&ui, notes, store.clone()),
         shelves: ShelvesPage::new(&ui, shelves, todos.clone(), icons, store.clone()),
+        apps: AppsPage::new(&ui, store.clone()),
         settings: SettingsPage::new(&ui, settings, store.clone()),
         drop_state: Arc::new(DropState::default()),
         drop_registration: None,
@@ -330,6 +338,7 @@ pub(crate) struct Controller {
     ui: Panel,
     notes: NotesPage,
     shelves: ShelvesPage,
+    apps: AppsPage,
     settings: SettingsPage,
     drop_state: Arc<DropState>,
     drop_registration: Option<Registration>,
@@ -479,6 +488,9 @@ impl Controller {
         if self.tab == PanelTab::Shelves {
             self.shelves.entered(&self.ui);
         }
+        if self.tab == PanelTab::Apps {
+            self.apps.entered(&self.ui);
+        }
         if self.tab == PanelTab::Settings {
             self.settings.entered(&self.ui);
         } else {
@@ -570,6 +582,7 @@ impl Controller {
     fn hide(&mut self) {
         self.exit_triage();
         self.settings.cancel_recording(&self.ui);
+        self.apps.dismiss(&self.ui);
         self.visible = false;
         self.error = None;
         self.sync_drop();
@@ -602,10 +615,17 @@ impl Controller {
         if tab != PanelTab::Settings {
             self.settings.cancel_recording(&self.ui);
         }
+        if tab != PanelTab::Apps {
+            self.apps.dismiss(&self.ui);
+        }
         if tab == PanelTab::Notes {
             self.notes.entered(&self.ui);
         } else if tab == PanelTab::Shelves {
             self.shelves.entered(&self.ui);
+        } else if tab == PanelTab::Apps {
+            self.error = None;
+            self.push_error();
+            self.apps.entered(&self.ui);
         } else if tab == PanelTab::Settings {
             self.error = None;
             self.push_error();
