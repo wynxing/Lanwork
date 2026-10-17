@@ -26,10 +26,13 @@ pub use host::{
 pub use http::{
     HttpResponse, HttpTransport, Outgoing, RustlsTransport, TransportError, install_ring,
 };
+pub use id::{imported_prefix_forbidden, valid_id};
 pub use manifest::{Manifest, load_dir, materialize};
 pub use package::{
-    FOLDER_SENTINEL, Grant, PackageError, PickedSource, StagedPackage, decode_grant, encode_grant,
-    grant_lines, inspect_path, inspect_zip_bytes, permission_lines, resolve_selection,
+    CopyPreview, FOLDER_SENTINEL, Grant, MAX_ENTRIES as TOOL_MAX_FILES,
+    MAX_ENTRY as TOOL_MAX_ENTRY, MAX_UNCOMPRESSED as TOOL_MAX_BYTES, PackageError, PickedSource,
+    RecheckedTool, StagedPackage, decode_grant, encode_grant, grant_lines, inspect_path,
+    inspect_zip_bytes, permission_lines, preview_copy, recheck_installed, resolve_selection,
 };
 pub use secret::{
     MemorySecretStore, SecretStore, delete_product_secrets, product_target_name, spike_target_name,

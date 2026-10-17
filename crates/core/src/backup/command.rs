@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::error::BackupError;
-use super::package::PackageOverview;
+use super::package::{PackageOverview, PackagePreview};
 use super::service::{BackupService, LaunchBackup, ListedBackup};
 use crate::capture::CivilDate;
 use crate::storage::{BootHooks, Store};
@@ -48,7 +48,7 @@ impl BackupCommands {
         self.service.backup_on_launch(today, now_ms)
     }
 
-    pub fn inspect(&self, package: &Path) -> Result<PackageOverview, BackupError> {
+    pub fn inspect(&self, package: &Path) -> Result<PackagePreview, BackupError> {
         self.service.inspect(package)
     }
 

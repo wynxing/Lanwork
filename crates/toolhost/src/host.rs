@@ -323,6 +323,18 @@ impl Session {
         self.call("on_load", ());
     }
 
+    /// 把当前存储再写一次盘。没有写盘回调时什么都不做。
+    pub fn flush_storage(&self) -> Result<(), String> {
+        let (persist, storage) = {
+            let inner = self.inner.borrow();
+            (inner.persist_storage.clone(), inner.storage.clone())
+        };
+        if let Some(persist) = persist {
+            persist(&storage)?;
+        }
+        Ok(())
+    }
+
     pub fn on_unload(&self) {
         self.drop_inflight();
         self.invoke("on_unload", (), false);

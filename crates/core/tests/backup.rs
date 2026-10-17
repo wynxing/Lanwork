@@ -749,3 +749,147 @@ fn import_drops_the_open_todo_float_cache_so_a_later_write_does_not_restore_the_
     assert_eq!(record.stack, None);
     assert_eq!(record.dock, None);
 }
+
+const TOOL_MANIFEST: &str = r#"
+id = "example.quota"
+name = "API 额度"
+description = "剩余额度"
+entry = "main.lua"
+services = ["secret", "storage"]
+
+[[secret]]
+id = "api_key"
+label = "API 密钥"
+
+[[component]]
+id = "summary"
+component = "text"
+text = "没有数据"
+"#;
+
+#[test]
+fn export_and_import_keep_tool_data_and_leave_secrets_behind() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    write_rel(
+        &fx.store,
+        "notes/n1.json",
+        r#"{"schemaVersion":1,"body":"note-body-marker-77"}"#,
+    );
+    lanwork_core::panel::install_copy(
+        &fx.store.data_dir(),
+        "example.quota",
+        "API 额度",
+        "剩余额度",
+        &[
+            ("manifest.toml".to_string(), TOOL_MANIFEST.as_bytes().to_vec()),
+            ("main.lua".to_string(), b"function on_load() end\n".to_vec()),
+            (
+                "icon.png".to_string(),
+                b"\x89PNG\r\n\x1a\nicon-marker".to_vec(),
+            ),
+            ("helper.lua".to_string(), b"helper-secret-marker".to_vec()),
+        ],
+        br#"{"schemaVersion":1,"services":["notify"],"domains":[],"secrets":[],"value":"secret-marker-77"}"#,
+    )
+    .unwrap();
+    write_rel(
+        &fx.store,
+        "tool-storage/example.quota.json",
+        r#"{"schemaVersion":1,"entries":{"note":"storage-marker-77"}}"#,
+    );
+    write_rel(
+        &fx.store,
+        "tool-windows/example.quota.json",
+        r#"{"schemaVersion":1,"floatWindow":{"x":12,"y":34,"width":320,"height":360},"floatPinned":false,"open":true}"#,
+    );
+    write_rel(
+        &fx.store,
+        "tool-enabled.json",
+        r#"{"schemaVersion":1,"disabled":["example.quota","lanwork.float-shell-demo"],"token":"enabled-extra-marker"}"#,
+    );
+    write_rel(
+        &fx.store,
+        "tool-windows/lanwork.float-shell-demo.json",
+        r#"{"schemaVersion":1,"open":true,"floatWindow":{"x":1,"y":1,"width":200,"height":120}}"#,
+    );
+    write_rel(&fx.store, "credentials.json", "credential-marker-77");
+    for scratch in [
+        "tools/.incoming-example.quota/leak.txt",
+        "tools/.previous-example.quota/leak.txt",
+        "tools/.hold-example.quota.0/leak.txt",
+    ] {
+        write_rel(&fx.store, scratch, "scratch-marker-77");
+    }
+    write_rel(
+        &fx.store,
+        "tools/example.bad/manifest.toml",
+        "bad-body-marker",
+    );
+    write_rel(&fx.store, "tools/example.bad/main.lua", "nope");
+
+    let dest = fx._temp.path().join("tools.zip");
+    commands.export(&dest, 9).unwrap();
+    let packed = String::from_utf8_lossy(&std::fs::read(&dest).unwrap()).into_owned();
+    assert!(packed.contains("storage-marker-77"));
+    assert!(packed.contains("note-body-marker-77"));
+    assert!(packed.contains("icon-marker"));
+    assert!(packed.contains("example.quota"));
+    assert!(packed.contains("API 密钥"));
+    assert!(!packed.contains("\"open\":true"));
+    assert!(!packed.contains("secret-marker-77"));
+    assert!(!packed.contains("helper-secret-marker"));
+    assert!(!packed.contains("scratch-marker-77"));
+    assert!(!packed.contains("credential-marker-77"));
+    assert!(!packed.contains("bad-body-marker"));
+    assert!(!packed.contains("enabled-extra-marker"));
+    assert!(!packed.contains(".incoming-"));
+    assert!(!packed.contains(".previous-"));
+    assert!(!packed.contains(".hold-"));
+    assert!(!packed.contains("lanwork.float-shell-demo"));
+    let log = std::fs::read_to_string(fx.store.log_path()).unwrap_or_default();
+    assert!(log.contains("工具未导出"));
+    assert!(log.contains("example.bad"));
+    assert!(!log.contains("secret-marker-77"));
+    assert!(!log.contains("bad-body-marker"));
+
+    write_rel(
+        &fx.store,
+        "notes/n1.json",
+        r#"{"schemaVersion":1,"body":"replaced"}"#,
+    );
+    let _ = std::fs::remove_dir_all(fx.store.data_dir().join("tools"));
+    commands.import(&dest, 10).unwrap();
+    assert!(read_rel(&fx.store, "notes/n1.json").contains("note-body-marker-77"));
+    assert!(read_rel(&fx.store, "tools/example.quota/main.lua").contains("on_load"));
+    assert!(read_rel(&fx.store, "tools/example.quota/card.json").contains("API 额度"));
+    let grant = read_rel(&fx.store, "tools/example.quota/grant.json");
+    assert!(grant.contains("api_key"));
+    assert!(grant.contains("API 密钥"));
+    assert!(!grant.contains("secret-marker-77"));
+    assert!(!grant.contains("notify"));
+    assert!(
+        !fx.store
+            .data_dir()
+            .join("tools/example.quota/helper.lua")
+            .exists()
+    );
+    assert!(!fx.store.data_dir().join("tools/example.bad").exists());
+    assert!(
+        !fx.store
+            .data_dir()
+            .join("tools/.incoming-example.quota")
+            .exists()
+    );
+    assert!(read_rel(&fx.store, "tool-storage/example.quota.json").contains("storage-marker-77"));
+    let window = read_rel(&fx.store, "tool-windows/example.quota.json");
+    assert!(window.contains("\"x\":12"));
+    assert!(window.contains("\"floatPinned\":false"));
+    assert!(!window.contains("\"open\":true"));
+    assert!(read_rel(&fx.store, "tool-enabled.json").contains("example.quota"));
+    assert!(!read_rel(&fx.store, "tool-enabled.json").contains("enabled-extra-marker"));
+    assert_eq!(
+        std::fs::read(fx.store.data_dir().join("credentials.json")).unwrap(),
+        b"credential-marker-77"
+    );
+}

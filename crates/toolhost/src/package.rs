@@ -16,9 +16,9 @@ pub const FOLDER_SENTINEL: &str = "Folder Selection.";
 
 const INVALID: &str = "清单无效";
 const MAX_ARCHIVE: usize = 8 * 1024 * 1024;
-const MAX_UNCOMPRESSED: usize = 8 * 1024 * 1024;
-const MAX_ENTRY: usize = 2 * 1024 * 1024;
-const MAX_ENTRIES: usize = 64;
+pub const MAX_UNCOMPRESSED: usize = 8 * 1024 * 1024;
+pub const MAX_ENTRY: usize = 2 * 1024 * 1024;
+pub const MAX_ENTRIES: usize = 64;
 const SCHEMA: u64 = 1;
 
 /// 读到的工具包。文件路径相对工具根，只用 `/` 拆开。
@@ -205,6 +205,97 @@ fn stage_from_files(files: Vec<(String, Vec<u8>)>) -> Result<StagedPackage, Pack
         manifest,
         files: staged,
     })
+}
+
+/// 已经装进数据目录的副本，按导入的规则再查一遍。
+///
+/// `files` 的路径相对工具根。`card.json` 和 `grant.json` 不参与清单校验，结果里也不保留它们。
+/// 通过之后，文件只留清单、入口脚本和 PNG 图标。授权按这份清单重新生成，不读备份里的 `grant.json`。
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecheckedTool {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// 相对工具根，只用 `/`。不含 `card.json` 和 `grant.json`。
+    pub files: Vec<(String, Vec<u8>)>,
+    /// `Grant::from_manifest` 的编码。没有密钥原文。
+    pub grant: Vec<u8>,
+}
+
+pub fn recheck_installed(
+    dir_name: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<RecheckedTool, PackageError> {
+    let staged = stage_copy(dir_name, files)?;
+    let grant = Grant::from_manifest(&staged.manifest);
+    Ok(RecheckedTool {
+        id: staged.manifest.id.clone(),
+        name: staged.manifest.name.clone(),
+        description: staged.manifest.description.clone(),
+        files: staged.files,
+        grant: encode_grant(&grant),
+    })
+}
+
+/// 确认页用的名称和权限句子。校验与 [`recheck_installed`] 相同，句子来自清单。
+///
+/// 不读 `grant.json`，也不写盘。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyPreview {
+    pub name: String,
+    pub lines: Vec<String>,
+}
+
+pub fn preview_copy(
+    dir_name: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<CopyPreview, PackageError> {
+    let staged = stage_copy(dir_name, files)?;
+    Ok(CopyPreview {
+        name: staged.manifest.name.clone(),
+        lines: permission_lines(&staged.manifest),
+    })
+}
+
+fn stage_copy(dir_name: &str, files: &[(String, Vec<u8>)]) -> Result<StagedPackage, PackageError> {
+    if !crate::id::valid_id(dir_name) {
+        return Err(PackageError::invalid(if dir_name.starts_with('.') {
+            "id 不能以 . 开头"
+        } else {
+            "id 不是单个路径分量"
+        }));
+    }
+    if crate::id::imported_prefix_forbidden(dir_name) {
+        return Err(PackageError::invalid("导入的 id 不能以 lanwork. 开头"));
+    }
+    if files.len() > MAX_ENTRIES {
+        return Err(PackageError::invalid("压缩包文件过多"));
+    }
+    let mut total = 0usize;
+    let mut seen = BTreeSet::new();
+    let mut staged_input = Vec::new();
+    for (name, bytes) in files {
+        let name = normalize_name(name)?;
+        if !seen.insert(name.clone()) {
+            return Err(PackageError::invalid("路径重复"));
+        }
+        if bytes.len() > MAX_ENTRY {
+            return Err(PackageError::invalid("文件过大"));
+        }
+        total = total.saturating_add(bytes.len());
+        if total > MAX_UNCOMPRESSED {
+            return Err(PackageError::invalid("压缩包过大"));
+        }
+        if name == "card.json" || name == "grant.json" {
+            continue;
+        }
+        staged_input.push((name, bytes.clone()));
+    }
+    let staged = stage_from_files(staged_input)?;
+    if staged.manifest.id != dir_name {
+        return Err(PackageError::invalid("id 与目录不一致"));
+    }
+    Ok(staged)
 }
 
 /// 根上有清单就用根。否则只能有一个顶层文件夹，清单在里面。
@@ -978,5 +1069,76 @@ mod tests {
 
     fn push_u32(buf: &mut Vec<u8>, value: u32) {
         buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn sample_manifest() -> String {
+        "\
+id = \"example.quota\"
+name = \"API 额度\"
+description = \"剩余额度\"
+entry = \"main.lua\"
+services = [\"secret\", \"storage\"]
+
+[[secret]]
+id = \"api_key\"
+label = \"API 密钥\"
+
+[[component]]
+id = \"summary\"
+component = \"text\"
+text = \"没有数据\"
+"
+        .to_string()
+    }
+
+    #[test]
+    fn recheck_drops_the_backup_grant_and_files_import_would_drop() {
+        let manifest = sample_manifest();
+        let files = vec![
+            ("manifest.toml".to_string(), manifest.into_bytes()),
+            ("main.lua".to_string(), b"function on_load() end\n".to_vec()),
+            ("helper.lua".to_string(), b"not-copied".to_vec()),
+            (
+                "icon.png".to_string(),
+                b"\x89PNG\r\n\x1a\nicon".to_vec(),
+            ),
+            ("card.json".to_string(), br#"{"name":"tampered"}"#.to_vec()),
+            (
+                "grant.json".to_string(),
+                br#"{"schemaVersion":1,"services":["notify","secret","storage"],"domains":[],"secrets":[],"value":"secret-marker"}"#
+                    .to_vec(),
+            ),
+        ];
+        let checked = recheck_installed("example.quota", &files).unwrap();
+        assert_eq!(checked.id, "example.quota");
+        assert_eq!(checked.name, "API 额度");
+        let names: Vec<_> = checked
+            .files
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(names, ["manifest.toml", "main.lua", "icon.png"]);
+        let grant = decode_grant(&checked.grant).unwrap();
+        assert!(grant.services.contains("secret"));
+        assert!(grant.services.contains("storage"));
+        assert!(!grant.services.contains("notify"));
+        assert_eq!(grant.secrets.len(), 1);
+        assert_eq!(grant.secrets[0].id, "api_key");
+        assert!(
+            !checked
+                .grant
+                .windows(125)
+                .any(|window| window == b"secret-marker")
+        );
+        assert!(recheck_installed("lanwork.quota", &files).is_err());
+        assert!(recheck_installed(".incoming-example.quota", &files).is_err());
+        let mut crossed = files.clone();
+        crossed.push(("../../notes/pwn.json".to_string(), b"{}".to_vec()));
+        assert!(recheck_installed("example.quota", &crossed).is_err());
+        let mut renamed = files.clone();
+        renamed[0].1 = sample_manifest()
+            .replace("example.quota", "example.other")
+            .into_bytes();
+        assert!(recheck_installed("example.quota", &renamed).is_err());
     }
 }

@@ -8,6 +8,8 @@
 // 控件左缘相对窗口是 132+16+120=268。第 i 行中心相对本页是 8+48*i+24。
 // 数据页「更换」「立即备份」「导出」「导入」贴在行的右边，右边距 16。按钮宽是文字宽加 20。
 // 「导入未完成」为真时，右侧每一类的内容下移 36。
+// 确认时导入行仍高 48，取消和确认导入的位置不变。工具权限在这一行下面，每行 22，最多 154，多了就滚动。
+// 备份列表每行高 44，右侧是「恢复」。列表最多高 220，再多就滚动。
 
 import { Btn, Field, Ink, Segments, ToggleSwitch } from "widgets.slint";
 
@@ -17,6 +19,11 @@ export struct SettingsHiddenApp {
 
 export struct SettingsBackup {
     label: string,
+}
+
+export struct ImportLine {
+    text: string,
+    heading: bool,
 }
 
 export global SettingsPageData {
@@ -45,6 +52,7 @@ export global SettingsPageData {
     in property <bool> import-enabled: true;
     in property <bool> import-confirming: false;
     in property <string> import-overview;
+    in property <[ImportLine]> import-lines;
     in property <bool> import-recovered: false;
     in property <[SettingsBackup]> backups;
     in property <string> version-text: "0.2.0";
@@ -71,6 +79,7 @@ export global SettingsPageData {
     callback import-clicked();
     callback confirm-import();
     callback cancel-import();
+    callback restore-backup(int);
     callback update-clicked();
 
     in property <[SettingsHiddenApp]> hidden-apps;
@@ -430,6 +439,27 @@ component DataPage inherits Rectangle {
             }
         }
 
+        // 名称用正文色，权限句子和「不会恢复」用次要色，和这一页的字号相同。多了就在这块里滚动。
+        if SettingsPageData.import-confirming && SettingsPageData.import-lines.length > 0: import-tools := Flickable {
+            property <length> row-h: 22px;
+
+            height: min(154px, SettingsPageData.import-lines.length * row-h);
+            content-width: self.width;
+            content-height: SettingsPageData.import-lines.length * row-h;
+
+            for line[index] in SettingsPageData.import-lines: Text {
+                y: index * import-tools.row-h;
+                x: line.heading ? 0px : 12px;
+                width: import-tools.width - (line.heading ? 0px : 12px);
+                height: import-tools.row-h;
+                text: line.text;
+                color: line.heading ? root.c.ink : root.c.secondary;
+                font-size: line.heading ? 14px : 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
         if SettingsPageData.backups.length == 0: Text {
             height: 36px;
             text: "没有备份";
@@ -439,10 +469,10 @@ component DataPage inherits Rectangle {
         }
 
         if SettingsPageData.backups.length > 0: backup-list := Flickable {
-            vertical-stretch: 1;
-            min-height: 44px;
+            // 行高 44。最多露出 5 行，再多就在这块里滚动。
+            height: min(SettingsPageData.backups.length * 44px, 220px);
             content-width: self.width;
-            content-height: max(self.height, SettingsPageData.backups.length * 44px);
+            content-height: SettingsPageData.backups.length * 44px;
 
             for item[index] in SettingsPageData.backups: Rectangle {
                 y: index * 44px;
@@ -450,13 +480,24 @@ component DataPage inherits Rectangle {
                 height: 44px;
 
                 Text {
-                    width: parent.width;
+                    width: parent.width - 80px;
                     height: parent.height;
                     text: item.label;
                     color: root.c.ink;
                     font-size: 14px;
                     vertical-alignment: center;
                     overflow: elide;
+                }
+
+                Btn {
+                    x: parent.width - self.width;
+                    y: (parent.height - self.height) / 2;
+                    text: "恢复";
+                    enabled: SettingsPageData.backup-enabled && !SettingsPageData.import-confirming;
+                    c: root.c;
+                    clicked => {
+                        SettingsPageData.restore-backup(index);
+                    }
                 }
 
                 Rectangle {

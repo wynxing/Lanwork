@@ -3,7 +3,7 @@
 //! 可见行为见 `docs/tools.md`「应用页」。导入确认和卸载的句子在 `tool_install`。
 //! 没有 `tools/` 时，列表是空的，界面只留「导入+」。
 //! 启用状态写在数据目录的 `tool-enabled.json`。安装副本的路径规格还没定，
-//! 这份文件名因此也还不是产品规则，并且不进导出白名单。
+//! 这份文件名因此也还不是产品规则。文件在时进入导出和备份。
 
 use std::collections::BTreeSet;
 use std::io;
@@ -210,6 +210,14 @@ pub fn encode_enabled(disabled: &BTreeSet<String>) -> Vec<u8> {
     let mut bytes = serde_json::to_vec(&on_disk).expect("启用状态可以编码");
     bytes.push(b'\n');
     bytes
+}
+
+/// 导出和恢复用。只保留关掉的 id，丢掉其它字段。读不懂时是 `None`。
+pub(crate) fn canonical_enabled(bytes: &[u8]) -> Option<Vec<u8>> {
+    match decode_enabled(bytes) {
+        EnabledBytes::Known(disabled) => Some(encode_enabled(&disabled)),
+        EnabledBytes::Unsupported | EnabledBytes::Corrupt => None,
+    }
 }
 
 #[derive(Serialize)]

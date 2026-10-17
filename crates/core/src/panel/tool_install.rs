@@ -4,6 +4,7 @@
 //! 这两条路径规格仍待定，这里只是这一版的放法，不写成产品规则。
 //! 窗口记录在 `tool-windows/<工具 id>.json`。卸载时把这份记录一起删掉。
 //! 启用状态仍在 `tool-enabled.json`。密钥不在这里。这个模块不读清单，卡片名称来自安装时写下的 `card.json`。
+//! 导出和备份带走副本、存储和窗口记录。临时目录不在名单里。
 
 use std::collections::BTreeMap;
 use std::io;
@@ -371,6 +372,15 @@ struct Card {
     id: String,
     name: String,
     description: String,
+}
+
+pub(crate) fn card_bytes(id: &str, name: &str, description: &str) -> Vec<u8> {
+    encode_card(id, name, description)
+}
+
+/// 导出和恢复用。只保留 `entries` 里的文本。读不懂时是 `None`。
+pub(crate) fn canonical_storage(bytes: &[u8]) -> Option<Vec<u8>> {
+    decode_storage(bytes).map(|entries| encode_storage(&entries))
 }
 
 fn encode_card(id: &str, name: &str, description: &str) -> Vec<u8> {

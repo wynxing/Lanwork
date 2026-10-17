@@ -10,7 +10,7 @@ use slint::platform::software_renderer::RepaintBufferType;
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use crate::{Panel, SettingsHiddenApp, SettingsPageData};
+use crate::{ImportLine, Panel, SettingsBackup, SettingsHiddenApp, SettingsPageData};
 
 struct Headless(Rc<MinimalSoftwareWindow>);
 
@@ -241,6 +241,20 @@ fn backup_export_and_import_buttons_ask_and_do_not_run_when_disabled() {
         row_center(3.0),
     );
     assert_eq!(cancels.get(), 1, "取消在确认的左边");
+
+    let lines: Vec<ImportLine> = (0..12)
+        .map(|index| ImportLine {
+            text: format!("第 {index} 行").into(),
+            heading: index % 3 == 0,
+        })
+        .collect();
+    data.set_import_lines(ModelRc::new(VecModel::from(lines)));
+    slint::platform::update_timers_and_animations();
+    // 导入行下面才是权限列表。点第一行不确认。
+    click(&ui, CONTROL_X, PAGE_Y + 8.0 + 48.0 * 4.0 + 11.0);
+    assert_eq!(confirms.get(), 1, "权限列表不代替确认");
+    click(&ui, right, row_center(3.0));
+    assert_eq!(confirms.get(), 2, "工具多时确认仍在导入行右边");
 }
 
 #[test]
@@ -315,4 +329,39 @@ fn restore_asks_for_the_hidden_app_under_the_pointer() {
     let y = PAGE_Y + 8.0 + 88.0 + 40.0 + 22.0;
     click(&ui, WIDTH as f32 - 16.0 - 24.0, y);
     assert_eq!(*restored.borrow(), [0]);
+}
+
+#[test]
+fn backup_restore_sits_on_the_row_and_stays_quiet_while_confirming() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    data.set_backups(ModelRc::new(VecModel::from(vec![
+        SettingsBackup {
+            label: "手动 2026-10-16 00:00".into(),
+        },
+        SettingsBackup {
+            label: "自动 2026-10-15".into(),
+        },
+    ])));
+    slint::platform::update_timers_and_animations();
+    let restored = Rc::new(RefCell::new(Vec::new()));
+    {
+        let restored = Rc::clone(&restored);
+        data.on_restore_backup(move |index| restored.borrow_mut().push(index));
+    }
+    open_section(&ui, 2.0);
+    let x = WIDTH as f32 - 16.0 - 24.0;
+    let first = PAGE_Y + 8.0 + 48.0 * 4.0 + 22.0;
+    click(&ui, x, first);
+    click(&ui, x, first + 44.0);
+    assert_eq!(*restored.borrow(), [0, 1]);
+    data.set_import_confirming(true);
+    slint::platform::update_timers_and_animations();
+    click(&ui, x, first);
+    assert_eq!(restored.borrow().len(), 2, "正在确认时不再开始另一份");
+    data.set_import_confirming(false);
+    data.set_backup_enabled(false);
+    slint::platform::update_timers_and_animations();
+    click(&ui, x, first);
+    assert_eq!(restored.borrow().len(), 2, "备份进行中不再恢复");
 }

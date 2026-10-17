@@ -2,7 +2,8 @@
 //!
 //! 可见行为见 `docs/tools.md`「悬浮窗外壳」。贴边几何调用便签悬浮窗已经在用的
 //! [`release_float`] 和 [`settle_float`]，不另写一套距离和边。
-//! 记录在数据目录的 `tool-windows/<工具 id>.json`。不进导出白名单，那是第 6 步。
+//! 记录在数据目录的 `tool-windows/<工具 id>.json`，进入导出和备份。
+//! 包里的这份不含 `open`，恢复后窗口不因备份自动打开。
 //! 没有 `floatStack`：不与便签、收纳、待办叠在一起。
 
 use std::io;
@@ -511,6 +512,18 @@ pub fn backup_json(record: &ShellRecord) -> Vec<u8> {
     export_json(record)
 }
 
+/// 放进导出包和备份的窗口记录。落盘格式，去掉 `open`。读不懂时是 `None`。
+pub(crate) fn archived_window(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut record = decode(bytes).openable()?;
+    record.open = false;
+    let encoded = encode(&record);
+    let mut value: Value = serde_json::from_slice(encoded.trim_ascii_end()).ok()?;
+    value.as_object_mut()?.remove("open");
+    let mut out = serde_json::to_vec(&value).ok()?;
+    out.push(b'\n');
+    Some(out)
+}
+
 #[derive(Serialize)]
 struct OnDisk<'a> {
     #[serde(rename = "schemaVersion")]
@@ -1015,8 +1028,8 @@ mod tests {
         assert!(record_relative("").is_none());
         let package = include_str!("../backup/package.rs");
         assert!(
-            !package.contains("tool-windows"),
-            "窗口记录这一步不进导出白名单"
+            package.contains("Kind::ToolWindow"),
+            "窗口记录进入导出白名单"
         );
 
         let dir = std::env::temp_dir().join(format!(
