@@ -39,7 +39,38 @@ pub struct WidgetDecl {
 pub struct SecretDecl {
     pub id: String,
     pub label: String,
+    /// 这个密钥发出去时用的请求头。没有则由脚本在每次请求里写。
+    pub header: Option<String>,
+    /// `header` 有值时，请求头的值是此前缀加上密钥原文。可以是空字符串。
+    pub prefix: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixedHeader {
+    pub name: String,
+    pub value: String,
+}
+
+pub(crate) const HEADER_NAME_MAX: usize = 64;
+pub(crate) const HEADER_VALUE_MAX: usize = 512;
+pub(crate) const PREFIX_MAX: usize = 128;
+pub(crate) const HEADER_LIMIT: usize = 16;
+
+const FORBIDDEN_HEADERS: &[&str] = &[
+    "host",
+    "cookie",
+    "content-length",
+    "content-type",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "upgrade",
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Manifest {
@@ -48,6 +79,9 @@ pub struct Manifest {
     pub description: String,
     pub services: BTreeSet<String>,
     pub domains: Vec<String>,
+    /// 为真时可以向 `domains` 里的每一台 POST JSON。
+    pub post: bool,
+    pub headers: Vec<FixedHeader>,
     pub secrets: Vec<SecretDecl>,
     pub widgets: Vec<WidgetDecl>,
     /// 入口脚本相对工具文件夹的路径。不含 `..`。
@@ -115,16 +149,17 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
         return Err("secret 和服务声明对不齐".to_string());
     }
 
-    let domains = if services.contains("http") {
-        parse_domains(table.get("http").ok_or("缺少 http")?)?
+    let (domains, post, headers) = if services.contains("http") {
+        parse_http(table.get("http").ok_or("缺少 http")?)?
     } else {
-        Vec::new()
+        (Vec::new(), false, Vec::new())
     };
     let secrets = if services.contains("secret") {
         parse_secrets(table.get("secret").ok_or("缺少 secret")?)?
     } else {
         Vec::new()
     };
+    reject_header_collisions(&headers, &secrets)?;
     let widgets = parse_widgets(table.get("component").ok_or("缺少 component")?)?;
 
     Ok((
@@ -134,6 +169,8 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
             description,
             services,
             domains,
+            post,
+            headers,
             secrets,
             widgets,
             entry: entry.clone(),
@@ -156,9 +193,12 @@ fn parse_services(value: &toml::Value) -> Result<BTreeSet<String>, String> {
     Ok(set)
 }
 
-fn parse_domains(value: &toml::Value) -> Result<Vec<String>, String> {
+fn parse_http(value: &toml::Value) -> Result<(Vec<String>, bool, Vec<FixedHeader>), String> {
     let table = value.as_table().ok_or("http 不是表")?;
-    require_keys(table.keys().map(String::as_str), &["domains"])?;
+    require_keys(
+        table.keys().map(String::as_str),
+        &["domains", "post", "headers"],
+    )?;
     let array = table
         .get("domains")
         .and_then(toml::Value::as_array)
@@ -174,7 +214,106 @@ fn parse_domains(value: &toml::Value) -> Result<Vec<String>, String> {
         }
         domains.push(host.to_string());
     }
-    Ok(domains)
+    let post = match table.get("post") {
+        None => false,
+        Some(toml::Value::Boolean(value)) => *value,
+        Some(_) => return Err("post 不是布尔".to_string()),
+    };
+    let headers = match table.get("headers") {
+        None => Vec::new(),
+        Some(value) => parse_headers(value)?,
+    };
+    Ok((domains, post, headers))
+}
+
+fn parse_headers(value: &toml::Value) -> Result<Vec<FixedHeader>, String> {
+    let array = value.as_array().ok_or("headers 不是数组")?;
+    if array.len() > HEADER_LIMIT {
+        return Err("请求头过多".to_string());
+    }
+    let mut headers = Vec::new();
+    for item in array {
+        let table = item.as_table().ok_or("请求头不是表")?;
+        require_keys(table.keys().map(String::as_str), &["name", "value"])?;
+        let name = required_str(table, "name")?;
+        header_name_reason(name)?;
+        let value = required_str(table, "value")?;
+        header_value_reason(value)?;
+        if headers
+            .iter()
+            .any(|header: &FixedHeader| header.name.eq_ignore_ascii_case(name))
+        {
+            return Err("请求头重复".to_string());
+        }
+        headers.push(FixedHeader {
+            name: name.to_string(),
+            value: value.to_string(),
+        });
+    }
+    Ok(headers)
+}
+
+pub(crate) fn header_name_reason(name: &str) -> Result<(), String> {
+    if FORBIDDEN_HEADERS
+        .iter()
+        .any(|forbidden| name.eq_ignore_ascii_case(forbidden))
+    {
+        return Err(format!("不能使用这个请求头：{name}"));
+    }
+    if name.is_empty()
+        || name.len() > HEADER_NAME_MAX
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("请求头名称无效".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn header_value_reason(value: &str) -> Result<(), String> {
+    if value.len() > HEADER_VALUE_MAX {
+        return Err("请求头的值过长".to_string());
+    }
+    if value.trim().is_empty() {
+        return Err("请求头的值为空".to_string());
+    }
+    if !value.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
+        return Err("请求头的值无效".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn prefix_reason(prefix: &str) -> Result<(), String> {
+    if prefix.len() > PREFIX_MAX {
+        return Err("密钥头的前缀过长".to_string());
+    }
+    if !prefix.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
+        return Err("密钥头的前缀无效".to_string());
+    }
+    Ok(())
+}
+
+fn reject_header_collisions(headers: &[FixedHeader], secrets: &[SecretDecl]) -> Result<(), String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for secret in secrets {
+        let Some(name) = secret.header.as_deref() else {
+            continue;
+        };
+        if seen.iter().any(|prior| name.eq_ignore_ascii_case(prior)) {
+            return Err("请求头重复".to_string());
+        }
+        if headers
+            .iter()
+            .any(|header| header.name.eq_ignore_ascii_case(name))
+        {
+            return Err("请求头与密钥头重名".to_string());
+        }
+        seen.push(name);
+    }
+    Ok(())
 }
 
 pub fn valid_domain(host: &str) -> bool {
@@ -215,7 +354,10 @@ fn parse_secrets(value: &toml::Value) -> Result<Vec<SecretDecl>, String> {
     let mut seen = BTreeSet::new();
     for item in array {
         let table = item.as_table().ok_or("密钥项不是表")?;
-        require_keys(table.keys().map(String::as_str), &["id", "label"])?;
+        require_keys(
+            table.keys().map(String::as_str),
+            &["id", "label", "header", "prefix"],
+        )?;
         let id = required_str(table, "id")?;
         if !valid_id(id) {
             return Err("密钥 id 无效".to_string());
@@ -224,9 +366,30 @@ fn parse_secrets(value: &toml::Value) -> Result<Vec<SecretDecl>, String> {
             return Err("密钥 id 重复".to_string());
         }
         let label = trimmed_line(required_str(table, "label")?, "密钥名称")?;
+        let header = optional_str(table, "header")?;
+        let prefix = optional_str(table, "prefix")?;
+        if prefix.is_some() && header.is_none() {
+            return Err("写了前缀但没有请求头".to_string());
+        }
+        let header = match header {
+            Some(header) => {
+                header_name_reason(header)?;
+                Some(header.to_string())
+            }
+            None => None,
+        };
+        let prefix = match prefix {
+            Some(prefix) => {
+                prefix_reason(prefix)?;
+                prefix.to_string()
+            }
+            None => String::new(),
+        };
         secrets.push(SecretDecl {
             id: id.to_string(),
             label,
+            header,
+            prefix,
         });
     }
     Ok(secrets)
@@ -385,6 +548,91 @@ pub fn materialize(dir: &Path, manifest: &str, script: &str) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tool_text(http: &str, secret: &str) -> String {
+        format!(
+            "id = \"example.headers\"\nname = \"示例\"\ndescription = \"说明\"\nentry = \"main.lua\"\nservices = [\"http\", \"secret\"]\ncomponent = []\n\n[http]\ndomains = [\"api.example.com\"]\n{http}\n\n{secret}\n"
+        )
+    }
+
+    #[test]
+    fn headers_and_post_parse_or_reject() {
+        let secret = "[[secret]]\nid = \"token\"\nlabel = \"访问令牌\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n\n[[secret]]\nid = \"account\"\nlabel = \"账号\"\nheader = \"ChatGPT-Account-Id\"\n";
+        let ok = tool_text(
+            "post = true\nheaders = [\n  { name = \"anthropic-beta\", value = \"oauth-2025-04-20\" },\n  { name = \"anthropic-version\", value = \"2023-06-01\" },\n  { name = \"User-Agent\", value = \"my-tool\" },\n]\n",
+            secret,
+        );
+        let (parsed, _) = parse(&ok).expect("清单");
+        assert!(parsed.post);
+        assert_eq!(parsed.headers.len(), 3);
+        assert_eq!(parsed.secrets[0].prefix, "Bearer ");
+        assert_eq!(
+            parsed.secrets[1].header.as_deref(),
+            Some("ChatGPT-Account-Id")
+        );
+
+        let cases = [
+            (
+                "headers = [{ name = \"Host\", value = \"evil.example\" }]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "不能使用这个请求头：Host",
+            ),
+            (
+                "headers = [{ name = \"cookie\", value = \"a\" }]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "不能使用这个请求头：cookie",
+            ),
+            (
+                "headers = [{ name = \"Content-Type\", value = \"text/plain\" }]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "不能使用这个请求头：Content-Type",
+            ),
+            (
+                "headers = [{ name = \"Transfer-Encoding\", value = \"chunked\" }]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "不能使用这个请求头",
+            ),
+            (
+                "headers = [{ name = \"Connection\", value = \"keep-alive\" }]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "不能使用这个请求头",
+            ),
+            (
+                "headers = [\n  { name = \"User-Agent\", value = \"a\" },\n  { name = \"user-agent\", value = \"b\" },\n]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "请求头重复",
+            ),
+            (
+                "headers = [{ name = \"X-Bad\", value = \"a\\r\\nb\" }]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "请求头的值无效",
+            ),
+            (
+                "headers = [{ name = \"Authorization\", value = \"fixed\" }]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\nheader = \"authorization\"\nprefix = \"Bearer \"\n",
+                "请求头与密钥头重名",
+            ),
+            (
+                "",
+                "[[secret]]\nid = \"a\"\nlabel = \"甲\"\nheader = \"X-One\"\n\n[[secret]]\nid = \"b\"\nlabel = \"乙\"\nheader = \"x-one\"\n",
+                "请求头重复",
+            ),
+            (
+                "",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\nprefix = \"Bearer \"\n",
+                "写了前缀但没有请求头",
+            ),
+            (
+                "headers = [{ name = \"-bad\", value = \"a\" }]\n",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "请求头名称无效",
+            ),
+        ];
+        for (http, secret, expect) in cases {
+            let err = parse(&tool_text(http, secret)).expect_err(expect);
+            assert!(err.contains(expect), "{err} 不含 {expect}");
+        }
+    }
 
     #[test]
     fn domain_rules() {

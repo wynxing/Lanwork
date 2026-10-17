@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-use crate::manifest::{Manifest, SecretDecl, load_dir, parse};
+use crate::manifest::{FixedHeader, Manifest, SecretDecl, load_dir, parse};
 
 /// 系统文件对话框里用来选中当前文件夹的占位名。不是产品界面上的句子。
 pub const FOLDER_SENTINEL: &str = "Folder Selection.";
@@ -28,11 +28,13 @@ pub struct StagedPackage {
     pub files: Vec<(String, Vec<u8>)>,
 }
 
-/// 用户确认过的服务、域名和密钥。运行时清单不能超出这份范围。
+/// 用户确认过的服务、域名、固定请求头、提交权限和密钥。运行时清单不能超出这份范围。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
     pub services: BTreeSet<String>,
     pub domains: Vec<String>,
+    pub post: bool,
+    pub headers: Vec<FixedHeader>,
     pub secrets: Vec<SecretDecl>,
 }
 
@@ -42,11 +44,15 @@ impl Grant {
         Self {
             services: manifest.services.clone(),
             domains: manifest.domains.clone(),
+            post: manifest.post,
+            headers: manifest.headers.clone(),
             secrets: manifest.secrets.clone(),
         }
     }
 
-    /// 清单里的服务、域名和密钥 id 都在确认过的范围内。
+    /// 清单里的服务、域名、固定请求头、提交权限和密钥都在确认过的范围内。
+    ///
+    /// 新版本多了密钥、固定请求头、主机名或提交权限时返回假。少了权限仍返回真。
     #[must_use]
     pub fn allows(&self, manifest: &Manifest) -> bool {
         if manifest
@@ -54,6 +60,9 @@ impl Grant {
             .iter()
             .any(|service| !self.services.contains(service))
         {
+            return false;
+        }
+        if manifest.post && !self.post {
             return false;
         }
         if manifest.domains.iter().any(|domain| {
@@ -64,10 +73,32 @@ impl Grant {
         }) {
             return false;
         }
-        manifest
-            .secrets
-            .iter()
-            .all(|secret| self.secrets.iter().any(|granted| granted.id == secret.id))
+        if manifest.headers.iter().any(|header| {
+            !self.headers.iter().any(|granted| {
+                granted.name.eq_ignore_ascii_case(&header.name) && granted.value == header.value
+            })
+        }) {
+            return false;
+        }
+        manifest.secrets.iter().all(|secret| {
+            self.secrets
+                .iter()
+                .any(|granted| granted.id == secret.id && secret_binding_ok(granted, secret))
+        })
+    }
+}
+
+/// 密钥头被拿掉仍算在原授权里。新加或改了请求头、前缀则要再确认。
+fn secret_binding_ok(granted: &SecretDecl, next: &SecretDecl) -> bool {
+    match &next.header {
+        None => true,
+        Some(header) => {
+            granted
+                .header
+                .as_ref()
+                .is_some_and(|prior| prior.eq_ignore_ascii_case(header))
+                && granted.prefix == next.prefix
+        }
     }
 }
 
@@ -331,25 +362,45 @@ fn join_prefix(prefix: &str, relative: &str) -> String {
     }
 }
 
-/// 确认页上的白话句子。域名逐条，密钥只出现名称。
+/// 确认页上的白话句子。域名逐条，固定请求头写出名称和值，密钥只出现名称。
 #[must_use]
 pub fn permission_lines(manifest: &Manifest) -> Vec<String> {
-    lines_for(&manifest.services, &manifest.domains, &manifest.secrets)
+    lines_for(
+        &manifest.services,
+        &manifest.domains,
+        manifest.post,
+        &manifest.headers,
+        &manifest.secrets,
+    )
 }
 
 #[must_use]
 pub fn grant_lines(grant: &Grant) -> Vec<String> {
-    lines_for(&grant.services, &grant.domains, &grant.secrets)
+    lines_for(
+        &grant.services,
+        &grant.domains,
+        grant.post,
+        &grant.headers,
+        &grant.secrets,
+    )
 }
 
 fn lines_for(
     services: &BTreeSet<String>,
     domains: &[String],
+    post: bool,
+    headers: &[FixedHeader],
     secrets: &[SecretDecl],
 ) -> Vec<String> {
     let mut lines = Vec::new();
     for domain in domains {
         lines.push(format!("访问 {domain}"));
+        if post {
+            lines.push(format!("向 {domain} 提交数据"));
+        }
+    }
+    for header in headers {
+        lines.push(format!("请求头 {}: {}", header.name, header.value));
     }
     for secret in secrets {
         lines.push(format!("使用你填写的 {}", secret.label));
@@ -377,9 +428,24 @@ pub fn encode_grant(grant: &Grant) -> Vec<u8> {
         .secrets
         .iter()
         .map(|secret| {
-            serde_json::json!({
+            let mut item = serde_json::json!({
                 "id": secret.id,
                 "label": secret.label,
+            });
+            if let Some(header) = &secret.header {
+                item["header"] = serde_json::Value::String(header.clone());
+                item["prefix"] = serde_json::Value::String(secret.prefix.clone());
+            }
+            item
+        })
+        .collect();
+    let headers: Vec<serde_json::Value> = grant
+        .headers
+        .iter()
+        .map(|header| {
+            serde_json::json!({
+                "name": header.name,
+                "value": header.value,
             })
         })
         .collect();
@@ -387,6 +453,8 @@ pub fn encode_grant(grant: &Grant) -> Vec<u8> {
         "schemaVersion": SCHEMA,
         "services": grant.services,
         "domains": grant.domains,
+        "post": grant.post,
+        "headers": headers,
         "secrets": secrets,
     });
     let mut bytes = serde_json::to_vec(&value).expect("确认记录可以编码");
@@ -404,6 +472,15 @@ pub fn decode_grant(bytes: &[u8]) -> Option<Grant> {
     }
     let services = string_set(obj.get("services")?)?;
     let domains = string_list(obj.get("domains")?)?;
+    let post = match obj.get("post") {
+        None => false,
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(_) => return None,
+    };
+    let headers = match obj.get("headers") {
+        None => Vec::new(),
+        Some(value) => decode_headers(value)?,
+    };
     let mut secrets = Vec::new();
     for item in obj.get("secrets")?.as_array()? {
         let item = item.as_object()?;
@@ -412,13 +489,47 @@ pub fn decode_grant(bytes: &[u8]) -> Option<Grant> {
         if id.is_empty() || label.is_empty() {
             return None;
         }
-        secrets.push(SecretDecl { id, label });
+        let header = match item.get("header") {
+            None => None,
+            Some(serde_json::Value::String(value)) if !value.is_empty() => Some(value.clone()),
+            Some(_) => return None,
+        };
+        let prefix = match item.get("prefix") {
+            None => String::new(),
+            Some(serde_json::Value::String(value)) => value.clone(),
+            Some(_) => return None,
+        };
+        if header.is_none() && !prefix.is_empty() {
+            return None;
+        }
+        secrets.push(SecretDecl {
+            id,
+            label,
+            header,
+            prefix,
+        });
     }
     Some(Grant {
         services,
         domains,
+        post,
+        headers,
         secrets,
     })
+}
+
+fn decode_headers(value: &serde_json::Value) -> Option<Vec<FixedHeader>> {
+    let mut headers = Vec::new();
+    for item in value.as_array()? {
+        let item = item.as_object()?;
+        let name = item.get("name")?.as_str()?.to_string();
+        let value = item.get("value")?.as_str()?.to_string();
+        if name.is_empty() || value.is_empty() {
+            return None;
+        }
+        headers.push(FixedHeader { name, value });
+    }
+    Some(headers)
 }
 
 fn string_set(value: &serde_json::Value) -> Option<BTreeSet<String>> {
@@ -896,6 +1007,130 @@ mod tests {
         widened.domains.push("evil.example".to_string());
         assert!(!grant.allows(&widened));
         assert!(decode_grant(b"{\"schemaVersion\":99}").is_none());
+    }
+
+    #[test]
+    fn adding_a_secret_header_host_or_post_requires_confirmation_again() {
+        let base = r#"
+id = "example.quota"
+name = "额度"
+description = "说明"
+entry = "main.lua"
+services = ["http", "secret"]
+component = []
+
+[http]
+domains = ["api.example.com"]
+
+[[secret]]
+id = "token"
+label = "令牌"
+"#;
+        let (manifest, _) = parse(base).unwrap();
+        let grant = Grant::from_manifest(&manifest);
+        assert!(grant.allows(&manifest));
+        let old = r#"{"schemaVersion":1,"services":["http","secret"],"domains":["api.example.com"],"secrets":[{"id":"token","label":"令牌"}]}"#;
+        let decoded = decode_grant(old.as_bytes()).unwrap();
+        assert!(decoded.allows(&manifest));
+        assert!(!decoded.post);
+        assert!(decoded.headers.is_empty());
+
+        let with_secret = base.replace(
+            "id = \"token\"\nlabel = \"令牌\"\n",
+            "id = \"token\"\nlabel = \"令牌\"\n\n[[secret]]\nid = \"account\"\nlabel = \"账号\"\n",
+        );
+        let (with_secret, _) = parse(&with_secret).unwrap();
+        assert!(!grant.allows(&with_secret));
+        assert!(
+            permission_lines(&with_secret)
+                .iter()
+                .any(|line| line == "使用你填写的 账号")
+        );
+
+        let with_header = base.replace(
+            "domains = [\"api.example.com\"]\n",
+            "domains = [\"api.example.com\"]\nheaders = [{ name = \"anthropic-beta\", value = \"oauth-2025-04-20\" }]\n",
+        );
+        let (with_header, _) = parse(&with_header).unwrap();
+        assert!(!grant.allows(&with_header));
+        assert!(
+            permission_lines(&with_header)
+                .iter()
+                .any(|line| { line == "请求头 anthropic-beta: oauth-2025-04-20" })
+        );
+
+        let with_host = base.replace(
+            "domains = [\"api.example.com\"]",
+            "domains = [\"api.example.com\", \"chatgpt.com\"]",
+        );
+        let (with_host, _) = parse(&with_host).unwrap();
+        assert!(!grant.allows(&with_host));
+        assert!(
+            permission_lines(&with_host)
+                .iter()
+                .any(|line| line == "访问 chatgpt.com")
+        );
+
+        let post_source = base.replace(
+            "domains = [\"api.example.com\"]\n",
+            "domains = [\"api.example.com\"]\npost = true\nheaders = [{ name = \"anthropic-version\", value = \"2023-06-01\" }]\n",
+        );
+        let (with_post, _) = parse(&post_source).unwrap();
+        assert!(!grant.allows(&with_post));
+        let lines = permission_lines(&with_post);
+        assert_eq!(lines[0], "访问 api.example.com");
+        assert_eq!(lines[1], "向 api.example.com 提交数据");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "请求头 anthropic-version: 2023-06-01")
+        );
+        let mut changed = Grant::from_manifest(&with_header);
+        changed.headers[0].value = "other".to_string();
+        assert!(!changed.allows(&with_header));
+        let narrower = with_header.clone();
+        let mut dropped = with_header.clone();
+        dropped.headers.clear();
+        assert!(Grant::from_manifest(&narrower).allows(&dropped));
+        let preview = preview_copy(
+            "example.quota",
+            &[
+                ("manifest.toml".to_string(), post_source.into_bytes()),
+                ("main.lua".to_string(), b"function on_load() end\n".to_vec()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(preview.lines, permission_lines(&with_post));
+    }
+
+    #[test]
+    fn import_rejects_a_forbidden_header_with_a_chinese_detail() {
+        let dir = scratch("bad-header");
+        std::fs::write(
+            dir.join("manifest.toml"),
+            r#"
+id = "example.headers"
+name = "示例"
+description = "说明"
+entry = "main.lua"
+services = ["http", "secret"]
+component = []
+
+[http]
+domains = ["api.example.com"]
+headers = [{ name = "Host", value = "evil.example" }]
+
+[[secret]]
+id = "token"
+label = "令牌"
+"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("main.lua"), b"function on_load() end\n").unwrap();
+        let err = inspect_path(&dir).unwrap_err();
+        assert_eq!(err.to_string(), "清单无效");
+        assert!(err.detail().contains("不能使用这个请求头：Host"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

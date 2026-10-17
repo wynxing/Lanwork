@@ -54,9 +54,22 @@ domains = ["api.example.com"]
 [[secret]]
 id = "api_key"
 label = "API 密钥"
+header = "Authorization"
+prefix = "Bearer "
 ```
 
-`domains` 只写主机名，不写 `https://`、端口、路径和通配符。密钥的 `label` 是确认页和「填写密钥」里给用户看的名称。
+要提交 JSON 时在 `[http]` 里写 `post = true`。确认页对每个域名加一句「向 <主机> 提交数据」。固定请求头写在 `headers` 里，确认页会显示名称和值，不要把密钥写进去：
+
+```toml
+[http]
+domains = ["api.anthropic.com"]
+headers = [
+  { name = "anthropic-beta", value = "oauth-2025-04-20" },
+  { name = "anthropic-version", value = "2023-06-01" },
+]
+```
+
+`domains` 只写主机名，不写 `https://`、端口、路径和通配符。密钥的 `label` 是确认页和「填写密钥」里给用户看的名称。`header` 可以不写在清单里，改在请求里写。多个密钥各用各的头，名字不能重复，也不能和 `headers` 重名。`User-Agent` 写进 `headers` 就替换默认的 `Lanwork`。
 
 ## 脚本模板
 
@@ -102,10 +115,10 @@ timer.every(300, refresh)
 | `storage` | `storage.get` `storage.set` | 保存这个工具自己的数据 |
 | `todo.read` | `todo.list` `on_todos_changed` | 读取你的待办 |
 | `todo.complete` | `todo.complete(id)` | 完成你的待办 |
-| `http` | `http.request({ method = "GET", url = "...", secret = 可省略 }, fn)` | 每个域名一句「访问 <主机名>」 |
-| `secret` | 没有读取函数。只在 `http.request` 里写 `secret.id` | 每个密钥一句「使用你填写的<名称>」 |
+| `http` | `http.request({ method = "GET" 或 "POST", url = "...", secret 或 secrets = 可省略, body = POST 时的 JSON 字符串 }, fn)` | 每个域名一句「访问 <主机名>」。`post = true` 时再加「向 <主机> 提交数据」。每个固定请求头一句「请求头 <名称>: <值>」 |
+| `secret` | 没有读取函数。只在 `http.request` 里按 id 附带 | 每个密钥一句「使用你填写的<名称>」 |
 
-`http` 只发送已声明主机上的 `https` GET。不跟随重定向，同一台主机上的也不跟随。不附带密钥的明文 `http` 不发送，回调里的 `error` 是「不允许明文 http」。附带密钥时必须是 `https`。没填密钥时回调里的 `error` 是「未填写密钥」，请求不会发出。
+`http` 只发往已声明的主机。GET 可以发。POST 要清单里 `post = true`，`body` 用 `json.encode` 得到的 JSON 字符串，不超过 64 KiB。宿主写 `Content-Type: application/json`。不跟随重定向，同一台主机上的也不跟随。不附带密钥的明文 `http` 不发送，回调里的 `error` 是「不允许明文 http」。附带密钥时必须是 `https`。没填密钥时回调里的 `error` 是「未填写密钥」，请求不会发出。一次请求可以带多个密钥，最多 8 个，每个进自己的头。脚本不能另加请求头。
 
 标准库只有 `string`、`table`、`math`、`utf8`，外加基础函数。没有 `io`、`os`、`package`、`debug`、`coroutine`、`require`、`load`、`print`。
 
@@ -140,10 +153,11 @@ timer.every(300, refresh)
 - [ ] `id` 不以 `lanwork.` 开头，大小写不论
 - [ ] 有 `http` 就有 `domains`，有 `secret` 就至少有一项 `id` 和 `label`，两边都和 `services` 对齐
 - [ ] 域名是纯主机名
+- [ ] 固定请求头的名字不与密钥头重名，也不用 `Host`、`Cookie`、`Content-Type` 这些被拒绝的名字；`User-Agent` 只有在要替换 `Lanwork` 时才写
 - [ ] 组件只用 `text`、`button`、`timer`、`progress`，id 不重复
 - [ ] 计时组件在需要倒数时调用了 `ui.timer_running`
 - [ ] `timer.every` 的秒数大于或等于 30
-- [ ] 请求是 `https` GET，主机名写在 `domains` 里，密钥只按 id 引用。明文 `http` 不发，窗口是「不允许明文 http」，也不跟随重定向
+- [ ] 请求的主机名写在 `domains` 里。GET 直接发；POST 先写 `post = true`，正文是 JSON 字符串。密钥只按 id 引用，多个密钥各占一个头。明文 `http` 不发，窗口是「不允许明文 http」，也不跟随重定向
 - [ ] 没有 `print`、`require`、`io`、`os`、协程
 - [ ] 文件夹根上有 `manifest.toml` 和入口脚本；zip 根上有清单，或只有一个顶层文件夹
 - [ ] 告诉了用户从「应用」页导入，以及密钥要在「填写密钥」里填

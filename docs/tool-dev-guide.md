@@ -74,8 +74,8 @@ component = "progress"
 | `description` | 卡片上的一行短说明。同样不能含换行，去掉首尾空白后还要有字 |
 | `entry` | 入口脚本的相对路径 |
 | `services` | 字符串数组。可以是空的。名字只能是下表里的服务。同一个名字写两次，按一次算 |
-| `http` | 仅当 `services` 含 `http`。表里只有 `domains` |
-| `secret` | 仅当 `services` 含 `secret`。数组，至少一项。每项只有 `id` 和 `label` |
+| `http` | 仅当 `services` 含 `http`。表里可以有 `domains`、`post`、`headers` |
+| `secret` | 仅当 `services` 含 `secret`。数组，至少一项。每项有 `id` 和 `label`，还可以有 `header` 和 `prefix` |
 | `component` | 数组，必须有这个键，可以是空的。内容区从上到下排 |
 
 `services` 里有 `http` 就必须有 `[http]`，有 `[http]` 就必须声明 `http`。`secret` 一样。对不齐就是「清单无效」。
@@ -89,10 +89,10 @@ component = "progress"
 | `storage` | 保存这个工具自己的数据 |
 | `todo.read` | 读取你的待办 |
 | `todo.complete` | 完成你的待办 |
-| `http` | 每个域名一句「访问 <主机名>」，不另写「联网」 |
+| `http` | 每个域名一句「访问 <主机名>」，不另写「联网」。`post = true` 时，每个域名紧接着「向 <主机> 提交数据」。每个固定请求头一句「请求头 <名称>: <值>」 |
 | `secret` | 每个密钥一句「使用你填写的<名称>」 |
 
-句子顺序是固定的，不跟着 `services` 数组的书写顺序。先按清单顺序列出每个域名，再按清单顺序列出每个密钥名称，然后是通知、读取待办、完成待办、保存数据、定时刷新。额度示例的三句是：
+句子顺序是固定的，不跟着 `services` 数组的书写顺序。先按清单顺序，每个域名一句「访问」，允许提交时紧接着「向 <主机> 提交数据」。然后按清单顺序列出每个固定请求头，再按清单顺序列出每个密钥名称，然后是通知、读取待办、完成待办、保存数据、定时刷新。额度示例的三句是：
 
 ```text
 访问 api.example.com
@@ -100,7 +100,9 @@ component = "progress"
 定时刷新
 ```
 
-确认页上没有密钥的值，也没有密钥 id。
+确认页上没有密钥的值，也没有密钥 id。固定请求头的值会写在确认页上，不要把密钥填进 `headers`。
+
+更新时确认页仍整份列出这些句子。新版本比上次确认多了密钥、固定请求头、主机名或 `post`，必须再确认一次，新的那几句就在这份列表里。导出包和备份的那一次确认用同一套句子。
 
 ### id
 
@@ -143,6 +145,41 @@ component = "progress"
 `api.example.com` 只等于它自己。它不等于 `example.com`，也不等于 `a.api.example.com`。请求时忽略大小写：清单里写 `api.example.com`，URL 用 `API.Example.COM` 仍然算同一台。确认页上的句子保留清单里的写法。
 
 URL 里可以有路径、查询和端口。端口不写进 `domains`。
+
+### 提交和固定请求头
+
+`post` 可以不写，不写等于假。写成真时，脚本可以向 `domains` 里的每一台 POST JSON。不能只给其中一台打开。确认页对每一台都加「向 <主机> 提交数据」。
+
+`headers` 可以不写。每一项只有 `name` 和 `value`。
+
+```toml
+[http]
+domains = ["api.anthropic.com", "chatgpt.com"]
+post = true
+headers = [
+  { name = "anthropic-beta", value = "oauth-2025-04-20" },
+  { name = "anthropic-version", value = "2023-06-01" },
+  { name = "X-XAI-Token-Auth", value = "xai-grok-cli" },
+  { name = "User-Agent", value = "my-tool" },
+]
+
+[[secret]]
+id = "token"
+label = "访问令牌"
+header = "Authorization"
+prefix = "Bearer "
+
+[[secret]]
+id = "account"
+label = "账号"
+header = "ChatGPT-Account-Id"
+```
+
+名字忽略大小写比较。`Host`、`Cookie`、`Content-Length`、`Content-Type`、`Transfer-Encoding`、`Connection`，以及 `Keep-Alive`、`Proxy-Authenticate`、`Proxy-Authorization`、`Proxy-Connection`、`TE`、`Trailer`、`Upgrade` 都不能写。固定请求头之间不能重名，也不能和某个密钥的 `header` 重名。名字只含字母、数字和 `-`，不以 `-` 开头或结尾，最长 64。值是可打印 ASCII，不含回车换行，去掉首尾空白后还要有字，最长 512。最多 16 条。不合规则时不安装，界面是「清单无效」，日志里有具体原因。
+
+声明了 `User-Agent` 就用这条替换默认的 `Lanwork`，只发出一条。没声明时仍是 `User-Agent: Lanwork`。`Accept` 没声明时仍是 `*/*`。
+
+密钥的 `header` 和 `prefix` 都可以不写。写了 `prefix` 就必须写 `header`。`prefix` 是值前面的字，例如 `Bearer `，可以是空字符串，只含可打印 ASCII，最长 128，不能含回车换行。同一个工具里，密钥声明的请求头也不能彼此重名。
 
 ## 组件
 
@@ -302,15 +339,46 @@ end)
 
 `http.request` 不等待网络，返回之后宿主再调用那个函数。`secret` 可以省略。写了的话，`id` 必须是清单里的一项，`header` 是头的名字，只含字母、数字和 `-`，`prefix` 是值的前缀，可以是空字符串，但不能含换行。宿主把「前缀 + 密钥原文」放进这个头。脚本读不到原文，也读不到拼好的头。
 
-脚本不能另加请求头，也不能写请求体。表里多出来的字段这次忽略。发出去的请求带 `Host`（主机名，不带端口）、`User-Agent: Lanwork`、`Accept: */*` 和 `Connection: close`。密钥头加在这些后面。
+一次请求要附上多个密钥时，用 `secrets`，不要和 `secret` 同时写。最多 8 个：
 
-当前只发送 `https` 的 GET。不附带密钥的明文 `http` 不发送，已经定了。重定向一律不跟随，同一台主机上的也不跟随，已经定了。
+```lua
+http.request({
+  method = "GET",
+  url = "https://chatgpt.com/backend-api/wham/usage", -- 路径按服务商文档写
+  secrets = {
+    { id = "token", header = "Authorization", prefix = "Bearer " },
+    { id = "account", header = "ChatGPT-Account-Id", prefix = "" },
+  },
+}, function(result)
+end)
+```
+
+清单里该密钥已经写了 `header` 时，脚本可以只写 `id`。两边都写时，名字忽略大小写必须相同，前缀必须逐字相同，发出去的名字用清单里的写法。没在清单里写 `header` 时，脚本必须自己写。同一请求里请求头不能重名，也不能和固定请求头重名，也不能用上面拒绝的那些名字。其中一个密钥没填，这一次整份都不发。
+
+脚本不能另加请求头。表里多出来的字段这次忽略。发出去的请求带 `Host`（主机名，不带端口）、`User-Agent`（清单里的值，否则 `Lanwork`）、`Accept`（清单里的值，否则 `*/*`）和 `Connection: close`。其余固定请求头按清单顺序接在后面，密钥头再接在后面。
+
+`post = true` 时可以 POST。`body` 是 JSON 字符串，可以用 `json.encode` 得到。宿主检查它是合法 JSON，不超过 64 KiB，并自己写上 `Content-Type: application/json` 和 `Content-Length`。正文按脚本给出的字节发出，不重新排版。GET 不能带 `body`。
+
+```lua
+http.request({
+  method = "POST",
+  url = "https://api.example.com/v1/usage",
+  body = json.encode({ limit = 1 }),
+  secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
+}, function(result)
+end)
+```
+
+不附带密钥的明文 `http` 不发送，已经定了。重定向一律不跟随，同一台主机上的也不跟随，已经定了。
 
 | 情况 | 结果 |
 | --- | --- |
-| 方法不是 GET | 不发送。`error` 是「不在范围内」 |
+| 方法不是 GET 或 POST，POST 未允许，或 GET 带了 `body` | 不发送。`error` 是「不在范围内」 |
+| `body` 不是 JSON 字符串，或 POST 没有 `body` | 不发送。「数据无效」 |
+| `body` 超过 64 KiB | 不发送。「数据过大」 |
 | URL 解析不了、带了用户名或密码、协议不是 `http` / `https` | 不发送。「地址无效」 |
 | 附带密钥但不是 `https` | 不发送。「地址无效」 |
+| 这次请求的密钥头不合法、重名，或和固定请求头重名 | 不发送。「地址无效」 |
 | 不附带密钥的明文 `http` | 不发送。「不允许明文 http」 |
 | 主机名不在已确认的清单里 | 不发送。「域名未允许」 |
 | 密钥 id 不在清单里、还没填写，或值是空的 | 不发送。「未填写密钥」 |
@@ -337,7 +405,7 @@ end)
 
 ### `secret`
 
-没有读取函数。密钥只通过 `http.request` 的 `secret.id` 附带。
+没有读取函数。密钥只通过 `http.request` 的 `secret` 或 `secrets` 附带。原文不进脚本、存储、日志和确认页。
 
 用户在该工具卡片的「⋯」里点「填写密钥」。每一行左边是 `label`，右边是掩码输入，不回显已保存的值，也不显示密钥 id。关掉再打开，输入是空的。保存只写入填写了的行，空着的行保持原样。某一行没有写上时，界面是「「名称」没有写下」，不含密钥的值；已经写上的行仍然生效。清除删掉这个工具已声明的密钥，不再询问一次。
 
@@ -355,7 +423,7 @@ end)
 
 新导入的工具启用开关是打开的。程序使用数据目录里的副本，不移动、不删除用户原来的文件夹。
 
-同一 id 已经安装时，再导入视为更新。确认页标明是更新，并有一句「保留数据」。确认后用新副本替换旧副本。同一 id 已有的存储、密钥、窗口位置、大小、贴边和钉住保留。这扇窗口如果开着，按「生命周期」重载。未确认则不替换。
+同一 id 已经安装时，再导入视为更新。确认页标明是更新，并有一句「保留数据」。新版本多了密钥、固定请求头、主机名或提交权限时，这些句子出现在同一张确认页上，必须再确认一次。确认后用新副本替换旧副本。同一 id 已有的存储、密钥、窗口位置、大小、贴边和钉住保留。这扇窗口如果开着，按「生命周期」重载。未确认则不替换。
 
 从某一张卡片的「更新」选到的包，id 必须是这张卡片的。不是时显示「不是这个工具的更新包」，不打开确认，也不导入。「导入+」和拖入不按某一张卡片核对 id。
 
@@ -369,11 +437,13 @@ end)
 
 | 情况 | 界面 |
 | --- | --- |
-| 清单解析不了，字段、组件或服务不认识，id 不合法，域名不合法，`http` / `secret` 对不齐，文件过大，不是文件夹或 zip | 「清单无效」。不安装 |
+| 清单解析不了，字段、组件或服务不认识，id 不合法，域名不合法，请求头不合法，`http` / `secret` 对不齐，文件过大，不是文件夹或 zip | 「清单无效」。不安装 |
 | 副本上的清单超出已经确认的范围，或权限记录读不了 | 窗口显示「未授权」，脚本不跑 |
 | 脚本访问未授予的服务 | 「未授权」 |
-| GET 以外的方法 | 「不在范围内」 |
-| 地址无效，或附带密钥但不是 `https` | 「地址无效」 |
+| 未允许的 POST，或 GET、POST 以外的方法，或 GET 带了正文 | 「不在范围内」 |
+| POST 正文不是 JSON | 「数据无效」 |
+| POST 正文超过 64 KiB | 「数据过大」 |
+| 地址无效，附带密钥但不是 `https`，或这次请求的密钥头不合法 | 「地址无效」 |
 | 不附带密钥的明文 `http` | 「不允许明文 http」 |
 | 主机名不在已确认的清单里 | 「域名未允许」 |
 | 密钥未填写 | 「未填写密钥」 |

@@ -19,7 +19,7 @@
 //! HTTP 在另一条线程上连接和读取。脚本回调返回之后，宿主才按等待上限取结果并调用 Lua。等待上限的秒数仍待定，这次默认 5 秒。
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
@@ -31,7 +31,9 @@ use mlua::{
     Function, HookTriggers, Lua, LuaOptions, MultiValue, RegistryKey, StdLib, Table, Value, VmState,
 };
 
-use crate::http::{HttpDeny, HttpRequest, HttpTransport, Outgoing, SecretAttach, prepare};
+use crate::http::{
+    HttpDeny, HttpRequest, HttpTransport, Outgoing, ResolvedSecret, SecretAttach, prepare,
+};
 use crate::manifest::{Manifest, WidgetDecl, WidgetKind, load_dir};
 use crate::secret::SecretStore;
 
@@ -147,7 +149,7 @@ impl Default for Options {
 struct DenyTransport;
 
 impl HttpTransport for DenyTransport {
-    fn get(
+    fn send(
         &self,
         _request: &Outgoing,
     ) -> Result<crate::http::HttpResponse, crate::http::TransportError> {
@@ -225,8 +227,8 @@ struct Inner {
 struct Inflight {
     rx: mpsc::Receiver<Result<crate::http::HttpResponse, crate::http::TransportError>>,
     callback: RegistryKey,
-    secret: String,
-    header_value: Option<String>,
+    secrets: Vec<String>,
+    header_values: Vec<String>,
 }
 
 pub struct Session {
@@ -545,7 +547,7 @@ impl Session {
         };
         let (ok, status, body, error) = match response {
             Ok(Ok(response)) => {
-                if response_leaks(&response, &item.secret, item.header_value.as_deref()) {
+                if response_leaks(&response, &item.secrets, &item.header_values) {
                     let text = HttpDeny::RequestFailed.text().to_string();
                     self.inner.borrow_mut().note(&text);
                     (false, Some(response.status), String::new(), text)
@@ -1006,10 +1008,10 @@ fn coerced_len(value: &Value) -> Option<usize> {
 
 fn response_leaks(
     response: &crate::http::HttpResponse,
-    secret: &str,
-    header_value: Option<&str>,
+    secrets: &[String],
+    header_values: &[String],
 ) -> bool {
-    if secret.is_empty() {
+    if secrets.iter().all(|secret| secret.is_empty()) {
         return false;
     }
     let mut parts = Vec::with_capacity(1 + response.headers.len() * 2);
@@ -1018,7 +1020,10 @@ fn response_leaks(
         parts.push(name.as_str());
         parts.push(value.as_str());
     }
-    crate::http::response_exposes_secret(&parts, secret, header_value)
+    secrets.iter().enumerate().any(|(index, secret)| {
+        let header = header_values.get(index).map(String::as_str);
+        crate::http::response_exposes_secret(&parts, secret, header)
+    })
 }
 
 fn install_hook(lua: &Lua, limit: Arc<Limit>) -> Result<(), String> {
@@ -1431,7 +1436,11 @@ fn bind_http(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
 
 enum Gate {
     Deny(&'static str),
-    Send { outgoing: Outgoing, secret: String },
+    Send {
+        outgoing: Outgoing,
+        secrets: Vec<String>,
+        header_values: Vec<String>,
+    },
 }
 
 fn http_request(
@@ -1442,17 +1451,25 @@ fn http_request(
 ) -> mlua::Result<()> {
     let method: String = options.get("method").unwrap_or_default();
     let url: String = options.get("url").unwrap_or_default();
-    let secret = options
-        .get::<Option<Table>>("secret")?
-        .map(|table| SecretAttach {
-            id: table.get("id").unwrap_or_default(),
-            header: table.get("header").unwrap_or_default(),
-            prefix: table.get("prefix").unwrap_or_default(),
-        });
+    let secrets = match read_attaches(&options) {
+        Ok(secrets) => secrets,
+        Err(text) => {
+            inner.borrow_mut().note(text);
+            return deliver(lua, &callback, false, None, "", text);
+        }
+    };
+    let body = match read_body(&options) {
+        Ok(body) => body,
+        Err(text) => {
+            inner.borrow_mut().note(text);
+            return deliver(lua, &callback, false, None, "", text);
+        }
+    };
     let request = HttpRequest {
         method,
         url,
-        secret,
+        secrets,
+        body,
     };
     let gate = {
         let inner = inner.borrow();
@@ -1463,14 +1480,17 @@ fn http_request(
             inner.borrow_mut().note(text);
             deliver(lua, &callback, false, None, "", text)
         }
-        Gate::Send { outgoing, secret } => {
+        Gate::Send {
+            outgoing,
+            secrets,
+            header_values,
+        } => {
             let transport = Arc::clone(&inner.borrow().transport);
-            let header_value = outgoing.header_value.clone();
             let (tx, rx) = mpsc::channel();
             thread::Builder::new()
                 .name("toolhost-http".to_string())
                 .spawn(move || {
-                    let _ = tx.send(transport.get(&outgoing));
+                    let _ = tx.send(transport.send(&outgoing));
                 })
                 .map_err(|_| mlua::Error::runtime("请求失败"))?;
             let key = lua.create_registry_value(callback)?;
@@ -1479,47 +1499,160 @@ fn http_request(
             inner.inflight.push(Inflight {
                 rx,
                 callback: key,
-                secret,
-                header_value,
+                secrets,
+                header_values,
             });
             Ok(())
         }
     }
 }
 
+fn read_attaches(options: &Table) -> Result<Vec<SecretAttach>, &'static str> {
+    let one = options.get::<Value>("secret").map_err(|_| "地址无效")?;
+    let many = options.get::<Value>("secrets").map_err(|_| "地址无效")?;
+    match (one, many) {
+        (Value::Nil, Value::Nil) => Ok(Vec::new()),
+        (Value::Table(table), Value::Nil) => read_attach(&table).map(|item| vec![item]),
+        (Value::Nil, Value::Table(table)) => read_attach_list(&table),
+        _ => Err("地址无效"),
+    }
+}
+
+fn read_attach_list(table: &Table) -> Result<Vec<SecretAttach>, &'static str> {
+    if table.raw_len() == 0 && table.contains_key("id").unwrap_or(false) {
+        return Err("地址无效");
+    }
+    let mut secrets = Vec::new();
+    for index in 1..=table.raw_len() {
+        match table.get::<Value>(index).map_err(|_| "地址无效")? {
+            Value::Table(item) => secrets.push(read_attach(&item)?),
+            _ => return Err("地址无效"),
+        }
+    }
+    if secrets.len() > crate::http::SECRET_LIMIT {
+        return Err("地址无效");
+    }
+    Ok(secrets)
+}
+
+fn read_attach(table: &Table) -> Result<SecretAttach, &'static str> {
+    let Some(id) = field_string(table, "id")? else {
+        return Err("地址无效");
+    };
+    let header = field_string(table, "header")?.unwrap_or_default();
+    let prefix = field_string(table, "prefix")?;
+    Ok(SecretAttach {
+        id,
+        header,
+        prefix_set: prefix.is_some(),
+        prefix: prefix.unwrap_or_default(),
+    })
+}
+
+fn read_body(options: &Table) -> Result<Option<String>, &'static str> {
+    match options.get::<Value>("body").map_err(|_| "数据无效")? {
+        Value::Nil => Ok(None),
+        Value::String(text) => text
+            .to_str()
+            .map(|text| Some(text.to_string()))
+            .map_err(|_| "数据无效"),
+        _ => Err("数据无效"),
+    }
+}
+
+fn field_string(table: &Table, key: &str) -> Result<Option<String>, &'static str> {
+    match table.get::<Value>(key).map_err(|_| "地址无效")? {
+        Value::Nil => Ok(None),
+        Value::String(text) => text
+            .to_str()
+            .map(|text| Some(text.to_string()))
+            .map_err(|_| "地址无效"),
+        _ => Err("地址无效"),
+    }
+}
+
 fn decide(inner: &Inner, request: &HttpRequest) -> Gate {
-    let declared = request.secret.as_ref().is_some_and(|secret| {
-        inner
+    let mut seen = BTreeSet::new();
+    let mut resolved = Vec::new();
+    let mut raw = Vec::new();
+    for attach in &request.secrets {
+        if !seen.insert(attach.id.as_str()) {
+            return Gate::Deny(HttpDeny::BadAddress.text());
+        }
+        let Some(declared) = inner
             .manifest
             .secrets
             .iter()
-            .any(|item| item.id == secret.id)
-    });
-    let value = if let Some(secret) = &request.secret {
-        if declared {
-            match inner.store.borrow().read(&inner.manifest.id, &secret.id) {
-                Ok(value) => value,
-                Err(_) => return Gate::Deny(HttpDeny::RequestFailed.text()),
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let secret_text = value.clone().unwrap_or_default();
+            .find(|item| item.id == attach.id)
+        else {
+            return Gate::Deny(HttpDeny::SecretMissing.text());
+        };
+        let (header, prefix) = match binding(declared, attach) {
+            Ok(pair) => pair,
+            Err(text) => return Gate::Deny(text),
+        };
+        let value = match inner.store.borrow().read(&inner.manifest.id, &attach.id) {
+            Ok(Some(value)) if !value.is_empty() => value,
+            Ok(_) => return Gate::Deny(HttpDeny::SecretMissing.text()),
+            Err(_) => return Gate::Deny(HttpDeny::RequestFailed.text()),
+        };
+        raw.push(value.clone());
+        resolved.push(ResolvedSecret {
+            header,
+            prefix,
+            value,
+        });
+    }
     match prepare(
         request,
         &inner.manifest.domains,
-        value.as_deref(),
-        declared || request.secret.is_none(),
+        inner.manifest.post,
+        &inner.manifest.headers,
+        &resolved,
     ) {
-        Ok(outgoing) => Gate::Send {
-            outgoing,
-            secret: secret_text,
-        },
+        Ok(outgoing) => {
+            if outgoing.headers.len() < resolved.len() {
+                return Gate::Deny(HttpDeny::RequestFailed.text());
+            }
+            let start = outgoing.headers.len() - resolved.len();
+            let header_values = outgoing.headers[start..]
+                .iter()
+                .map(|(_, value)| value.clone())
+                .collect();
+            Gate::Send {
+                outgoing,
+                secrets: raw,
+                header_values,
+            }
+        }
         Err(deny) => Gate::Deny(deny.text()),
     }
+}
+
+fn binding(
+    declared: &crate::manifest::SecretDecl,
+    attach: &SecretAttach,
+) -> Result<(String, String), &'static str> {
+    let header = if let Some(declared_header) = &declared.header {
+        if attach.header.is_empty() || attach.header.eq_ignore_ascii_case(declared_header) {
+            declared_header.clone()
+        } else {
+            return Err(HttpDeny::BadAddress.text());
+        }
+    } else if attach.header.is_empty() {
+        return Err(HttpDeny::BadAddress.text());
+    } else {
+        attach.header.clone()
+    };
+    let prefix = if declared.header.is_some() {
+        if attach.prefix_set && attach.prefix != declared.prefix {
+            return Err(HttpDeny::BadAddress.text());
+        }
+        declared.prefix.clone()
+    } else {
+        attach.prefix.clone()
+    };
+    Ok((header, prefix))
 }
 
 fn deliver(
