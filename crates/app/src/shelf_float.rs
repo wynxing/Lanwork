@@ -1,6 +1,7 @@
 //! 收纳分组的悬浮窗：只显示该分组条目的独立窗口，使用时创建，关闭时释放。
 //!
 //! 同一分组已经有悬浮窗时只聚焦它，不把已经收起的细条展开。窗口始终在最上层。
+//! 拖动条、关闭、来源行和贴边在共用外壳里。这里只接分组条目、拖入拖出和关联待办。
 //! 每个分组记住自己的展开位置、大小和贴边：写进分组文件的 `floatWindow` 和 `floatDock`。
 //! 贴边对得上当前屏幕时按细条或展开的位置打开；对不上时丢掉贴边。
 //! 不贴边时，拖动、改大小、按记住的位置打开，以及内容把窗口撑大，整扇都留在所在显示器的工作区里。
@@ -499,9 +500,16 @@ fn wire(ui: &ShelfFloat, group_id: &str) {
         let id = id.clone();
         move || with_window(&id, |window, _| window.on_strip())
     });
-    ui.on_drag_window({
+    ui.on_drag_requested({
         let id = id.clone();
-        move || with_window(&id, |window, _| window.drag())
+        move || {
+            with_window(&id, |window, _| {
+                if !window.session.chrome().collapsed {
+                    window.ui.invoke_focus_float();
+                }
+                window.drag();
+            });
+        }
     });
     ui.on_flip_page({
         let id = id.clone();

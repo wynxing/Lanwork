@@ -433,6 +433,42 @@ mod tests {
     }
 
     #[test]
+    fn legacy_float_pin_keeps_geometry_dock_and_stack() {
+        let raw = r#"{
+            "schemaVersion": 1,
+            "id": "n1",
+            "title": "标题",
+            "body": "正文",
+            "pinned": true,
+            "floatWindow": {"x": 11, "y": 22, "width": 320, "height": 360},
+            "floatDock": {"edge": "right", "offset": 40, "collapsed": false},
+            "floatStack": {"id": "s1", "index": 1, "current": true},
+            "floatPinned": true
+        }"#;
+        let file: super::NoteFile = serde_json::from_str(raw).unwrap();
+        let note = file.into_note("n1".into()).unwrap();
+        assert!(note.pinned, "列表置顶和窗口钉住不是同一个字段");
+        assert_eq!(note.title, "标题");
+        assert_eq!(note.body, "正文");
+        assert_eq!(note.float.unwrap().x, 11);
+        assert_eq!(note.float.unwrap().width, 320);
+        assert_eq!(note.float_dock.unwrap().edge, super::DockEdge::Right);
+        assert_eq!(note.float_dock.unwrap().offset, 40);
+        assert_eq!(note.float_stack.as_ref().unwrap().id, "s1");
+        assert!(note.float_stack.as_ref().unwrap().current);
+        let saved = serde_json::to_string(&super::NoteFile::from_note(&note)).unwrap();
+        assert!(
+            !saved.contains("floatPinned"),
+            "旧的窗口钉住读进来之后不再写回"
+        );
+        assert!(saved.contains("floatWindow"));
+        assert!(saved.contains("floatDock"));
+        assert!(saved.contains("floatStack"));
+        assert!(saved.contains("s1"));
+        assert!(saved.contains("\"pinned\":true"));
+    }
+
+    #[test]
     fn empty_title_uses_the_shared_placeholder() {
         assert_eq!(display_title(""), EMPTY_TITLE_DISPLAY);
         assert_eq!(display_title(" "), EMPTY_TITLE_DISPLAY);

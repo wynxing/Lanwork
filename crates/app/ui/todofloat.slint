@@ -1,9 +1,10 @@
-// 待办悬浮窗。全程序只有一个：上沿一条可拖动的细条，右侧是关闭，下面一行来源，再下面是待办列表。
-// 可以勾选完成和取消完成。不能新建，也不能改标题。窗口始终在最上层。
-// 贴边收起时只留下一个小把手，窗口其余部分透明。风格与便签悬浮窗一致。
+// 待办悬浮窗的列表。拖动条、关闭、来源行和贴边把手在共用的 FloatChrome 里。
+// 没有钉住按钮，窗口始终在最上层。可以勾选完成和取消完成。不能新建，也不能改标题。
+// 来源行默认文字是「待办」。
 
-import { ListView, Palette } from "std-widgets.slint";
-import { Check, EdgeHandle, FloatSource, Ink } from "widgets.slint";
+import { ListView } from "std-widgets.slint";
+import { FloatChrome } from "float_shell.slint";
+import { Check, Ink } from "widgets.slint";
 
 export struct TodoFloatRow {
     title: string,
@@ -39,170 +40,89 @@ export component TodoFloat inherits Window {
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
     in property <[TodoFloatRow]> rows;
-    // 这个窗口没有单独的名称，来源行就是「待办」。
     in property <string> source: "待办";
 
     callback close-clicked();
-    callback drag-window();
+    callback drag-requested();
     callback strip-clicked();
-    // -1 向左，1 向右。勾选框是点击区域，不拿键盘焦点。
     callback flip-page(int);
     callback toggle-row(int);
 
-    property <Ink> c: {
-        ink: dark ? #ffffff : #1b1b1b,
-        secondary: dark ? #c5c5c5 : #5d5d5d,
-        tertiary: dark ? #9a9a9a : #767676,
-        divider: dark ? #ffffff17 : #00000014,
-        hover: dark ? #ffffff0d : #00000008,
-        selection: dark ? #ffffff14 : #0000000d,
-        field: dark ? #ffffff0a : #ffffff80,
-        accent: dark ? #60cdff : #005fb8,
-        critical: dark ? #ff99a4 : #c42b1c,
-    };
-    property <length> error-h: !collapsed && error != "" ? 24px : 0px;
-
-    // 布局检查用。列表从来源行和错误行下面开始，每一行 36px。
-    out property <length> content-y: collapsed ? 0px : 28px + source-row.height + error-h;
-    out property <length> source-y: source-row.absolute-position.y;
-    out property <length> source-h: source-row.height;
-    out property <bool> source-open: source-row.visible;
+    property <Ink> c: chrome.c;
+    // 错误画在列表上面，字号沿用原来的 12px。外壳底部那一行留给工具窗口。
+    property <length> row-error: root.error != "" ? 24px : 0px;
+    out property <length> content-y: chrome.content-y;
+    out property <length> source-y: chrome.source-y;
+    out property <length> source-h: chrome.source-h;
+    out property <bool> source-open: chrome.source-open;
     out property <length> row-h: 36px;
-    out property <bool> shows-empty: !collapsed && rows.length == 0;
-    out property <length> close-x: close-box.absolute-position.x;
-    out property <length> close-y: close-box.absolute-position.y;
-    out property <length> strip-x: edge-strip.absolute-position.x;
-    out property <length> strip-y: edge-strip.absolute-position.y;
-    out property <length> strip-width: edge-strip.width;
-    out property <length> strip-height: edge-strip.height;
-    out property <length> grip-width: edge-strip.grip-width;
-    out property <length> grip-height: edge-strip.grip-height;
+    out property <bool> shows-empty: !root.collapsed && rows.length == 0;
+    out property <length> close-x: chrome.close-x;
+    out property <length> close-y: chrome.close-y;
+    out property <length> strip-x: chrome.strip-x;
+    out property <length> strip-y: chrome.strip-y;
+    out property <length> strip-width: chrome.strip-width;
+    out property <length> strip-height: chrome.strip-height;
+    out property <length> grip-width: chrome.grip-width;
+    out property <length> grip-height: chrome.grip-height;
 
     background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
     init => {
-        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
         float-scope.focus();
-    }
-    changed dark => {
-        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
     }
 
     public function focus-float() {
         float-scope.focus();
     }
 
-    float-scope := FocusScope {
-        key-pressed(event) => {
-            if root.stack-pages > 1 && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
-                root.flip-page(event.text == Key.LeftArrow ? -1 : 1);
-                return accept;
-            }
-            reject
+    chrome := FloatChrome {
+        dark: root.dark;
+        collapsed: root.collapsed;
+        dock-edge: root.dock-edge;
+        source: root.source;
+        stack-pages: root.stack-pages;
+        stack-index: root.stack-index;
+        show-pin: false;
+        show-source: true;
+        error-in-chrome: false;
+
+        close-clicked => {
+            root.close-clicked();
+        }
+        drag-requested => {
+            root.drag-requested();
+        }
+        strip-clicked => {
+            root.strip-clicked();
         }
 
-        if !collapsed: Rectangle {
-            x: 0px;
-            y: 0px;
-            width: parent.width;
-            height: 28px;
-
-            TouchArea {
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                        float-scope.focus();
-                        root.drag-window();
-                    }
-                }
-            }
-        }
-
-        close-box := Rectangle {
-            x: parent.width - 28px;
-            y: 0px;
-            width: 28px;
-            height: 28px;
-            visible: !collapsed;
-            background: close-touch.has-hover ? c.hover : transparent;
-
-            Path {
-                x: 9px;
-                y: 9px;
-                width: 10px;
-                height: 10px;
-                viewbox-width: 10;
-                viewbox-height: 10;
-                fill: transparent;
-                stroke: c.secondary;
-                stroke-width: 1.2px;
-                commands: "M1 1l8 8 M9 1l-8 8";
-            }
-
-            close-touch := TouchArea {
-                clicked => {
-                    root.close-clicked();
-                }
-            }
-        }
-
-        if collapsed: EdgeHandle {
-            x: 0px;
-            y: 0px;
-            dark: root.dark;
-            along-vertical: dock-edge != "top";
-            press-drags: true;
-            pages: root.stack-pages;
-            page-index: root.stack-index;
-            pressed => {
-                root.drag-window();
-            }
-        }
-
-        source-row := FloatSource {
-            x: 0px;
-            y: 28px;
-            width: parent.width;
-            visible: !collapsed;
-            source: root.source;
-            ink: c.tertiary;
-        }
-
-        edge-strip := EdgeHandle {
-            x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
-            y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
-            visible: !collapsed && dock-edge != "";
-            dark: root.dark;
-            along-vertical: dock-edge != "top";
-            clicked => {
-                root.strip-clicked();
-            }
-        }
-
-        if !collapsed && error != "": Text {
+        if root.error != "": Text {
             x: 12px;
-            y: 28px + source-row.height;
+            y: 0px;
             width: parent.width - 24px;
-            height: 24px;
-            text: error;
-            color: c.critical;
+            height: root.row-error;
+            text: root.error;
+            color: root.c.critical;
             font-size: 12px;
             vertical-alignment: center;
             overflow: elide;
         }
 
-        if !collapsed && rows.length == 0: Text {
+        if rows.length == 0: Text {
             x: 16px;
-            y: root.content-y + 12px;
+            y: root.row-error + 12px;
             text: "没有待办";
-            color: c.secondary;
+            color: root.c.secondary;
             font-size: 14px;
         }
 
-        if !collapsed: list := ListView {
+        list := ListView {
             x: 0px;
-            y: root.content-y;
+            y: root.row-error;
             width: parent.width;
-            height: parent.height - root.content-y;
+            // `@children` 的 parent.height 是整窗，不是内容槽。
+            height: root.height - 28px - 20px - root.row-error;
 
             for row[index] in rows: Rectangle {
                 height: root.row-h;
@@ -229,6 +149,22 @@ export component TodoFloat inherits Window {
                     overflow: elide;
                 }
             }
+        }
+    }
+
+    // 收起时内容槽藏起来。翻页键留在窗口上。勾选框不拿键盘焦点。
+    float-scope := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 0px;
+        height: 0px;
+
+        key-pressed(event) => {
+            if root.stack-pages > 1 && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                root.flip-page(event.text == Key.LeftArrow ? -1 : 1);
+                return accept;
+            }
+            reject
         }
     }
 }

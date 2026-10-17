@@ -511,6 +511,8 @@ fn source_line_is_a_single_quiet_row_and_each_page_keeps_its_own() {
     note.show().expect("show");
     slint::platform::update_timers_and_animations();
     assert_eq!(note.get_source().as_str(), long, "名称不在数据里截断");
+    assert!(!note.get_pin_drawn(), "便签悬浮窗没有钉住按钮");
+    assert!(note.get_above_ordinary(), "便签悬浮窗始终在最上层");
     assert_eq!(note.get_source_y(), TITLE_STRIP);
     assert_eq!(note.get_source_h(), SOURCE_ROW);
     assert_eq!(note.get_body_y(), TITLE_STRIP + SOURCE_ROW);
@@ -536,17 +538,26 @@ fn source_line_is_a_single_quiet_row_and_each_page_keeps_its_own() {
     slint::platform::update_timers_and_animations();
     assert!(!note.get_source_open(), "收起的把手不显示来源行");
 
+    let shell = include_str!("../ui/float_shell.slint");
+    assert!(
+        shell.contains("source-row := FloatSource"),
+        "来源行画在共用外壳上"
+    );
+    assert!(shell.contains("y: 28px;"), "来源行应在拖动条下面");
+    assert!(
+        shell.contains("visible: root.source-band > 0px;"),
+        "收起或工具窗口不显示来源行"
+    );
     for (name, source) in [
         ("notefloat.slint", include_str!("../ui/notefloat.slint")),
         ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
         ("todofloat.slint", include_str!("../ui/todofloat.slint")),
     ] {
         assert!(
-            source.contains("source-row := FloatSource"),
-            "{name} 没有来源行"
+            source.contains("chrome := FloatChrome"),
+            "{name} 应把内容放进共用外壳"
         );
-        assert!(source.contains("y: 28px;"), "{name} 的来源行应在拖动条下面");
-        assert!(source.contains("visible: !"), "{name} 收起时应藏起来源行");
+        assert!(source.contains("show-source: true;"), "{name} 应打开来源行");
     }
     let group = include_str!("float_group.rs");
     assert!(group.contains("note_float::present"));
@@ -863,6 +874,26 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     assert!(!shell.get_error_drawn());
     assert_eq!(shell.get_content_height(), height - TITLE_STRIP);
 
+    shell.set_show_source(true);
+    shell.set_source("便签 · 甲".into());
+    slint::platform::update_timers_and_animations();
+    assert!(shell.get_source_drawn(), "打开来源行才画");
+    assert_eq!(shell.get_source_y(), TITLE_STRIP);
+    assert_eq!(shell.get_source_h(), SOURCE_ROW);
+    assert_eq!(shell.get_content_y(), TITLE_STRIP + SOURCE_ROW);
+    shell.set_show_pin(false);
+    slint::platform::update_timers_and_animations();
+    assert!(!shell.get_pin_drawn(), "关掉钉住后按钮不在");
+    assert_eq!(shell.get_close_x(), 320.0 - 28.0, "关闭仍在右上");
+    shell.set_show_pin(true);
+    shell.set_show_source(false);
+    shell.set_source("".into());
+    slint::platform::update_timers_and_animations();
+    assert!(shell.get_pin_drawn());
+    assert!(!shell.get_source_drawn(), "工具默认不画来源行");
+    assert_eq!(shell.get_content_y(), TITLE_STRIP);
+    assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
+
     let pins = Rc::new(Cell::new(0));
     let closes = Rc::new(Cell::new(0));
     let drags = Rc::new(Cell::new(0));
@@ -940,8 +971,8 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     assert!(source.contains("resize-border-width: thin ? 0px : 6px;"));
     assert!(source.contains("min-width: thin ? 1px : min(200px, limit-width);"));
     assert!(source.contains("min-height: thin ? 1px : min(120px, limit-height);"));
-    assert!(!source.contains("FloatSource"));
-    assert!(source.contains("source-drawn: false"));
+    assert!(source.contains("show-source: false"));
+    assert!(source.contains("source-row.visible"));
 
     let _probe = FloatShellProbe::new().expect("内容槽能放进子元素");
 }
