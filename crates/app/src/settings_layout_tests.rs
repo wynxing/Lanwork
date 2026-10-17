@@ -10,7 +10,10 @@ use slint::platform::software_renderer::RepaintBufferType;
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use crate::{ImportLine, Panel, SettingsBackup, SettingsHiddenApp, SettingsPageData};
+use crate::{
+    ImportLine, Panel, SettingsBackup, SettingsExternalClient, SettingsHiddenApp,
+    SettingsLayoutBox, SettingsPageData,
+};
 
 struct Headless(Rc<MinimalSoftwareWindow>);
 
@@ -381,4 +384,260 @@ fn backup_restore_sits_on_the_row_and_stays_quiet_while_confirming() {
     slint::platform::update_timers_and_animations();
     click(&ui, x, first);
     assert_eq!(restored.borrow().len(), 2, "备份进行中不再恢复");
+}
+
+fn draw(window: &Rc<MinimalSoftwareWindow>) {
+    window.request_redraw();
+    let _ = window.draw_if_needed(|renderer| {
+        use slint::platform::software_renderer::Rgb565Pixel;
+        let mut buffer = vec![Rgb565Pixel(0); (WIDTH * HEIGHT) as usize];
+        renderer.render(&mut buffer, WIDTH as usize);
+    });
+}
+
+fn pump(ui: &Panel, window: &Rc<MinimalSoftwareWindow>) {
+    let data = ui.global::<SettingsPageData>();
+    // 条件刚成立时元素还不在，changed 不会跑。先画一帧再改 tick，几何才会写出来。
+    slint::platform::update_timers_and_animations();
+    draw(window);
+    data.set_layout_tick(data.get_layout_tick() + 1);
+    slint::platform::update_timers_and_animations();
+    draw(window);
+    data.set_layout_tick(data.get_layout_tick() + 1);
+    slint::platform::update_timers_and_animations();
+    draw(window);
+}
+
+fn overlaps(a: &SettingsLayoutBox, b: &SettingsLayoutBox) -> bool {
+    a.shown
+        && b.shown
+        && a.w > 0.0
+        && a.h > 0.0
+        && b.w > 0.0
+        && b.h > 0.0
+        && a.x < b.x + b.w
+        && b.x < a.x + a.w
+        && a.y < b.y + b.h
+        && b.y < a.y + a.h
+}
+
+fn assert_apart(label: &str, a: &SettingsLayoutBox, b: &SettingsLayoutBox) {
+    assert!(
+        !overlaps(a, b),
+        "{label} 重叠 ({}, {}, {}, {}) 与 ({}, {}, {}, {})",
+        a.x,
+        a.y,
+        a.w,
+        a.h,
+        b.x,
+        b.y,
+        b.w,
+        b.h
+    );
+}
+
+fn assert_same_left(label: &str, item: &SettingsLayoutBox, row: &SettingsLayoutBox) {
+    assert!(item.shown, "{label} 没有摆出来");
+    assert_eq!(item.x, row.x, "{label} 左缘与这一列文字不一致");
+    assert!(
+        item.x + item.w <= row.x + row.w + 0.5,
+        "{label} 超出右缘 {} > {}",
+        item.x + item.w,
+        row.x + row.w
+    );
+}
+
+/// 1024 物理像素、150% 缩放，再减去面板两侧 24 的边距。常见的偏窄 Windows 宽度。
+const NARROW_PANEL: f32 = 634.0;
+
+fn load_external(
+    ui: &Panel,
+    window: &Rc<MinimalSoftwareWindow>,
+    with_clients: bool,
+    unavailable: bool,
+) {
+    let data = ui.global::<SettingsPageData>();
+    data.set_external_ai(true);
+    data.set_external_unavailable(unavailable);
+    data.set_external_endpoint(
+        "http://127.0.0.1:39217/mcp/clients/abcdefghijklmnopqrstuvwxyz".into(),
+    );
+    if with_clients {
+        data.set_external_token(
+            "lw_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+        );
+        data.set_external_clients(ModelRc::new(VecModel::from(vec![
+            SettingsExternalClient {
+                name: "一个很长的客户端名称用来确认不会压住状态和撤销".into(),
+                status: "已连接".into(),
+            },
+            SettingsExternalClient {
+                name: "Cursor".into(),
+                status: "未连接".into(),
+            },
+        ])));
+    } else {
+        data.set_external_token("".into());
+        data.set_external_clients(ModelRc::new(VecModel::from(
+            Vec::<SettingsExternalClient>::new(),
+        )));
+    }
+    pump(ui, window);
+}
+
+fn assert_external_section(
+    ui: &Panel,
+    window: &Rc<MinimalSoftwareWindow>,
+    panel_width: f32,
+    with_clients: bool,
+    unavailable: bool,
+) {
+    ui.set_panel_width(panel_width);
+    load_external(ui, window, with_clients, unavailable);
+    let data = ui.global::<SettingsPageData>();
+    let row = data.get_external_row();
+    let switch = data.get_external_switch();
+    let field = data.get_external_field();
+    let auth = data.get_external_auth();
+    let token = data.get_external_token_box();
+    let endpoint = data.get_external_endpoint_box();
+    let empty = data.get_external_empty();
+    let name = data.get_external_client_name();
+    let status = data.get_external_client_status();
+    let revoke = data.get_external_revoke();
+    let unavail = data.get_external_unavail();
+
+    let content = panel_width - 132.0 - 32.0;
+    assert!(row.shown, "外部 AI 行没有摆出来");
+    assert!(
+        (row.w - content).abs() < 1.0,
+        "行宽 {}，这一列应是 {}",
+        row.w,
+        content
+    );
+    assert_eq!(switch.x, row.x + 120.0, "开关与其它控件左缘一致");
+    assert_eq!(switch.w, 40.0);
+    assert!(switch.h > 0.0);
+
+    assert!(field.shown, "名称框没有摆出来");
+    assert!(auth.shown, "授权按钮没有摆出来");
+    assert_same_left("名称", &field, &row);
+    assert_eq!(field.w, 180.0, "名称框宽度");
+    assert_eq!(field.h, 30.0, "名称框与其它输入同高");
+    assert_eq!(auth.h, field.h, "授权与名称同高");
+    assert_eq!(auth.y, field.y, "授权与名称同一行");
+    assert_eq!(auth.x, field.x + field.w + 8.0, "名称和授权间隔 8");
+    assert!(auth.w > 20.0, "授权按钮没有宽度");
+    assert_apart("名称和授权", &field, &auth);
+    assert!(auth.x + auth.w <= row.x + row.w + 0.5, "授权超出右缘");
+    assert!(field.y >= row.y + row.h - 0.5, "名称应在开关行下面");
+
+    assert_same_left("端点", &endpoint, &row);
+    assert!(endpoint.h > 0.0);
+    assert_apart("名称和端点", &field, &endpoint);
+
+    if with_clients {
+        assert!(!empty.shown, "有客户端时不显示空状态");
+        assert_same_left("token", &token, &row);
+        assert_eq!(token.h, 30.0, "token 框与输入同高");
+        assert!(
+            (token.w - row.w).abs() < 1.0,
+            "token 框应铺满这一列 {} != {}",
+            token.w,
+            row.w
+        );
+        assert_apart("名称和 token", &field, &token);
+        assert_apart("token 和端点", &token, &endpoint);
+        assert!(token.y >= field.y + field.h - 0.5);
+        assert!(endpoint.y >= token.y + token.h - 0.5);
+
+        assert_same_left("客户端名称", &name, &row);
+        assert!(status.shown && revoke.shown);
+        assert_eq!(name.y, status.y, "状态与名称同一行");
+        assert_eq!(
+            revoke.y + revoke.h / 2.0,
+            name.y + name.h / 2.0,
+            "撤销垂直居中"
+        );
+        assert!(
+            name.x + name.w <= status.x + 0.5,
+            "名称压住状态 {} > {}",
+            name.x + name.w,
+            status.x
+        );
+        assert!(
+            status.x + status.w <= revoke.x + 0.5,
+            "状态压住撤销 {} > {}",
+            status.x + status.w,
+            revoke.x
+        );
+        assert_apart("名称和状态", &name, &status);
+        assert_apart("状态和撤销", &status, &revoke);
+        assert_apart("名称和撤销", &name, &revoke);
+        assert!(revoke.x + revoke.w <= row.x + row.w + 0.5, "撤销超出右缘");
+        assert!(name.y >= endpoint.y + endpoint.h - 0.5);
+        assert_apart("端点和客户端", &endpoint, &name);
+    } else {
+        assert!(!token.shown, "没有 token 时不显示原文");
+        assert!(!name.shown, "没有客户端时不显示列表");
+        assert_same_left("没有客户端", &empty, &row);
+        assert!(empty.y >= endpoint.y + endpoint.h - 0.5);
+        assert_apart("端点和空状态", &endpoint, &empty);
+        assert_apart("名称和空状态", &field, &empty);
+    }
+
+    if unavailable {
+        assert!(unavail.shown, "无法监听没有摆出来");
+        assert!(
+            unavail.x >= switch.x + switch.w - 0.5,
+            "无法监听压住开关 {} < {}",
+            unavail.x,
+            switch.x + switch.w
+        );
+        assert!(
+            unavail.x + unavail.w <= row.x + row.w + 0.5,
+            "无法监听超出右缘"
+        );
+        assert!(unavail.y >= row.y - 0.5 && unavail.y + unavail.h <= row.y + row.h + 0.5);
+        assert_apart("无法监听和开关", &unavail, &switch);
+        assert_apart("无法监听和名称", &unavail, &field);
+    } else {
+        assert!(!unavail.shown);
+    }
+}
+
+#[test]
+fn external_ai_name_field_and_authorize_button_do_not_overlap() {
+    let (ui, window) = open(false);
+    open_section(&ui, 3.0);
+    let data = ui.global::<SettingsPageData>();
+    let authorizes = Rc::new(Cell::new(0));
+    let revokes = Rc::new(RefCell::new(Vec::new()));
+    {
+        let authorizes = Rc::clone(&authorizes);
+        data.on_authorize_external(move || authorizes.set(authorizes.get() + 1));
+        let revokes = Rc::clone(&revokes);
+        data.on_revoke_external(move |index| revokes.borrow_mut().push(index));
+    }
+
+    for width in [WIDTH as f32, NARROW_PANEL] {
+        assert_external_section(&ui, &window, width, true, true);
+        assert_external_section(&ui, &window, width, false, false);
+        assert_external_section(&ui, &window, width, true, false);
+    }
+
+    // 点名称占位符不应点到盖在上面的「授权」。再点按钮本身才授权。
+    let data = ui.global::<SettingsPageData>();
+    let field = data.get_external_field();
+    let auth = data.get_external_auth();
+    click(&ui, field.x + 14.0, field.y + field.h / 2.0);
+    assert_eq!(authorizes.get(), 0, "名称左侧被授权挡住了");
+    click(&ui, auth.x + auth.w / 2.0, auth.y + auth.h / 2.0);
+    assert_eq!(authorizes.get(), 1, "授权按钮能点到");
+
+    assert_external_section(&ui, &window, WIDTH as f32, true, false);
+    let data = ui.global::<SettingsPageData>();
+    let revoke = data.get_external_revoke();
+    click(&ui, revoke.x + revoke.w / 2.0, revoke.y + revoke.h / 2.0);
+    assert_eq!(*revokes.borrow(), [0], "撤销点到第一行");
 }
