@@ -8,7 +8,7 @@
 
 mod atomic;
 
-pub(crate) use atomic::set_before_replace;
+pub(crate) use atomic::{set_before_replace, without_before_replace};
 mod boot;
 mod change;
 mod error;

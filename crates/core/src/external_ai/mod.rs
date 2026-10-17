@@ -424,7 +424,7 @@ impl ExternalAi {
         self.shared.session_idle_ms.store(millis, Ordering::Release);
     }
 
-    /// 测试在替换正式文件之前插入动作。
+    /// 测试在向前替换正式文件之前插入动作。回滚和修复不调用它。
     #[cfg(test)]
     pub fn set_replace_probe(&self, probe: Option<Arc<dyn Fn() + Send + Sync>>) {
         *lock_mutex(&self.shared.replace_probe) = probe;
@@ -607,7 +607,9 @@ impl Shared {
         self.notify(Notice::Conflict);
     }
 
-    /// 替换正式文件之前再看一次未写盘的修改。看见了就不替换，磁盘保持原字节。
+    /// 每一次向前替换之前再看一次未写盘的修改。看见了就不替换。
+    ///
+    /// 一次写入里前面已经换过的文件，由待办服务写回操作前的内容。那次回写和修复不走这个检查。
     fn guarded_todo<T>(
         &self,
         id: &str,
@@ -1059,6 +1061,53 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(ai.shared.todos.item(&id).unwrap().item.title, "本机");
         assert_eq!(ai.conflicts()[0].client, "Claude");
+        ai.set_replace_probe(None);
+        ai.shutdown();
+    }
+
+    #[test]
+    fn a_keystroke_during_the_second_replace_of_a_move_restores_both_files() {
+        let (_temp, ai) = opened();
+        ai.set_enabled_at(true, 0).unwrap();
+        let issued = ai.authorize("Claude").unwrap();
+        let source = ai.shared.todos.create_list("来源").unwrap();
+        let target = ai.shared.todos.create_list("目标").unwrap();
+        let created = ai
+            .shared
+            .invoke(
+                &issued.token,
+                "create_todo",
+                &json!({ "title": "本机", "listId": source }),
+            )
+            .unwrap();
+        let id = created["id"].as_str().unwrap().to_owned();
+        let revision = created["revision"].as_u64().unwrap();
+        let dir = ai.shared.store.data_dir().join("todos");
+        let source_path = dir.join(format!("{source}.json"));
+        let target_path = dir.join(format!("{target}.json"));
+        let source_before = std::fs::read(&source_path).unwrap();
+        let target_before = std::fs::read(&target_path).unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_probe = Arc::clone(&hits);
+        let marker = ai.clone();
+        let marked = id.clone();
+        ai.set_replace_probe(Some(Arc::new(move || {
+            if hits_probe.fetch_add(1, Ordering::SeqCst) == 1 {
+                marker.set_dirty(HashSet::from([marked.clone()]));
+            }
+        })));
+        let conflict = ai.shared.invoke(
+            &issued.token,
+            "update_todo",
+            &json!({ "id": id, "revision": revision, "listId": target }),
+        );
+        assert_eq!(conflict.unwrap_err(), format!("待办保存冲突：{id}"));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(&source_path).unwrap(), source_before);
+        assert_eq!(std::fs::read(&target_path).unwrap(), target_before);
+        let stored = ai.shared.todos.item(&id).unwrap();
+        assert_eq!(stored.list_id, source);
+        assert_eq!(stored.item.title, "本机");
         ai.set_replace_probe(None);
         ai.shutdown();
     }

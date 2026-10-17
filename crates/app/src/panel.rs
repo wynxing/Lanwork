@@ -580,6 +580,7 @@ impl Controller {
             self.settings.entered(&self.ui);
         } else {
             self.settings.cancel_recording(&self.ui);
+            self.settings.stop_session_refresh();
         }
         self.push_conflict();
     }
@@ -670,6 +671,7 @@ impl Controller {
     fn hide(&mut self) {
         self.exit_triage();
         self.settings.cancel_recording(&self.ui);
+        self.settings.stop_session_refresh();
         self.apps.dismiss(&self.ui);
         self.visible = false;
         self.error = None;
@@ -702,6 +704,7 @@ impl Controller {
         self.ui.set_tab(i32::try_from(tab.index()).unwrap_or(0));
         if tab != PanelTab::Settings {
             self.settings.cancel_recording(&self.ui);
+            self.settings.stop_session_refresh();
         }
         if tab != PanelTab::Apps {
             self.apps.dismiss(&self.ui);

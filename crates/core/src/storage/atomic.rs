@@ -17,9 +17,28 @@ thread_local! {
 
 /// 替换正式文件之前调用。返回假则删掉临时文件，不改正式文件。
 ///
-/// 只影响当前线程。外部写入用它在落盘前再看一次未写盘的修改。
+/// 只影响当前线程。外部写入用它在向前落盘前再看一次未写盘的修改。
+/// 回滚和修复用 [`without_before_replace`]，这段时间不调用钩子。
 pub(crate) fn set_before_replace(hook: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {
     BEFORE_REPLACE.with(|slot| *slot.borrow_mut() = hook);
+}
+
+/// 暂时卸下当前线程的替换钩子。`body` 里的替换照常落盘，结束时把钩子装回去。
+pub(crate) fn without_before_replace<T>(body: impl FnOnce() -> T) -> T {
+    let previous = BEFORE_REPLACE.with(|slot| slot.borrow_mut().take());
+    let _restore = RestoreHook { previous };
+    body()
+}
+
+struct RestoreHook {
+    previous: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
+
+impl Drop for RestoreHook {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        BEFORE_REPLACE.with(|slot| *slot.borrow_mut() = previous);
+    }
 }
 
 pub(crate) fn is_replace_aborted(err: &io::Error) -> bool {

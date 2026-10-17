@@ -1213,6 +1213,15 @@ impl Service {
     }
 
     fn write_preimage(&self, previous: &[TodoList], replaced: &[String]) -> Result<(), TodoError> {
+        // 外部写入的替换检查只拦住向前的替换。写回操作前内容时必须落盘。
+        crate::storage::without_before_replace(|| self.write_preimage_holding(previous, replaced))
+    }
+
+    fn write_preimage_holding(
+        &self,
+        previous: &[TodoList],
+        replaced: &[String],
+    ) -> Result<(), TodoError> {
         if let Some(err) = self.injected_rollback_failure() {
             return Err(err);
         }
@@ -1239,6 +1248,11 @@ impl Service {
     /// 修复写回不提交批次：这条命令仍要返回错误，不发布 `EntityChanged`。
     /// 读盘或修复写回再失败时返回那个错误，并卸下内存，避免接着用和磁盘不一致的原内容。
     fn repair_partial(&self, original: TodoError) -> Result<(), TodoError> {
+        // 修复写回同样不走外部写入的替换检查，否则服务会被卸下，磁盘留下重复条目。
+        crate::storage::without_before_replace(|| self.repair_partial_holding(original))
+    }
+
+    fn repair_partial_holding(&self, original: TodoError) -> Result<(), TodoError> {
         if let Some(hook) = self.take_before_reread() {
             hook();
         }

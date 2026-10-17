@@ -78,6 +78,8 @@ pub(crate) struct SettingsPage {
     /// 刚授权的那一把原文。只放在界面上，不写日志。关掉开关、撤销或再次授权后清掉。
     shown_token: RefCell<Option<(String, String)>>,
     external_name_reset: Cell<i32>,
+    /// 设置页开着时刷新「已连接」。会话空闲后这一行自己回到「未连接」。
+    session_timer: slint::Timer,
 }
 
 enum Hold {
@@ -172,6 +174,7 @@ impl SettingsPage {
             external_name: RefCell::new(String::new()),
             shown_token: RefCell::new(None),
             external_name_reset: Cell::new(0),
+            session_timer: slint::Timer::default(),
         };
         page.push(ui);
         page
@@ -186,6 +189,22 @@ impl SettingsPage {
     pub(crate) fn entered(&mut self, ui: &Panel) {
         self.cancel_recording(ui);
         self.push(ui);
+        self.start_session_refresh();
+    }
+
+    /// 离开设置标签或面板收起时调用。停掉「已连接」的刷新。
+    pub(crate) fn stop_session_refresh(&self) {
+        self.session_timer.stop();
+    }
+
+    fn start_session_refresh(&self) {
+        if self.session_timer.running() {
+            return;
+        }
+        self.session_timer
+            .start(slint::TimerMode::Repeated, Duration::from_secs(1), || {
+                with_settings(|page, ui| page.push_external(ui))
+            });
     }
 
     /// 离开设置标签、面板收起或失焦、进程退出时调用。正在录入就放弃，并把热键注册回去。

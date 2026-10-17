@@ -31,6 +31,7 @@ pub(super) fn accept_loop(listener: TcpListener, shared: Arc<Shared>, shutdown: 
                 }
                 if !try_acquire(&shared) {
                     let mut stream = stream;
+                    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
                     let _ = stream.write_all(&http_response(
                         503,
                         "Service Unavailable",
