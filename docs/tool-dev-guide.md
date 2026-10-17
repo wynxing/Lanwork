@@ -56,6 +56,8 @@ domains = ["api.example.com"]
 [[secret]]
 id = "api_key"
 label = "API 密钥"
+header = "Authorization"
+prefix = "Bearer "
 
 [[component]]
 id = "summary"
@@ -75,7 +77,8 @@ component = "progress"
 | `entry` | 入口脚本的相对路径 |
 | `services` | 字符串数组。可以是空的。名字只能是下表里的服务。同一个名字写两次，按一次算 |
 | `http` | 仅当 `services` 含 `http`。表里可以有 `domains`、`post`、`headers` |
-| `secret` | 仅当 `services` 含 `secret`。数组，至少一项。每项有 `id` 和 `label`，还可以有 `header` 和 `prefix` |
+| `secret` | 仅当 `services` 含 `secret`。数组，至少一项。每项有 `id`、`label` 和 `header`，`prefix` 可以不写 |
+| `usage` | 可以不写。数组，至少一项。每项只有 `source`，只能是 `chatgpt`、`claude` 或 `grok`。这不是 `services` 里的名字 |
 | `component` | 数组，必须有这个键，可以是空的。内容区从上到下排 |
 
 `services` 里有 `http` 就必须有 `[http]`，有 `[http]` 就必须声明 `http`。`secret` 一样。对不齐就是「清单无效」。
@@ -90,19 +93,22 @@ component = "progress"
 | `todo.read` | 读取你的待办 |
 | `todo.complete` | 完成你的待办 |
 | `http` | 每个域名一句「访问 <主机名>」，不另写「联网」。`post = true` 时，每个域名紧接着「向 <主机> 提交数据」。每个固定请求头一句「请求头 <名称>: <值>」 |
-| `secret` | 每个密钥一句「使用你填写的<名称>」 |
+| `secret` | 每个密钥一句。没有前缀时是「使用你填写的 <名称>，请求头 <名称>」。写了前缀再接「，前缀 <前缀>」，前缀按清单逐字显示，末尾空格也留着 |
+| `usage` | 每个来源一句：「使用本机的 ChatGPT 登录」「使用本机的 Claude 登录」或「使用本机的 Grok 登录」 |
 
-句子顺序是固定的，不跟着 `services` 数组的书写顺序。先按清单顺序，每个域名一句「访问」，允许提交时紧接着「向 <主机> 提交数据」。然后按清单顺序列出每个固定请求头，再按清单顺序列出每个密钥名称，然后是通知、读取待办、完成待办、保存数据、定时刷新。额度示例的三句是：
+句子顺序是固定的，不跟着 `services` 数组的书写顺序。先按清单顺序，每个域名一句「访问」，允许提交时紧接着「向 <主机> 提交数据」。然后按清单顺序列出每个固定请求头，再按清单顺序列出每个密钥，再按清单顺序列出每个本机登录来源，然后是通知、读取待办、完成待办、保存数据、定时刷新。额度示例的三句是：
 
 ```text
 访问 api.example.com
-使用你填写的 API 密钥
+使用你填写的 API 密钥，请求头 Authorization，前缀 Bearer 
 定时刷新
 ```
 
-确认页上没有密钥的值，也没有密钥 id。固定请求头的值会写在确认页上，不要把密钥填进 `headers`。
+确认页上没有密钥的值，也没有密钥 id。固定请求头的值会写在确认页上，不要把密钥填进 `headers`。密钥的请求头名字和前缀会出现在确认页上，值不会。
 
-更新时确认页仍整份列出这些句子。新版本比上次确认多了密钥、固定请求头、主机名或 `post`，必须再确认一次，新的那几句就在这份列表里。导出包和备份的那一次确认用同一套句子。
+更新时确认页仍整份列出这些句子。新版本比上次确认多了密钥、改了或拿掉密钥的请求头或前缀、多了固定请求头、主机名、`post` 或本机登录来源，必须再确认一次，新的那几句就在这份列表里。只改密钥的 `label` 不用再确认。少了来源或少了密钥不算扩大。导出包和备份的那一次确认用同一套句子。
+
+已经确认过、但授权记录里没有请求头的旧工具，窗口显示「未授权」，要再确认一次。清单里不写 `header` 的密钥不安装。
 
 ### id
 
@@ -179,7 +185,7 @@ header = "ChatGPT-Account-Id"
 
 声明了 `User-Agent` 就用这条替换默认的 `Lanwork`，只发出一条。没声明时仍是 `User-Agent: Lanwork`。`Accept` 没声明时仍是 `*/*`。
 
-密钥的 `header` 和 `prefix` 都可以不写。写了 `prefix` 就必须写 `header`。`prefix` 是值前面的字，例如 `Bearer `，可以是空字符串，只含可打印 ASCII，最长 128，不能含回车换行。同一个工具里，密钥声明的请求头也不能彼此重名。
+每个要发出的密钥都必须写 `header`。`prefix` 可以不写，不写等于空字符串。写了 `prefix` 却没有 `header` 时不安装，说明是「写了前缀但没有请求头」。没写 `header` 时不安装，说明是「密钥没有请求头」。`prefix` 是值前面的字，例如 `Bearer `，可以是空字符串，只含可打印 ASCII，最长 128，不能含回车换行。同一个工具里，密钥声明的请求头也不能彼此重名。脚本不能另选请求头的名字。
 
 ## 组件
 
@@ -265,6 +271,8 @@ header = "ChatGPT-Account-Id"
 
 `secret` 声明了之后会有一个空表 `secret`，上面没有读取函数。没声明时，读 `secret` 也是「未授权」。
 
+`usage` 不是 `services` 里的名字。清单写了 `[[usage]]` 才有 `usage.fetch`。没写时读 `usage` 也是「未授权」。
+
 ### `timer`
 
 要写进 `services`。额度示例用它每 300 秒再请求一次。
@@ -332,12 +340,12 @@ header = "ChatGPT-Account-Id"
 http.request({
   method = "GET",
   url = "https://api.example.com/v1/quota",
-  secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
+  secret = { id = "api_key" },
 }, function(result)
 end)
 ```
 
-`http.request` 不等待网络，返回之后宿主再调用那个函数。`secret` 可以省略。写了的话，`id` 必须是清单里的一项，`header` 是头的名字，只含字母、数字和 `-`，`prefix` 是值的前缀，可以是空字符串，但不能含换行。宿主把「前缀 + 密钥原文」放进这个头。脚本读不到原文，也读不到拼好的头。
+`http.request` 不等待网络，返回之后宿主再调用那个函数。`secret` 可以省略。写了的话，`id` 必须是清单里的一项。请求头的名字和前缀以清单为准，宿主把「前缀 + 密钥原文」放进清单里的那个头。脚本读不到原文，也读不到拼好的头。
 
 一次请求要附上多个密钥时，用 `secrets`，不要和 `secret` 同时写。最多 8 个：
 
@@ -346,14 +354,14 @@ http.request({
   method = "GET",
   url = "https://chatgpt.com/backend-api/wham/usage", -- 路径按服务商文档写
   secrets = {
-    { id = "token", header = "Authorization", prefix = "Bearer " },
-    { id = "account", header = "ChatGPT-Account-Id", prefix = "" },
+    { id = "token" },
+    { id = "account" },
   },
 }, function(result)
 end)
 ```
 
-清单里该密钥已经写了 `header` 时，脚本可以只写 `id`。两边都写时，名字忽略大小写必须相同，前缀必须逐字相同，发出去的名字用清单里的写法。没在清单里写 `header` 时，脚本必须自己写。同一请求里请求头不能重名，也不能和固定请求头重名，也不能用上面拒绝的那些名字。其中一个密钥没填，这一次整份都不发。
+脚本只写 `id`。如果还写了 `header` 或 `prefix`，请求头忽略大小写必须和清单相同，前缀必须逐字相同，否则这一次不发送，「地址无效」。发出去的名字和前缀始终用清单里的写法。同一请求里请求头不能重名，也不能和固定请求头重名，也不能用上面拒绝的那些名字。其中一个密钥没填，这一次整份都不发。
 
 脚本不能另加请求头。表里多出来的字段这次忽略。发出去的请求带 `Host`（主机名，不带端口）、`User-Agent`（清单里的值，否则 `Lanwork`）、`Accept`（清单里的值，否则 `*/*`）和 `Connection: close`。其余固定请求头按清单顺序接在后面，密钥头再接在后面。
 
@@ -364,7 +372,7 @@ http.request({
   method = "POST",
   url = "https://api.example.com/v1/usage",
   body = json.encode({ limit = 1 }),
-  secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
+  secret = { id = "api_key" },
 }, function(result)
 end)
 ```
@@ -378,7 +386,7 @@ end)
 | `body` 超过 64 KiB | 不发送。「数据过大」 |
 | URL 解析不了、带了用户名或密码、协议不是 `http` / `https` | 不发送。「地址无效」 |
 | 附带密钥但不是 `https` | 不发送。「地址无效」 |
-| 这次请求的密钥头不合法、重名，或和固定请求头重名 | 不发送。「地址无效」 |
+| 脚本写的请求头或前缀和清单不一致，或这次请求的密钥头重名、和固定请求头重名 | 不发送。「地址无效」 |
 | 不附带密钥的明文 `http` | 不发送。「不允许明文 http」 |
 | 主机名不在已确认的清单里 | 不发送。「域名未允许」 |
 | 密钥 id 不在清单里、还没填写，或值是空的 | 不发送。「未填写密钥」 |
@@ -415,6 +423,62 @@ end)
 
 检查的形式：密钥原文；`Bearer ` 加原文和 `bearer ` 加原文；这次实际发出的请求头的值；上面每一项的标准 Base64 和 URL 安全 Base64，带填充和不带填充；把 `%XX` 按十六进制解码后再找，十六进制忽略大小写，连续解码最多四次。原文或解码结果里的 `+` 再按空格看一次。
 
+## 本机登录用量
+
+清单用 `[[usage]]` 声明来源，不写进 `services`。宿主读本机的登录文件，向写死的地址发 GET，把响应收成一张表交给脚本。脚本看不到令牌、账号、网址和原始正文。清单不能改路径、网址、方法或请求头，也不能把请求指到别的主机。宿主不写、不刷新、不修改这些文件。
+
+| 来源 | 文件 | 目录可以被这个环境变量换掉 |
+| --- | --- | --- |
+| `chatgpt` | `%USERPROFILE%\.codex\auth.json` | `CODEX_HOME` |
+| `claude` | `%USERPROFILE%\.claude\.credentials.json` | `CLAUDE_CONFIG_DIR` |
+| `grok` | `%USERPROFILE%\.grok\auth.json` | `GROK_HOME` |
+
+环境变量没设或是空的，就用上面的默认目录。三个地址是：
+
+- ChatGPT：`GET https://chatgpt.com/backend-api/wham/usage`。文件里用 `tokens.access_token` 和 `tokens.account_id`。过期看 access token 的 JWT `exp`，不校验签名。请求头是 `Authorization: Bearer <令牌>`、`ChatGPT-Account-Id`、`Accept: application/json`，`User-Agent` 固定为 `Lanwork`。
+- Claude：`GET https://api.anthropic.com/api/oauth/usage`。文件里用 `claudeAiOauth.accessToken`，过期看 `claudeAiOauth.expiresAt`（毫秒）。请求头另有 `anthropic-beta: oauth-2025-04-20`。
+- Grok：`GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`。文件顶层的键是 OIDC 范围网址。优先用以 `https://auth.x.ai` 开头、还没过期的那一项（有多项时取键的字典序最小的），否则用 `https://accounts.x.ai/sign-in`。令牌在该项的 `key`，过期看 `expires_at`。请求头另有 `X-XAI-Token-Auth: xai-grok-cli`。
+
+只走 https，不跟随重定向。等待和正文 1 MiB 上限与 `http` 相同。同一来源 60 秒内再取，不再读文件、不再发请求，把上次规范化的结果交回去。成功和失败都这样。这 60 秒按宿主线程计，同一进程里的工具共用。
+
+Claude 的订阅令牌按 Anthropic 的条款只用于 Claude Code 和 claude.ai。使用 `claude` 这个来源由用户自行承担风险。
+
+```lua
+usage.fetch("chatgpt", function(result)
+end)
+```
+
+`usage.fetch` 不等待网络。来源名字不是那三个之一时，马上回调，「数据无效」。名字对、但清单没声明时，马上回调，「未授权」。其余在脚本返回之后回调。
+
+`result` 里没有的字段就不出现，不会放一个 `nil`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `ok` | 取到了数字时为 `true` |
+| `error` | `ok` 为假时的说明 |
+| `plan` | 只有 ChatGPT，而且 `plan_type` 是去掉首尾空白后 1 到 64 个字符、不含控制字符的字符串。更长或是空的就省略。不是字符串则整份是「数据无效」 |
+| `limit_reached` | 只有 ChatGPT，布尔。响应里没有这个字段就省略 |
+| `windows` | 数组。每一项有 `name` 和 `used_percent`。`used_percent` 已经是百分数，不是 0 到 1。能解析出重置时间时才有 `resets_at_ms`（Unix 毫秒）。ChatGPT 能解析出窗口长度时才有 `limit_seconds` |
+
+窗口名字：
+
+| 来源 | `name` | 百分数从哪来 |
+| --- | --- | --- |
+| ChatGPT | 先 `primary_window`，再 `secondary_window`。`limit_window_seconds` 为 18000 时是「5小时」，604800 是「每周」，整天是「N天」，整小时是「N小时」，其余是「窗口」 | `used_percent` |
+| Claude | 按这个顺序，空的或 `null` 跳过：「5小时」「7天」「7天 Opus」「7天 Sonnet」 | `utilization` 原样写入，不把 0 到 1 乘成百分数 |
+| Grok | 一项，名字是「额度」 | 优先 `config.creditUsagePercent`。没有则用 `onDemandUsed.val / onDemandCap.val * 100`。这两个字段可以在根上，也可以在 `config` 里 |
+
+ChatGPT 的 `reset_at`、Grok 的 `config.currentPeriod.end`（没有再用 `config.billingPeriodEnd`）可以是数字、数字字符串或 RFC3339。大于等于 1e12 的正数当作毫秒，大于等于 1e9 的当作秒。解析不了就省略 `resets_at_ms`，百分数仍保留。Claude 的 `resets_at` 只认 RFC3339。
+
+| 情况 | `error` |
+| --- | --- |
+| 文件没有、读不了、不是 JSON、令牌过期，或正文超过 1 MiB | 「登录已过期」 |
+| HTTP 401 或 403 | 「登录已过期」。不解析正文 |
+| 连接失败、超时、其它状态码、重定向 | 「请求失败」 |
+| 正文不是预期的 JSON | 「数据无效」 |
+
+这些句子里没有令牌、账号和原始正文。日志也不写。用户要刷新登录，就打开对应的应用。
+
 ## 导入和更新
 
 入口是应用页的「导入+」。可以选择一个文件夹，或一个 zip。把文件夹或 zip 拖到应用页上，同样开始导入。
@@ -423,7 +487,7 @@ end)
 
 新导入的工具启用开关是打开的。程序使用数据目录里的副本，不移动、不删除用户原来的文件夹。
 
-同一 id 已经安装时，再导入视为更新。确认页标明是更新，并有一句「保留数据」。新版本多了密钥、固定请求头、主机名或提交权限时，这些句子出现在同一张确认页上，必须再确认一次。确认后用新副本替换旧副本。同一 id 已有的存储、密钥、窗口位置、大小、贴边和钉住保留。这扇窗口如果开着，按「生命周期」重载。未确认则不替换。
+同一 id 已经安装时，再导入视为更新。确认页标明是更新，并有一句「保留数据」。新版本多了密钥、改了或拿掉密钥的请求头或前缀、多了固定请求头、主机名、提交权限或本机登录来源时，这些句子出现在同一张确认页上，必须再确认一次。确认后用新副本替换旧副本。同一 id 已有的存储、密钥、窗口位置、大小、贴边和钉住保留。这扇窗口如果开着，按「生命周期」重载。未确认则不替换。
 
 从某一张卡片的「更新」选到的包，id 必须是这张卡片的。不是时显示「不是这个工具的更新包」，不打开确认，也不导入。「导入+」和拖入不按某一张卡片核对 id。
 
@@ -437,13 +501,15 @@ end)
 
 | 情况 | 界面 |
 | --- | --- |
-| 清单解析不了，字段、组件或服务不认识，id 不合法，域名不合法，请求头不合法，`http` / `secret` 对不齐，文件过大，不是文件夹或 zip | 「清单无效」。不安装 |
+| 清单解析不了，字段、组件或服务不认识，id 不合法，域名不合法，请求头不合法，密钥没有请求头，来源不认识，`http` / `secret` 对不齐，文件过大，不是文件夹或 zip | 「清单无效」。不安装 |
 | 副本上的清单超出已经确认的范围，或权限记录读不了 | 窗口显示「未授权」，脚本不跑 |
 | 脚本访问未授予的服务 | 「未授权」 |
 | 未允许的 POST，或 GET、POST 以外的方法，或 GET 带了正文 | 「不在范围内」 |
 | POST 正文不是 JSON | 「数据无效」 |
 | POST 正文超过 64 KiB | 「数据过大」 |
-| 地址无效，附带密钥但不是 `https`，或这次请求的密钥头不合法 | 「地址无效」 |
+| 地址无效，附带密钥但不是 `https`，或脚本写的请求头、前缀和清单不一致 | 「地址无效」 |
+| 本机登录文件没有、读不了、令牌过期，或用量接口返回 401 / 403 | 「登录已过期」。说明里没有令牌 |
+| 用量接口的正文解析不了 | 「数据无效」。说明里没有正文 |
 | 不附带密钥的明文 `http` | 「不允许明文 http」 |
 | 主机名不在已确认的清单里 | 「域名未允许」 |
 | 密钥未填写 | 「未填写密钥」 |
@@ -478,7 +544,7 @@ end)
 cargo test -p lanwork-toolhost
 ```
 
-额度示例和倒计时示例都在这组测试里。测试会核对开发说明里的代码块和 `examples/` 下的文件是同一份，并让倒计时走完 60 秒。
+额度示例、倒计时示例和 ChatGPT 用量示例都在这组测试里。测试会核对开发说明里的代码块和 `examples/` 下的文件是同一份，并让倒计时走完 60 秒。
 
 ## 打包
 
@@ -514,6 +580,8 @@ domains = ["api.example.com"]
 [[secret]]
 id = "api_key"
 label = "API 密钥"
+header = "Authorization"
+prefix = "Bearer "
 
 [[component]]
 id = "summary"
@@ -554,7 +622,7 @@ local function refresh()
   http.request({
     method = "GET",
     url = "https://api.example.com/v1/quota",
-    secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
+    secret = { id = "api_key" },
   }, function(result)
     if not result.ok then
       show_error(result.error or "额度读取失败")
@@ -628,3 +696,120 @@ function on_timer(id)
   ui.text("status", "到了")
 end
 ```
+
+## 示例：ChatGPT 用量
+
+[examples/chatgpt-usage](../examples/chatgpt-usage) 不声明 `http` 和 `secret`。确认页两句是「使用本机的 ChatGPT 登录」和「定时刷新」。打开时取一次，之后每 300 秒再取。文本各一行：5 小时和每周的已用百分数，以及 UTC 的重置时刻。沙箱没有 `os.date`，时刻用纯算术从 `resets_at_ms` 算出来。
+
+`manifest.toml`：
+
+```toml
+id = "example.chatgpt-usage"
+name = "ChatGPT 用量"
+description = "本机 ChatGPT 登录的 5 小时和每周用量"
+entry = "main.lua"
+services = ["timer"]
+
+[[usage]]
+source = "chatgpt"
+
+[[component]]
+id = "five"
+component = "text"
+text = "没有数据"
+
+[[component]]
+id = "five_bar"
+component = "progress"
+
+[[component]]
+id = "week"
+component = "text"
+text = ""
+
+[[component]]
+id = "week_bar"
+component = "progress"
+```
+
+`main.lua`：
+
+```lua
+local function format_utc(ms)
+  local secs = math.floor(ms / 1000)
+  local days = math.floor(secs / 86400)
+  local sod = secs - days * 86400
+  local hour = math.floor(sod / 3600)
+  local minute = math.floor((sod % 3600) / 60)
+  local z = days + 719468
+  local era = math.floor(z / 146097)
+  local doe = z - era * 146097
+  local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
+  local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+  local mp = math.floor((5 * doy + 2) / 153)
+  local day = doy - math.floor((153 * mp + 2) / 5) + 1
+  local month = mp + 3
+  if month > 12 then
+    month = month - 12
+  end
+  return string.format("%02d-%02d %02d:%02d", month, day, hour, minute)
+end
+
+local function find_window(windows, name)
+  if type(windows) ~= "table" then
+    return nil
+  end
+  for _, window in ipairs(windows) do
+    if type(window) == "table" and window.name == name then
+      return window
+    end
+  end
+  return nil
+end
+
+local function show(text_id, bar_id, window)
+  if type(window) ~= "table" or type(window.used_percent) ~= "number" then
+    ui.text(text_id, "没有数据")
+    ui.progress(bar_id, 0)
+    return
+  end
+  local when = ""
+  if type(window.resets_at_ms) == "number" then
+    when = " · " .. format_utc(window.resets_at_ms)
+  end
+  ui.text(text_id, string.format("%s %g%%%s", window.name, window.used_percent, when))
+  local ratio = window.used_percent / 100
+  if ratio < 0 then
+    ratio = 0
+  end
+  if ratio > 1 then
+    ratio = 1
+  end
+  ui.progress(bar_id, ratio)
+end
+
+local function show_error(message)
+  ui.text("five", message)
+  ui.text("week", "")
+  ui.progress("five_bar", 0)
+  ui.progress("week_bar", 0)
+end
+
+local function refresh()
+  usage.fetch("chatgpt", function(result)
+    if not result.ok then
+      show_error(result.error or "请求失败")
+      return
+    end
+    show("five", "five_bar", find_window(result.windows, "5小时"))
+    show("week", "week_bar", find_window(result.windows, "每周"))
+  end)
+end
+
+function on_load()
+  refresh()
+  timer.every(300, refresh)
+end
+```
+
+登录文件没有或已经过期时，文本是「登录已过期」，请求不会发出。用户打开 ChatGPT 应用刷新登录即可。脚本里没有能把令牌打出来的调用。

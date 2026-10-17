@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use crate::id::{imported_prefix_forbidden, valid_id};
+use crate::usage::UsageSource;
 
 const SERVICES: &[&str] = &[
     "timer",
@@ -39,7 +40,7 @@ pub struct WidgetDecl {
 pub struct SecretDecl {
     pub id: String,
     pub label: String,
-    /// 这个密钥发出去时用的请求头。没有则由脚本在每次请求里写。
+    /// 这个密钥发出去时用的请求头。清单里必须写。脚本不能另选。
     pub header: Option<String>,
     /// `header` 有值时，请求头的值是此前缀加上密钥原文。可以是空字符串。
     pub prefix: String,
@@ -83,6 +84,8 @@ pub struct Manifest {
     pub post: bool,
     pub headers: Vec<FixedHeader>,
     pub secrets: Vec<SecretDecl>,
+    /// 本机登录用量。顺序与清单一致。脚本不能改路径和网址。
+    pub usage: Vec<UsageSource>,
     pub widgets: Vec<WidgetDecl>,
     /// 入口脚本相对工具文件夹的路径。不含 `..`。
     pub entry: String,
@@ -116,6 +119,7 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
             "services",
             "http",
             "secret",
+            "usage",
             "component",
         ],
     )?;
@@ -160,6 +164,10 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
         Vec::new()
     };
     reject_header_collisions(&headers, &secrets)?;
+    let usage = match table.get("usage") {
+        None => Vec::new(),
+        Some(value) => parse_usage(value)?,
+    };
     let widgets = parse_widgets(table.get("component").ok_or("缺少 component")?)?;
 
     Ok((
@@ -172,6 +180,7 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
             post,
             headers,
             secrets,
+            usage,
             widgets,
             entry: entry.clone(),
             script: String::new(),
@@ -371,13 +380,11 @@ fn parse_secrets(value: &toml::Value) -> Result<Vec<SecretDecl>, String> {
         if prefix.is_some() && header.is_none() {
             return Err("写了前缀但没有请求头".to_string());
         }
-        let header = match header {
-            Some(header) => {
-                header_name_reason(header)?;
-                Some(header.to_string())
-            }
-            None => None,
+        let Some(header) = header else {
+            return Err("密钥没有请求头".to_string());
         };
+        header_name_reason(header)?;
+        let header = Some(header.to_string());
         let prefix = match prefix {
             Some(prefix) => {
                 prefix_reason(prefix)?;
@@ -393,6 +400,27 @@ fn parse_secrets(value: &toml::Value) -> Result<Vec<SecretDecl>, String> {
         });
     }
     Ok(secrets)
+}
+
+fn parse_usage(value: &toml::Value) -> Result<Vec<UsageSource>, String> {
+    let array = value.as_array().ok_or("usage 不是数组")?;
+    if array.is_empty() {
+        return Err("声明了 usage 但没有来源".to_string());
+    }
+    let mut sources = Vec::new();
+    for item in array {
+        let table = item.as_table().ok_or("来源不是表")?;
+        require_keys(table.keys().map(String::as_str), &["source"])?;
+        let name = required_str(table, "source")?;
+        let Some(source) = UsageSource::parse(name) else {
+            return Err(format!("不认识的来源 {name}"));
+        };
+        if sources.contains(&source) {
+            return Err("来源重复".to_string());
+        }
+        sources.push(source);
+    }
+    Ok(sources)
 }
 
 fn parse_widgets(value: &toml::Value) -> Result<Vec<WidgetDecl>, String> {
@@ -621,6 +649,11 @@ mod tests {
                 "",
                 "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\nprefix = \"Bearer \"\n",
                 "写了前缀但没有请求头",
+            ),
+            (
+                "",
+                "[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n",
+                "密钥没有请求头",
             ),
             (
                 "headers = [{ name = \"-bad\", value = \"a\" }]\n",

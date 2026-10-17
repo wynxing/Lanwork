@@ -1266,8 +1266,16 @@ text = "没有数据"
         let expected = lanwork_toolhost::permission_lines(&loaded);
         assert!(expected.iter().any(|line| line == "访问 api.example.com"));
         assert!(expected.iter().any(|line| line == "访问 cdn.example.com"));
-        assert!(expected.iter().any(|line| line == "使用你填写的 令牌"));
-        assert!(expected.iter().any(|line| line == "使用你填写的 备用令牌"));
+        assert!(
+            expected
+                .iter()
+                .any(|line| line == "使用你填写的 令牌，请求头 Authorization，前缀 Bearer ")
+        );
+        assert!(
+            expected
+                .iter()
+                .any(|line| line == "使用你填写的 备用令牌，请求头 X-Spare")
+        );
         assert!(expected.iter().any(|line| line == "发送通知"));
         assert_eq!(preview.tools.len(), 2);
         assert_eq!(preview.tools[0].name, "example.bad");
@@ -1359,10 +1367,13 @@ domains = [\"api.example.com\", \"cdn.example.com\"]
 [[secret]]
 id = \"token\"
 label = \"令牌\"
+header = \"Authorization\"
+prefix = \"Bearer \"
 
 [[secret]]
 id = \"spare\"
 label = \"备用令牌\"
+header = \"X-Spare\"
 
 [[component]]
 id = \"summary\"

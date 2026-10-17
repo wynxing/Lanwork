@@ -813,7 +813,7 @@ fn quota_example_hides_secret_and_limits_hosts() {
         &tool(
             "example.api-quota",
             "\"http\", \"secret\"",
-            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\n",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n",
             &text_widgets(&["out", "kind"]),
         ),
         r#"
@@ -890,7 +890,7 @@ fn response_echo_is_redacted_before_lua() {
         &tool(
             "example.echo",
             "\"http\", \"secret\"",
-            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\n",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n",
             &text_widgets(&["out"]),
         ),
         r#"
@@ -998,7 +998,7 @@ fn echo_caption(name: &str, body: &str, header: &str, secret: &str) -> String {
         &tool(
             "example.echo",
             "\"http\", \"secret\"",
-            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\n",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n",
             &text_widgets(&["out"]),
         ),
         r#"
@@ -1140,7 +1140,7 @@ fn failing_secret_read_does_not_panic() {
         &tool(
             "example.bad-store",
             "\"http\", \"secret\"",
-            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\n",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n",
             &text_widgets(&["out"]),
         ),
         r#"
@@ -1322,7 +1322,7 @@ fn windows_credential_roundtrip_and_attach() {
         &tool(
             &tool_id,
             "\"http\", \"secret\"",
-            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\n",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"api_key\"\nlabel = \"API 密钥\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n",
             &text_widgets(&["out"]),
         ),
         r#"
@@ -1523,7 +1523,7 @@ fn a_second_secret_echoed_by_the_host_is_blanked() {
         &tool(
             "example.echo-two",
             "\"http\", \"secret\"",
-            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n\n[[secret]]\nid = \"account\"\nlabel = \"账号\"\n",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"token\"\nlabel = \"令牌\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n\n[[secret]]\nid = \"account\"\nlabel = \"账号\"\nheader = \"ChatGPT-Account-Id\"\n",
             &text_widgets(&["out"]),
         ),
         r#"
@@ -1571,4 +1571,201 @@ end
             .iter()
             .all(|note| !note.text.contains(account))
     );
+}
+
+fn b64url(bytes: &[u8]) -> String {
+    const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    let mut index = 0;
+    while index + 3 <= bytes.len() {
+        let n = (u32::from(bytes[index]) << 16)
+            | (u32::from(bytes[index + 1]) << 8)
+            | u32::from(bytes[index + 2]);
+        for shift in [18, 12, 6, 0] {
+            out.push(ALPHA[((n >> shift) & 63) as usize] as char);
+        }
+        index += 3;
+    }
+    let rest = bytes.len() - index;
+    if rest > 0 {
+        let mut n = u32::from(bytes[index]) << 16;
+        if rest == 2 {
+            n |= u32::from(bytes[index + 1]) << 8;
+        }
+        out.push(ALPHA[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHA[((n >> 12) & 63) as usize] as char);
+        if rest == 2 {
+            out.push(ALPHA[((n >> 6) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+fn future_access_token() -> String {
+    let header = b64url(br#"{"alg":"none"}"#);
+    let payload = b64url(br#"{"exp":4102444800}"#);
+    format!("{header}.{payload}.sig")
+}
+
+fn usage_body() -> String {
+    r#"{"plan_type":"plus","rate_limit":{"limit_reached":false,"primary_window":{"used_percent":12.5,"limit_window_seconds":18000,"reset_at":1577836800},"secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_at":1578441600}}}"#.to_string()
+}
+
+fn open_chatgpt(dir: &Path, transport: Arc<Recorded>, roots: crate::usage::UsageRoots) -> Session {
+    crate::guide::write_example(dir, "chatgpt").unwrap();
+    let mut options = Options::default();
+    options.transport = transport;
+    options.usage_roots = Some(roots);
+    let session = open_at(dir, options).unwrap();
+    session.on_load();
+    session
+}
+
+#[test]
+fn chatgpt_usage_example_hides_the_login_and_caches() {
+    crate::usage::reset_usage_cache_for_test();
+    let token = future_access_token();
+    let account = "acct-leak-9f3a";
+    let dir = Scratch::new("chatgpt-usage");
+    let codex = dir.join("codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(
+        codex.join("auth.json"),
+        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
+    )
+    .unwrap();
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 200,
+        body: usage_body(),
+    });
+    let roots = crate::usage::UsageRoots {
+        chatgpt: codex.clone(),
+        claude: dir.join("claude"),
+        grok: dir.join("grok"),
+    };
+    let session = open_chatgpt(&dir, transport.clone(), roots);
+    assert_eq!(caption(&session, "five"), "5小时 12.5% · 01-01 00:00");
+    assert_eq!(caption(&session, "week"), "每周 40% · 01-08 00:00");
+    assert!((session.widget("five_bar").unwrap().progress - 0.125).abs() < 1e-9);
+    assert!((session.widget("week_bar").unwrap().progress - 0.4).abs() < 1e-9);
+    let sent = transport.log.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].url, crate::usage::CHATGPT_USAGE_URL);
+    assert!(
+        sent[0].headers.iter().any(|(name, value)| {
+            name == "Authorization" && value == &format!("Bearer {token}")
+        })
+    );
+    assert!(
+        sent[0]
+            .headers
+            .iter()
+            .any(|(name, value)| name == "ChatGPT-Account-Id" && value == account)
+    );
+    let debug = format!("{:?}", sent[0]);
+    assert!(debug.contains("<redacted>"), "{debug}");
+    assert!(!debug.contains(&token), "{debug}");
+    assert!(!debug.contains(account), "{debug}");
+    for text in [caption(&session, "five"), caption(&session, "week")] {
+        assert!(!text.contains(&token), "{text}");
+        assert!(!text.contains(account), "{text}");
+        assert!(!text.contains("chatgpt.com"), "{text}");
+    }
+    assert!(
+        session
+            .notices()
+            .iter()
+            .all(|note| { !note.text.contains(&token) && !note.text.contains(account) })
+    );
+    session.advance(300.0);
+    assert_eq!(session.http_sends(), 1);
+    assert_eq!(transport.log.lock().unwrap().len(), 1);
+    crate::usage::age_usage_cache_for_test(Duration::from_secs(61));
+    session.advance(300.0);
+    assert_eq!(session.http_sends(), 2);
+    assert_eq!(transport.log.lock().unwrap().len(), 2);
+
+    crate::usage::reset_usage_cache_for_test();
+    let denied = Scratch::new("chatgpt-401");
+    std::fs::create_dir_all(denied.join("codex")).unwrap();
+    std::fs::write(
+        denied.join("codex").join("auth.json"),
+        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
+    )
+    .unwrap();
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 401,
+        body: token.clone(),
+    });
+    let session = open_chatgpt(
+        &denied,
+        transport,
+        crate::usage::UsageRoots {
+            chatgpt: denied.join("codex"),
+            claude: denied.join("claude"),
+            grok: denied.join("grok"),
+        },
+    );
+    assert_eq!(caption(&session, "five"), "登录已过期");
+    assert_eq!(caption(&session, "week"), "");
+    assert!(!caption(&session, "five").contains(&token));
+    assert!(
+        session
+            .notices()
+            .iter()
+            .all(|note| { note.text == "登录已过期" && !note.text.contains(&token) })
+    );
+
+    crate::usage::reset_usage_cache_for_test();
+    let missing = Scratch::new("chatgpt-missing");
+    std::fs::create_dir_all(missing.join("codex")).unwrap();
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 200,
+        body: token.clone(),
+    });
+    let session = open_chatgpt(
+        &missing,
+        transport.clone(),
+        crate::usage::UsageRoots {
+            chatgpt: missing.join("codex"),
+            claude: missing.join("claude"),
+            grok: missing.join("grok"),
+        },
+    );
+    assert_eq!(caption(&session, "five"), "登录已过期");
+    assert!(transport.log.lock().unwrap().is_empty());
+    assert_eq!(session.http_sends(), 0);
+    assert!(!caption(&session, "five").contains(&token));
+
+    crate::usage::reset_usage_cache_for_test();
+    let broken = Scratch::new("chatgpt-bad-json");
+    std::fs::create_dir_all(broken.join("codex")).unwrap();
+    std::fs::write(
+        broken.join("codex").join("auth.json"),
+        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
+    )
+    .unwrap();
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 200,
+        body: format!("not-json {token}"),
+    });
+    let session = open_chatgpt(
+        &broken,
+        transport,
+        crate::usage::UsageRoots {
+            chatgpt: broken.join("codex"),
+            claude: broken.join("claude"),
+            grok: broken.join("grok"),
+        },
+    );
+    assert_eq!(caption(&session, "five"), "数据无效");
+    assert!(!caption(&session, "five").contains(&token));
+    assert!(!caption(&session, "five").contains(account));
+    assert!(session.notices().iter().all(|note| {
+        !note.text.contains(&token) && !note.text.contains(account) && note.text == "数据无效"
+    }));
 }

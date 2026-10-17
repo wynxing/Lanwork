@@ -47,20 +47,50 @@ pub struct SecretAttach {
 }
 
 /// 已经从凭据库取出、可以拼进请求头的密钥。原文只留在宿主。
-#[derive(Clone, Debug)]
+///
+/// `Debug` 不打印原文，避免日志或断言失败时把密钥打出来。
+#[derive(Clone)]
 pub struct ResolvedSecret {
     pub header: String,
     pub prefix: String,
     pub value: String,
 }
 
-#[derive(Clone, Debug)]
+impl std::fmt::Debug for ResolvedSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedSecret")
+            .field("header", &self.header)
+            .field("prefix", &self.prefix)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct Outgoing {
     pub method: String,
     pub url: String,
     /// 固定请求头在前，密钥头在后。不含 Host、Connection、Content-Length、Content-Type。
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for Outgoing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, _)| (name.as_str(), "<redacted>"))
+            .collect();
+        formatter
+            .debug_struct("Outgoing")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &headers)
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]

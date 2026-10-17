@@ -10,6 +10,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use crate::manifest::{FixedHeader, Manifest, SecretDecl, load_dir, parse};
+use crate::usage::UsageSource;
 
 /// 系统文件对话框里用来选中当前文件夹的占位名。不是产品界面上的句子。
 pub const FOLDER_SENTINEL: &str = "Folder Selection.";
@@ -28,7 +29,7 @@ pub struct StagedPackage {
     pub files: Vec<(String, Vec<u8>)>,
 }
 
-/// 用户确认过的服务、域名、固定请求头、提交权限和密钥。运行时清单不能超出这份范围。
+/// 用户确认过的服务、域名、固定请求头、提交权限、密钥和本机登录来源。运行时清单不能超出这份范围。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
     pub services: BTreeSet<String>,
@@ -36,6 +37,7 @@ pub struct Grant {
     pub post: bool,
     pub headers: Vec<FixedHeader>,
     pub secrets: Vec<SecretDecl>,
+    pub usage: Vec<UsageSource>,
 }
 
 impl Grant {
@@ -47,12 +49,14 @@ impl Grant {
             post: manifest.post,
             headers: manifest.headers.clone(),
             secrets: manifest.secrets.clone(),
+            usage: manifest.usage.clone(),
         }
     }
 
-    /// 清单里的服务、域名、固定请求头、提交权限和密钥都在确认过的范围内。
+    /// 清单里的服务、域名、固定请求头、提交权限、密钥和登录来源都在确认过的范围内。
     ///
-    /// 新版本多了密钥、固定请求头、主机名或提交权限时返回假。少了权限仍返回真。
+    /// 新版本多了密钥、固定请求头、主机名、提交权限或登录来源时返回假。
+    /// 密钥的请求头或前缀变了、或者拿掉了，也返回假。少了权限仍返回真。
     #[must_use]
     pub fn allows(&self, manifest: &Manifest) -> bool {
         if manifest
@@ -80,6 +84,13 @@ impl Grant {
         }) {
             return false;
         }
+        if manifest
+            .usage
+            .iter()
+            .any(|source| !self.usage.contains(source))
+        {
+            return false;
+        }
         manifest.secrets.iter().all(|secret| {
             self.secrets
                 .iter()
@@ -88,18 +99,16 @@ impl Grant {
     }
 }
 
-/// 密钥头被拿掉仍算在原授权里。新加或改了请求头、前缀则要再确认。
+/// 请求头或前缀变了、或者清单里拿掉了请求头，都要再确认。
 fn secret_binding_ok(granted: &SecretDecl, next: &SecretDecl) -> bool {
-    match &next.header {
-        None => true,
-        Some(header) => {
-            granted
-                .header
-                .as_ref()
-                .is_some_and(|prior| prior.eq_ignore_ascii_case(header))
-                && granted.prefix == next.prefix
-        }
-    }
+    let Some(header) = next.header.as_deref() else {
+        return false;
+    };
+    granted
+        .header
+        .as_ref()
+        .is_some_and(|prior| prior.eq_ignore_ascii_case(header))
+        && granted.prefix == next.prefix
 }
 
 #[derive(Debug)]
@@ -362,7 +371,7 @@ fn join_prefix(prefix: &str, relative: &str) -> String {
     }
 }
 
-/// 确认页上的白话句子。域名逐条，固定请求头写出名称和值，密钥只出现名称。
+/// 确认页上的白话句子。域名逐条，固定请求头写出名称和值，密钥写出名称和请求头。
 #[must_use]
 pub fn permission_lines(manifest: &Manifest) -> Vec<String> {
     lines_for(
@@ -371,6 +380,7 @@ pub fn permission_lines(manifest: &Manifest) -> Vec<String> {
         manifest.post,
         &manifest.headers,
         &manifest.secrets,
+        &manifest.usage,
     )
 }
 
@@ -382,7 +392,19 @@ pub fn grant_lines(grant: &Grant) -> Vec<String> {
         grant.post,
         &grant.headers,
         &grant.secrets,
+        &grant.usage,
     )
+}
+
+fn secret_line(secret: &SecretDecl) -> String {
+    match secret.header.as_deref() {
+        Some(header) if !secret.prefix.is_empty() => format!(
+            "使用你填写的 {}，请求头 {header}，前缀 {}",
+            secret.label, secret.prefix
+        ),
+        Some(header) => format!("使用你填写的 {}，请求头 {header}", secret.label),
+        None => format!("使用你填写的 {}", secret.label),
+    }
 }
 
 fn lines_for(
@@ -391,6 +413,7 @@ fn lines_for(
     post: bool,
     headers: &[FixedHeader],
     secrets: &[SecretDecl],
+    usage: &[UsageSource],
 ) -> Vec<String> {
     let mut lines = Vec::new();
     for domain in domains {
@@ -403,7 +426,10 @@ fn lines_for(
         lines.push(format!("请求头 {}: {}", header.name, header.value));
     }
     for secret in secrets {
-        lines.push(format!("使用你填写的 {}", secret.label));
+        lines.push(secret_line(secret));
+    }
+    for source in usage {
+        lines.push(source.confirm_line().to_string());
     }
     if services.contains("notify") {
         lines.push("发送通知".to_string());
@@ -456,6 +482,7 @@ pub fn encode_grant(grant: &Grant) -> Vec<u8> {
         "post": grant.post,
         "headers": headers,
         "secrets": secrets,
+        "usage": grant.usage.iter().map(UsageSource::as_str).collect::<Vec<_>>(),
     });
     let mut bytes = serde_json::to_vec(&value).expect("确认记录可以编码");
     bytes.push(b'\n');
@@ -509,13 +536,26 @@ pub fn decode_grant(bytes: &[u8]) -> Option<Grant> {
             prefix,
         });
     }
+    let usage = match obj.get("usage") {
+        None => Vec::new(),
+        Some(value) => decode_usage(value)?,
+    };
     Some(Grant {
         services,
         domains,
         post,
         headers,
         secrets,
+        usage,
     })
+}
+
+fn decode_usage(value: &serde_json::Value) -> Option<Vec<UsageSource>> {
+    let mut sources = Vec::new();
+    for item in value.as_array()? {
+        sources.push(UsageSource::parse(item.as_str()?)?);
+    }
+    Some(sources)
 }
 
 fn decode_headers(value: &serde_json::Value) -> Option<Vec<FixedHeader>> {
@@ -835,7 +875,7 @@ pub(crate) fn png_signature(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guide::{countdown, quota};
+    use crate::guide::{chatgpt_usage, countdown, quota};
     use crate::manifest::materialize;
 
     fn scratch(name: &str) -> PathBuf {
@@ -886,7 +926,10 @@ mod tests {
         assert_eq!(manifest.id, "example.api-quota");
         let lines = permission_lines(&manifest);
         assert!(lines.contains(&"访问 api.example.com".to_string()));
-        assert!(lines.contains(&"使用你填写的 API 密钥".to_string()));
+        assert!(
+            lines
+                .contains(&"使用你填写的 API 密钥，请求头 Authorization，前缀 Bearer ".to_string())
+        );
         assert!(lines.contains(&"定时刷新".to_string()));
         assert!(
             !lines
@@ -915,6 +958,34 @@ mod tests {
         assert!(permission_lines(&staged.manifest).is_empty());
         let names: Vec<&str> = staged.files.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["manifest.toml", "main.lua"]);
+    }
+
+    #[test]
+    fn shipped_chatgpt_usage_matches_the_guide() {
+        let (manifest, script) = chatgpt_usage().unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/chatgpt-usage");
+        let on_disk_manifest = std::fs::read_to_string(root.join("manifest.toml"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let on_disk_script = std::fs::read_to_string(root.join("main.lua"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(on_disk_manifest.trim_end(), manifest.trim_end());
+        assert_eq!(on_disk_script.trim_end(), script.trim_end());
+        let staged = inspect_path(&root).unwrap();
+        assert_eq!(staged.manifest.id, "example.chatgpt-usage");
+        assert_eq!(
+            staged.manifest.usage,
+            vec![crate::usage::UsageSource::Chatgpt]
+        );
+        let lines = permission_lines(&staged.manifest);
+        assert_eq!(
+            lines,
+            vec![
+                "使用本机的 ChatGPT 登录".to_string(),
+                "定时刷新".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1025,27 +1096,61 @@ domains = ["api.example.com"]
 [[secret]]
 id = "token"
 label = "令牌"
+header = "Authorization"
+prefix = "Bearer "
 "#;
         let (manifest, _) = parse(base).unwrap();
         let grant = Grant::from_manifest(&manifest);
         assert!(grant.allows(&manifest));
+        let bytes = encode_grant(&grant);
+        assert_eq!(decode_grant(&bytes).unwrap(), grant);
         let old = r#"{"schemaVersion":1,"services":["http","secret"],"domains":["api.example.com"],"secrets":[{"id":"token","label":"令牌"}]}"#;
         let decoded = decode_grant(old.as_bytes()).unwrap();
-        assert!(decoded.allows(&manifest));
+        assert!(
+            !decoded.allows(&manifest),
+            "旧授权没有请求头，不能盖住现在的声明"
+        );
+        assert!(decoded.usage.is_empty());
         assert!(!decoded.post);
         assert!(decoded.headers.is_empty());
 
         let with_secret = base.replace(
-            "id = \"token\"\nlabel = \"令牌\"\n",
-            "id = \"token\"\nlabel = \"令牌\"\n\n[[secret]]\nid = \"account\"\nlabel = \"账号\"\n",
+            "id = \"token\"\nlabel = \"令牌\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n",
+            "id = \"token\"\nlabel = \"令牌\"\nheader = \"Authorization\"\nprefix = \"Bearer \"\n\n[[secret]]\nid = \"account\"\nlabel = \"账号\"\nheader = \"ChatGPT-Account-Id\"\n",
         );
         let (with_secret, _) = parse(&with_secret).unwrap();
         assert!(!grant.allows(&with_secret));
         assert!(
             permission_lines(&with_secret)
                 .iter()
-                .any(|line| line == "使用你填写的 账号")
+                .any(|line| { line == "使用你填写的 账号，请求头 ChatGPT-Account-Id" })
         );
+
+        let renamed = base.replace("header = \"Authorization\"", "header = \"X-Api-Key\"");
+        let (renamed, _) = parse(&renamed).unwrap();
+        assert!(!grant.allows(&renamed));
+        let reprefix = base.replace("prefix = \"Bearer \"", "prefix = \"Token \"");
+        let (reprefix, _) = parse(&reprefix).unwrap();
+        assert!(!grant.allows(&reprefix));
+        assert!(
+            parse(&base.replace("header = \"Authorization\"\nprefix = \"Bearer \"\n", "")).is_err()
+        );
+
+        let with_usage = format!("{base}\n[[usage]]\nsource = \"chatgpt\"\n");
+        let (with_usage, _) = parse(&with_usage).unwrap();
+        assert!(!grant.allows(&with_usage));
+        assert!(
+            permission_lines(&with_usage)
+                .iter()
+                .any(|line| line == "使用本机的 ChatGPT 登录")
+        );
+        let usage_grant = Grant::from_manifest(&with_usage);
+        assert!(usage_grant.allows(&with_usage));
+        assert!(usage_grant.allows(&manifest));
+        let dropped_header = manifest.clone();
+        let mut removed = manifest.clone();
+        removed.secrets[0].header = None;
+        assert!(!Grant::from_manifest(&dropped_header).allows(&removed));
 
         let with_header = base.replace(
             "domains = [\"api.example.com\"]\n",
@@ -1123,6 +1228,8 @@ headers = [{ name = "Host", value = "evil.example" }]
 [[secret]]
 id = "token"
 label = "令牌"
+header = "Authorization"
+prefix = "Bearer "
 "#,
         )
         .unwrap();
@@ -1335,6 +1442,8 @@ services = [\"secret\", \"storage\"]
 [[secret]]
 id = \"api_key\"
 label = \"API 密钥\"
+header = \"Authorization\"
+prefix = \"Bearer \"
 
 [[component]]
 id = \"summary\"
