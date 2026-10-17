@@ -56,7 +56,7 @@ struct Recorded {
 }
 
 impl HttpTransport for Recorded {
-    fn get(
+    fn send(
         &self,
         _request: &Outgoing,
     ) -> Result<lanwork_toolhost::HttpResponse, lanwork_toolhost::TransportError> {

@@ -77,7 +77,7 @@ struct Recorded {
 }
 
 impl HttpTransport for Recorded {
-    fn get(&self, request: &Outgoing) -> Result<HttpResponse, crate::http::TransportError> {
+    fn send(&self, request: &Outgoing) -> Result<HttpResponse, crate::http::TransportError> {
         self.log.lock().expect("记录").push(request.clone());
         Ok(HttpResponse {
             status: self.status,
@@ -777,7 +777,12 @@ fn quota_example_hides_secret_and_limits_hosts() {
     let sent = transport.log.lock().unwrap().clone();
     assert_eq!(sent.len(), 1);
     let expected = format!("Bearer {secret}");
-    assert_eq!(sent[0].header_value.as_deref(), Some(expected.as_str()));
+    assert!(
+        sent[0]
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Authorization" && value == &expected)
+    );
     assert!(!caption(&session, "summary").contains(secret));
     assert!(
         session
@@ -1051,7 +1056,7 @@ struct EchoTransport {
 }
 
 impl HttpTransport for EchoTransport {
-    fn get(&self, _request: &Outgoing) -> Result<HttpResponse, crate::http::TransportError> {
+    fn send(&self, _request: &Outgoing) -> Result<HttpResponse, crate::http::TransportError> {
         Ok(HttpResponse {
             status: 200,
             body: self.body.clone(),
@@ -1112,7 +1117,7 @@ struct SlowTransport {
 }
 
 impl HttpTransport for SlowTransport {
-    fn get(&self, _request: &Outgoing) -> Result<HttpResponse, crate::http::TransportError> {
+    fn send(&self, _request: &Outgoing) -> Result<HttpResponse, crate::http::TransportError> {
         let (lock, cv) = &*self.pair;
         let guard = lock.lock().expect("锁");
         let (guard, _wait) = cv
@@ -1345,7 +1350,12 @@ end
     session.on_load();
     let sent = transport.log.lock().unwrap().clone();
     let expected = format!("Bearer {secret}");
-    assert_eq!(sent[0].header_value.as_deref(), Some(expected.as_str()));
+    assert!(
+        sent[0]
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Authorization" && value == &expected)
+    );
     assert!(!caption(&session, "out").contains(secret));
     store
         .borrow_mut()
@@ -1357,5 +1367,208 @@ end
             .read(&tool_id, "api_key")
             .expect("再读")
             .is_none()
+    );
+}
+
+#[test]
+fn several_secrets_fixed_headers_and_post_stay_out_of_the_script() {
+    let token = "tok-secret-a";
+    let account = "acct-secret-b";
+    let dir = Scratch::new("multi");
+    write_tool(
+        &dir,
+        &tool(
+            "example.multi",
+            "\"http\", \"secret\"",
+            r#"
+[http]
+domains = ["api.example.com"]
+post = true
+headers = [
+  { name = "anthropic-beta", value = "oauth-2025-04-20" },
+  { name = "User-Agent", value = "my-tool" },
+]
+
+[[secret]]
+id = "token"
+label = "访问令牌"
+header = "Authorization"
+prefix = "Bearer "
+
+[[secret]]
+id = "account"
+label = "账号"
+header = "ChatGPT-Account-Id"
+"#,
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  local lines = {}
+  local function ask(options)
+    http.request(options, function(result)
+      local blob = result.error or "ok"
+      blob = blob .. tostring(result.header) .. tostring(result.secret)
+      table.insert(lines, blob)
+      ui.text("out", table.concat(lines, "|"))
+    end)
+  end
+  ask({
+    method = "GET",
+    url = "https://api.example.com/v1",
+    secrets = {
+      { id = "token" },
+      { id = "account", header = "chatgpt-account-id", prefix = "" },
+    },
+  })
+  ask({
+    method = "POST",
+    url = "https://api.example.com/v1/usage",
+    body = json.encode({ n = 1 }),
+    secret = { id = "token" },
+  })
+  ask({
+    method = "POST",
+    url = "https://api.example.com/v1/usage",
+    body = "nope",
+    secret = { id = "token" },
+  })
+  ask({
+    method = "GET",
+    url = "https://api.example.com/v1",
+    secrets = { { id = "token", header = "X-Other" } },
+  })
+  ask({
+    method = "GET",
+    url = "https://api.example.com/v1",
+    secret = { id = "token" },
+    secrets = { { id = "account" } },
+  })
+end
+"#,
+    );
+    let transport = recorded(r#"{"ok":true}"#);
+    let store = Rc::new(RefCell::new(MemorySecretStore::default()));
+    store
+        .borrow_mut()
+        .put("example.multi", "token", token)
+        .unwrap();
+    store
+        .borrow_mut()
+        .put("example.multi", "account", account)
+        .unwrap();
+    let mut options = Options::default();
+    options.store = store;
+    options.transport = transport.clone();
+    let session = open_at(&dir, options).unwrap();
+    session.on_load();
+    let text = caption(&session, "out");
+    // 拒绝在 http.request 里当场回调；发出去的两笔等脚本返回后再完成。
+    assert_eq!(
+        text,
+        "数据无效nilnil|地址无效nilnil|地址无效nilnil|oknilnil|oknilnil"
+    );
+    assert!(!text.contains(token));
+    assert!(!text.contains(account));
+    assert!(
+        session
+            .notices()
+            .iter()
+            .all(|note| { !note.text.contains(token) && !note.text.contains(account) })
+    );
+    let sent = transport.log.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].method, "GET");
+    assert!(sent[0].body.is_empty());
+    assert!(has_header(&sent[0], "anthropic-beta", "oauth-2025-04-20"));
+    assert!(has_header(&sent[0], "User-Agent", "my-tool"));
+    assert!(has_header(
+        &sent[0],
+        "Authorization",
+        &format!("Bearer {token}")
+    ));
+    assert!(has_header(&sent[0], "ChatGPT-Account-Id", account));
+    assert!(!sent[0].url.contains(token));
+    assert!(!sent[0].url.contains(account));
+    let wire = String::from_utf8(crate::http::encode_http(&sent[0]).unwrap()).unwrap();
+    assert_eq!(wire.matches("User-Agent:").count(), 1);
+    assert!(wire.contains("User-Agent: my-tool\r\n"));
+    assert_eq!(sent[1].method, "POST");
+    assert_eq!(sent[1].body, br#"{"n":1}"#);
+    assert!(has_header(
+        &sent[1],
+        "Authorization",
+        &format!("Bearer {token}")
+    ));
+    let post = String::from_utf8(crate::http::encode_http(&sent[1]).unwrap()).unwrap();
+    assert!(post.starts_with("POST /v1/usage HTTP/1.1\r\n"));
+    assert_eq!(post.matches("Content-Type:").count(), 1);
+    assert!(post.contains("Content-Type: application/json\r\n"));
+    assert!(!sent[1].url.contains(token));
+}
+
+fn has_header(outgoing: &Outgoing, name: &str, value: &str) -> bool {
+    outgoing
+        .headers
+        .iter()
+        .any(|(key, got)| key == name && got == value)
+}
+
+#[test]
+fn a_second_secret_echoed_by_the_host_is_blanked() {
+    let account = "acct-echo-secret";
+    let dir = Scratch::new("echo-two");
+    write_tool(
+        &dir,
+        &tool(
+            "example.echo-two",
+            "\"http\", \"secret\"",
+            "[http]\ndomains = [\"api.example.com\"]\n\n[[secret]]\nid = \"token\"\nlabel = \"令牌\"\n\n[[secret]]\nid = \"account\"\nlabel = \"账号\"\n",
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  http.request({
+    method = "GET",
+    url = "https://api.example.com/v1",
+    secrets = {
+      { id = "token", header = "Authorization", prefix = "Bearer " },
+      { id = "account", header = "ChatGPT-Account-Id", prefix = "" },
+    },
+  }, function(result)
+    ui.text("out", table.concat({
+      tostring(result.ok),
+      result.body or "",
+      result.error or "",
+    }, "|"))
+  end)
+end
+"#,
+    );
+    let transport = Arc::new(EchoTransport {
+        body: account.to_string(),
+        header: "clean".to_string(),
+    });
+    let store = Rc::new(RefCell::new(MemorySecretStore::default()));
+    store
+        .borrow_mut()
+        .put("example.echo-two", "token", "tok-other")
+        .unwrap();
+    store
+        .borrow_mut()
+        .put("example.echo-two", "account", account)
+        .unwrap();
+    let mut options = Options::default();
+    options.store = store;
+    options.transport = transport;
+    let session = open_at(&dir, options).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "out"), "false||请求失败");
+    assert!(!caption(&session, "out").contains(account));
+    assert!(
+        session
+            .notices()
+            .iter()
+            .all(|note| !note.text.contains(account))
     );
 }

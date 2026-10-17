@@ -261,6 +261,8 @@ fn the_import_card_lists_permissions_and_the_update_note_is_kept() {
     data.set_dialog_detail(SharedString::from("服务商接口的剩余额度"));
     data.set_dialog_lines(ModelRc::new(VecModel::from(vec![
         SharedString::from("访问 api.example.com"),
+        SharedString::from("向 api.example.com 提交数据"),
+        SharedString::from("请求头 anthropic-beta: oauth-2025-04-20"),
         SharedString::from("使用你填写的 API 密钥"),
     ])));
     data.set_dialog_note(SharedString::from("保留数据"));
