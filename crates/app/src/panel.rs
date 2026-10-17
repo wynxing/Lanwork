@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use lanwork_core::CivilDate;
 use lanwork_core::apps::{LaunchTarget, launch};
 use lanwork_core::dispatch::IconCache;
+use lanwork_core::external_ai::{ExternalAi, Notice};
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::{
     self, DropZone, PanelTab, PanelTarget, RECURRENCE_CHOICES, Row, TodoView, format_date,
@@ -142,11 +143,15 @@ pub(crate) fn install(
         store.log_warn(&format!("面板窗口初始化未排队：{err}"));
     }
 
+    let external = ExternalAi::open(store.clone(), todos.clone(), notes.clone());
+    let notices = external.subscribe();
+    let log = store.clone();
     let controller = Controller {
         notes: NotesPage::new(&ui, notes, store.clone()),
         shelves: ShelvesPage::new(&ui, shelves, todos.clone(), icons, store.clone()),
         apps: AppsPage::new(&ui, store.clone()),
-        settings: SettingsPage::new(&ui, settings, store.clone()),
+        settings: SettingsPage::new(&ui, settings, store.clone(), external.clone()),
+        external,
         drop_state: Arc::new(DropState::default()),
         drop_registration: None,
         linked: HashSet::new(),
@@ -172,8 +177,22 @@ pub(crate) fn install(
         dark: false,
         hwnd_ready: false,
         from_notification: false,
+        drafts: FieldDrafts::default(),
+        composing: false,
     };
     PANEL.with(|cell| *cell.borrow_mut() = Some(controller));
+    let spawned = std::thread::Builder::new()
+        .name("lanwork-external-ai".to_owned())
+        .spawn(move || {
+            while let Ok(notice) = notices.recv() {
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_panel(move |panel| panel.on_external(notice));
+                });
+            }
+        });
+    if spawned.is_err() {
+        log.log_warn("外部 AI 的界面通知没有启动");
+    }
 }
 
 /// 进程退出前调用：录入热键中就结束录入，把热键注册回去。
@@ -334,6 +353,25 @@ fn wire(ui: &Panel) {
         let text = text.to_string();
         with_panel(move |panel| panel.commit_until(&text));
     });
+    ui.on_edit_title(|text| {
+        let text = text.to_string();
+        with_panel(move |panel| panel.edit_title(&text));
+    });
+    ui.on_edit_due(|text| {
+        let text = text.to_string();
+        with_panel(move |panel| panel.edit_due(&text));
+    });
+    ui.on_edit_remind(|text| {
+        let text = text.to_string();
+        with_panel(move |panel| panel.edit_remind(&text));
+    });
+    ui.on_edit_until(|text| {
+        let text = text.to_string();
+        with_panel(move |panel| panel.edit_until(&text));
+    });
+    ui.on_compose_field(|active| with_panel(move |panel| panel.compose_field(active)));
+    ui.on_keep_local_todo(|| with_panel(Controller::keep_local_todo));
+    ui.on_keep_external_todo(|| with_panel(Controller::keep_external_todo));
     ui.on_start_triage(|| with_panel(Controller::enter_triage));
     ui.on_triage_key(|code, modified| {
         let handled = Rc::new(Cell::new(false));
@@ -380,6 +418,35 @@ pub(crate) struct Controller {
     hwnd_ready: bool,
     /// 这次显示来自到期通知。前台失败时不收起，并再显示一次以盖过 `SW_HIDE`。
     from_notification: bool,
+    external: ExternalAi,
+    drafts: FieldDrafts,
+    composing: bool,
+}
+
+#[derive(Default)]
+struct FieldDrafts {
+    title: Option<String>,
+    due: Option<String>,
+    remind: Option<String>,
+    until: Option<String>,
+}
+
+fn draft_of(saved: &str, text: &str) -> Option<String> {
+    if text == saved {
+        None
+    } else {
+        Some(text.to_owned())
+    }
+}
+
+impl FieldDrafts {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn any(&self) -> bool {
+        self.title.is_some() || self.due.is_some() || self.remind.is_some() || self.until.is_some()
+    }
 }
 
 impl Controller {
@@ -514,6 +581,7 @@ impl Controller {
         } else {
             self.settings.cancel_recording(&self.ui);
         }
+        self.push_conflict();
     }
 
     fn present(&mut self) {
@@ -735,6 +803,7 @@ impl Controller {
             .is_some_and(|id| !self.rows.iter().any(|row| &row.id == id))
         {
             self.selected = None;
+            self.clear_drafts();
         }
         let models: Vec<PanelRow> = self
             .rows
@@ -781,6 +850,7 @@ impl Controller {
     /// `reset` 为真时输入框回到条目里的值；写入失败时不重置，保留用户正在改的文字。
     fn push_detail(&mut self, reset: bool) {
         if reset {
+            self.clear_drafts();
             self.detail_version = self.detail_version.wrapping_add(1);
         }
         self.ui.set_detail_version(self.detail_version);
@@ -1065,6 +1135,98 @@ impl Controller {
         };
         let result = self.todos.purge(&id).map_err(|err| err.to_string());
         self.finish(result, true);
+    }
+
+    fn on_external(&mut self, notice: Notice) {
+        match notice {
+            Notice::Clients => self.settings.push_external(&self.ui),
+            Notice::Conflict => self.push_conflict(),
+        }
+    }
+
+    fn push_conflict(&mut self) {
+        let title = self
+            .external
+            .conflicts()
+            .into_iter()
+            .next()
+            .map(|(_, title)| title)
+            .unwrap_or_default();
+        self.ui.set_todo_conflict_title(title.into());
+    }
+
+    fn keep_local_todo(&mut self) {
+        if let Some((id, _)) = self.external.conflicts().into_iter().next() {
+            self.external.keep_local(&id);
+        }
+        self.push_conflict();
+    }
+
+    fn keep_external_todo(&mut self) {
+        let Some((id, _)) = self.external.conflicts().into_iter().next() else {
+            self.push_conflict();
+            return;
+        };
+        match self.external.keep_external(&id) {
+            Ok(()) => {
+                if self.selected.as_deref() == Some(id.as_str()) {
+                    self.clear_drafts();
+                }
+                self.reload();
+                self.push_detail(true);
+                self.push_conflict();
+            }
+            Err(message) => {
+                self.error = Some(message);
+                self.push_error();
+                self.push_conflict();
+            }
+        }
+    }
+
+    fn edit_title(&mut self, text: &str) {
+        let saved = self.ui.get_detail().title.to_string();
+        self.drafts.title = draft_of(&saved, text);
+        self.sync_dirty();
+    }
+
+    fn edit_due(&mut self, text: &str) {
+        let saved = self.ui.get_detail().due.to_string();
+        self.drafts.due = draft_of(&saved, text);
+        self.sync_dirty();
+    }
+
+    fn edit_remind(&mut self, text: &str) {
+        let saved = self.ui.get_detail().remind.to_string();
+        self.drafts.remind = draft_of(&saved, text);
+        self.sync_dirty();
+    }
+
+    fn edit_until(&mut self, text: &str) {
+        let saved = self.ui.get_detail().until.to_string();
+        self.drafts.until = draft_of(&saved, text);
+        self.sync_dirty();
+    }
+
+    fn compose_field(&mut self, active: bool) {
+        self.composing = active;
+        self.sync_dirty();
+    }
+
+    fn clear_drafts(&mut self) {
+        self.drafts.clear();
+        self.composing = false;
+        self.sync_dirty();
+    }
+
+    fn sync_dirty(&self) {
+        let mut ids = HashSet::new();
+        if (self.composing || self.drafts.any())
+            && let Some(id) = &self.selected
+        {
+            ids.insert(id.clone());
+        }
+        self.external.set_dirty(ids);
     }
 
     fn commit_title(&mut self, text: &str) {

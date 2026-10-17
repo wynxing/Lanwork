@@ -58,6 +58,10 @@ pub enum TodoError {
     PurgeRecord,
     /// `todo-float.json` 的 `schemaVersion` 不受支持。文件留着，不写回去。
     FloatSchema,
+    /// 调用方带来的修订号与已保存的不一致。不写盘。
+    Conflict {
+        id: String,
+    },
     PendingSpec(PendingTopic),
 }
 
@@ -111,6 +115,7 @@ impl fmt::Display for TodoError {
             Self::DuplicateId { id } => write!(f, "标识重复：{id}"),
             Self::PurgeRecord => write!(f, "待办清除记录无法读取"),
             Self::FloatSchema => write!(f, "todo-float.json 的 schemaVersion 不受支持"),
+            Self::Conflict { id } => write!(f, "待办保存冲突：{id}"),
             Self::PendingSpec(PendingTopic::MonthlyMissingDay) => {
                 write!(f, "每月这一天在目标月不存在，尚未规定落到哪一天")
             }

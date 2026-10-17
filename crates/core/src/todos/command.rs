@@ -284,6 +284,34 @@ impl TodoCommands {
         self.service.restore(item_id)
     }
 
+    /// 外部工具一次改完允许的字段。修订号不一致时不写盘。
+    pub fn apply_patch(
+        &self,
+        item_id: &str,
+        revision: Option<u64>,
+        patch: super::model::TodoPatch,
+    ) -> Result<super::model::TodoItem, TodoError> {
+        self.service.apply_patch(item_id, revision, patch)
+    }
+
+    /// 完成。修订号必须是这次读到的。带周期时仍按现有规则生成下一次。
+    pub fn complete_at(&self, item_id: &str, revision: u64) -> Result<(), TodoError> {
+        self.service.complete_at(item_id, revision)
+    }
+
+    /// 取消完成。下一次是否删除仍按现有规则，产品规格里待定的分支不另作处理。
+    pub fn uncomplete_at(&self, item_id: &str, revision: u64) -> Result<(), TodoError> {
+        self.service.uncomplete_at(item_id, revision)
+    }
+
+    pub fn soft_delete_at(&self, item_id: &str, revision: u64) -> Result<(), TodoError> {
+        self.service.soft_delete_at(item_id, revision)
+    }
+
+    pub fn restore_at(&self, item_id: &str, revision: u64) -> Result<(), TodoError> {
+        self.service.restore_at(item_id, revision)
+    }
+
     /// 永久删除回收站中的一条。不在回收站时不改数据，也不发出 [`TodoNotice::Purged`]。
     pub fn purge(&self, item_id: &str) -> Result<(), TodoError> {
         self.service.purge(item_id)

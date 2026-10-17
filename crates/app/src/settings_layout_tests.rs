@@ -325,10 +325,27 @@ fn restore_asks_for_the_hidden_app_under_the_pointer() {
         data.on_restore_hidden(move |index| restored.borrow_mut().push(index));
     }
     open_section(&ui, 3.0);
-    // 上边距 8、更新块 88、节标题 40，然后第一条右侧的「恢复」。
-    let y = PAGE_Y + 8.0 + 88.0 + 40.0 + 22.0;
+    // 上边距 8、更新块 88、「外部 AI」一行 48、节标题 40，然后第一条右侧的「恢复」。
+    let y = PAGE_Y + 8.0 + 88.0 + 48.0 + 40.0 + 22.0;
     click(&ui, WIDTH as f32 - 16.0 - 24.0, y);
     assert_eq!(*restored.borrow(), [0]);
+}
+
+#[test]
+fn external_ai_switch_asks_and_does_not_flip_by_itself() {
+    let (ui, _window) = open(false);
+    let data = ui.global::<SettingsPageData>();
+    let requested = Rc::new(RefCell::new(Vec::new()));
+    {
+        let requested = Rc::clone(&requested);
+        data.on_set_external_ai(move |enabled| requested.borrow_mut().push(enabled));
+    }
+    open_section(&ui, 3.0);
+    // 版本块 88 之下那一行的开关中心。
+    let y = PAGE_Y + 8.0 + 88.0 + 24.0;
+    click(&ui, CONTROL_X + 20.0, y);
+    assert_eq!(*requested.borrow(), [true]);
+    assert!(!data.get_external_ai());
 }
 
 #[test]

@@ -93,6 +93,14 @@ export component Panel inherits Window {
     callback commit-remind(string);
     callback choose-recurrence(int);
     callback commit-until(string);
+    callback edit-title(string);
+    callback edit-due(string);
+    callback edit-remind(string);
+    callback edit-until(string);
+    callback compose-field(bool);
+    in property <string> todo-conflict-title;
+    callback keep-local-todo();
+    callback keep-external-todo();
     callback open-shelf();
     callback float-todos();
 
@@ -718,6 +726,12 @@ export component Panel inherits Window {
                                     source-text: detail.title;
                                     reset: detail-version;
                                     c: root.c;
+                                    edited(text) => {
+                                        root.edit-title(text);
+                                    }
+                                    composing(active) => {
+                                        root.compose-field(active);
+                                    }
                                     committed(text) => {
                                         root.commit-title(text);
                                     }
@@ -837,6 +851,12 @@ export component Panel inherits Window {
                                     source-text: detail.due;
                                     reset: detail-version;
                                     c: root.c;
+                                    edited(text) => {
+                                        root.edit-due(text);
+                                    }
+                                    composing(active) => {
+                                        root.compose-field(active);
+                                    }
                                     committed(text) => {
                                         root.commit-due(text);
                                     }
@@ -857,6 +877,12 @@ export component Panel inherits Window {
                                     source-text: detail.remind;
                                     reset: detail-version;
                                     c: root.c;
+                                    edited(text) => {
+                                        root.edit-remind(text);
+                                    }
+                                    composing(active) => {
+                                        root.compose-field(active);
+                                    }
                                     committed(text) => {
                                         root.commit-remind(text);
                                     }
@@ -899,6 +925,12 @@ export component Panel inherits Window {
                                     source-text: detail.until;
                                     reset: detail-version;
                                     c: root.c;
+                                    edited(text) => {
+                                        root.edit-until(text);
+                                    }
+                                    composing(active) => {
+                                        root.compose-field(active);
+                                    }
                                     committed(text) => {
                                         root.commit-until(text);
                                     }
@@ -1105,6 +1137,53 @@ export component Panel inherits Window {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                if todo-conflict-title != "": Rectangle {
+                    x: 0px;
+                    y: parent.height - 44px;
+                    width: parent.width;
+                    height: 44px;
+                    background: c.field;
+
+                    Rectangle {
+                        height: 1px;
+                        width: parent.width;
+                        background: c.divider;
+                    }
+
+                    HorizontalLayout {
+                        x: 12px;
+                        y: 1px;
+                        width: parent.width - 24px;
+                        height: 43px;
+                        spacing: 8px;
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: "待办保存冲突 " + todo-conflict-title;
+                            color: c.ink;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        Btn {
+                            text: "保留本机的版本";
+                            c: c;
+                            clicked => {
+                                root.keep-local-todo();
+                            }
+                        }
+
+                        Btn {
+                            text: "保留外部的版本";
+                            c: c;
+                            clicked => {
+                                root.keep-external-todo();
                             }
                         }
                     }

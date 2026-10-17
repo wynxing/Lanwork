@@ -28,7 +28,7 @@
 | 面板和其他界面 | `crates/app`。程序外壳、搜索条、面板的标签框架、待办页、便签页、收纳页、设置页（常规、待办、数据、其他：开机启动、热角、搜索条热键、主题、网页搜索引擎、安静时段、「稍后」天数、数据目录的更换与迁移、立即备份、导出和导入、隐藏的应用、检查更新）、便签悬浮窗和收纳悬浮窗已接入。查询调度在 `lanwork_core::dispatch`，搜索条已调用（面板搜索框已放弃）。便签快速收集（`/note`）的预览和提交还没有（待办快速收集已放弃）。待办薄命令 `TodoCommands`、便签薄命令 `NoteCommands` 和收纳薄命令 `ShelfCommands` 已在 `crates/core`。热角已接入，见「热角」。没有 Windows 验收 |
 | 其余技术验证的最小程序 | `spikes/<名称>`。`spikes/render`、`spikes/hotcorner` 与 `spikes/toolhost` 仍在维护，已通过验证的 spike 程序已清理归档 |
 | 渲染器 | 默认已写入「运行时」，外壳按此选择。见 [roadmap.md](roadmap.md)「技术验证」，这一项仍未通过 |
-| 外部 AI（本机 MCP）、应用页与悬浮窗工具 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [tools.md](tools.md)。原先的扩展页已并入应用页，见 [extensions.md](extensions.md)。外部 AI 没有代码，技术验证表里还没有对应项，没有通过记录之前不写依赖它的界面。应用页有代码，未在 Windows 上验收。导入、卸载、更新、查看权限和填写密钥有代码，未在 Windows 上验收。副本这一版在数据目录的 `tools/<工具 id>/`，路径仍待定。宿主在 `crates/toolhost`，没有界面。窗口验证程序在 `spikes/toolhost`，技术验证「工具宿主」已通过。凭据管理器界面待用户用 `lanwork --toolhost-cred` 确认，不挡住应用页。安装副本的路径仍待定。这一版放在 `tools/<工具 id>/`，和 `tool-storage/`、`tool-enabled.json`、`tool-windows/<工具 id>.json` 一起进入导出、备份和更换数据目录。外壳状态在 `lanwork_core::panel::float_shell`。 | |
+| 外部 AI（本机 MCP）、应用页与悬浮窗工具 | 排在 v0.2.0 之后。行为见 [external-ai.md](external-ai.md) 与 [tools.md](tools.md)。原先的扩展页已并入应用页，见 [extensions.md](extensions.md)。外部 AI 有代码，未在 Windows 上验收。技术验证表里还没有通过记录。应用页有代码，未在 Windows 上验收。导入、卸载、更新、查看权限和填写密钥有代码，未在 Windows 上验收。副本这一版在数据目录的 `tools/<工具 id>/`，路径仍待定。宿主在 `crates/toolhost`，没有界面。窗口验证程序在 `spikes/toolhost`，技术验证「工具宿主」已通过。凭据管理器界面待用户用 `lanwork --toolhost-cred` 确认，不挡住应用页。安装副本的路径仍待定。这一版放在 `tools/<工具 id>/`，和 `tool-storage/`、`tool-enabled.json`、`tool-windows/<工具 id>.json` 一起进入导出、备份和更换数据目录。外壳状态在 `lanwork_core::panel::float_shell`。 | |
 | 收纳网页引用 | 排在 v0.2.0 之后。可见行为见 [product.md](product.md)「收纳」。有代码，未在 Windows 上验收。拖放和打开见「收纳」的「网页引用」。依赖的技术验证「网址拖放」已通过，结论见 [roadmap.md](roadmap.md)。浏览器扩展还没有代码 |
 | 待办悬浮窗 | `crates/app` 的 `todo_float` 与 `crates/core` 的 `todos/float_file`。可见行为见 [product.md](product.md)「待办」。已敲定并按实际实现运作（未完成与已完成展示、仅标题和勾选框、逾期标红等），未在 Windows 上最终验收。位置记在数据目录的 `todo-float.json`，不写进清单文件，进入导出和备份白名单。贴边和叠页加入现有悬浮窗，见「待办悬浮窗」。「背景」和「渲染器」仍没有通过记录。窗口外观沿用便签悬浮窗，写了也不改变这两项的记录 |
 
@@ -309,8 +309,8 @@ Lanwork/
 - 写入：进程内一把互斥锁。同目录写 `<name>.tmp`，调用 `FlushFileBuffers` 后，目标已存在时用 `ReplaceFileW`（`REPLACEFILE_WRITE_THROUGH`），否则用 `MoveFileExW`（`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`）。替换失败则删除临时文件、保留原文件，并返回带路径的错误。不自动重试。数据目录位于 OneDrive 同步的「文档」下时，同步进程占用按同一规则报错。
 - 单个 JSON 无法解析时，把该文件改名为 `<id>.json.corrupt-<UTC 毫秒>-<序号>` 并记日志，其他文件仍可读。日志不含文件内容。不认识的 `schemaVersion` 不隔离，由调用方拒绝。
 - 每个 JSON 对象带数字字段 `schemaVersion`。当前版本是 1。新字段可选并有默认值；缺少 `schemaVersion` 的旧文件按 1 读取。示例模型是 `ExampleDocument`，不是待办或便签模型。
-- 写盘成功后发布 `EntityChanged { kind, id, revision }`。`revision` 只在便签保存时携带新的修订号，其他实体为 None。v0.2.0 之后外部 AI 落地时，待办也携带修订号，见 [external-ai.md](external-ai.md)：缺少 `revision` 按 0 读取，不一致则返回「待办保存冲突」；在此之前 `EntityChanged` 保持现在的行为。跨文件批次在提交成功后按写入顺序发布；写盘失败或批次未提交不发布。订阅回调在写锁释放之后执行。
-- 日志在 `logs/app.log`。单文件超过 1 MiB 时轮转，保留 `app.log`、`app.log.1`、`app.log.2`。不写文件内容，因此不写便签正文。落盘前去掉常见 GitHub token 形态，以及名称含 `TOKEN`、`SECRET`、`PASSWORD`、`CREDENTIAL`、或以 `_KEY` 结尾且值长度至少 8 的环境变量的值。错误里仍会写出文件路径。
+- 写盘成功后发布 `EntityChanged { kind, id, revision }`。`revision` 在便签保存时携带新的修订号。待办在这一次写入恰好有一条的修订号变化时携带该修订号，否则为 None。旧待办没有 `revision` 时按 0 读取，不一致则返回「待办保存冲突」，见 [external-ai.md](external-ai.md)。跨文件批次在提交成功后按写入顺序发布；写盘失败或批次未提交不发布。订阅回调在写锁释放之后执行。
+- 日志在 `logs/app.log`。单文件超过 1 MiB 时轮转，保留 `app.log`、`app.log.1`、`app.log.2`。不写文件内容，因此不写便签正文。落盘前去掉常见 GitHub token 形态，`lw_` 后接 64 位十六进制的外部 AI token，这次进程记住的 token 原文，以及名称含 `TOKEN`、`SECRET`、`PASSWORD`、`CREDENTIAL`、或以 `_KEY` 结尾且值长度至少 8 的环境变量的值。错误里仍会写出文件路径。
 - `import.pending` 的内容是备份绝对路径的 UTF-8 文本，不是 JSON。它不进入导出包。
 - 收件箱是 `kind=inbox` 的待办清单，首次需要时创建一次。
 - 待办可带到期日、提醒、周期、来源，以及至多一个当前标记。旧记录的来源 `type` 仍是 `github-pr` 或 `github-issue`，并带 `url`、`repo`、`number`，这样已有待办能打开。打开来源只看 URL 是不是 `http` / `https`，不按仓库或编号另做处理。没有再从本机 `gh` 创建来源的服务。每月重复的锚点日是周期上的 `monthDay`（1 至 31）。缺少该字段的旧记录按当前到期日的日子计算。已经写下的 `monthDay` 不因本次到期日落到月末而改掉。

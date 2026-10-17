@@ -7,7 +7,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use super::lock_mutex;
 
-/// 写盘成功后的通知。`revision` 只在便签保存时有值。
+/// 写盘成功后的通知。便签保存时 `revision` 是新的修订号。
+/// 待办在恰好一条的修订号变化时同样带上新值，多条一起变时为 `None`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityChanged {
     pub kind: EntityKind,

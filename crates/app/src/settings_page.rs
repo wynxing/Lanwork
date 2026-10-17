@@ -1,7 +1,7 @@
 //! 面板的设置页。左边四个分类，右边是当前分类。
 //! 常规：开机启动、热角、搜索条热键、主题、网页搜索引擎。
 //! 待办：安静时段、「稍后」天数。数据：当前数据目录、更换并迁移、立即备份、导出和导入。
-//! 其他：关于与更新、隐藏的应用。
+//! 其他：关于与更新、外部 AI、隐藏的应用。
 //!
 //! 决定在 `lanwork_core::panel` 和 `lanwork_core::shell`：先写 `config.json`，成功后才写注册表、
 //! 换热角；热键先注册新的、再写盘、再卸旧的。这里只把结果推给界面，并在失败时用配置里的原值重推，
@@ -21,6 +21,7 @@ use lanwork_core::config::{
     parse_clock,
 };
 use lanwork_core::dispatch::Dispatch;
+use lanwork_core::external_ai::ExternalAi;
 use lanwork_core::panel::{
     change_hot_corner, change_launch_at_startup, change_quiet_hours, change_snooze_days,
     change_theme, change_web_search_engine, hot_corner_at, hot_corner_titles, parse_snooze_days,
@@ -35,7 +36,9 @@ use crate::keycap;
 use crate::panel::with_settings;
 use crate::platform::HotkeyControl;
 use crate::registry::apply_startup;
-use crate::{ImportLine, Panel, SettingsBackup, SettingsHiddenApp, SettingsPageData};
+use crate::{
+    ImportLine, Panel, SettingsBackup, SettingsExternalClient, SettingsHiddenApp, SettingsPageData,
+};
 
 const CAPTURE_UNAVAILABLE: &str = "热键录入不可用";
 
@@ -70,6 +73,11 @@ pub(crate) struct SettingsPage {
     backup_paths: RefCell<Vec<PathBuf>>,
     /// 恢复或迁移前关掉的工具窗口。导入成功后不重开；迁移后从新目录重开。
     held_windows: RefCell<Vec<String>>,
+    external: ExternalAi,
+    external_name: RefCell<String>,
+    /// 刚授权的那一把原文。只放在界面上，不写日志。关掉开关、撤销或再次授权后清掉。
+    shown_token: RefCell<Option<(String, String)>>,
+    external_name_reset: Cell<i32>,
 }
 
 enum Hold {
@@ -81,7 +89,12 @@ enum Hold {
 }
 
 impl SettingsPage {
-    pub(crate) fn new(ui: &Panel, services: SettingsServices, store: Store) -> Self {
+    pub(crate) fn new(
+        ui: &Panel,
+        services: SettingsServices,
+        store: Store,
+        external: ExternalAi,
+    ) -> Self {
         let titles: Vec<SharedString> = hot_corner_titles().into_iter().map(Into::into).collect();
         let themes: Vec<SharedString> = theme_titles().into_iter().map(Into::into).collect();
         let engines: Vec<SharedString> = web_engine_titles().into_iter().map(Into::into).collect();
@@ -123,6 +136,17 @@ impl SettingsPage {
         data.on_restore_hidden(|index| {
             with_settings(move |page, ui| page.restore_hidden(ui, index));
         });
+        data.on_set_external_ai(|enabled| {
+            with_settings(move |page, ui| page.set_external_ai(ui, enabled));
+        });
+        data.on_external_name_edited(|text| {
+            let text = text.to_string();
+            with_settings(move |page, _ui| page.set_external_name(text));
+        });
+        data.on_authorize_external(|| with_settings(SettingsPage::authorize_external));
+        data.on_revoke_external(|index| {
+            with_settings(move |page, ui| page.revoke_external(ui, index));
+        });
         let SettingsServices {
             config,
             hotkeys,
@@ -144,8 +168,16 @@ impl SettingsPage {
             import_lines: RefCell::new(Vec::new()),
             backup_paths: RefCell::new(Vec::new()),
             held_windows: RefCell::new(Vec::new()),
+            external: external.clone(),
+            external_name: RefCell::new(String::new()),
+            shown_token: RefCell::new(None),
+            external_name_reset: Cell::new(0),
         };
+        let not_listening = external.enabled() && external.port().is_none();
         page.push(ui);
+        if not_listening {
+            ui.set_error("无法监听".into());
+        }
         page
     }
 
@@ -226,6 +258,93 @@ impl SettingsPage {
         self.field_reset.set(reset);
         data.set_field_reset(reset);
         self.push_hidden(ui);
+        self.push_external(ui);
+    }
+
+    /// 外部 AI 的开关、端点、刚发出的 token 和客户端列表。token 原文只在这里交给界面。
+    pub(crate) fn push_external(&self, ui: &Panel) {
+        let data = ui.global::<SettingsPageData>();
+        data.set_external_ai(self.external.enabled());
+        let token = self
+            .shown_token
+            .borrow()
+            .as_ref()
+            .map(|(_, token)| SharedString::from(token.as_str()))
+            .unwrap_or_default();
+        data.set_external_token(token);
+        data.set_external_endpoint(self.external.endpoint().unwrap_or_default().into());
+        data.set_external_name_reset(self.external_name_reset.get());
+        let rows: Vec<SettingsExternalClient> = self
+            .external
+            .clients()
+            .iter()
+            .map(|client| SettingsExternalClient {
+                name: client.name.as_str().into(),
+                status: if client.connected {
+                    "已连接".into()
+                } else {
+                    "未连接".into()
+                },
+            })
+            .collect();
+        data.set_external_clients(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
+    }
+
+    fn set_external_name(&mut self, name: String) {
+        *self.external_name.borrow_mut() = name;
+    }
+
+    fn set_external_ai(&mut self, ui: &Panel, enabled: bool) {
+        self.cancel_recording(ui);
+        match self.external.set_enabled(enabled) {
+            Ok(()) => {
+                if !enabled {
+                    *self.shown_token.borrow_mut() = None;
+                }
+                self.finish(ui, Ok(()));
+            }
+            Err(err) => self.finish(ui, Err(err.to_string())),
+        }
+    }
+
+    fn authorize_external(&mut self, ui: &Panel) {
+        let name = self.external_name.borrow().clone();
+        match self.external.authorize(&name) {
+            Ok(issued) => {
+                *self.shown_token.borrow_mut() = Some((issued.id, issued.token));
+                self.external_name.borrow_mut().clear();
+                self.external_name_reset
+                    .set(self.external_name_reset.get().wrapping_add(1));
+                ui.set_error(self.hotkey_error().unwrap_or_default().into());
+                self.push(ui);
+            }
+            Err(err) => self.fail(ui, &err.to_string()),
+        }
+    }
+
+    fn revoke_external(&mut self, ui: &Panel, index: i32) {
+        let Some(id) = usize::try_from(index).ok().and_then(|index| {
+            self.external
+                .clients()
+                .get(index)
+                .map(|client| client.id.clone())
+        }) else {
+            return;
+        };
+        match self.external.revoke(&id) {
+            Ok(()) => {
+                let clear = self
+                    .shown_token
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(shown, _)| shown == &id);
+                if clear {
+                    *self.shown_token.borrow_mut() = None;
+                }
+                self.finish(ui, Ok(()));
+            }
+            Err(err) => self.finish(ui, Err(err.to_string())),
+        }
     }
 
     /// 选择文件夹。取消就什么也不做。选中之后才开始迁移，路径要等切换成功才换。

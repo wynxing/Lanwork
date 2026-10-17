@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::CivilDate;
-use crate::storage::{CollectionKind, DocumentId, Store, is_supported_schema, lock_mutex};
+use crate::storage::{
+    ChangeMeta, CollectionKind, DocumentId, Store, is_supported_schema, lock_mutex,
+};
 
 use super::error::{PendingTopic, TodoError};
 use super::model::{
@@ -401,6 +403,47 @@ impl Service {
         self.ready_op(|| self.restore_locked(item_id))
     }
 
+    /// 按外部提交改字段。`revision` 为 `Some` 时必须与已保存的一致，否则不写盘。
+    ///
+    /// `None` 是用户已经选定保留外部版本，不再核对此前读到的修订号。
+    /// 一次调用只写这一批字段。清单变了时，目标文件和源文件在同一批次里。
+    pub(crate) fn apply_patch(
+        &self,
+        item_id: &str,
+        revision: Option<u64>,
+        patch: super::model::TodoPatch,
+    ) -> Result<TodoItem, TodoError> {
+        self.ready_op(|| self.apply_patch_locked(item_id, revision, patch))
+    }
+
+    pub(crate) fn complete_at(&self, item_id: &str, revision: u64) -> Result<(), TodoError> {
+        self.ready_op(|| {
+            self.gate(item_id, revision, ItemPlace::Live)?;
+            self.complete_locked(item_id)
+        })
+    }
+
+    pub(crate) fn uncomplete_at(&self, item_id: &str, revision: u64) -> Result<(), TodoError> {
+        self.ready_op(|| {
+            self.gate(item_id, revision, ItemPlace::Live)?;
+            self.uncomplete_locked(item_id)
+        })
+    }
+
+    pub(crate) fn soft_delete_at(&self, item_id: &str, revision: u64) -> Result<(), TodoError> {
+        self.ready_op(|| {
+            self.gate(item_id, revision, ItemPlace::Live)?;
+            self.soft_delete_locked(item_id)
+        })
+    }
+
+    pub(crate) fn restore_at(&self, item_id: &str, revision: u64) -> Result<(), TodoError> {
+        self.ready_op(|| {
+            self.gate(item_id, revision, ItemPlace::Trash)?;
+            self.restore_locked(item_id)
+        })
+    }
+
     pub(crate) fn purge(&self, item_id: &str) -> Result<(), TodoError> {
         self.ready_op(|| self.purge_locked(item_id))
     }
@@ -559,6 +602,7 @@ impl Service {
             recurrence.fill_missing_month_day(item.due);
         }
         item.source = draft.source;
+        bump_revision(&mut item);
         lists[list_index].items.push(item);
         let changed = lists[list_index].clone();
         self.persist(lists, vec![changed])?;
@@ -588,6 +632,7 @@ impl Service {
         for (index, item) in items.iter_mut().enumerate() {
             if previous.get(index).is_none_or(|id| id != &item.id) {
                 note_touched(item);
+                bump_revision(item);
             }
         }
         renumber(&mut items);
@@ -680,6 +725,7 @@ impl Service {
         parent.ever_completed = true;
         parent.generated_next = None;
         note_touched(parent);
+        bump_revision(parent);
         if let Some(due) = generated {
             let mut next = lists[list_index].items[item_index].clone();
             next.id = fresh_unique_id('i', |candidate| {
@@ -696,6 +742,8 @@ impl Service {
             next.deleted_at = None;
             next.origin_list_id = None;
             next.moved_at = None;
+            next.revision = 0;
+            bump_revision(&mut next);
             if let Some(recurrence) = next.recurrence.as_mut() {
                 recurrence.fill_missing_month_day(source_due);
             }
@@ -722,6 +770,7 @@ impl Service {
         let recorded = lists[list_index].items[item_index].generated_next.clone();
         lists[list_index].items[item_index].completed = false;
         lists[list_index].items[item_index].generated_next = None;
+        bump_revision(&mut lists[list_index].items[item_index]);
         if let Some(recorded) = recorded
             && let Some((child_list, child_index)) = find_item(&lists, &recorded.id)
             && child_list == list_index
@@ -746,6 +795,7 @@ impl Service {
         item.deleted_at = Some(now_ms());
         item.origin_list_id = Some(list_id);
         note_touched(item);
+        bump_revision(item);
         let changed = lists[list_index].clone();
         self.persist(lists, vec![changed])
     }
@@ -769,6 +819,7 @@ impl Service {
             lists[list_index].items[item_index].deleted_at = None;
             lists[list_index].items[item_index].origin_list_id = None;
             note_touched(&mut lists[list_index].items[item_index]);
+            bump_revision(&mut lists[list_index].items[item_index]);
             let changed = lists[list_index].clone();
             return self.persist(lists, vec![changed]);
         }
@@ -776,6 +827,7 @@ impl Service {
         item.deleted_at = None;
         item.origin_list_id = None;
         note_touched(&mut item);
+        bump_revision(&mut item);
         item.moved_at = Some(now_ms());
         item.order = next_order(lists[origin_index].items.iter().map(|item| item.order))?;
         lists[origin_index].items.push(item);
@@ -879,6 +931,7 @@ impl Service {
         marked[target.0].items[target.1].current = true;
         marked[target.0].items[target.1].current_since = Some(now);
         note_touched(&mut marked[target.0].items[target.1]);
+        bump_revision(&mut marked[target.0].items[target.1]);
         let mut final_lists = marked.clone();
         for (list_index, item_index) in currents {
             if (list_index, item_index) == target {
@@ -887,6 +940,7 @@ impl Service {
             final_lists[list_index].items[item_index].current = false;
             final_lists[list_index].items[item_index].current_since = None;
             note_touched(&mut final_lists[list_index].items[item_index]);
+            bump_revision(&mut final_lists[list_index].items[item_index]);
         }
         let mut writes = vec![marked[target.0].clone()];
         for list in &final_lists {
@@ -911,6 +965,7 @@ impl Service {
                     item.current = false;
                     item.current_since = None;
                     note_touched(item);
+                    bump_revision(item);
                     changed = true;
                 }
             }
@@ -985,12 +1040,100 @@ impl Service {
         let mut item = lists[list_index].items[item_index].clone();
         item.moved_at = Some(now_ms());
         note_touched(&mut item);
+        bump_revision(&mut item);
         item.order = next_order(lists[target_index].items.iter().map(|item| item.order))?;
         lists[target_index].items.push(item);
         lists[list_index].items.remove(item_index);
         let target = lists[target_index].clone();
         let source = lists[list_index].clone();
         self.persist(lists, vec![target, source])
+    }
+
+    fn gate(&self, item_id: &str, revision: u64, place: ItemPlace) -> Result<(), TodoError> {
+        let lists = self.lists_vec()?;
+        let (list_index, item_index) =
+            find_item(&lists, item_id).ok_or_else(|| missing_item(item_id))?;
+        let item = &lists[list_index].items[item_index];
+        match place {
+            ItemPlace::Live if item.in_trash() => return Err(TodoError::AlreadyInTrash),
+            ItemPlace::Trash if !item.in_trash() => return Err(TodoError::NotInTrash),
+            ItemPlace::Live | ItemPlace::Trash => {}
+        }
+        if item.revision != revision {
+            return Err(TodoError::Conflict {
+                id: item_id.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn apply_patch_locked(
+        &self,
+        item_id: &str,
+        revision: Option<u64>,
+        patch: super::model::TodoPatch,
+    ) -> Result<TodoItem, TodoError> {
+        let mut lists = self.lists_vec()?;
+        let (list_index, item_index) =
+            find_item(&lists, item_id).ok_or_else(|| missing_item(item_id))?;
+        if lists[list_index].items[item_index].in_trash() {
+            return Err(TodoError::AlreadyInTrash);
+        }
+        if let Some(expected) = revision
+            && lists[list_index].items[item_index].revision != expected
+        {
+            return Err(TodoError::Conflict {
+                id: item_id.to_owned(),
+            });
+        }
+        {
+            let item = &mut lists[list_index].items[item_index];
+            if let Some(title) = patch.title {
+                item.title = normalize_required(&title).ok_or(TodoError::BlankTitle)?;
+            }
+            if let Some(due) = patch.due {
+                item.due = due;
+                if let Some(recurrence) = item.recurrence.as_mut() {
+                    recurrence.fill_missing_month_day(item.due);
+                }
+            }
+            if let Some(remind_at) = patch.remind_at {
+                item.remind_at = remind_at;
+            }
+            if let Some(recurrence) = patch.recurrence {
+                let mut recurrence = recurrence;
+                if let Some(recurrence) = recurrence.as_mut() {
+                    recurrence.fill_missing_month_day(item.due);
+                }
+                item.recurrence = recurrence;
+            }
+            note_touched(item);
+            bump_revision(item);
+        }
+        if let Some(target_id) = patch
+            .list_id
+            .filter(|target| target != &lists[list_index].id)
+        {
+            let target_index =
+                find_list(&lists, &target_id).ok_or_else(|| missing_list(&target_id))?;
+            let mut item = lists[list_index].items.remove(item_index);
+            item.moved_at = Some(now_ms());
+            item.order = next_order(lists[target_index].items.iter().map(|item| item.order))?;
+            lists[target_index].items.push(item);
+            let Some(stored) = lists[target_index].items.last().cloned() else {
+                return Err(TodoError::ItemNotFound {
+                    id: item_id.to_owned(),
+                });
+            };
+            let target = lists[target_index].clone();
+            let source = lists[list_index].clone();
+            self.persist(lists, vec![target, source])?;
+            return Ok(stored);
+        }
+        let stored = lists[list_index].items[item_index].clone();
+        let changed = lists[list_index].clone();
+        self.persist(lists, vec![changed])?;
+        Ok(stored)
     }
 
     fn edit_active(
@@ -1006,6 +1149,7 @@ impl Service {
         }
         note_touched(&mut lists[list_index].items[item_index]);
         mutate(&mut lists[list_index].items[item_index])?;
+        bump_revision(&mut lists[list_index].items[item_index]);
         let changed = lists[list_index].clone();
         self.persist(lists, vec![changed])
     }
@@ -1036,7 +1180,10 @@ impl Service {
                 drop(batch);
                 return self.finish_failed_write(&previous, &replaced, err);
             }
-            match batch.write_json(&DocumentId::Todo(list.id.clone()), list) {
+            let meta = ChangeMeta {
+                revision: list_revision(&previous, list),
+            };
+            match batch.write_with(&DocumentId::Todo(list.id.clone()), list, meta) {
                 Ok(_) => replaced.push(list.id.clone()),
                 Err(err) => {
                     drop(batch);
@@ -1255,6 +1402,34 @@ fn missing_item(id: &str) -> TodoError {
 
 fn note_touched(item: &mut TodoItem) {
     item.generated_untouched = false;
+}
+
+fn bump_revision(item: &mut TodoItem) {
+    item.revision = item.revision.saturating_add(1);
+}
+
+enum ItemPlace {
+    Live,
+    Trash,
+}
+
+/// 这一份清单里恰好一条待办的修订号变了时，变更消息带上新的修订号。
+fn list_revision(previous: &[TodoList], list: &TodoList) -> Option<u64> {
+    let before = previous.iter().find(|existing| existing.id == list.id);
+    let mut changed = Vec::new();
+    for item in &list.items {
+        let old = before.and_then(|list| list.items.iter().find(|old| old.id == item.id));
+        match old {
+            Some(old) if old.revision != item.revision => changed.push(item.revision),
+            None => changed.push(item.revision),
+            Some(_) => {}
+        }
+    }
+    if changed.len() == 1 {
+        Some(changed[0])
+    } else {
+        None
+    }
 }
 
 /// 下一次仍是完成时写下的那一条。改过、完成过、在回收站、是当前或被移动过都不是。

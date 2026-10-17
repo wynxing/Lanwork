@@ -222,6 +222,11 @@ impl Store {
         self.inner.log.error(message);
     }
 
+    /// 这次进程的日志再遇到这段原文就删掉。不把原文写进日志。
+    pub fn remember_secret(&self, secret: &str) {
+        self.inner.log.remember_secret(secret);
+    }
+
     pub fn import_pending_path(&self) -> PathBuf {
         self.data_dir().join("import.pending")
     }
