@@ -2,6 +2,7 @@
 //!
 //! 列出全部清单里未进回收站的待办，含已完成。勾选走 `complete_item`，取消勾选走
 //! `uncomplete_item`。不能新建，也不能改标题。位置在 `todo-float.json`。
+//! 拖动条、关闭、来源行和贴边在共用外壳里。这里只接勾选和列表。位置仍在 `todo-float.json`。
 //! 贴边和叠页用现有的 `float_dock`、`float_group`。
 //! 贴边对得上当前屏幕时按细条或展开的位置打开；对不上时丢掉贴边。
 //! 不贴边时，拖动、改大小、按记住的位置打开，以及内容把窗口撑大，整扇都留在所在显示器的工作区里。
@@ -419,7 +420,14 @@ fn wire(ui: &TodoFloat) {
         CloseRequestResponse::KeepWindowShown
     });
     ui.on_strip_clicked(|| with_window(|window, _| window.on_strip()));
-    ui.on_drag_window(|| with_window(|window, _| window.drag()));
+    ui.on_drag_requested(|| {
+        with_window(|window, _| {
+            if !window.session.chrome().collapsed {
+                window.ui.invoke_focus_float();
+            }
+            window.drag();
+        });
+    });
     ui.on_flip_page(|dir| {
         let flip = if dir < 0 { Flip::Left } else { Flip::Right };
         crate::float_group::flip(StackPage::Todo, flip);

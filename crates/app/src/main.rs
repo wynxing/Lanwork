@@ -216,8 +216,14 @@ mod tests {
         assert!(!source.contains("TextInput"), "待办悬浮窗不能改标题");
         assert!(!source.contains("add-item"), "待办悬浮窗不能新建");
         assert!(!source.contains("name: \"新建"));
-        assert!(source.contains("limit-width"));
+        assert!(
+            source.contains("chrome := FloatChrome"),
+            "待办悬浮窗用共用外壳"
+        );
         assert!(source.contains("min(200px, limit-width)"));
+        let shell = include_str!("../ui/float_shell.slint");
+        assert!(shell.contains("limit-width"));
+        assert!(shell.contains("min(200px, limit-width)"));
         let panel = include_str!("../ui/panel.slint");
         assert!(panel.contains("callback float-todos();"));
         assert!(panel.contains("text: \"悬浮\";"));

@@ -1,8 +1,10 @@
-// 工具悬浮窗外壳。顶部 28px 拖动条，右侧钉住和关闭，风格与便签悬浮窗的关闭相同。
-// 不画来源行。内容放在内容槽里，调用方替换。贴边把手沿用便签悬浮窗的那一块。
+// 悬浮窗外壳。拖动条、钉住、关闭、来源行和贴边把手都在 `FloatChrome`。
+// 工具窗口是下面的 `FloatShell`：钉住开着、不画来源行、把手上没有叠页的点。
+// 便签、收纳、待办各自仍是窗口，放进同一块 `FloatChrome`，只换里面的内容。
+// Slint 1.18 不把基类属性导出给 Rust，所以那三扇不继承 `FloatShell`。
 
 import { Palette } from "std-widgets.slint";
-import { EdgeHandle, Ink } from "widgets.slint";
+import { EdgeHandle, FloatSource, Ink } from "widgets.slint";
 
 export struct ToolRow {
     kind: string,
@@ -12,29 +14,26 @@ export struct ToolRow {
     progress: float,
 }
 
-export component FloatShell inherits Window {
-    title: "Lanwork";
-    icon: @image-url("../assets/lanwork-256.png");
-    no-frame: true;
-    default-font-family: "Microsoft YaHei UI";
-    default-font-size: 14px;
-    preferred-width: 320px;
-    preferred-height: 360px;
-    min-width: thin ? 1px : min(200px, limit-width);
-    min-height: thin ? 1px : min(120px, limit-height);
-    in property <length> limit-width: 100000px;
-    in property <length> limit-height: 100000px;
-    max-width: thin ? 100000px : limit-width;
-    max-height: thin ? 100000px : limit-height;
-    resize-border-width: thin ? 0px : 6px;
+export component FloatChrome inherits Rectangle {
+    x: 0px;
+    y: 0px;
+    width: 100%;
+    height: 100%;
+
     // 没记过钉住时按开。关掉之后由调用方写成 false。
-    in-out property <bool> pinned: true;
-    always-on-top: root.pinned;
+    in property <bool> pinned: true;
+    // 工具为真。产品悬浮窗为假：不画钉住，拖动区让到关闭按钮为止。
+    in property <bool> show-pin: true;
+    // 为真时拖动条下面始终留一行来源，即使文字是空的。工具为假。
+    in property <bool> show-source: false;
+    in property <string> source: "";
+    // 外壳底部的错误行。产品悬浮窗的错误画在内容里，把这个关掉。
+    in property <bool> error-in-chrome: true;
+    // 一叠的页数和当前下标。1 页时把手上不画点。工具保持 1。
+    in property <int> stack-pages: 1;
+    in property <int> stack-index: 0;
 
     in property <bool> dark;
-    in property <bool> acrylic;
-    in property <color> solid-color: #f3f3f3;
-    in property <bool> thin;
     in property <bool> collapsed: false;
     // ""、"left"、"right"、"top"。
     in property <string> dock-edge: "";
@@ -52,7 +51,8 @@ export component FloatShell inherits Window {
     callback pin-clicked();
     callback row-clicked(string);
 
-    property <Ink> c: {
+    // 公开给放进内容槽的页面，颜色仍由外壳按主题算。
+    out property <Ink> c: {
         ink: dark ? #ffffff : #1b1b1b,
         secondary: dark ? #c5c5c5 : #5d5d5d,
         tertiary: dark ? #9a9a9a : #767676,
@@ -65,9 +65,11 @@ export component FloatShell inherits Window {
     };
 
     out property <string> marker-text: slot-label.text;
-    out property <bool> above-ordinary: root.always-on-top;
     out property <bool> pin-drawn: pin-box.visible;
-    out property <bool> source-drawn: false;
+    out property <bool> source-drawn: source-row.visible;
+    out property <length> source-y: source-row.absolute-position.y;
+    out property <length> source-h: root.source-band;
+    out property <bool> source-open: source-row.visible;
     out property <bool> close-drawn: close-box.visible;
     out property <length> drag-band: root.collapsed ? 0px : 28px;
     out property <bool> content-open: content.visible;
@@ -89,11 +91,10 @@ export component FloatShell inherits Window {
     out property <bool> collapsed-handle-open: collapsed-handle.visible;
     out property <length> collapsed-handle-width: collapsed-handle.width;
     out property <length> collapsed-handle-height: collapsed-handle.height;
-    property <length> error-h: !root.collapsed && root.error != "" ? 24px : 0px;
+    property <length> source-band: root.show-source && !root.collapsed ? 20px : 0px;
+    property <length> error-h: root.error-in-chrome && !root.collapsed && root.error != "" ? 24px : 0px;
     out property <bool> error-drawn: error-line.visible;
     out property <string> error-text: error-line.text;
-
-    background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
     init => {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
@@ -123,7 +124,7 @@ export component FloatShell inherits Window {
         TouchArea {
             x: 0px;
             y: 0px;
-            width: parent.width - 56px;
+            width: root.show-pin ? parent.width - 56px : parent.width - 28px;
             height: parent.height;
 
             pointer-event(event) => {
@@ -139,7 +140,7 @@ export component FloatShell inherits Window {
         y: 0px;
         width: 28px;
         height: 28px;
-        visible: !root.collapsed;
+        visible: !root.collapsed && root.show-pin;
         background: pin-touch.has-hover ? c.hover : (root.pinned ? c.selection : transparent);
 
         Path {
@@ -190,12 +191,23 @@ export component FloatShell inherits Window {
         }
     }
 
-    content := Rectangle {
-        visible: !root.collapsed;
+    // 来源行在拖动条下面、内容槽外面。按下它不拖动窗口。收起时不占高度。
+    source-row := FloatSource {
         x: 0px;
         y: 28px;
         width: parent.width;
-        height: parent.height - 28px - root.error-h;
+        height: root.source-band;
+        visible: root.source-band > 0px;
+        source: root.source;
+        ink: c.tertiary;
+    }
+
+    content := Rectangle {
+        visible: !root.collapsed;
+        x: 0px;
+        y: 28px + root.source-band;
+        width: parent.width;
+        height: parent.height - 28px - root.source-band - root.error-h;
 
         @children
 
@@ -315,6 +327,8 @@ export component FloatShell inherits Window {
         dark: root.dark;
         along-vertical: dock-edge != "top";
         press-drags: true;
+        pages: root.stack-pages;
+        page-index: root.stack-index;
 
         pressed => {
             root.drag-requested();
@@ -331,6 +345,110 @@ export component FloatShell inherits Window {
         clicked => {
             root.strip-clicked();
         }
+    }
+}
+
+export component FloatShell inherits Window {
+    title: "Lanwork";
+    icon: @image-url("../assets/lanwork-256.png");
+    no-frame: true;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+    preferred-width: 320px;
+    preferred-height: 360px;
+    min-width: thin ? 1px : min(200px, limit-width);
+    min-height: thin ? 1px : min(120px, limit-height);
+    in property <length> limit-width: 100000px;
+    in property <length> limit-height: 100000px;
+    max-width: thin ? 100000px : limit-width;
+    max-height: thin ? 100000px : limit-height;
+    resize-border-width: thin ? 0px : 6px;
+    in-out property <bool> pinned: true;
+    always-on-top: root.pinned;
+    in property <bool> show-pin: true;
+    in property <bool> show-source: false;
+    in property <string> source: "";
+
+    in property <bool> dark;
+    in property <bool> acrylic;
+    in property <color> solid-color: #f3f3f3;
+    in property <bool> thin;
+    in property <bool> collapsed: false;
+    in property <string> dock-edge: "";
+    in property <string> marker: "";
+    in property <string> heading: "";
+    in property <string> error: "";
+    in property <[ToolRow]> rows;
+
+    callback drag-requested();
+    callback strip-clicked();
+    callback close-clicked();
+    callback pin-clicked();
+    callback row-clicked(string);
+
+    out property <string> marker-text: chrome.marker-text;
+    out property <bool> above-ordinary: root.always-on-top;
+    out property <bool> pin-drawn: chrome.pin-drawn;
+    out property <bool> source-drawn: chrome.source-drawn;
+    out property <length> source-y: chrome.source-y;
+    out property <length> source-h: chrome.source-h;
+    out property <bool> source-open: chrome.source-open;
+    out property <bool> close-drawn: chrome.close-drawn;
+    out property <length> drag-band: chrome.drag-band;
+    out property <bool> content-open: chrome.content-open;
+    out property <length> content-x: chrome.content-x;
+    out property <length> content-y: chrome.content-y;
+    out property <length> content-width: chrome.content-width;
+    out property <length> content-height: chrome.content-height;
+    out property <length> pin-x: chrome.pin-x;
+    out property <length> pin-y: chrome.pin-y;
+    out property <length> close-x: chrome.close-x;
+    out property <length> close-y: chrome.close-y;
+    out property <length> strip-x: chrome.strip-x;
+    out property <length> strip-y: chrome.strip-y;
+    out property <length> strip-width: chrome.strip-width;
+    out property <length> strip-height: chrome.strip-height;
+    out property <length> grip-width: chrome.grip-width;
+    out property <length> grip-height: chrome.grip-height;
+    out property <bool> strip-open: chrome.strip-open;
+    out property <bool> collapsed-handle-open: chrome.collapsed-handle-open;
+    out property <length> collapsed-handle-width: chrome.collapsed-handle-width;
+    out property <length> collapsed-handle-height: chrome.collapsed-handle-height;
+    out property <bool> error-drawn: chrome.error-drawn;
+    out property <string> error-text: chrome.error-text;
+
+    background: collapsed ? transparent : (acrylic ? transparent : solid-color);
+
+    chrome := FloatChrome {
+        pinned: root.pinned;
+        show-pin: root.show-pin;
+        show-source: root.show-source;
+        source: root.source;
+        dark: root.dark;
+        collapsed: root.collapsed;
+        dock-edge: root.dock-edge;
+        marker: root.marker;
+        heading: root.heading;
+        error: root.error;
+        rows: root.rows;
+
+        drag-requested => {
+            root.drag-requested();
+        }
+        strip-clicked => {
+            root.strip-clicked();
+        }
+        close-clicked => {
+            root.close-clicked();
+        }
+        pin-clicked => {
+            root.pin-clicked();
+        }
+        row-clicked(id) => {
+            root.row-clicked(id);
+        }
+
+        @children
     }
 }
 

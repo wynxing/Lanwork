@@ -1,8 +1,10 @@
-// 收纳分组的悬浮窗。上沿一条可拖动的细条，右侧是关闭，下面一行来源，再下面是「关联待办」和条目。
-// 窗口始终在最上层。贴边收起时只留下一个小把手，窗口其余部分透明。条目列表和面板的收纳页是同一个组件。
+// 收纳分组悬浮窗。拖动条、关闭、来源行和贴边把手在共用的 FloatChrome 里。
+// 没有钉住按钮，窗口始终在最上层。来源行下面仍是「关联待办」，再下面是条目。
+// 条目列表和面板的收纳页是同一个组件。
 
-import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Check, EdgeHandle, FloatSource, Ink } from "widgets.slint";
+import { ListView } from "std-widgets.slint";
+import { FloatChrome } from "float_shell.slint";
+import { Btn, Check, Ink } from "widgets.slint";
 import { RefsList, ShelvesPageData } from "shelvespage.slint";
 
 export component ShelfFloat inherits Window {
@@ -23,7 +25,6 @@ export component ShelfFloat inherits Window {
     always-on-top: true;
 
     in property <bool> dark;
-    // 亚克力时客户区透明，DWM 画背景。
     in property <bool> acrylic;
     in property <color> solid-color: #f3f3f3;
     in property <string> error;
@@ -33,34 +34,22 @@ export component ShelfFloat inherits Window {
     in property <string> dock-edge;
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
-    // 「收纳 · 分组名」。分组不在时是「收纳」。收起时不显示。
     in property <string> source;
 
     callback close-clicked();
-    callback drag-window();
+    callback drag-requested();
     callback strip-clicked();
     callback flip-page(int);
 
-    property <Ink> c: {
-        ink: dark ? #ffffff : #1b1b1b,
-        secondary: dark ? #c5c5c5 : #5d5d5d,
-        tertiary: dark ? #9a9a9a : #767676,
-        divider: dark ? #ffffff17 : #00000014,
-        hover: dark ? #ffffff0d : #00000008,
-        selection: dark ? #ffffff14 : #0000000d,
-        field: dark ? #ffffff0a : #ffffff80,
-        accent: dark ? #60cdff : #005fb8,
-        critical: dark ? #ff99a4 : #c42b1c,
-    };
-    property <length> error-height: error != "" ? 24px : 0px;
+    property <Ink> c: chrome.c;
     property <int> link-rows: min(ShelvesPageData.links.length, 4);
     // 收起时只有标题行；展开后是 1 到 4 行列表，没有关联时一行说明。
     property <length> links-height: ShelvesPageData.links-open ? 28px + max(link-rows, 1) * 30px : 28px;
     // 选中条目时底部多一行：完整路径和「移除引用」。
     property <length> action-height: ShelvesPageData.selected-ref >= 0 ? 34px : 0px;
+    property <length> error-height: root.error != "" ? 24px : 0px;
 
-    // 布局检查用：各块的屏幕位置，测试据此确认互不重叠。Slint 里没有显式 x、y 的子元素会在
-    // 父元素里居中，父元素高度一变它就跟着动，所以这里每个子元素都写了 y。
+    // 布局检查用：各块的屏幕位置。父元素高度一变，没写 y 的子元素会跟着居中，所以每个都写了 y。
     out property <length> links-head-y: links-head-box.absolute-position.y;
     out property <length> links-head-height: links-head-box.height;
     out property <length> links-body-y: links-body.absolute-position.y;
@@ -68,129 +57,52 @@ export component ShelfFloat inherits Window {
     out property <length> refs-area-y: refs-area.absolute-position.y;
     out property <length> refs-area-height: refs-area.height;
     out property <length> action-y: action-bar.absolute-position.y;
-    out property <length> close-x: close-box.absolute-position.x;
-    out property <length> strip-x: edge-strip.absolute-position.x;
-    out property <length> strip-y: edge-strip.absolute-position.y;
-    out property <length> strip-width: edge-strip.width;
-    out property <length> strip-height: edge-strip.height;
-    out property <length> grip-width: edge-strip.grip-width;
-    out property <length> grip-height: edge-strip.grip-height;
-    out property <length> source-y: source-row.absolute-position.y;
-    out property <length> source-h: source-row.height;
-    out property <bool> source-open: source-row.visible;
+    out property <length> close-x: chrome.close-x;
+    out property <length> close-y: chrome.close-y;
+    out property <length> strip-x: chrome.strip-x;
+    out property <length> strip-y: chrome.strip-y;
+    out property <length> strip-width: chrome.strip-width;
+    out property <length> strip-height: chrome.strip-height;
+    out property <length> grip-width: chrome.grip-width;
+    out property <length> grip-height: chrome.grip-height;
+    out property <length> source-y: chrome.source-y;
+    out property <length> source-h: chrome.source-h;
+    out property <bool> source-open: chrome.source-open;
 
     background: collapsed ? transparent : (acrylic ? transparent : solid-color);
 
     init => {
-        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
         float-scope.focus();
-    }
-    changed dark => {
-        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
     }
 
     public function focus-float() {
         float-scope.focus();
     }
 
-    float-scope := FocusScope {
-        key-pressed(event) => {
-            if root.stack-pages > 1 && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
-                root.flip-page(event.text == Key.LeftArrow ? -1 : 1);
-                return accept;
-            }
-            if ShelvesPageData.selected-ref >= 0 && event.text == Key.Return {
-                if event.modifiers.control {
-                    ShelvesPageData.open-ref-folder();
-                } else {
-                    ShelvesPageData.open-ref();
-                }
-                return accept;
-            }
-            reject
+    chrome := FloatChrome {
+        dark: root.dark;
+        collapsed: root.collapsed;
+        dock-edge: root.dock-edge;
+        source: root.source;
+        stack-pages: root.stack-pages;
+        stack-index: root.stack-index;
+        show-pin: false;
+        show-source: true;
+        error-in-chrome: false;
+
+        close-clicked => {
+            root.close-clicked();
         }
-
-        if !root.collapsed: Rectangle {
-            x: 0px;
-            y: 0px;
-            width: parent.width;
-            height: 28px;
-
-            TouchArea {
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                        float-scope.focus();
-                        root.drag-window();
-                    }
-                }
-            }
+        drag-requested => {
+            root.drag-requested();
         }
-
-        close-box := Rectangle {
-            x: parent.width - 28px;
-            y: 0px;
-            width: 28px;
-            height: 28px;
-            visible: !root.collapsed;
-            background: close-touch.has-hover ? c.hover : transparent;
-
-            Path {
-                x: 9px;
-                y: 9px;
-                width: 10px;
-                height: 10px;
-                viewbox-width: 10;
-                viewbox-height: 10;
-                fill: transparent;
-                stroke: c.secondary;
-                stroke-width: 1.2px;
-                commands: "M1 1l8 8 M9 1l-8 8";
-            }
-
-            close-touch := TouchArea {
-                clicked => {
-                    root.close-clicked();
-                }
-            }
-        }
-
-        if root.collapsed: EdgeHandle {
-            x: 0px;
-            y: 0px;
-            dark: root.dark;
-            along-vertical: dock-edge != "top";
-            press-drags: true;
-            pages: root.stack-pages;
-            page-index: root.stack-index;
-            pressed => {
-                root.drag-window();
-            }
-        }
-
-        source-row := FloatSource {
-            x: 0px;
-            y: 28px;
-            width: parent.width;
-            visible: !root.collapsed;
-            source: root.source;
-            ink: c.tertiary;
-        }
-
-        edge-strip := EdgeHandle {
-            x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
-            y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
-            visible: !root.collapsed && dock-edge != "";
-            dark: root.dark;
-            along-vertical: dock-edge != "top";
-            clicked => {
-                root.strip-clicked();
-            }
+        strip-clicked => {
+            root.strip-clicked();
         }
 
         Rectangle {
-            visible: !root.collapsed;
             x: 10px;
-            y: 28px + source-row.height;
+            y: 0px;
             width: parent.width - 20px;
             height: links-height;
             clip: true;
@@ -201,7 +113,7 @@ export component ShelfFloat inherits Window {
                 width: parent.width;
                 height: 28px;
                 border-radius: 6px;
-                background: links-head.has-hover ? c.hover : transparent;
+                background: links-head.has-hover ? root.c.hover : transparent;
 
                 links-head := TouchArea {
                     clicked => {
@@ -218,7 +130,7 @@ export component ShelfFloat inherits Window {
                     viewbox-width: 10;
                     viewbox-height: 10;
                     fill: transparent;
-                    stroke: c.secondary;
+                    stroke: root.c.secondary;
                     stroke-width: 1.4px;
                     commands: ShelvesPageData.links-open ? "M1 3l4 4 4-4" : "M3 1l4 4-4 4";
                 }
@@ -229,7 +141,7 @@ export component ShelfFloat inherits Window {
                     width: parent.width - 24px - 6px;
                     height: 28px;
                     text: ShelvesPageData.links.length > 0 ? "关联待办（" + ShelvesPageData.links.length + "）" : "关联待办";
-                    color: c.secondary;
+                    color: root.c.secondary;
                     font-size: 13px;
                     vertical-alignment: center;
                     overflow: elide;
@@ -249,7 +161,7 @@ export component ShelfFloat inherits Window {
                     width: parent.width - 24px;
                     height: 30px;
                     text: "没有关联待办";
-                    color: c.tertiary;
+                    color: root.c.tertiary;
                     font-size: 13px;
                     vertical-alignment: center;
                 }
@@ -293,7 +205,7 @@ export component ShelfFloat inherits Window {
                                     width: parent.width;
                                     height: parent.height;
                                     text: link.found ? link.title : "找不到这条待办";
-                                    color: !link.found || link.completed || link.in-trash ? c.tertiary : c.ink;
+                                    color: !link.found || link.completed || link.in-trash ? root.c.tertiary : root.c.ink;
                                     font-size: 13px;
                                     vertical-alignment: center;
                                     overflow: elide;
@@ -306,17 +218,17 @@ export component ShelfFloat inherits Window {
         }
 
         refs-area := Rectangle {
-            visible: !root.collapsed;
             x: 10px;
-            y: 28px + source-row.height + links-height;
+            y: links-height;
             width: parent.width - 20px;
-            height: parent.height - 28px - source-row.height - links-height - 8px - error-height - action-height;
+            // `@children` 的 parent.height 是整窗。y 已经相对内容槽，高度按窗口减去拖动条和来源行。
+            height: root.height - 28px - 20px - links-height - 8px - error-height - action-height;
 
             if ShelvesPageData.refs.length == 0: Text {
                 x: 4px;
                 y: 4px;
                 text: "没有条目";
-                color: c.secondary;
+                color: root.c.secondary;
                 font-size: 14px;
             }
 
@@ -334,9 +246,8 @@ export component ShelfFloat inherits Window {
 
         // 选中条目时：完整路径和「移除引用」。触发方式沿用面板的按钮，不加 Delete 键或右键。
         action-bar := Rectangle {
-            visible: !root.collapsed;
             x: 10px;
-            y: parent.height - error-height - 4px - action-height;
+            y: root.height - 28px - 20px - error-height - 4px - action-height;
             width: parent.width - 20px;
             height: action-height;
 
@@ -348,7 +259,7 @@ export component ShelfFloat inherits Window {
                 Text {
                     horizontal-stretch: 1;
                     text: ShelvesPageData.selected-path;
-                    color: c.secondary;
+                    color: root.c.secondary;
                     font-size: 12px;
                     vertical-alignment: center;
                     overflow: elide;
@@ -366,16 +277,40 @@ export component ShelfFloat inherits Window {
             }
         }
 
-        if !root.collapsed && error != "": Text {
+        if root.error != "": Text {
             x: 10px;
-            y: parent.height - error-height - 4px;
+            y: root.height - 28px - 20px - error-height - 4px;
             width: parent.width - 20px;
             height: error-height;
             text: root.error;
-            color: c.critical;
+            color: root.c.critical;
             font-size: 13px;
             vertical-alignment: center;
             overflow: elide;
+        }
+    }
+
+    // 收起时内容槽藏起来。翻页和 Enter 留在窗口上。
+    float-scope := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 0px;
+        height: 0px;
+
+        key-pressed(event) => {
+            if root.stack-pages > 1 && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                root.flip-page(event.text == Key.LeftArrow ? -1 : 1);
+                return accept;
+            }
+            if ShelvesPageData.selected-ref >= 0 && event.text == Key.Return {
+                if event.modifiers.control {
+                    ShelvesPageData.open-ref-folder();
+                } else {
+                    ShelvesPageData.open-ref();
+                }
+                return accept;
+            }
+            reject
         }
     }
 }

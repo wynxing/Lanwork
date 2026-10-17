@@ -402,6 +402,43 @@ mod tests {
     }
 
     #[test]
+    fn legacy_pin_field_does_not_drop_geometry_dock_or_stack() {
+        let (_temp, store, todos) = open();
+        let path = store.data_dir().join(FLOAT_FILE);
+        std::fs::write(
+            &path,
+            r#"{"schemaVersion":1,"floatWindow":{"x":8,"y":9,"width":320,"height":360},"floatDock":{"edge":"left","offset":12,"collapsed":false},"floatStack":{"id":"mix","index":2,"current":true},"floatPinned":true}"#,
+        )
+        .unwrap();
+        let FloatWindowFile::Record(record) = todos.read_float_window().unwrap() else {
+            panic!("应读回记录");
+        };
+        assert_eq!(record.geometry.unwrap().x, 8);
+        assert_eq!(record.dock.unwrap().edge, DockEdge::Left);
+        assert_eq!(record.stack.unwrap().id, "mix");
+        todos
+            .set_float_geometry(
+                FloatGeometry {
+                    x: 8,
+                    y: 9,
+                    width: 321,
+                    height: 360,
+                },
+                record.dock,
+            )
+            .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("\"x\":8"));
+        assert!(saved.contains("\"width\":321"));
+        assert!(saved.contains("\"edge\":\"left\""));
+        assert!(saved.contains("mix"));
+        assert!(
+            !saved.contains("floatPinned"),
+            "待办悬浮窗的记录里没有钉住字段"
+        );
+    }
+
+    #[test]
     fn corrupt_json_is_quarantined_and_lists_stay() {
         let (_temp, store, todos) = open();
         let list_id = todos.create_list("工作").unwrap();

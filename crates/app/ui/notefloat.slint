@@ -1,9 +1,9 @@
-// 便签悬浮窗。上沿一条可拖动的细条，右侧是关闭，下面一行来源，再下面是正文。没有说明文字。
-// 窗口始终在最上层。贴边收起时只留下一个小把手，窗口其余部分透明。风格与面板一致。
+// 便签悬浮窗。拖动条、关闭、来源行和贴边把手在共用的 FloatChrome 里。
+// 没有钉住按钮，窗口始终在最上层。这里只放正文。
 
-import { Palette } from "std-widgets.slint";
-import { EdgeHandle, FloatSource, Ink } from "widgets.slint";
+import { FloatChrome } from "float_shell.slint";
 import { NoteEditor } from "noteeditor.slint";
+import { Ink } from "widgets.slint";
 
 export component NoteFloat inherits Window {
     title: "Lanwork";
@@ -23,70 +23,48 @@ export component NoteFloat inherits Window {
     always-on-top: true;
 
     in property <bool> dark;
-    // 亚克力时客户区透明，DWM 画背景。
     in property <bool> acrylic;
     in property <color> solid-color: #f3f3f3;
     in property <int> problem;
     in property <string> problem-text;
     in property <bool> closing;
-    // 收起或正在滑向把手时，最小尺寸放开，避免被 200px 挡住。
     in property <bool> thin;
     in property <bool> collapsed;
     // ""、"left"、"right"、"top"。
     in property <string> dock-edge;
-    // 一叠的页数和当前下标。1 页时和原来的悬浮窗一样。
     in property <int> stack-pages: 1;
     in property <int> stack-index: 0;
-    // 「便签 · 名称」。收起时不显示。
     in property <string> source;
     in-out property <string> body <=> editor.body;
     out property <string> preedit: editor.preedit;
+    out property <length> body-y: editor.absolute-position.y;
 
     callback body-edited(string);
     callback close-clicked();
-    callback drag-window();
+    callback drag-requested();
     callback strip-clicked();
-    // -1 向左，1 向右。正文有焦点时不调用。
     callback flip-page(int);
     callback retry();
     callback discard();
     callback keep-mine();
     callback keep-saved();
 
-    property <Ink> c: {
-        ink: dark ? #ffffff : #1b1b1b,
-        secondary: dark ? #c5c5c5 : #5d5d5d,
-        tertiary: dark ? #9a9a9a : #767676,
-        divider: dark ? #ffffff17 : #00000014,
-        hover: dark ? #ffffff0d : #00000008,
-        selection: dark ? #ffffff14 : #0000000d,
-        field: dark ? #ffffff0a : #ffffff80,
-        accent: dark ? #60cdff : #005fb8,
-        critical: dark ? #ff99a4 : #c42b1c,
-    };
-
-    // 布局检查用：关闭按钮和贴边把手在窗口里的位置。测试用来点。
-    out property <length> close-x: close-box.absolute-position.x;
-    out property <length> close-y: close-box.absolute-position.y;
-    out property <length> strip-x: edge-strip.absolute-position.x;
-    out property <length> strip-y: edge-strip.absolute-position.y;
-    out property <length> strip-width: edge-strip.width;
-    out property <length> strip-height: edge-strip.height;
-    out property <length> grip-width: edge-strip.grip-width;
-    out property <length> grip-height: edge-strip.grip-height;
-    out property <length> source-y: source-row.absolute-position.y;
-    out property <length> source-h: source-row.height;
-    out property <bool> source-open: source-row.visible;
-    out property <length> body-y: editor.absolute-position.y;
+    property <Ink> c: chrome.c;
+    out property <bool> above-ordinary: root.always-on-top;
+    out property <bool> pin-drawn: chrome.pin-drawn;
+    out property <length> close-x: chrome.close-x;
+    out property <length> close-y: chrome.close-y;
+    out property <length> strip-x: chrome.strip-x;
+    out property <length> strip-y: chrome.strip-y;
+    out property <length> strip-width: chrome.strip-width;
+    out property <length> strip-height: chrome.strip-height;
+    out property <length> grip-width: chrome.grip-width;
+    out property <length> grip-height: chrome.grip-height;
+    out property <length> source-y: chrome.source-y;
+    out property <length> source-h: chrome.source-h;
+    out property <bool> source-open: chrome.source-open;
 
     background: collapsed ? transparent : (acrylic ? transparent : solid-color);
-
-    init => {
-        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
-    }
-    changed dark => {
-        Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
-    }
 
     public function focus-body() {
         editor.focus-body();
@@ -96,6 +74,56 @@ export component NoteFloat inherits Window {
         page-keys.focus();
     }
 
+    chrome := FloatChrome {
+        dark: root.dark;
+        collapsed: root.collapsed;
+        dock-edge: root.dock-edge;
+        source: root.source;
+        stack-pages: root.stack-pages;
+        stack-index: root.stack-index;
+        show-pin: false;
+        show-source: true;
+        error-in-chrome: false;
+
+        close-clicked => {
+            root.close-clicked();
+        }
+        drag-requested => {
+            root.drag-requested();
+        }
+        strip-clicked => {
+            root.strip-clicked();
+        }
+
+        editor := NoteEditor {
+            x: 10px;
+            y: 0px;
+            width: parent.width - 20px;
+            // `@children` 的 parent.height 是整窗，不是内容槽。高度按窗口算，和原来写在窗口上一样。
+            height: root.height - 28px - 20px - 8px;
+            c: root.c;
+            problem: root.problem;
+            problem-text: root.problem-text;
+            closing: root.closing;
+            body-edited(text) => {
+                root.body-edited(text);
+            }
+            retry => {
+                root.retry();
+            }
+            discard => {
+                root.discard();
+            }
+            keep-mine => {
+                root.keep-mine();
+            }
+            keep-saved => {
+                root.keep-saved();
+            }
+        }
+    }
+
+    // 收起时内容槽藏起来。翻页键留在窗口上，把手仍能收到左右方向键。
     page-keys := FocusScope {
         x: 0px;
         y: 0px;
@@ -107,112 +135,6 @@ export component NoteFloat inherits Window {
                 return accept;
             }
             reject
-        }
-    }
-
-    if !collapsed: Rectangle {
-        x: 0px;
-        y: 0px;
-        width: parent.width;
-        height: 28px;
-
-        TouchArea {
-            pointer-event(event) => {
-                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                    root.focus-stack-keys();
-                    root.drag-window();
-                }
-            }
-        }
-    }
-
-    close-box := Rectangle {
-        x: parent.width - 28px;
-        y: 0px;
-        width: 28px;
-        height: 28px;
-        visible: !collapsed;
-        background: close-touch.has-hover ? c.hover : transparent;
-
-        Path {
-            x: 9px;
-            y: 9px;
-            width: 10px;
-            height: 10px;
-            viewbox-width: 10;
-            viewbox-height: 10;
-            fill: transparent;
-            stroke: c.secondary;
-            stroke-width: 1.2px;
-            commands: "M1 1l8 8 M9 1l-8 8";
-        }
-
-        close-touch := TouchArea {
-            clicked => {
-                root.close-clicked();
-            }
-        }
-    }
-
-    // 收起时整窗就是把手。窗口由外壳收成 3×40，这里不再另铺一圈。
-    if collapsed: EdgeHandle {
-        x: 0px;
-        y: 0px;
-        dark: root.dark;
-        along-vertical: dock-edge != "top";
-        press-drags: true;
-        pages: root.stack-pages;
-        page-index: root.stack-index;
-        pressed => {
-            root.drag-window();
-        }
-    }
-
-    source-row := FloatSource {
-        x: 0px;
-        y: 28px;
-        width: parent.width;
-        visible: !root.collapsed;
-        source: root.source;
-        ink: c.tertiary;
-    }
-
-    // 展开并且贴边时，靠边正中的同一块把手再点一次就收回。不盖住关闭按钮。
-    edge-strip := EdgeHandle {
-        x: dock-edge == "right" ? parent.width - self.width : dock-edge == "top" ? (parent.width - self.width) / 2 : 0px;
-        y: dock-edge == "top" ? 0px : (parent.height - self.height) / 2;
-        visible: !collapsed && dock-edge != "";
-        dark: root.dark;
-        along-vertical: dock-edge != "top";
-        clicked => {
-            root.strip-clicked();
-        }
-    }
-
-    editor := NoteEditor {
-        visible: !root.collapsed;
-        x: 10px;
-        y: 28px + source-row.height;
-        width: parent.width - 20px;
-        height: parent.height - 28px - source-row.height - 8px;
-        c: root.c;
-        problem: root.problem;
-        problem-text: root.problem-text;
-        closing: root.closing;
-        body-edited(text) => {
-            root.body-edited(text);
-        }
-        retry => {
-            root.retry();
-        }
-        discard => {
-            root.discard();
-        }
-        keep-mine => {
-            root.keep-mine();
-        }
-        keep-saved => {
-            root.keep-saved();
         }
     }
 }

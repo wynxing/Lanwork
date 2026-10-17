@@ -291,3 +291,41 @@ pub(crate) fn unsupported(id: &str, found: u32) -> ShelfError {
         found,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{LoadedShelf, ShelfFile};
+    use crate::notes::DockEdge;
+
+    #[test]
+    fn legacy_float_pin_keeps_geometry_dock_and_stack() {
+        let raw = r#"{
+            "schemaVersion": 1,
+            "name": "单片机",
+            "floatWindow": {"x": 5, "y": 6, "width": 200, "height": 120},
+            "floatDock": {"edge": "top", "offset": 15, "collapsed": true},
+            "floatStack": {"id": "pile", "index": 0, "current": true},
+            "floatPinned": false
+        }"#;
+        let file: ShelfFile = serde_json::from_str(raw).unwrap();
+        let LoadedShelf::Group(shelf) = file.into_loaded("g1".into()) else {
+            panic!("应读出分组");
+        };
+        assert_eq!(shelf.name, "单片机");
+        assert_eq!(shelf.float.unwrap().x, 5);
+        assert_eq!(shelf.float.unwrap().height, 120);
+        assert_eq!(shelf.float_dock.unwrap().edge, DockEdge::Top);
+        assert!(shelf.float_dock.unwrap().collapsed);
+        assert_eq!(shelf.float_stack.as_ref().unwrap().id, "pile");
+        let saved = serde_json::to_string(&ShelfFile::from_shelf(&shelf)).unwrap();
+        assert!(
+            !saved.contains("floatPinned"),
+            "旧的窗口钉住读进来之后不再写回"
+        );
+        assert!(saved.contains("floatWindow"));
+        assert!(saved.contains("floatDock"));
+        assert!(saved.contains("floatStack"));
+        assert!(saved.contains("pile"));
+        assert!(saved.contains("单片机"));
+    }
+}
