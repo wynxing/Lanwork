@@ -30,7 +30,11 @@ pub(super) fn accept_loop(listener: TcpListener, shared: Arc<Shared>, shutdown: 
                     shared.notify(Notice::Clients);
                 }
                 if !try_acquire(&shared) {
-                    reject_busy(stream);
+                    // 排空请求会等到读超时。放到短线程里，接受循环不被这 5 秒堵住。
+                    // 线程没起来时闭包连同套接字一起丢掉，不在接受线程上等待。
+                    let _ = std::thread::Builder::new()
+                        .name("lanwork-mcp-busy".to_owned())
+                        .spawn(move || reject_busy(stream));
                     continue;
                 }
                 let task = Arc::clone(&shared);
@@ -87,26 +91,23 @@ fn release(shared: &Shared) {
     shared.connections.fetch_sub(1, Ordering::AcqRel);
 }
 
-/// 第 17 个连接直接回 503。写出限时与普通请求相同。
+/// 第 17 个连接直接回 503。在独立线程里做完：整段写出去、关掉写方向、再按读超时排空请求。
 ///
-/// 先读掉已经到达的请求。Windows 在关闭时如果接收缓冲还有数据，会发 RST，
-/// 把刚写出的响应截掉。
+/// 写出限时与普通请求相同。写满之前不关闭。Windows 在关闭时如果接收缓冲还有数据，
+/// 会发 RST，把还没送达的响应丢掉，所以先 `shutdown(Write)` 再读掉请求。
 fn reject_busy(mut stream: TcpStream) {
-    discard_arrived(&mut stream);
     let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
-    let _ = stream.write_all(&http_response(
+    let bytes = http_response(
         503,
         "Service Unavailable",
         &[],
         error_body(None, "连接过多"),
-    ));
-    discard_arrived(&mut stream);
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-}
-
-fn discard_arrived(stream: &mut TcpStream) {
-    let _ = stream.set_nonblocking(true);
+    );
+    if write_entire(&mut stream, &bytes).is_ok() {
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+    }
     let mut tmp = [0u8; 2048];
     loop {
         match stream.read(&mut tmp) {
@@ -116,6 +117,37 @@ fn discard_arrived(stream: &mut TcpStream) {
             Err(_) => break,
         }
     }
+}
+
+/// 在写出限时内把整段响应写完。超时或 `WouldBlock` 不丢掉已经写出去的前半段。
+fn write_entire(stream: &mut TcpStream, mut bytes: &[u8]) -> std::io::Result<()> {
+    let start = std::time::Instant::now();
+    while !bytes.is_empty() {
+        if start.elapsed() >= READ_TIMEOUT {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "write timed out",
+            ));
+        }
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "write zero",
+                ));
+            }
+            Ok(n) => bytes = &bytes[n..],
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err)
+                if err.kind() == std::io::ErrorKind::TimedOut
+                    || err.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 fn serve_one(shared: &Shared, mut stream: TcpStream) {
