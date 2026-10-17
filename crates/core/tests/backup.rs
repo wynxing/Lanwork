@@ -1,5 +1,6 @@
 //! 备份、导出和导入。设置页调用这些命令。
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lanwork_core::CivilDate;
 use lanwork_core::backup::{BackupCommands, BackupKind, LaunchBackup, overview_text};
 use lanwork_core::notes::{FloatGeometry, FloatStackSlot, NoteCommands, NoteError, NoteInput};
+use lanwork_core::panel::{self, EnabledBytes, encode_enabled, is_enabled, read_enabled};
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::{BootHooks, EntityKind, Store, StorePaths};
 use lanwork_core::todos::{FloatWindowFile, TodoCommands};
@@ -892,4 +894,99 @@ fn export_and_import_keep_tool_data_and_leave_secrets_behind() {
         std::fs::read(fx.store.data_dir().join("credentials.json")).unwrap(),
         b"credential-marker-77"
     );
+}
+
+fn install_quota(store: &Store) {
+    panel::install_copy(
+        &store.data_dir(),
+        "example.quota",
+        "API 额度",
+        "剩余额度",
+        &[
+            (
+                "manifest.toml".to_string(),
+                TOOL_MANIFEST.as_bytes().to_vec(),
+            ),
+            ("main.lua".to_string(), b"function on_load() end\n".to_vec()),
+        ],
+        br#"{"schemaVersion":1,"services":["storage"],"domains":[],"secrets":[]}"#,
+    )
+    .unwrap();
+}
+
+fn zip_contains(path: &Path, needle: &[u8]) -> bool {
+    let bytes = std::fs::read(path).unwrap();
+    !needle.is_empty() && bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+fn enabled_bytes(ids: &[&str]) -> Vec<u8> {
+    let disabled: BTreeSet<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+    encode_enabled(&disabled)
+}
+
+/// 包里的 `tool-enabled.json` 在 `disabled` 为空时也要写回。
+/// 不写的话白名单清理会删掉它，下一次导入前的备份就不再带这份文件。
+#[test]
+fn import_writes_tool_enabled_for_empty_and_nonempty_disabled() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    install_quota(&fx.store);
+    let path = fx.store.data_dir().join("tool-enabled.json");
+    let empty = enabled_bytes(&[]);
+    let disabled = enabled_bytes(&["example.quota"]);
+
+    std::fs::write(&path, &empty).unwrap();
+    let exported = fx._temp.path().join("enabled-empty.zip");
+    commands.export(&exported, 1).unwrap();
+    assert!(
+        zip_contains(&exported, b"tool-enabled.json"),
+        "导出应带上空的启用文件"
+    );
+    assert!(
+        zip_contains(&exported, &empty),
+        "导出里的启用文件应是空名单"
+    );
+    let manual = commands.backup_manual(2).unwrap();
+    assert!(zip_contains(&manual, &empty), "备份应带上空的启用文件");
+
+    std::fs::write(&path, &disabled).unwrap();
+    commands.import(&exported, 3).unwrap();
+    assert!(path.is_file(), "导入空名单后 tool-enabled.json 应仍在");
+    assert_eq!(std::fs::read(&path).unwrap(), empty);
+    let EnabledBytes::Known(set) = read_enabled(&fx.store.data_dir()).unwrap() else {
+        panic!("应读回空的关闭名单");
+    };
+    assert!(set.is_empty());
+    assert!(is_enabled(&set, "example.quota"));
+
+    commands.import(&exported, 4).unwrap();
+    let holding = fx.store.backups_dir().join("import-4.zip");
+    assert!(
+        zip_contains(&holding, &empty),
+        "下一次导入前的备份仍应带上 tool-enabled.json"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), empty);
+
+    std::fs::write(&path, &disabled).unwrap();
+    let exported_off = fx._temp.path().join("enabled-off.zip");
+    commands.export(&exported_off, 5).unwrap();
+    assert!(zip_contains(&exported_off, &disabled));
+    std::fs::remove_file(&path).unwrap();
+    commands.import(&exported_off, 6).unwrap();
+    assert!(path.is_file(), "导入非空名单后 tool-enabled.json 应写回");
+    assert_eq!(std::fs::read(&path).unwrap(), disabled);
+    let EnabledBytes::Known(set) = read_enabled(&fx.store.data_dir()).unwrap() else {
+        panic!("应读回关掉的工具");
+    };
+    assert!(!is_enabled(&set, "example.quota"));
+
+    let restore_from = commands.backup_manual(7).unwrap();
+    std::fs::write(&path, &empty).unwrap();
+    commands.import(&restore_from, 8).unwrap();
+    assert!(path.is_file(), "从备份恢复后 tool-enabled.json 应仍在");
+    assert_eq!(std::fs::read(&path).unwrap(), disabled);
+    let EnabledBytes::Known(set) = read_enabled(&fx.store.data_dir()).unwrap() else {
+        panic!("恢复后关掉的工具应仍在名单里");
+    };
+    assert!(!is_enabled(&set, "example.quota"));
 }

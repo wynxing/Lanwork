@@ -239,6 +239,8 @@ pub(crate) fn restore_copies(
 /// 写回已经成功恢复的工具的存储和窗口，并按启用状态合并。
 ///
 /// 校验失败的 id 不写包里的侧车。启用文件读不懂时记日志，成功恢复的工具按启用处理。
+/// 包里的启用文件读得懂时，即使关掉的名单是空的，也按合并结果写回。
+/// 不写的话，后面的白名单删除会把数据目录里的这份文件清掉。
 pub(crate) fn write_restored_sidecars(
     store: &Store,
     sidecars: &[&StoredFile],
@@ -286,7 +288,8 @@ pub(crate) fn write_restored_sidecars(
         None
     };
     let merged = merge_enabled(&local, package, restored, skipped);
-    if !merged.is_empty() {
+    // 包内这份文件读得懂时，关掉的名单即使是空的也写回，避免白名单清理把它删掉。
+    if package.is_some() || !merged.is_empty() {
         let bytes = panel::encode_enabled(&merged);
         write_named(store, "tool-enabled.json", &bytes)?;
         keep.insert("tool-enabled.json".to_owned());
