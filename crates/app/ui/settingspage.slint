@@ -5,7 +5,10 @@
 // 布局测试按这些坐标点（窗口里，标题 48px，其下 1px 分隔线，本页从 y=49 开始）：
 // 左栏宽 132。分类从 y=8 起，步长 40，行高 36。第 i 行中心相对本页是 8+40*i+18。
 // 右栏从 x=132 起，内边距左 16、上 8，行高 48，标签宽 120。
-// 其他页：版本块高 88，其下「外部 AI」一行高 48，再是「隐藏的应用」。
+// 其他页：版本块高 88，其下「外部 AI」一行高 48。
+// 开关打开后下一行高 40：名称框宽 180、高 30，左缘与这一列文字相同；「授权」在右侧，间隔 8，同高。
+// 再往下是 token（高 30）、端点（高 28）、客户端，都从同一左缘起。客户端右侧是状态和「撤销」。
+// 然后是「隐藏的应用」。
 // 控件左缘相对窗口是 132+16+120=268。第 i 行中心相对本页是 8+48*i+24。
 // 数据页「更换」「立即备份」「导出」「导入」贴在行的右边，右边距 16。按钮宽是文字宽加 20。
 // 「导入未完成」为真时，右侧每一类的内容下移 36。
@@ -21,6 +24,15 @@ export struct SettingsHiddenApp {
 export struct SettingsExternalClient {
     name: string,
     status: string,
+}
+
+// 布局测试读的一块矩形。界面不画它。
+export struct SettingsLayoutBox {
+    shown: bool,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
 }
 
 export struct SettingsBackup {
@@ -101,6 +113,20 @@ export global SettingsPageData {
     callback external-name-edited(string);
     callback authorize-external();
     callback revoke-external(int);
+
+    // 布局测试在画出之后加一，下面的矩形再写一次。界面本身不使用。
+    in-out property <int> layout-tick: 0;
+    in-out property <SettingsLayoutBox> external-row;
+    in-out property <SettingsLayoutBox> external-switch;
+    in-out property <SettingsLayoutBox> external-unavail;
+    in-out property <SettingsLayoutBox> external-field;
+    in-out property <SettingsLayoutBox> external-auth;
+    in-out property <SettingsLayoutBox> external-token-box;
+    in-out property <SettingsLayoutBox> external-endpoint-box;
+    in-out property <SettingsLayoutBox> external-empty;
+    in-out property <SettingsLayoutBox> external-client-name;
+    in-out property <SettingsLayoutBox> external-client-status;
+    in-out property <SettingsLayoutBox> external-revoke;
 }
 
 component Row inherits Rectangle {
@@ -532,6 +558,65 @@ component OtherPage inherits Rectangle {
     in property <Ink> c;
     in property <bool> dark;
 
+    function hidden-box() -> SettingsLayoutBox {
+        { shown: false, x: 0px, y: 0px, w: 0px, h: 0px }
+    }
+
+    function layout-box(x: length, y: length, w: length, h: length) -> SettingsLayoutBox {
+        { shown: true, x: x, y: y, w: w, h: h }
+    }
+
+    property <bool> ai-on: SettingsPageData.external-ai;
+    changed ai-on => {
+        if !ai-on {
+            SettingsPageData.external-field = root.hidden-box();
+            SettingsPageData.external-auth = root.hidden-box();
+            SettingsPageData.external-token-box = root.hidden-box();
+            SettingsPageData.external-endpoint-box = root.hidden-box();
+            SettingsPageData.external-empty = root.hidden-box();
+            SettingsPageData.external-client-name = root.hidden-box();
+            SettingsPageData.external-client-status = root.hidden-box();
+            SettingsPageData.external-revoke = root.hidden-box();
+        }
+    }
+
+    property <bool> token-on: SettingsPageData.external-ai && SettingsPageData.external-token != "";
+    changed token-on => {
+        if !token-on {
+            SettingsPageData.external-token-box = root.hidden-box();
+        }
+    }
+
+    property <bool> endpoint-on: SettingsPageData.external-ai && SettingsPageData.external-endpoint != "";
+    changed endpoint-on => {
+        if !endpoint-on {
+            SettingsPageData.external-endpoint-box = root.hidden-box();
+        }
+    }
+
+    property <bool> empty-on: SettingsPageData.external-ai && SettingsPageData.external-clients.length == 0;
+    changed empty-on => {
+        if !empty-on {
+            SettingsPageData.external-empty = root.hidden-box();
+        }
+    }
+
+    property <int> client-count: SettingsPageData.external-ai ? SettingsPageData.external-clients.length : 0;
+    changed client-count => {
+        if client-count < 1 {
+            SettingsPageData.external-client-name = root.hidden-box();
+            SettingsPageData.external-client-status = root.hidden-box();
+            SettingsPageData.external-revoke = root.hidden-box();
+        }
+    }
+
+    property <bool> unavail-on: SettingsPageData.external-unavailable;
+    changed unavail-on => {
+        if !unavail-on {
+            SettingsPageData.external-unavail = root.hidden-box();
+        }
+    }
+
     VerticalLayout {
         padding-left: 16px;
         padding-right: 16px;
@@ -602,11 +687,17 @@ component OtherPage inherits Rectangle {
             }
         }
 
-        Row {
+        ai-row := Row {
             name: "外部 AI";
             c: root.c;
 
-            ToggleSwitch {
+            property <length> geom: self.absolute-position.x + self.absolute-position.y + self.width + self.height + ai-switch.absolute-position.x + ai-switch.absolute-position.y + ai-switch.width + ai-switch.height + SettingsPageData.layout-tick * 1px;
+            changed geom => {
+                SettingsPageData.external-row = root.layout-box(self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                SettingsPageData.external-switch = root.layout-box(ai-switch.absolute-position.x, ai-switch.absolute-position.y, ai-switch.width, ai-switch.height);
+            }
+
+            ai-switch := ToggleSwitch {
                 x: 120px;
                 y: (parent.height - self.height) / 2;
                 checked: SettingsPageData.external-ai;
@@ -627,14 +718,27 @@ component OtherPage inherits Rectangle {
                 font-size: 13px;
                 vertical-alignment: center;
                 overflow: elide;
+
+                property <length> geom: self.absolute-position.x + self.absolute-position.y + self.width + self.height + SettingsPageData.layout-tick * 1px;
+                changed geom => {
+                    SettingsPageData.external-unavail = root.layout-box(self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                }
             }
         }
 
         if SettingsPageData.external-ai: Rectangle {
             height: 40px;
 
-            Field {
-                y: 5px;
+            property <length> geom: name-field.absolute-position.x + name-field.absolute-position.y + name-field.width + name-field.height + auth-btn.absolute-position.x + auth-btn.absolute-position.y + auth-btn.width + auth-btn.height + SettingsPageData.layout-tick * 1px;
+            changed geom => {
+                SettingsPageData.external-field = root.layout-box(name-field.absolute-position.x, name-field.absolute-position.y, name-field.width, name-field.height);
+                SettingsPageData.external-auth = root.layout-box(auth-btn.absolute-position.x, auth-btn.absolute-position.y, auth-btn.width, auth-btn.height);
+            }
+
+            // 不写 x 时这块输入在父级里水平居中，会压住「名称」。
+            name-field := Field {
+                x: 0px;
+                y: (parent.height - self.height) / 2;
                 width: 180px;
                 name: "名称";
                 reset: SettingsPageData.external-name-reset;
@@ -648,9 +752,9 @@ component OtherPage inherits Rectangle {
                 }
             }
 
-            Btn {
-                x: 188px;
-                y: 5px;
+            auth-btn := Btn {
+                x: name-field.x + name-field.width + 8px;
+                y: (parent.height - self.height) / 2;
                 text: "授权";
                 c: root.c;
                 clicked => {
@@ -661,10 +765,17 @@ component OtherPage inherits Rectangle {
 
         if SettingsPageData.external-ai && SettingsPageData.external-token != "": Rectangle {
             height: 30px;
+            min-width: 0px;
+            horizontal-stretch: 1;
             border-radius: 6px;
             border-width: 1px;
             border-color: root.c.divider;
             background: root.c.field;
+
+            property <length> geom: self.absolute-position.x + self.absolute-position.y + self.width + self.height + SettingsPageData.layout-tick * 1px;
+            changed geom => {
+                SettingsPageData.external-token-box = root.layout-box(self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+            }
 
             TextInput {
                 x: 10px;
@@ -680,35 +791,76 @@ component OtherPage inherits Rectangle {
             }
         }
 
-        if SettingsPageData.external-ai && SettingsPageData.external-endpoint != "": Text {
+        if SettingsPageData.external-ai && SettingsPageData.external-endpoint != "": Rectangle {
             height: 28px;
-            text: SettingsPageData.external-endpoint;
-            color: root.c.secondary;
-            font-size: 12px;
-            vertical-alignment: center;
-            overflow: elide;
+            min-width: 0px;
+            horizontal-stretch: 1;
+
+            property <length> geom: endpoint-text.absolute-position.x + endpoint-text.absolute-position.y + endpoint-text.width + endpoint-text.height + SettingsPageData.layout-tick * 1px;
+            changed geom => {
+                SettingsPageData.external-endpoint-box = root.layout-box(endpoint-text.absolute-position.x, endpoint-text.absolute-position.y, endpoint-text.width, endpoint-text.height);
+            }
+
+            endpoint-text := Text {
+                x: 0px;
+                width: parent.width;
+                height: parent.height;
+                text: SettingsPageData.external-endpoint;
+                color: root.c.secondary;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
 
-        if SettingsPageData.external-ai && SettingsPageData.external-clients.length == 0: Text {
+        if SettingsPageData.external-ai && SettingsPageData.external-clients.length == 0: Rectangle {
             height: 36px;
-            text: "没有客户端";
-            color: root.c.secondary;
-            font-size: 13px;
-            vertical-alignment: center;
+            min-width: 0px;
+            horizontal-stretch: 1;
+
+            property <length> geom: empty-text.absolute-position.x + empty-text.absolute-position.y + empty-text.width + empty-text.height + SettingsPageData.layout-tick * 1px;
+            changed geom => {
+                SettingsPageData.external-empty = root.layout-box(empty-text.absolute-position.x, empty-text.absolute-position.y, empty-text.width, empty-text.height);
+            }
+
+            empty-text := Text {
+                x: 0px;
+                width: parent.width;
+                height: parent.height;
+                text: "没有客户端";
+                color: root.c.secondary;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
 
         if SettingsPageData.external-ai && SettingsPageData.external-clients.length > 0: external-list := Flickable {
             height: min(SettingsPageData.external-clients.length * 44px, 176px);
+            min-width: 0px;
+            horizontal-stretch: 1;
             content-width: self.width;
             content-height: max(self.height, SettingsPageData.external-clients.length * 44px);
 
             for client[index] in SettingsPageData.external-clients: Rectangle {
+                x: 0px;
                 y: index * 44px;
                 width: external-list.width;
                 height: 44px;
 
-                Text {
-                    width: parent.width - 160px;
+                property <length> geom: name-text.absolute-position.x + name-text.absolute-position.y + name-text.width + name-text.height + status-text.absolute-position.x + status-text.absolute-position.y + status-text.width + status-text.height + revoke-btn.absolute-position.x + revoke-btn.absolute-position.y + revoke-btn.width + revoke-btn.height + SettingsPageData.layout-tick * 1px;
+                changed geom => {
+                    if (index == 0) {
+                        SettingsPageData.external-client-name = root.layout-box(name-text.absolute-position.x, name-text.absolute-position.y, name-text.width, name-text.height);
+                        SettingsPageData.external-client-status = root.layout-box(status-text.absolute-position.x, status-text.absolute-position.y, status-text.width, status-text.height);
+                        SettingsPageData.external-revoke = root.layout-box(revoke-btn.absolute-position.x, revoke-btn.absolute-position.y, revoke-btn.width, revoke-btn.height);
+                    }
+                }
+
+                // 不写 x 时文字在自己的宽度里居中，会压住右侧的状态。
+                name-text := Text {
+                    x: 0px;
+                    width: max(0px, parent.width - 160px);
                     height: parent.height;
                     text: client.name;
                     color: root.c.ink;
@@ -717,7 +869,7 @@ component OtherPage inherits Rectangle {
                     overflow: elide;
                 }
 
-                Text {
+                status-text := Text {
                     x: parent.width - 148px;
                     width: 64px;
                     height: parent.height;
@@ -729,7 +881,7 @@ component OtherPage inherits Rectangle {
                     overflow: elide;
                 }
 
-                Btn {
+                revoke-btn := Btn {
                     x: parent.width - self.width;
                     y: (parent.height - self.height) / 2;
                     text: "撤销";
