@@ -433,11 +433,11 @@ end)
 | `claude` | `%USERPROFILE%\.claude\.credentials.json` | `CLAUDE_CONFIG_DIR` |
 | `grok` | `%USERPROFILE%\.grok\auth.json` | `GROK_HOME` |
 
-环境变量没设或是空的，就用上面的默认目录。三个地址是：
+环境变量没设或是空的，就用 `%USERPROFILE%` 拼默认目录。`USERPROFILE` 也没有或是空的，才用 `HOME`。某一项自己的目录变量优先于这两个。拼出来的目录必须是绝对路径。两个家目录都没有，这一项也没有自己的绝对路径目录，就当作没有登录，窗口是「登录已过期」，不发请求。不会去读当前工作目录。三个地址是：
 
 - ChatGPT：`GET https://chatgpt.com/backend-api/wham/usage`。文件里用 `tokens.access_token` 和 `tokens.account_id`。过期看 access token 的 JWT `exp`，不校验签名。请求头是 `Authorization: Bearer <令牌>`、`ChatGPT-Account-Id`、`Accept: application/json`，`User-Agent` 固定为 `Lanwork`。
 - Claude：`GET https://api.anthropic.com/api/oauth/usage`。文件里用 `claudeAiOauth.accessToken`，过期看 `claudeAiOauth.expiresAt`（毫秒）。请求头另有 `anthropic-beta: oauth-2025-04-20`。
-- Grok：`GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`。文件顶层的键是 OIDC 范围网址。优先用以 `https://auth.x.ai` 开头、还没过期的那一项（有多项时取键的字典序最小的），否则用 `https://accounts.x.ai/sign-in`。令牌在该项的 `key`，过期看 `expires_at`。请求头另有 `X-XAI-Token-Auth: xai-grok-cli`。
+- Grok：`GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`。文件顶层的键是 OIDC 范围网址。优先用键等于 `https://auth.x.ai`，或后面紧跟 `/`、`:` 的那一项（有多项时取键的字典序最小、还没过期的）。`https://auth.x.ai.evil.example` 不算。否则用同样的规则匹配 `https://accounts.x.ai/sign-in`。令牌在该项的 `key`，过期看 `expires_at`。请求头另有 `X-XAI-Token-Auth: xai-grok-cli`。
 
 只走 https，不跟随重定向。等待和正文 1 MiB 上限与 `http` 相同。同一来源 60 秒内再取，不再读文件、不再发请求，把上次规范化的结果交回去。成功和失败都这样。这 60 秒按宿主线程计，同一进程里的工具共用。
 

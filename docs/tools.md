@@ -179,6 +179,8 @@ GET 一直可以发。额度示例用的就是 `https` GET。POST 只有清单�
 | `claude` | `%USERPROFILE%\.claude\.credentials.json` | `CLAUDE_CONFIG_DIR` |
 | `grok` | `%USERPROFILE%\.grok\auth.json` | `GROK_HOME` |
 
+`USERPROFILE` 没有或是空的，才用 `HOME` 拼这三个默认目录。某一项自己的目录变量优先。目录必须是绝对路径。两个家目录都没有，或者路径不是绝对路径，窗口显示「登录已过期」，不发请求，也不读当前工作目录。
+
 脚本调用 `usage.fetch`，只拿到规范化后的数字：`windows` 里每一项有 `name` 和 `used_percent`（已经是百分数），能解析出重置时间时才有 `resets_at_ms`。ChatGPT 还可以有 `plan` 和 `limit_reached`。没有令牌、账号、网址和原始正文。字段的完整形状见开发说明。
 
 文件没有、读不了、令牌过期，或接口返回 401 / 403，窗口显示「登录已过期」。其它失败沿用「请求失败」。正文解析不了是「数据无效」。这些句子里没有令牌。只走 https，不跟随重定向。等待和 1 MiB 上限与 `http` 相同。同一来源 60 秒内再取，返回上次的规范化结果，不再读文件、不再发请求。

@@ -1640,9 +1640,9 @@ fn chatgpt_usage_example_hides_the_login_and_caches() {
         body: usage_body(),
     });
     let roots = crate::usage::UsageRoots {
-        chatgpt: codex.clone(),
-        claude: dir.join("claude"),
-        grok: dir.join("grok"),
+        chatgpt: Some(codex.clone()),
+        claude: Some(dir.join("claude")),
+        grok: Some(dir.join("grok")),
     };
     let session = open_chatgpt(&dir, transport.clone(), roots);
     assert_eq!(caption(&session, "five"), "5小时 12.5% · 01-01 00:00");
@@ -1703,9 +1703,9 @@ fn chatgpt_usage_example_hides_the_login_and_caches() {
         &denied,
         transport,
         crate::usage::UsageRoots {
-            chatgpt: denied.join("codex"),
-            claude: denied.join("claude"),
-            grok: denied.join("grok"),
+            chatgpt: Some(denied.join("codex")),
+            claude: Some(denied.join("claude")),
+            grok: Some(denied.join("grok")),
         },
     );
     assert_eq!(caption(&session, "five"), "登录已过期");
@@ -1730,9 +1730,9 @@ fn chatgpt_usage_example_hides_the_login_and_caches() {
         &missing,
         transport.clone(),
         crate::usage::UsageRoots {
-            chatgpt: missing.join("codex"),
-            claude: missing.join("claude"),
-            grok: missing.join("grok"),
+            chatgpt: Some(missing.join("codex")),
+            claude: Some(missing.join("claude")),
+            grok: Some(missing.join("grok")),
         },
     );
     assert_eq!(caption(&session, "five"), "登录已过期");
@@ -1757,9 +1757,9 @@ fn chatgpt_usage_example_hides_the_login_and_caches() {
         &broken,
         transport,
         crate::usage::UsageRoots {
-            chatgpt: broken.join("codex"),
-            claude: broken.join("claude"),
-            grok: broken.join("grok"),
+            chatgpt: Some(broken.join("codex")),
+            claude: Some(broken.join("claude")),
+            grok: Some(broken.join("grok")),
         },
     );
     assert_eq!(caption(&session, "five"), "数据无效");
@@ -1767,5 +1767,99 @@ fn chatgpt_usage_example_hides_the_login_and_caches() {
     assert!(!caption(&session, "five").contains(account));
     assert!(session.notices().iter().all(|note| {
         !note.text.contains(&token) && !note.text.contains(account) && note.text == "数据无效"
+    }));
+}
+
+#[test]
+fn relative_usage_root_is_expired_and_sends_nothing() {
+    crate::usage::reset_usage_cache_for_test();
+    let dir = Scratch::new("usage-relative");
+    let transport = recorded(r#"{"plan_type":"plus"}"#);
+    let mut options = Options::default();
+    options.transport = transport.clone();
+    options.usage_roots = Some(crate::usage::UsageRoots {
+        chatgpt: Some(PathBuf::from("codex")),
+        claude: Some(PathBuf::from(".")),
+        grok: None,
+    });
+    crate::guide::write_example(&dir, "chatgpt").unwrap();
+    let session = open_at(&dir, options).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "five"), "登录已过期");
+    assert_eq!(session.http_sends(), 0);
+    assert!(transport.log.lock().unwrap().is_empty());
+}
+
+#[test]
+fn undeclared_source_cannot_read_another_tools_cached_usage() {
+    crate::usage::reset_usage_cache_for_test();
+    let token = future_access_token();
+    let account = "acct-leak-9f3a";
+    let dir = Scratch::new("usage-owner");
+    let codex = dir.join("codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(
+        codex.join("auth.json"),
+        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
+    )
+    .unwrap();
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 200,
+        body: usage_body(),
+    });
+    let owner = open_chatgpt(
+        &dir,
+        transport,
+        crate::usage::UsageRoots {
+            chatgpt: Some(codex),
+            claude: Some(dir.join("claude")),
+            grok: Some(dir.join("grok")),
+        },
+    );
+    assert!(caption(&owner, "five").contains("12.5%"));
+
+    let other = Scratch::new("usage-other");
+    write_tool(
+        &other,
+        &tool(
+            "example.other",
+            "",
+            "[[usage]]\nsource = \"claude\"\n",
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  usage.fetch("chatgpt", function(result)
+    local text = result.error or ""
+    if result.plan then
+      text = text .. result.plan
+    end
+    if type(result.windows) == "table" then
+      for _, window in ipairs(result.windows) do
+        text = text .. tostring(window.name) .. tostring(window.used_percent)
+      end
+    end
+    ui.text("out", text)
+  end)
+end
+"#,
+    );
+    let transport = recorded("{}");
+    let mut options = Options::default();
+    options.transport = transport.clone();
+    let session = open_at(&other, options).unwrap();
+    session.on_load();
+    let text = caption(&session, "out");
+    assert_eq!(text, "未授权");
+    assert!(!text.contains("12.5"), "{text}");
+    assert!(!text.contains("plus"), "{text}");
+    assert!(!text.contains("5小时"), "{text}");
+    assert!(!text.contains(&token), "{text}");
+    assert_eq!(session.http_sends(), 0);
+    assert!(transport.log.lock().unwrap().is_empty());
+    assert!(session.notices().iter().any(|note| note.text == "未授权"));
+    assert!(session.notices().iter().all(|note| {
+        note.text == "未授权" && !note.text.contains("12.5") && !note.text.contains(&token)
     }));
 }

@@ -17,8 +17,8 @@ pub const USAGE_USER_AGENT: &str = "Lanwork";
 /// 同一来源两次真正去读文件、发请求的最短间隔。
 pub const USAGE_INTERVAL: Duration = Duration::from_secs(60);
 
-const GROK_AUTH_PREFIX: &str = "https://auth.x.ai";
-const GROK_FALLBACK_KEY: &str = "https://accounts.x.ai/sign-in";
+const GROK_AUTH_ORIGIN: &str = "https://auth.x.ai";
+const GROK_FALLBACK_ORIGIN: &str = "https://accounts.x.ai/sign-in";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UsageSource {
@@ -57,49 +57,89 @@ impl UsageSource {
     }
 }
 
-/// 三个登录目录。产品在 Windows 上用 `USERPROFILE` 拼默认路径。
+/// 三个登录目录。没有绝对路径的那一项当作没有登录。
+///
+/// 产品在 Windows 上先用 `USERPROFILE`。它没设或是空的，才用 `HOME`。
+/// 某一项的目录变量优先于这两者。相对路径不补当前工作目录。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsageRoots {
-    pub chatgpt: PathBuf,
-    pub claude: PathBuf,
-    pub grok: PathBuf,
+    pub chatgpt: Option<PathBuf>,
+    pub claude: Option<PathBuf>,
+    pub grok: Option<PathBuf>,
 }
 
 impl UsageRoots {
     #[must_use]
     pub fn from_env() -> Self {
-        let home = env_path("USERPROFILE")
-            .unwrap_or_else(|| env_path("HOME").unwrap_or_else(|| PathBuf::from(".")));
-        resolve_roots(
-            &home,
+        let userprofile = env_path("USERPROFILE");
+        let home = env_path("HOME");
+        assemble_roots(
+            userprofile.as_deref(),
+            home.as_deref(),
             env_path("CODEX_HOME"),
             env_path("CLAUDE_CONFIG_DIR"),
             env_path("GROK_HOME"),
         )
     }
 
+    /// 目录不是绝对路径时返回 `None`，调用方按没有登录处理，不去读文件。
     #[must_use]
-    pub fn file(&self, source: UsageSource) -> PathBuf {
-        match source {
-            UsageSource::Chatgpt => self.chatgpt.join("auth.json"),
-            UsageSource::Claude => self.claude.join(".credentials.json"),
-            UsageSource::Grok => self.grok.join("auth.json"),
+    pub fn file(&self, source: UsageSource) -> Option<PathBuf> {
+        let dir = match source {
+            UsageSource::Chatgpt => self.chatgpt.as_ref(),
+            UsageSource::Claude => self.claude.as_ref(),
+            UsageSource::Grok => self.grok.as_ref(),
+        }?;
+        if !dir.is_absolute() {
+            return None;
         }
+        let name = match source {
+            UsageSource::Chatgpt | UsageSource::Grok => "auth.json",
+            UsageSource::Claude => ".credentials.json",
+        };
+        Some(dir.join(name))
     }
+}
+
+fn assemble_roots(
+    userprofile: Option<&Path>,
+    home: Option<&Path>,
+    codex_home: Option<PathBuf>,
+    claude_config_dir: Option<PathBuf>,
+    grok_home: Option<PathBuf>,
+) -> UsageRoots {
+    resolve_roots(
+        userprofile.or(home),
+        codex_home,
+        claude_config_dir,
+        grok_home,
+    )
 }
 
 #[must_use]
 pub fn resolve_roots(
-    home: &Path,
+    home: Option<&Path>,
     codex_home: Option<PathBuf>,
     claude_config_dir: Option<PathBuf>,
     grok_home: Option<PathBuf>,
 ) -> UsageRoots {
     UsageRoots {
-        chatgpt: codex_home.unwrap_or_else(|| home.join(".codex")),
-        claude: claude_config_dir.unwrap_or_else(|| home.join(".claude")),
-        grok: grok_home.unwrap_or_else(|| home.join(".grok")),
+        chatgpt: chosen_root(codex_home, home, ".codex"),
+        claude: chosen_root(claude_config_dir, home, ".claude"),
+        grok: chosen_root(grok_home, home, ".grok"),
     }
+}
+
+fn chosen_root(
+    override_dir: Option<PathBuf>,
+    home: Option<&Path>,
+    folder: &str,
+) -> Option<PathBuf> {
+    let path = match override_dir {
+        Some(dir) => dir,
+        None => home?.join(folder),
+    };
+    path.is_absolute().then_some(path)
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
@@ -166,7 +206,10 @@ pub fn prepare_usage(
     roots: &UsageRoots,
     now_ms: i64,
 ) -> Result<UsageCall, UsageError> {
-    let bytes = read_auth(&roots.file(source))?;
+    let Some(path) = roots.file(source) else {
+        return Err(UsageError::LoginExpired);
+    };
+    let bytes = read_auth(&path)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| UsageError::LoginExpired)?;
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|_| UsageError::LoginExpired)?;
@@ -288,17 +331,34 @@ fn grok_credential(
     map: &serde_json::Map<String, serde_json::Value>,
     now_ms: i64,
 ) -> Result<(&str, i64), UsageError> {
-    let mut preferred: Vec<&String> = map
-        .keys()
-        .filter(|key| key.starts_with(GROK_AUTH_PREFIX))
-        .collect();
-    preferred.sort();
-    for key in preferred {
+    if let Some(pair) = first_usable(map, GROK_AUTH_ORIGIN, now_ms) {
+        return Ok(pair);
+    }
+    first_usable(map, GROK_FALLBACK_ORIGIN, now_ms).ok_or(UsageError::LoginExpired)
+}
+
+/// 键等于这个来源，或者紧接着的字符是 `/` 或 `:`。
+/// `https://auth.x.ai.evil.example` 不算同一来源。
+fn origin_match(key: &str, origin: &str) -> bool {
+    let Some(rest) = key.strip_prefix(origin) else {
+        return false;
+    };
+    matches!(rest.chars().next(), None | Some('/' | ':'))
+}
+
+fn first_usable<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    origin: &str,
+    now_ms: i64,
+) -> Option<(&'a str, i64)> {
+    let mut keys: Vec<&String> = map.keys().filter(|key| origin_match(key, origin)).collect();
+    keys.sort();
+    for key in keys {
         if let Some(pair) = usable_entry(map.get(key), now_ms) {
-            return Ok(pair);
+            return Some(pair);
         }
     }
-    usable_entry(map.get(GROK_FALLBACK_KEY), now_ms).ok_or(UsageError::LoginExpired)
+    None
 }
 
 fn usable_entry(value: Option<&serde_json::Value>, now_ms: i64) -> Option<(&str, i64)> {
@@ -837,43 +897,106 @@ mod tests {
 
     fn roots(dir: &Path) -> UsageRoots {
         UsageRoots {
-            chatgpt: dir.join("codex"),
-            claude: dir.join("claude"),
-            grok: dir.join("grok"),
+            chatgpt: Some(dir.join("codex")),
+            claude: Some(dir.join("claude")),
+            grok: Some(dir.join("grok")),
         }
     }
 
     fn write_auth(dir: &Path, source: UsageSource, body: &str) {
-        let path = roots(dir).file(source);
+        let path = roots(dir).file(source).expect("绝对路径");
         std::fs::create_dir_all(path.parent().expect("目录")).expect("目录");
         std::fs::write(path, body).expect("写入");
     }
 
     #[test]
     fn default_dirs_follow_home_and_overrides() {
-        let home = Path::new(r"C:\Users\me");
-        let roots = resolve_roots(home, None, None, None);
-        assert_eq!(roots.chatgpt, home.join(".codex"));
-        assert_eq!(roots.claude, home.join(".claude"));
-        assert_eq!(roots.grok, home.join(".grok"));
+        let home = std::env::temp_dir().join("lanwork-usage-home");
+        assert!(home.is_absolute());
+        let roots = resolve_roots(Some(&home), None, None, None);
+        let codex = home.join(".codex");
+        let claude = home.join(".claude");
+        let grok = home.join(".grok");
+        assert_eq!(roots.chatgpt.as_deref(), Some(codex.as_path()));
+        assert_eq!(roots.claude.as_deref(), Some(claude.as_path()));
+        assert_eq!(roots.grok.as_deref(), Some(grok.as_path()));
         assert_eq!(
             roots.file(UsageSource::Chatgpt),
-            home.join(".codex").join("auth.json")
+            Some(codex.join("auth.json"))
         );
         assert_eq!(
             roots.file(UsageSource::Claude),
-            home.join(".claude").join(".credentials.json")
+            Some(claude.join(".credentials.json"))
         );
+        let codex_override = home.join("codex-override");
+        let claude_override = home.join("claude-override");
+        let grok_override = home.join("grok-override");
         let overridden = resolve_roots(
-            home,
-            Some(PathBuf::from(r"D:\codex")),
-            Some(PathBuf::from(r"D:\claude")),
-            Some(PathBuf::from(r"D:\grok")),
+            Some(&home),
+            Some(codex_override),
+            Some(claude_override),
+            Some(grok_override.clone()),
         );
         assert_eq!(
             overridden.file(UsageSource::Grok),
-            PathBuf::from(r"D:\grok").join("auth.json")
+            Some(grok_override.join("auth.json"))
         );
+        let home_only = assemble_roots(None, Some(&home), None, None, None);
+        assert_eq!(home_only.chatgpt.as_deref(), Some(codex.as_path()));
+        let profile = home.join("profile");
+        let profile_codex = profile.join(".codex");
+        let profile_first = assemble_roots(Some(&profile), Some(&home), None, None, None);
+        assert_eq!(
+            profile_first.chatgpt.as_deref(),
+            Some(profile_codex.as_path())
+        );
+    }
+
+    #[test]
+    fn missing_or_relative_home_is_no_login() {
+        let missing = resolve_roots(None, None, None, None);
+        assert!(missing.chatgpt.is_none());
+        assert!(missing.claude.is_none());
+        assert!(missing.grok.is_none());
+        assert_eq!(
+            prepare_usage(UsageSource::Chatgpt, &missing, 0).unwrap_err(),
+            UsageError::LoginExpired
+        );
+        let relative = resolve_roots(
+            Some(Path::new("relative-home")),
+            Some(PathBuf::from("codex")),
+            Some(PathBuf::from("claude")),
+            Some(PathBuf::from(".")),
+        );
+        assert!(relative.file(UsageSource::Chatgpt).is_none());
+        assert!(relative.file(UsageSource::Claude).is_none());
+        assert!(relative.file(UsageSource::Grok).is_none());
+        assert_eq!(
+            prepare_usage(UsageSource::Grok, &relative, 0).unwrap_err(),
+            UsageError::LoginExpired
+        );
+        let dotted = UsageRoots {
+            chatgpt: Some(PathBuf::from(".")),
+            claude: None,
+            grok: None,
+        };
+        assert!(dotted.file(UsageSource::Chatgpt).is_none());
+        let home = std::env::temp_dir();
+        let only_codex = home.join("only-codex");
+        let partial = assemble_roots(None, None, Some(only_codex.clone()), None, None);
+        assert_eq!(partial.chatgpt.as_deref(), Some(only_codex.as_path()));
+        assert!(partial.claude.is_none());
+        assert!(partial.grok.is_none());
+        let blocked = assemble_roots(
+            Some(Path::new("rel-profile")),
+            Some(&home),
+            None,
+            None,
+            None,
+        );
+        assert!(blocked.chatgpt.is_none());
+        assert!(blocked.claude.is_none());
+        assert!(blocked.grok.is_none());
     }
 
     #[test]
@@ -964,12 +1087,13 @@ mod tests {
         let err = prepare_usage(UsageSource::Chatgpt, &roots(&dir), 1_700_000_000_000).unwrap_err();
         assert_eq!(err, UsageError::LoginExpired);
         assert!(!err.text().contains(&expired));
-        std::fs::remove_file(roots(&dir).file(UsageSource::Chatgpt)).unwrap();
+        let auth = roots(&dir).file(UsageSource::Chatgpt).expect("绝对路径");
+        std::fs::remove_file(&auth).unwrap();
         assert_eq!(
             prepare_usage(UsageSource::Chatgpt, &roots(&dir), 0).unwrap_err(),
             UsageError::LoginExpired
         );
-        assert!(!roots(&dir).file(UsageSource::Chatgpt).exists());
+        assert!(!auth.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1078,6 +1202,35 @@ mod tests {
             &dir,
             UsageSource::Grok,
             r#"{"https://accounts.x.ai/other":{"key":"nope","expires_at":4102444800000}}"#,
+        );
+        assert_eq!(
+            prepare_usage(UsageSource::Grok, &roots(&dir), 1_700_000_000_000).unwrap_err(),
+            UsageError::LoginExpired
+        );
+        let evil = "grok-evil-token";
+        write_auth(
+            &dir,
+            UsageSource::Grok,
+            &format!(
+                r#"{{"https://auth.x.ai.evil.example":{{"key":"{evil}","expires_at":4102444800000}},"https://accounts.x.ai/sign-in.evil":{{"key":"{evil}","expires_at":4102444800000}},"https://accounts.x.ai/sign-in":{{"key":"{fallback}","expires_at":"2099-01-01T00:00:00Z"}}}}"#
+            ),
+        );
+        let call = prepare_usage(UsageSource::Grok, &roots(&dir), 1_700_000_000_000).unwrap();
+        assert!(call.outgoing.headers.iter().any(|(name, value)| {
+            name == "Authorization" && value == &format!("Bearer {fallback}")
+        }));
+        assert!(
+            call.outgoing
+                .headers
+                .iter()
+                .all(|(_, value)| !value.contains(evil))
+        );
+        write_auth(
+            &dir,
+            UsageSource::Grok,
+            &format!(
+                r#"{{"https://auth.x.ai.evil.example":{{"key":"{evil}","expires_at":4102444800000}}}}"#
+            ),
         );
         assert_eq!(
             prepare_usage(UsageSource::Grok, &roots(&dir), 1_700_000_000_000).unwrap_err(),

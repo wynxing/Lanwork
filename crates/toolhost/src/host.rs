@@ -263,19 +263,25 @@ pub struct Session {
     http_budget: Duration,
 }
 
+fn manifest_open_error(reason: String) -> String {
+    if reason.starts_with("读不到") || reason.starts_with("工具文件夹") {
+        reason
+    } else if reason.contains("入口脚本") || (reason.contains("UTF-8") && reason.contains("脚本"))
+    {
+        format!("脚本错误：{reason}")
+    } else {
+        format!("清单无效：{reason}")
+    }
+}
+
 impl Session {
     pub fn open(dir: &std::path::Path, options: Options) -> Result<Self, String> {
-        let manifest = load_dir(dir).map_err(|reason| {
-            if reason.starts_with("读不到") || reason.starts_with("工具文件夹") {
-                reason
-            } else if reason.contains("入口脚本")
-                || (reason.contains("UTF-8") && reason.contains("脚本"))
-            {
-                format!("脚本错误：{reason}")
-            } else {
-                format!("清单无效：{reason}")
-            }
-        })?;
+        let manifest = load_dir(dir).map_err(manifest_open_error)?;
+        Self::open_manifest(manifest, options)
+    }
+
+    /// 用已经读过、并且已经和授权对过的清单打开。不再读一次磁盘。
+    pub fn open_manifest(manifest: Manifest, options: Options) -> Result<Self, String> {
         let limit = Arc::new(Limit {
             start: Instant::now(),
             deadline_ms: AtomicU64::new(0),

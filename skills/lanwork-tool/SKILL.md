@@ -80,7 +80,7 @@ services = ["timer"]
 source = "chatgpt"
 ```
 
-`source` 只能是 `chatgpt`、`claude` 或 `grok`。确认页是「使用本机的 ChatGPT 登录」这一类句子。地址和请求头写死在宿主里，清单改不了。脚本用 `usage.fetch("chatgpt", fn)`，只拿到 `windows` 里的百分数和重置时间。Claude 订阅令牌按 Anthropic 的条款只用于 Claude Code 和 claude.ai，用 `claude` 由用户自行承担风险。
+`source` 只能是 `chatgpt`、`claude` 或 `grok`。确认页是「使用本机的 ChatGPT 登录」这一类句子。地址和请求头写死在宿主里，清单改不了。脚本用 `usage.fetch("chatgpt", fn)`，只拿到 `windows` 里的百分数和重置时间。登录文件默认在 `%USERPROFILE%` 下的 `.codex`、`.claude`、`.grok`。`USERPROFILE` 没有或是空的，才用 `HOME`。`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`GROK_HOME` 可以分别换掉这三个目录。目录必须是绝对路径。两个家目录都没有，或者路径不是绝对路径，就不发请求，窗口是「登录已过期」。Claude 订阅令牌按 Anthropic 的条款只用于 Claude Code 和 claude.ai，用 `claude` 由用户自行承担风险。
 
 ## 脚本模板
 
