@@ -1,7 +1,7 @@
 //! HTTPS GET。只向清单里声明的主机名发送。
 //!
 //! 不跟随重定向。同一主机名之内也不跟随，已经定了。
-//! 不附带密钥的明文 `http` 不发送，已经定了。Lua 看到的说明仍是「明文 http（是否允许仍待定）」。
+//! 不附带密钥的明文 `http` 不发送，已经定了。Lua 看到的说明是「不允许明文 http」。
 //! 附带密钥时只允许 `https`。
 //! HTTP 超时和正文上限规格待定。这次连接和读取各最多 5 秒，正文最多 1 MiB，超过则「请求失败」。
 //! 套接字在另一条线程上，脚本回调不等待网络。
@@ -213,7 +213,7 @@ pub enum HttpDeny {
     BadAddress,
     HostDenied,
     SecretMissing,
-    /// 明文 http 不发送，已经定了。说明文字仍是原来那句。
+    /// 明文 http 不发送，已经定了。
     PlainHttpUndecided,
     RequestFailed,
 }
@@ -225,7 +225,7 @@ impl HttpDeny {
             HttpDeny::BadAddress => "地址无效",
             HttpDeny::HostDenied => "域名未允许",
             HttpDeny::SecretMissing => "未填写密钥",
-            HttpDeny::PlainHttpUndecided => "明文 http（是否允许仍待定）",
+            HttpDeny::PlainHttpUndecided => "不允许明文 http",
             HttpDeny::RequestFailed => "请求失败",
         }
     }
@@ -500,6 +500,7 @@ mod tests {
             prepare(&get("http://api.example.com/v1"), &domains(), None, false),
             Err(HttpDeny::PlainHttpUndecided)
         ));
+        assert_eq!(HttpDeny::PlainHttpUndecided.text(), "不允许明文 http");
         let mut with_secret = get("http://api.example.com/v1");
         with_secret.secret = Some(SecretAttach {
             id: "api_key".to_string(),

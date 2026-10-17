@@ -105,7 +105,7 @@ timer.every(300, refresh)
 | `http` | `http.request({ method = "GET", url = "...", secret = 可省略 }, fn)` | 每个域名一句「访问 <主机名>」 |
 | `secret` | 没有读取函数。只在 `http.request` 里写 `secret.id` | 每个密钥一句「使用你填写的<名称>」 |
 
-`http` 只发送已声明主机上的 `https` GET。不跟随重定向，同一台主机上的也不跟随。不附带密钥的明文 `http` 不发送。附带密钥时必须是 `https`。没填密钥时回调里的 `error` 是「未填写密钥」，请求不会发出。
+`http` 只发送已声明主机上的 `https` GET。不跟随重定向，同一台主机上的也不跟随。不附带密钥的明文 `http` 不发送，回调里的 `error` 是「不允许明文 http」。附带密钥时必须是 `https`。没填密钥时回调里的 `error` 是「未填写密钥」，请求不会发出。
 
 标准库只有 `string`、`table`、`math`、`utf8`，外加基础函数。没有 `io`、`os`、`package`、`debug`、`coroutine`、`require`、`load`、`print`。
 
@@ -143,7 +143,7 @@ timer.every(300, refresh)
 - [ ] 组件只用 `text`、`button`、`timer`、`progress`，id 不重复
 - [ ] 计时组件在需要倒数时调用了 `ui.timer_running`
 - [ ] `timer.every` 的秒数大于或等于 30
-- [ ] 请求是 `https` GET，主机名写在 `domains` 里，密钥只按 id 引用。明文 `http` 不发，也不跟随重定向
+- [ ] 请求是 `https` GET，主机名写在 `domains` 里，密钥只按 id 引用。明文 `http` 不发，窗口是「不允许明文 http」，也不跟随重定向
 - [ ] 没有 `print`、`require`、`io`、`os`、协程
 - [ ] 文件夹根上有 `manifest.toml` 和入口脚本；zip 根上有清单，或只有一个顶层文件夹
 - [ ] 告诉了用户从「应用」页导入，以及密钥要在「填写密钥」里填

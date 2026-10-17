@@ -843,7 +843,7 @@ end
     session.on_load();
     let text = caption(&session, "out");
     assert!(text.contains("不在范围内"), "{text}");
-    assert!(text.contains("明文 http（是否允许仍待定）"), "{text}");
+    assert!(text.contains("不允许明文 http"), "{text}");
     assert!(text.contains("域名未允许"), "{text}");
     assert!(text.contains("地址无效"), "{text}");
     assert!(!text.contains(secret), "{text}");
