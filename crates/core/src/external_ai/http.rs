@@ -30,14 +30,7 @@ pub(super) fn accept_loop(listener: TcpListener, shared: Arc<Shared>, shutdown: 
                     shared.notify(Notice::Clients);
                 }
                 if !try_acquire(&shared) {
-                    let mut stream = stream;
-                    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
-                    let _ = stream.write_all(&http_response(
-                        503,
-                        "Service Unavailable",
-                        &[],
-                        error_body(None, "连接过多"),
-                    ));
+                    reject_busy(stream);
                     continue;
                 }
                 let task = Arc::clone(&shared);
@@ -92,6 +85,37 @@ fn try_acquire(shared: &Shared) -> bool {
 
 fn release(shared: &Shared) {
     shared.connections.fetch_sub(1, Ordering::AcqRel);
+}
+
+/// 第 17 个连接直接回 503。写出限时与普通请求相同。
+///
+/// 先读掉已经到达的请求。Windows 在关闭时如果接收缓冲还有数据，会发 RST，
+/// 把刚写出的响应截掉。
+fn reject_busy(mut stream: TcpStream) {
+    discard_arrived(&mut stream);
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
+    let _ = stream.write_all(&http_response(
+        503,
+        "Service Unavailable",
+        &[],
+        error_body(None, "连接过多"),
+    ));
+    discard_arrived(&mut stream);
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+fn discard_arrived(stream: &mut TcpStream) {
+    let _ = stream.set_nonblocking(true);
+    let mut tmp = [0u8; 2048];
+    loop {
+        match stream.read(&mut tmp) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
 }
 
 fn serve_one(shared: &Shared, mut stream: TcpStream) {
