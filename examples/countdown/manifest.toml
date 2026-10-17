@@ -1,0 +1,19 @@
+id = "example.countdown"
+name = "倒计时"
+description = "点开始后倒数 60 秒"
+entry = "main.lua"
+services = []
+
+[[component]]
+id = "status"
+component = "text"
+text = "准备"
+
+[[component]]
+id = "clock"
+component = "timer"
+
+[[component]]
+id = "start"
+component = "button"
+label = "开始"

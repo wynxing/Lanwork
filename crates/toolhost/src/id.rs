@@ -51,8 +51,26 @@ fn reserved_windows_name(id: &str) -> bool {
     )
 }
 
-/// 保留前缀。工具 id 不能以 `lanwork.` 开头。比较区分大小写：规格写的是 `lanwork.`。
-/// 忽略大小写算不算，待定。
+/// 保留前缀。工具 id 不能以 `lanwork.` 开头。比较忽略 ASCII 大小写，
+/// `Lanwork.tool` 和 `LANWORK.x` 同样拒绝。
+/// 拒绝时的说明仍是「id 不能以 lanwork. 开头」。
 pub fn imported_prefix_forbidden(id: &str) -> bool {
-    id.starts_with("lanwork.")
+    id.get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("lanwork."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::imported_prefix_forbidden;
+
+    #[test]
+    fn reserved_prefix_ignores_ascii_case() {
+        assert!(imported_prefix_forbidden("lanwork.quota"));
+        assert!(imported_prefix_forbidden("Lanwork.tool"));
+        assert!(imported_prefix_forbidden("LANWORK.x"));
+        assert!(imported_prefix_forbidden("LaNwOrK.Mixed"));
+        assert!(!imported_prefix_forbidden("lanwork"));
+        assert!(!imported_prefix_forbidden("example.lanwork"));
+        assert!(!imported_prefix_forbidden("example.api-quota"));
+    }
 }

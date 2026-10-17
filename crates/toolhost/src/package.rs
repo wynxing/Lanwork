@@ -724,7 +724,7 @@ pub(crate) fn png_signature(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guide::quota;
+    use crate::guide::{countdown, quota};
     use crate::manifest::materialize;
 
     fn scratch(name: &str) -> PathBuf {
@@ -786,6 +786,26 @@ mod tests {
         );
         assert!(!lines.iter().any(|line| line.contains("联网")));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shipped_countdown_passes_import_without_permissions() {
+        let (manifest, script) = countdown().unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/countdown");
+        let on_disk_manifest = std::fs::read_to_string(root.join("manifest.toml"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let on_disk_script = std::fs::read_to_string(root.join("main.lua"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(on_disk_manifest.trim_end(), manifest.trim_end());
+        assert_eq!(on_disk_script.trim_end(), script.trim_end());
+        let staged = inspect_path(&root).unwrap();
+        assert_eq!(staged.manifest.id, "example.countdown");
+        assert!(staged.manifest.services.is_empty());
+        assert!(permission_lines(&staged.manifest).is_empty());
+        let names: Vec<&str> = staged.files.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["manifest.toml", "main.lua"]);
     }
 
     #[test]
@@ -1130,7 +1150,11 @@ text = \"没有数据\"
                 .windows(125)
                 .any(|window| window == b"secret-marker")
         );
-        assert!(recheck_installed("lanwork.quota", &files).is_err());
+        for id in ["lanwork.quota", "Lanwork.tool", "LANWORK.x"] {
+            let err = recheck_installed(id, &files).unwrap_err();
+            assert_eq!(err.to_string(), "清单无效");
+            assert_eq!(err.detail(), "导入的 id 不能以 lanwork. 开头");
+        }
         assert!(recheck_installed(".incoming-example.quota", &files).is_err());
         let mut crossed = files.clone();
         crossed.push(("../../notes/pwn.json".to_string(), b"{}".to_vec()));

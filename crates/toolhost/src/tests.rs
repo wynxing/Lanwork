@@ -112,9 +112,11 @@ fn guide_manifest_and_rejections() {
         .map(|widget| widget.id.as_str())
         .collect();
     assert_eq!(ids, ["summary", "used"]);
-    let reserved = text.replace("id = \"example.api-quota\"", "id = \"lanwork.api-quota\"");
-    let reserved = manifest::parse(&reserved).expect_err("保留前缀");
-    assert!(reserved.contains("lanwork."));
+    for id in ["lanwork.api-quota", "Lanwork.tool", "LANWORK.x"] {
+        let reserved = text.replace("id = \"example.api-quota\"", &format!("id = \"{id}\""));
+        let reserved = manifest::parse(&reserved).expect_err("保留前缀");
+        assert_eq!(reserved, "id 不能以 lanwork. 开头");
+    }
     let dotted = text.replace("id = \"example.api-quota\"", "id = \".quota\"");
     let dotted = manifest::parse(&dotted).expect_err("点开头");
     assert!(dotted.contains("不能以 . 开头"));
@@ -841,12 +843,37 @@ end
     session.on_load();
     let text = caption(&session, "out");
     assert!(text.contains("不在范围内"), "{text}");
-    assert!(text.contains("明文 http（是否允许仍待定）"), "{text}");
+    assert!(text.contains("不允许明文 http"), "{text}");
     assert!(text.contains("域名未允许"), "{text}");
     assert!(text.contains("地址无效"), "{text}");
     assert!(!text.contains(secret), "{text}");
     assert_eq!(caption(&session, "kind"), "table:nil");
     assert_eq!(session.http_sends(), 0);
+}
+
+#[test]
+fn countdown_example_counts_down_after_the_button() {
+    let dir = Scratch::new("countdown");
+    crate::guide::write_example(&dir, "countdown").unwrap();
+    let session = open_at(&dir, Options::default()).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "status"), "准备");
+    let clock = session.widget("clock").unwrap();
+    assert_eq!(clock.seconds, 0);
+    assert!(!clock.running);
+    session.click("start");
+    let clock = session.widget("clock").unwrap();
+    assert!(clock.running);
+    assert_eq!(clock.seconds, 60);
+    assert_eq!(caption(&session, "status"), "倒数");
+    session.advance(59.0);
+    assert_eq!(session.widget("clock").unwrap().seconds, 1);
+    assert_eq!(caption(&session, "status"), "倒数");
+    session.advance(1.0);
+    assert_eq!(caption(&session, "status"), "到了");
+    let clock = session.widget("clock").unwrap();
+    assert_eq!(clock.seconds, 0);
+    assert!(!clock.running);
 }
 
 #[test]
