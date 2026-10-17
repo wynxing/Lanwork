@@ -111,7 +111,7 @@ component = "progress"
 - 不能以空格开头或结尾
 - 不能含 `/ \ < > : " | ? *`，也不能含控制字符
 - 第一个 `.` 之前的那一段不能是 Windows 保留设备名：`CON`、`PRN`、`AUX`、`NUL`、`COM1` 到 `COM9`、`LPT1` 到 `LPT9`。这一段忽略大小写，所以 `con.tool` 不行，`example.con` 可以
-- 不能以 `lanwork.` 开头。比较区分大小写，`Lanwork.tool` 目前过得去
+- 不能以 `lanwork.` 开头。比较忽略大小写，`Lanwork.tool` 和 `LANWORK.x` 也不行。界面仍是「清单无效」，日志里的说明仍是「id 不能以 lanwork. 开头」
 
 密钥的 `id` 用同一套路径分量规则，不检查 `lanwork.` 前缀。同一个工具里密钥 id 不能重复。
 
@@ -304,7 +304,7 @@ end)
 
 脚本不能另加请求头，也不能写请求体。表里多出来的字段这次忽略。发出去的请求带 `Host`（主机名，不带端口）、`User-Agent: Lanwork`、`Accept: */*` 和 `Connection: close`。密钥头加在这些后面。
 
-当前只发送 `https` 的 GET。
+当前只发送 `https` 的 GET。不附带密钥的明文 `http` 不发送，已经定了。重定向一律不跟随，同一台主机上的也不跟随，已经定了。
 
 | 情况 | 结果 |
 | --- | --- |

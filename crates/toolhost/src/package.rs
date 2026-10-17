@@ -1150,7 +1150,11 @@ text = \"没有数据\"
                 .windows(125)
                 .any(|window| window == b"secret-marker")
         );
-        assert!(recheck_installed("lanwork.quota", &files).is_err());
+        for id in ["lanwork.quota", "Lanwork.tool", "LANWORK.x"] {
+            let err = recheck_installed(id, &files).unwrap_err();
+            assert_eq!(err.to_string(), "清单无效");
+            assert_eq!(err.detail(), "导入的 id 不能以 lanwork. 开头");
+        }
         assert!(recheck_installed(".incoming-example.quota", &files).is_err());
         let mut crossed = files.clone();
         crossed.push(("../../notes/pwn.json".to_string(), b"{}".to_vec()));

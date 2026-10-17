@@ -112,9 +112,11 @@ fn guide_manifest_and_rejections() {
         .map(|widget| widget.id.as_str())
         .collect();
     assert_eq!(ids, ["summary", "used"]);
-    let reserved = text.replace("id = \"example.api-quota\"", "id = \"lanwork.api-quota\"");
-    let reserved = manifest::parse(&reserved).expect_err("保留前缀");
-    assert!(reserved.contains("lanwork."));
+    for id in ["lanwork.api-quota", "Lanwork.tool", "LANWORK.x"] {
+        let reserved = text.replace("id = \"example.api-quota\"", &format!("id = \"{id}\""));
+        let reserved = manifest::parse(&reserved).expect_err("保留前缀");
+        assert_eq!(reserved, "id 不能以 lanwork. 开头");
+    }
     let dotted = text.replace("id = \"example.api-quota\"", "id = \".quota\"");
     let dotted = manifest::parse(&dotted).expect_err("点开头");
     assert!(dotted.contains("不能以 . 开头"));

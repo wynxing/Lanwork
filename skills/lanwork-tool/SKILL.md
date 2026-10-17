@@ -105,7 +105,7 @@ timer.every(300, refresh)
 | `http` | `http.request({ method = "GET", url = "...", secret = 可省略 }, fn)` | 每个域名一句「访问 <主机名>」 |
 | `secret` | 没有读取函数。只在 `http.request` 里写 `secret.id` | 每个密钥一句「使用你填写的<名称>」 |
 
-`http` 当前只发送已声明主机上的 `https` GET，不跟随重定向。附带密钥时必须是 `https`。没填密钥时回调里的 `error` 是「未填写密钥」，请求不会发出。
+`http` 只发送已声明主机上的 `https` GET。不跟随重定向，同一台主机上的也不跟随。不附带密钥的明文 `http` 不发送。附带密钥时必须是 `https`。没填密钥时回调里的 `error` 是「未填写密钥」，请求不会发出。
 
 标准库只有 `string`、`table`、`math`、`utf8`，外加基础函数。没有 `io`、`os`、`package`、`debug`、`coroutine`、`require`、`load`、`print`。
 
@@ -113,7 +113,7 @@ timer.every(300, refresh)
 
 ## 硬性限制
 
-- `id` 是单个路径分量，1 到 200 字节，不能以 `.` 或 `lanwork.` 开头，不能是 Windows 设备名。
+- `id` 是单个路径分量，1 到 200 字节，不能以 `.` 开头，也不能以 `lanwork.` 开头（忽略大小写，`Lanwork.tool` 和 `LANWORK.x` 都不行），不能是 Windows 设备名。
 - 不认识的字段、组件、服务，或 `http` / `secret` 和 `services` 对不齐，界面只显示「清单无效」。
 - 域名不能是 IP，不能带协议、端口、路径、通配符。
 - `list`、`input`、`toggle` 现在只显示成一行文本，没有点击、输入和对应的 `ui` 函数。不要用。
@@ -137,13 +137,13 @@ timer.every(300, refresh)
 
 - [ ] 只声明了脚本真正调用的服务
 - [ ] 没有 `version` 和其它未列出的字段
-- [ ] `id` 不以 `lanwork.` 开头
+- [ ] `id` 不以 `lanwork.` 开头，大小写不论
 - [ ] 有 `http` 就有 `domains`，有 `secret` 就至少有一项 `id` 和 `label`，两边都和 `services` 对齐
 - [ ] 域名是纯主机名
 - [ ] 组件只用 `text`、`button`、`timer`、`progress`，id 不重复
 - [ ] 计时组件在需要倒数时调用了 `ui.timer_running`
 - [ ] `timer.every` 的秒数大于或等于 30
-- [ ] 请求是 `https` GET，主机名写在 `domains` 里，密钥只按 id 引用
+- [ ] 请求是 `https` GET，主机名写在 `domains` 里，密钥只按 id 引用。明文 `http` 不发，也不跟随重定向
 - [ ] 没有 `print`、`require`、`io`、`os`、协程
 - [ ] 文件夹根上有 `manifest.toml` 和入口脚本；zip 根上有清单，或只有一个顶层文件夹
 - [ ] 告诉了用户从「应用」页导入，以及密钥要在「填写密钥」里填
