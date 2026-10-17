@@ -253,7 +253,7 @@ cargo run -p hotcorner -- probe --out probe.json
 | [架构](docs/architecture.md) | Slint、Rust、数据与性能测量。技术验证结论见实现状态。它描述目标，不是现有代码的地图 |
 | [实现状态](docs/roadmap.md) | 哪些界面已有代码、哪些没有，以及技术验证记录 |
 | [外部 AI](docs/external-ai.md) | 本机 MCP。排在 v0.4.0 之后，还没有代码 |
-| [应用页与悬浮窗工具](docs/tools.md) | 悬浮窗工具。原先的扩展页已并入。排在 v0.4.0 之后。应用页有代码，未在 Windows 上验收。导入、卸载、更新、查看权限和填写密钥有代码，未在 Windows 上验收。宿主在 `crates/toolhost`。窗口验证见 `spikes/toolhost`。技术验证「工具宿主」已通过，凭据管理器界面待用户用 `--toolhost-cred` 确认。开发说明见 [docs/tool-dev-guide.md](docs/tool-dev-guide.md) |
+| [应用页与悬浮窗工具](docs/tools.md) | 悬浮窗工具。原先的扩展页已并入。排在 v0.4.0 之后。应用页有代码，未在 Windows 上验收。导入、卸载、更新、查看权限和填写密钥有代码，未在 Windows 上验收。宿主在 `crates/toolhost`。窗口验证见 `spikes/toolhost`。技术验证「工具宿主」已通过，凭据管理器界面待用户用 `--toolhost-cred` 确认。开发说明见 [docs/tool-dev-guide.md](docs/tool-dev-guide.md)。给 AI 写工具用的技能在 [skills/lanwork-tool/SKILL.md](skills/lanwork-tool/SKILL.md) |
 | [测量模板](docs/measurements/TEMPLATE.md) | 空白模板，不是实测。技术验证结论在实现状态 |
 
 <a id="credits"></a>

@@ -850,6 +850,31 @@ end
 }
 
 #[test]
+fn countdown_example_counts_down_after_the_button() {
+    let dir = Scratch::new("countdown");
+    crate::guide::write_example(&dir, "countdown").unwrap();
+    let session = open_at(&dir, Options::default()).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "status"), "准备");
+    let clock = session.widget("clock").unwrap();
+    assert_eq!(clock.seconds, 0);
+    assert!(!clock.running);
+    session.click("start");
+    let clock = session.widget("clock").unwrap();
+    assert!(clock.running);
+    assert_eq!(clock.seconds, 60);
+    assert_eq!(caption(&session, "status"), "倒数");
+    session.advance(59.0);
+    assert_eq!(session.widget("clock").unwrap().seconds, 1);
+    assert_eq!(caption(&session, "status"), "倒数");
+    session.advance(1.0);
+    assert_eq!(caption(&session, "status"), "到了");
+    let clock = session.widget("clock").unwrap();
+    assert_eq!(clock.seconds, 0);
+    assert!(!clock.running);
+}
+
+#[test]
 fn response_echo_is_redacted_before_lua() {
     let secret = "a b/c";
     let dir = Scratch::new("echo");

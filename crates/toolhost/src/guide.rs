@@ -36,9 +36,14 @@ pub fn quota() -> Result<(String, String), String> {
     example("## 示例：额度")
 }
 
+pub fn countdown() -> Result<(String, String), String> {
+    example("## 示例：倒计时")
+}
+
 pub fn write_example(dir: &std::path::Path, which: &str) -> Result<(), String> {
     let (manifest, script) = match which {
         "quota" => quota()?,
+        "countdown" => countdown()?,
         _ => return Err(format!("没有这个示例：{which}")),
     };
     crate::manifest::materialize(dir, &manifest, &script)
