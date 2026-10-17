@@ -35,7 +35,7 @@ use crate::keycap;
 use crate::panel::with_settings;
 use crate::platform::HotkeyControl;
 use crate::registry::apply_startup;
-use crate::{Panel, SettingsBackup, SettingsHiddenApp, SettingsPageData};
+use crate::{ImportLine, Panel, SettingsBackup, SettingsHiddenApp, SettingsPageData};
 
 const CAPTURE_UNAVAILABLE: &str = "热键录入不可用";
 
@@ -61,9 +61,13 @@ pub(crate) struct SettingsPage {
     field_reset: Cell<i32>,
     /// 迁移、备份、导出或导入在后台线程里跑。完成之前对应按钮不可再点。
     busy: Cell<bool>,
-    /// 已经校验过、还等用户确认的导入包。
+    /// 已经校验过、还等用户确认的导入包或备份包。
     pending_import: RefCell<Option<PathBuf>>,
     import_overview: RefCell<String>,
+    /// 工具名称和权限句子。`bool` 为真是名称。
+    import_lines: RefCell<Vec<(String, bool)>>,
+    /// 与界面上的备份行同一顺序，供「恢复」按序号打开。
+    backup_paths: RefCell<Vec<PathBuf>>,
     /// 恢复或迁移前关掉的工具窗口。导入成功后不重开；迁移后从新目录重开。
     held_windows: RefCell<Vec<String>>,
 }
@@ -111,6 +115,9 @@ impl SettingsPage {
         data.on_import_clicked(|| with_settings(SettingsPage::import_clicked));
         data.on_confirm_import(|| with_settings(SettingsPage::confirm_import));
         data.on_cancel_import(|| with_settings(SettingsPage::cancel_import));
+        data.on_restore_backup(|index| {
+            with_settings(move |page, ui| page.restore_backup(ui, index));
+        });
         data.on_update_clicked(crate::update::on_clicked);
         crate::update::push_into(ui);
         data.on_restore_hidden(|index| {
@@ -134,6 +141,8 @@ impl SettingsPage {
             busy: Cell::new(false),
             pending_import: RefCell::new(None),
             import_overview: RefCell::new(String::new()),
+            import_lines: RefCell::new(Vec::new()),
+            backup_paths: RefCell::new(Vec::new()),
             held_windows: RefCell::new(Vec::new()),
         };
         page.push(ui);
@@ -316,6 +325,16 @@ impl SettingsPage {
         let confirming = self.pending_import.borrow().is_some();
         data.set_import_confirming(confirming);
         data.set_import_overview(self.import_overview.borrow().as_str().into());
+        let lines: Vec<ImportLine> = self
+            .import_lines
+            .borrow()
+            .iter()
+            .map(|(text, heading)| ImportLine {
+                text: text.as_str().into(),
+                heading: *heading,
+            })
+            .collect();
+        data.set_import_lines(ModelRc::new(VecModel::from(lines)));
         data.set_import_action(if confirming { "确认导入" } else { "导入" }.into());
         data.set_import_enabled(true);
     }
@@ -346,12 +365,16 @@ impl SettingsPage {
                 Vec::new()
             }
         };
-        let rows: Vec<SettingsBackup> = listed
-            .iter()
-            .map(|item| SettingsBackup {
+        let dir = self.store.backups_dir();
+        let mut paths = Vec::with_capacity(listed.len());
+        let mut rows = Vec::with_capacity(listed.len());
+        for item in &listed {
+            paths.push(item.package_path(&dir));
+            rows.push(SettingsBackup {
                 label: item.label().into(),
-            })
-            .collect();
+            });
+        }
+        *self.backup_paths.borrow_mut() = paths;
         ui.global::<SettingsPageData>()
             .set_backups(ModelRc::new(VecModel::from(rows)));
     }
@@ -444,10 +467,16 @@ impl SettingsPage {
         let spawned = std::thread::Builder::new()
             .name("lanwork-import".to_owned())
             .spawn(move || {
-                let result = BackupCommands::open(store)
-                    .inspect(&path)
-                    .map(|overview| overview_text(&overview))
-                    .map_err(|err| err.to_string());
+                let result = BackupCommands::open(store).inspect(&path).map(|preview| {
+                    let lines: Vec<(String, bool)> = preview
+                        .tools
+                        .iter()
+                        .flat_map(|tool| tool.confirmation_lines())
+                        .map(|line| (line.text, line.heading))
+                        .collect();
+                    (overview_text(&preview.overview), lines)
+                });
+                let result = result.map_err(|err| err.to_string());
                 let _ = slint::invoke_from_event_loop(move || {
                     with_settings(move |page, ui| page.finish_inspect(ui, path, result));
                 });
@@ -458,21 +487,46 @@ impl SettingsPage {
         }
     }
 
-    fn finish_inspect(&mut self, ui: &Panel, path: PathBuf, result: Result<String, String>) {
+    fn finish_inspect(
+        &mut self,
+        ui: &Panel,
+        path: PathBuf,
+        result: Result<(String, Vec<(String, bool)>), String>,
+    ) {
         self.busy.set(false);
         match result {
-            Ok(overview) => {
+            Ok((overview, lines)) => {
                 *self.pending_import.borrow_mut() = Some(path);
                 *self.import_overview.borrow_mut() = overview;
+                *self.import_lines.borrow_mut() = lines;
                 ui.set_error(self.hotkey_error().unwrap_or_default().into());
                 self.push(ui);
             }
             Err(message) => {
-                self.pending_import.borrow_mut().take();
-                self.import_overview.borrow_mut().clear();
+                self.clear_import();
                 self.finish(ui, Err(message));
             }
         }
+    }
+
+    fn restore_backup(&mut self, ui: &Panel, index: i32) {
+        if self.busy.get() || self.pending_import.borrow().is_some() {
+            return;
+        }
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        let Some(path) = self.backup_paths.borrow().get(index).cloned() else {
+            return;
+        };
+        self.cancel_recording(ui);
+        self.begin_inspect(ui, path);
+    }
+
+    fn clear_import(&self) {
+        self.pending_import.borrow_mut().take();
+        self.import_overview.borrow_mut().clear();
+        self.import_lines.borrow_mut().clear();
     }
 
     fn confirm_import(&mut self, ui: &Panel) {
@@ -524,8 +578,7 @@ impl SettingsPage {
             return;
         }
         self.settle_import_windows(true);
-        self.pending_import.borrow_mut().take();
-        self.import_overview.borrow_mut().clear();
+        self.clear_import();
         self.store.log_info("设置页：导入完成");
         let applied = self.apply_imported_runtime();
         let result = match (applied, catalog_error) {
@@ -546,8 +599,7 @@ impl SettingsPage {
         if self.busy.get() {
             return;
         }
-        self.pending_import.borrow_mut().take();
-        self.import_overview.borrow_mut().clear();
+        self.clear_import();
         ui.set_error(self.hotkey_error().unwrap_or_default().into());
         self.push(ui);
     }

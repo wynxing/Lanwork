@@ -226,6 +226,38 @@ pub fn recheck_installed(
     dir_name: &str,
     files: &[(String, Vec<u8>)],
 ) -> Result<RecheckedTool, PackageError> {
+    let staged = stage_copy(dir_name, files)?;
+    let grant = Grant::from_manifest(&staged.manifest);
+    Ok(RecheckedTool {
+        id: staged.manifest.id.clone(),
+        name: staged.manifest.name.clone(),
+        description: staged.manifest.description.clone(),
+        files: staged.files,
+        grant: encode_grant(&grant),
+    })
+}
+
+/// 确认页用的名称和权限句子。校验与 [`recheck_installed`] 相同，句子来自清单。
+///
+/// 不读 `grant.json`，也不写盘。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyPreview {
+    pub name: String,
+    pub lines: Vec<String>,
+}
+
+pub fn preview_copy(
+    dir_name: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<CopyPreview, PackageError> {
+    let staged = stage_copy(dir_name, files)?;
+    Ok(CopyPreview {
+        name: staged.manifest.name.clone(),
+        lines: permission_lines(&staged.manifest),
+    })
+}
+
+fn stage_copy(dir_name: &str, files: &[(String, Vec<u8>)]) -> Result<StagedPackage, PackageError> {
     if !crate::id::valid_id(dir_name) {
         return Err(PackageError::invalid(if dir_name.starts_with('.') {
             "id 不能以 . 开头"
@@ -263,14 +295,7 @@ pub fn recheck_installed(
     if staged.manifest.id != dir_name {
         return Err(PackageError::invalid("id 与目录不一致"));
     }
-    let grant = Grant::from_manifest(&staged.manifest);
-    Ok(RecheckedTool {
-        id: staged.manifest.id.clone(),
-        name: staged.manifest.name.clone(),
-        description: staged.manifest.description.clone(),
-        files: staged.files,
-        grant: encode_grant(&grant),
-    })
+    Ok(staged)
 }
 
 /// 根上有清单就用根。否则只能有一个顶层文件夹，清单在里面。

@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use super::error::BackupError;
-use super::package::{self, PackageOverview};
+use super::package::{self, PackageOverview, PackagePreview};
 use super::tools;
 use super::zipstore::{self, StoredFile};
 use crate::capture::CivilDate;
@@ -33,6 +33,8 @@ pub struct ListedBackup {
     pub at_ms: i64,
     /// 自动备份文件名里的公历日。手动备份没有。
     pub day: Option<CivilDate>,
+    /// `backups/` 里的文件名，用来打开这一份再走导入确认。
+    pub file_name: String,
 }
 
 impl ListedBackup {
@@ -48,6 +50,11 @@ impl ListedBackup {
             },
             BackupKind::Manual => format!("手动 {}", format_utc_minute(self.at_ms)),
         }
+    }
+
+    #[must_use]
+    pub fn package_path(&self, backups_dir: &Path) -> PathBuf {
+        backups_dir.join(&self.file_name)
     }
 }
 
@@ -109,10 +116,14 @@ impl BackupService {
             .with_write_lock(|| list_retained_holding(&self.store))
     }
 
-    /// 校验包并返回概览，不改当前数据。
-    pub fn inspect(&self, package: &Path) -> Result<PackageOverview, BackupError> {
+    /// 校验包并返回概览和工具权限，不改当前数据。
+    pub fn inspect(&self, package: &Path) -> Result<PackagePreview, BackupError> {
         let files = read_zip(package)?;
-        package::inspect_files(&files)
+        let overview = package::inspect_files(&files)?;
+        Ok(PackagePreview {
+            overview,
+            tools: tools::preview_copies(&files),
+        })
     }
 
     /// 校验通过后先做导入备份，再替换。校验失败时当前数据不变。
@@ -401,6 +412,7 @@ fn listed_from_name(name: &str) -> Option<ListedBackup> {
             kind: BackupKind::Manual,
             at_ms,
             day: None,
+            file_name: name.to_owned(),
         });
     }
     let rest = stem.strip_prefix("auto-")?;
@@ -409,6 +421,7 @@ fn listed_from_name(name: &str) -> Option<ListedBackup> {
         kind: BackupKind::Auto,
         at_ms,
         day: parse_day(day_text),
+        file_name: name.to_owned(),
     })
 }
 
@@ -1204,6 +1217,197 @@ text = "没有数据"
             .import(&manifest_only, 15)
             .unwrap();
         assert!(capture.ids().is_empty(), "{:?}", capture.ids());
+    }
+
+    #[test]
+    fn inspect_lists_permission_lines_and_writes_nothing_until_import() {
+        let (temp, store) = store();
+        let data = store.data_dir();
+        std::fs::create_dir_all(data.join("notes")).unwrap();
+        std::fs::write(
+            data.join("notes/n.json"),
+            br#"{"schemaVersion":1,"body":"kept-note"}"#,
+        )
+        .unwrap();
+        let bad = data.join("tools/example.bad");
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::write(bad.join("keep.txt"), b"kept-bad-local").unwrap();
+        let manifest = rich_manifest();
+        let package = temp.path().join("preview.zip");
+        std::fs::write(
+            &package,
+            zipstore::write_stored(&preview_files(&manifest)).unwrap(),
+        )
+        .unwrap();
+
+        let before = std::fs::read(data.join("notes/n.json")).unwrap();
+        let preview = BackupService::open(store.clone())
+            .inspect(&package)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(data.join("notes/n.json")).unwrap(),
+            before,
+            "没确认就不写入"
+        );
+        assert!(store.read_import_pending().unwrap().is_none());
+        assert!(!data.join("tools/example.quota").exists());
+        assert_eq!(
+            std::fs::read(bad.join("keep.txt")).unwrap(),
+            b"kept-bad-local"
+        );
+        assert!(
+            preview
+                .tools
+                .iter()
+                .all(|tool| !tool.name.contains(".incoming"))
+        );
+
+        let loaded = lanwork_toolhost::load_dir(&materialize_tool(temp.path(), &manifest)).unwrap();
+        let expected = lanwork_toolhost::permission_lines(&loaded);
+        assert!(expected.iter().any(|line| line == "访问 api.example.com"));
+        assert!(expected.iter().any(|line| line == "访问 cdn.example.com"));
+        assert!(expected.iter().any(|line| line == "使用你填写的 令牌"));
+        assert!(expected.iter().any(|line| line == "使用你填写的 备用令牌"));
+        assert!(expected.iter().any(|line| line == "发送通知"));
+        assert_eq!(preview.tools.len(), 2);
+        assert_eq!(preview.tools[0].name, "example.bad");
+        let skipped = preview.tools[0].confirmation_lines();
+        assert_eq!(skipped[0].text, "example.bad");
+        assert!(skipped[0].heading);
+        assert_eq!(skipped[1].text, "不会恢复：清单无法解析");
+        assert!(preview.tools[0].permissions.is_empty());
+        assert_eq!(preview.tools[1].name, "API 额度");
+        assert_eq!(preview.tools[1].permissions, expected);
+        let shown: Vec<String> = preview.tools[1]
+            .confirmation_lines()
+            .into_iter()
+            .filter(|line| !line.heading)
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(shown, expected);
+        let joined = shown.join("\n");
+        assert!(!joined.contains("evil.example"));
+        assert!(!joined.contains("后门"));
+
+        BackupService::open(store.clone())
+            .import(&package, 21)
+            .unwrap();
+        assert!(data.join("tools/example.quota/manifest.toml").is_file());
+        let grant = std::fs::read_to_string(data.join("tools/example.quota/grant.json")).unwrap();
+        assert!(grant.contains("api.example.com"));
+        assert!(grant.contains("令牌"));
+        assert!(!grant.contains("evil.example"));
+        assert!(!grant.contains("后门"));
+        assert!(!grant.contains("notify-from-grant"));
+        assert_eq!(
+            std::fs::read(bad.join("keep.txt")).unwrap(),
+            b"kept-bad-local"
+        );
+        assert!(!data.join("tools/.incoming-example.quota").exists());
+    }
+
+    #[test]
+    fn retained_backups_preview_the_same_lines_and_wait_for_import() {
+        let (temp, store) = store();
+        let data = store.data_dir();
+        let manifest = rich_manifest();
+        let tool = materialize_tool(&data.join("tools/example.quota"), &manifest);
+        std::fs::write(tool.join("main.lua"), b"function on_load() end\n").unwrap();
+        let manual = BackupService::open(store.clone())
+            .backup_manual(30)
+            .unwrap();
+        let auto = match BackupService::open(store.clone())
+            .backup_on_launch(
+                crate::capture::CivilDate::try_from_ymd(2026, 10, 16).unwrap(),
+                31,
+            )
+            .unwrap()
+        {
+            LaunchBackup::Created { path } => path,
+            LaunchBackup::AlreadyDone => panic!("这一天还没有自动备份"),
+        };
+        std::fs::remove_dir_all(data.join("tools")).unwrap();
+        let loaded = lanwork_toolhost::load_dir(&materialize_tool(temp.path(), &manifest)).unwrap();
+        let expected = lanwork_toolhost::permission_lines(&loaded);
+        for path in [&manual, &auto] {
+            let preview = BackupService::open(store.clone()).inspect(path).unwrap();
+            assert!(!data.join("tools").exists(), "没确认就不写入");
+            assert_eq!(preview.tools.len(), 1);
+            assert_eq!(preview.tools[0].permissions, expected);
+            assert!(preview.tools[0].skip_reason.is_none());
+        }
+        BackupService::open(store.clone())
+            .import(&manual, 32)
+            .unwrap();
+        assert!(data.join("tools/example.quota/manifest.toml").is_file());
+        let grant = std::fs::read_to_string(data.join("tools/example.quota/grant.json")).unwrap();
+        assert!(grant.contains("api.example.com"));
+        assert!(!grant.contains("evil.example"));
+    }
+
+    fn rich_manifest() -> String {
+        "\
+id = \"example.quota\"
+name = \"API 额度\"
+description = \"剩余额度\"
+entry = \"main.lua\"
+services = [\"http\", \"notify\", \"secret\", \"storage\", \"timer\", \"todo.complete\", \"todo.read\"]
+
+[http]
+domains = [\"api.example.com\", \"cdn.example.com\"]
+
+[[secret]]
+id = \"token\"
+label = \"令牌\"
+
+[[secret]]
+id = \"spare\"
+label = \"备用令牌\"
+
+[[component]]
+id = \"summary\"
+component = \"text\"
+text = \"没有数据\"
+"
+        .to_string()
+    }
+
+    fn preview_files(manifest: &str) -> Vec<super::StoredFile> {
+        vec![
+            super::StoredFile {
+                name: "manifest.json".to_owned(),
+                bytes: package_manifest(0),
+            },
+            super::StoredFile {
+                name: "tools/example.bad/manifest.toml".to_owned(),
+                bytes: b"not-a-manifest".to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/manifest.toml".to_owned(),
+                bytes: manifest.as_bytes().to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/main.lua".to_owned(),
+                bytes: b"function on_load() end\n".to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/example.quota/grant.json".to_owned(),
+                bytes: r#"{"schemaVersion":1,"services":["notify"],"domains":["evil.example"],"secrets":[{"id":"x","label":"后门"}],"marker":"notify-from-grant"}"#
+                    .as_bytes()
+                    .to_vec(),
+            },
+            super::StoredFile {
+                name: "tools/.incoming-example.quota/leak.txt".to_owned(),
+                bytes: b"scratch".to_vec(),
+            },
+        ]
+    }
+
+    fn materialize_tool(dir: &Path, manifest: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+        std::fs::write(dir.join("main.lua"), b"function on_load() end\n").unwrap();
+        dir.to_path_buf()
     }
 
     fn quota_files(description: &str, entry: &str) -> Vec<super::StoredFile> {

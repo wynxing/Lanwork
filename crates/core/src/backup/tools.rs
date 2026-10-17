@@ -95,6 +95,87 @@ pub(crate) fn export_copies(store: &Store, groups: BTreeMap<String, CopyGroup>) 
     out
 }
 
+/// 恢复确认里的一个工具。句子来自清单，不来自包里的 `grant.json`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreTool {
+    pub name: String,
+    pub permissions: Vec<String>,
+    /// 不会恢复时的原因。会恢复则没有。
+    pub skip_reason: Option<String>,
+}
+
+/// 确认框里的一行。`heading` 为真是工具名称，否则是权限句子或「不会恢复」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmationLine {
+    pub text: String,
+    pub heading: bool,
+}
+
+impl RestoreTool {
+    #[must_use]
+    pub fn confirmation_lines(&self) -> Vec<ConfirmationLine> {
+        let mut lines = vec![ConfirmationLine {
+            text: self.name.clone(),
+            heading: true,
+        }];
+        if let Some(reason) = &self.skip_reason {
+            lines.push(ConfirmationLine {
+                text: format!("不会恢复：{reason}"),
+                heading: false,
+            });
+        } else {
+            for line in &self.permissions {
+                lines.push(ConfirmationLine {
+                    text: line.clone(),
+                    heading: false,
+                });
+            }
+        }
+        lines
+    }
+}
+
+/// 按导入时的分组看每个工具会恢复成什么。不写盘，也不记日志。
+///
+/// 以 `.` 开头的临时目录不列进来：它们不会作为工具留下。顺序按 id。
+pub(crate) fn preview_copies(files: &[StoredFile]) -> Vec<RestoreTool> {
+    let mut groups: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+    for file in files {
+        if let Some((id, rel)) = split_copy(&file.name) {
+            groups
+                .entry(id.to_owned())
+                .or_default()
+                .push((rel.to_owned(), file.bytes.clone()));
+        }
+    }
+    let mut out = Vec::new();
+    for (id, group) in groups {
+        if id.starts_with('.') {
+            continue;
+        }
+        match lanwork_toolhost::preview_copy(&id, &group) {
+            Ok(preview) => out.push(RestoreTool {
+                name: preview.name,
+                permissions: preview.lines,
+                skip_reason: None,
+            }),
+            Err(err) => {
+                let reason = clip(err.detail());
+                out.push(RestoreTool {
+                    name: show_id(&id),
+                    permissions: Vec::new(),
+                    skip_reason: Some(if reason.is_empty() {
+                        "清单无效".to_owned()
+                    } else {
+                        reason
+                    }),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// 读入一组副本。
 ///
 /// 校验失败的 id 放进 `skipped`，调用方保留本机副本和侧车。以 `.` 开头的临时目录不保留。

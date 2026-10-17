@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use super::error::BackupError;
-use super::tools::{self, CopyGroup};
+use super::tools::{self, CopyGroup, RestoreTool};
 use super::zipstore::StoredFile;
 use crate::storage::{self, DocumentId, Store};
 
@@ -113,6 +113,15 @@ pub(crate) fn collect_raw(store: &Store) -> Result<Vec<StoredFile>, BackupError>
     }
     files.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(files)
+}
+
+/// 导入或备份恢复确认前的结果。数量在 [`PackageOverview`]，工具在 `tools`。
+///
+/// 生成这份结果不写盘。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackagePreview {
+    pub overview: PackageOverview,
+    pub tools: Vec<RestoreTool>,
 }
 
 /// 导入确认前给设置页看的概览。只有数量和有没有配置、应用名单。
