@@ -762,6 +762,8 @@ services = ["secret", "storage"]
 [[secret]]
 id = "api_key"
 label = "API 密钥"
+header = "Authorization"
+prefix = "Bearer "
 
 [[component]]
 id = "summary"

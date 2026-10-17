@@ -1,0 +1,26 @@
+id = "example.chatgpt-usage"
+name = "ChatGPT 用量"
+description = "本机 ChatGPT 登录的 5 小时和每周用量"
+entry = "main.lua"
+services = ["timer"]
+
+[[usage]]
+source = "chatgpt"
+
+[[component]]
+id = "five"
+component = "text"
+text = "没有数据"
+
+[[component]]
+id = "five_bar"
+component = "progress"
+
+[[component]]
+id = "week"
+component = "text"
+text = ""
+
+[[component]]
+id = "week_bar"
+component = "progress"

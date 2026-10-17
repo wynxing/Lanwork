@@ -24,7 +24,7 @@ local function refresh()
   http.request({
     method = "GET",
     url = "https://api.example.com/v1/quota",
-    secret = { id = "api_key", header = "Authorization", prefix = "Bearer " },
+    secret = { id = "api_key" },
   }, function(result)
     if not result.ok then
       show_error(result.error or "额度读取失败")

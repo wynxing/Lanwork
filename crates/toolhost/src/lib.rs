@@ -15,6 +15,7 @@ mod manifest;
 mod package;
 mod pattern;
 mod secret;
+mod usage;
 
 pub mod probe;
 
@@ -37,6 +38,7 @@ pub use package::{
 pub use secret::{
     MemorySecretStore, SecretStore, delete_product_secrets, product_target_name, spike_target_name,
 };
+pub use usage::{UsageRoots, UsageSource};
 
 #[cfg(windows)]
 pub use secret::{ProductCredentialStore, WindowsCredentialStore};

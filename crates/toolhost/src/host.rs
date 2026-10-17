@@ -36,6 +36,10 @@ use crate::http::{
 };
 use crate::manifest::{Manifest, WidgetDecl, WidgetKind, load_dir};
 use crate::secret::SecretStore;
+use crate::usage::{
+    UsageError, UsageRoots, UsageSnapshot, UsageSource, cached_usage, interpret_usage,
+    prepare_usage, store_usage,
+};
 
 const CALLBACK_MS: u64 = 1000;
 const HOOK_INSTRUCTIONS: u32 = 4_096;
@@ -54,7 +58,9 @@ const STORAGE_VALUE_MAX: usize = 256 * 1024;
 const STORAGE_COUNT_MAX: usize = 256;
 /// 回调里再发请求会再等一轮。不停地一轮接一轮，规格没有写。最多 8 轮，避免宿主停不下来。
 const HTTP_DRAIN_ROUNDS: u32 = 8;
-const SERVICE_NAMES: &[&str] = &["timer", "notify", "storage", "todo", "http", "secret"];
+const SERVICE_NAMES: &[&str] = &[
+    "timer", "notify", "storage", "todo", "http", "secret", "usage",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TodoItem {
@@ -129,6 +135,8 @@ pub struct Options {
     /// 把完成交给待办存储。`Ok` 表示完成或已经完成。`Err` 的文字原样返回给脚本。
     /// 找不到时调用方应返回「找不到待办」。没有这个回调时只改注入的列表。
     pub complete_todo: Option<TodoComplete>,
+    /// 本机登录文件所在的目录。空着则按 `USERPROFILE` 和对应的环境变量现查。
+    pub usage_roots: Option<UsageRoots>,
 }
 
 impl Default for Options {
@@ -142,6 +150,7 @@ impl Default for Options {
             storage: BTreeMap::new(),
             persist_storage: None,
             complete_todo: None,
+            usage_roots: None,
         }
     }
 }
@@ -222,13 +231,29 @@ struct Inner {
     inflight: Vec<Inflight>,
     persist_storage: Option<StoragePersist>,
     complete_todo: Option<TodoComplete>,
+    usage_roots: Option<UsageRoots>,
+}
+
+enum FlightKind {
+    Http {
+        secrets: Vec<String>,
+        header_values: Vec<String>,
+    },
+    Usage {
+        source: UsageSource,
+        remember: bool,
+    },
+}
+
+enum FlightOutcome {
+    Http(Result<crate::http::HttpResponse, crate::http::TransportError>),
+    Usage(Result<UsageSnapshot, UsageError>),
 }
 
 struct Inflight {
-    rx: mpsc::Receiver<Result<crate::http::HttpResponse, crate::http::TransportError>>,
-    callback: RegistryKey,
-    secrets: Vec<String>,
-    header_values: Vec<String>,
+    rx: mpsc::Receiver<FlightOutcome>,
+    callbacks: Vec<RegistryKey>,
+    kind: FlightKind,
 }
 
 pub struct Session {
@@ -238,19 +263,25 @@ pub struct Session {
     http_budget: Duration,
 }
 
+fn manifest_open_error(reason: String) -> String {
+    if reason.starts_with("读不到") || reason.starts_with("工具文件夹") {
+        reason
+    } else if reason.contains("入口脚本") || (reason.contains("UTF-8") && reason.contains("脚本"))
+    {
+        format!("脚本错误：{reason}")
+    } else {
+        format!("清单无效：{reason}")
+    }
+}
+
 impl Session {
     pub fn open(dir: &std::path::Path, options: Options) -> Result<Self, String> {
-        let manifest = load_dir(dir).map_err(|reason| {
-            if reason.starts_with("读不到") || reason.starts_with("工具文件夹") {
-                reason
-            } else if reason.contains("入口脚本")
-                || (reason.contains("UTF-8") && reason.contains("脚本"))
-            {
-                format!("脚本错误：{reason}")
-            } else {
-                format!("清单无效：{reason}")
-            }
-        })?;
+        let manifest = load_dir(dir).map_err(manifest_open_error)?;
+        Self::open_manifest(manifest, options)
+    }
+
+    /// 用已经读过、并且已经和授权对过的清单打开。不再读一次磁盘。
+    pub fn open_manifest(manifest: Manifest, options: Options) -> Result<Self, String> {
         let limit = Arc::new(Limit {
             start: Instant::now(),
             deadline_ms: AtomicU64::new(0),
@@ -299,6 +330,7 @@ impl Session {
             inflight: Vec::new(),
             persist_storage: options.persist_storage,
             complete_todo: options.complete_todo,
+            usage_roots: options.usage_roots,
         }));
         lua.set_app_data(Rc::clone(&inner));
         bind(&lua, Rc::clone(&inner))?;
@@ -532,22 +564,40 @@ impl Session {
         }
     }
 
-    fn settle_http(
+    fn settle_http(&self, item: Inflight, response: Result<FlightOutcome, mpsc::RecvTimeoutError>) {
+        match item.kind {
+            FlightKind::Http {
+                secrets,
+                header_values,
+            } => self.settle_tool_http(item.callbacks, secrets, header_values, response),
+            FlightKind::Usage { source, remember } => {
+                self.settle_usage(item.callbacks, source, remember, response);
+            }
+        }
+    }
+
+    fn settle_tool_http(
         &self,
-        item: Inflight,
-        response: Result<
-            Result<crate::http::HttpResponse, crate::http::TransportError>,
-            mpsc::RecvTimeoutError,
-        >,
+        callbacks: Vec<RegistryKey>,
+        secrets: Vec<String>,
+        header_values: Vec<String>,
+        response: Result<FlightOutcome, mpsc::RecvTimeoutError>,
     ) {
-        let callback = self.lua.registry_value::<Function>(&item.callback).ok();
-        self.lua.remove_registry_value(item.callback).ok();
+        let Some(key) = callbacks.into_iter().next() else {
+            return;
+        };
+        let callback = self.lua.registry_value::<Function>(&key).ok();
+        self.lua.remove_registry_value(key).ok();
         let Some(callback) = callback else {
             return;
         };
-        let (ok, status, body, error) = match response {
-            Ok(Ok(response)) => {
-                if response_leaks(&response, &item.secrets, &item.header_values) {
+        let http = match response {
+            Ok(FlightOutcome::Http(result)) => result,
+            Ok(FlightOutcome::Usage(_)) | Err(_) => Err(crate::http::TransportError),
+        };
+        let (ok, status, body, error) = match http {
+            Ok(response) => {
+                if response_leaks(&response, &secrets, &header_values) {
                     let text = HttpDeny::RequestFailed.text().to_string();
                     self.inner.borrow_mut().note(&text);
                     (false, Some(response.status), String::new(), text)
@@ -564,7 +614,7 @@ impl Session {
                     (ok, Some(response.status), response.body, error)
                 }
             }
-            Ok(Err(_)) | Err(_) => {
+            Err(_) => {
                 let text = HttpDeny::RequestFailed.text().to_string();
                 self.inner.borrow_mut().note(&text);
                 (false, None, String::new(), text)
@@ -574,6 +624,34 @@ impl Session {
             || deliver(&self.lua, &callback, ok, status, &body, &error),
             false,
         );
+    }
+
+    fn settle_usage(
+        &self,
+        callbacks: Vec<RegistryKey>,
+        source: UsageSource,
+        remember: bool,
+        response: Result<FlightOutcome, mpsc::RecvTimeoutError>,
+    ) {
+        let outcome = match response {
+            Ok(FlightOutcome::Usage(result)) => result,
+            Ok(FlightOutcome::Http(_)) | Err(_) => Err(UsageError::Failed),
+        };
+        if remember {
+            store_usage(source, outcome.clone());
+        }
+        if let Err(err) = &outcome {
+            self.inner.borrow_mut().note(err.text());
+        }
+        for key in callbacks {
+            let callback = self.lua.registry_value::<Function>(&key).ok();
+            self.lua.remove_registry_value(key).ok();
+            let Some(callback) = callback else {
+                continue;
+            };
+            let outcome = outcome.clone();
+            self.run_lua(|| deliver_usage(&self.lua, &callback, &outcome), false);
+        }
     }
 
     pub fn take_popped(&self) -> Vec<Notification> {
@@ -1086,6 +1164,9 @@ fn bind(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
             .set("secret", lua.create_table().map_err(|err| err.to_string())?)
             .map_err(|err| err.to_string())?;
     }
+    if !inner.borrow().manifest.usage.is_empty() {
+        bind_usage(lua, inner)?;
+    }
     Ok(())
 }
 
@@ -1490,7 +1571,7 @@ fn http_request(
             thread::Builder::new()
                 .name("toolhost-http".to_string())
                 .spawn(move || {
-                    let _ = tx.send(transport.send(&outgoing));
+                    let _ = tx.send(FlightOutcome::Http(transport.send(&outgoing)));
                 })
                 .map_err(|_| mlua::Error::runtime("请求失败"))?;
             let key = lua.create_registry_value(callback)?;
@@ -1498,13 +1579,186 @@ fn http_request(
             inner.http_sends += 1;
             inner.inflight.push(Inflight {
                 rx,
-                callback: key,
-                secrets,
-                header_values,
+                callbacks: vec![key],
+                kind: FlightKind::Http {
+                    secrets,
+                    header_values,
+                },
             });
             Ok(())
         }
     }
+}
+
+fn bind_usage(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
+    let usage = lua.create_table().map_err(|err| err.to_string())?;
+    usage
+        .set(
+            "fetch",
+            lua.create_function(move |lua, (name, callback): (String, Function)| {
+                usage_fetch(lua, &inner, &name, callback)
+            })
+            .map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| err.to_string())?;
+    lua.globals()
+        .set("usage", usage)
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn usage_fetch(
+    lua: &Lua,
+    inner: &Rc<RefCell<Inner>>,
+    name: &str,
+    callback: Function,
+) -> mlua::Result<()> {
+    let Some(source) = UsageSource::parse(name) else {
+        inner.borrow_mut().note(UsageError::Invalid.text());
+        return deliver_usage(lua, &callback, &Err(UsageError::Invalid));
+    };
+    if !inner.borrow().manifest.usage.contains(&source) {
+        inner.borrow_mut().note(UsageError::Unauthorized.text());
+        return deliver_usage(lua, &callback, &Err(UsageError::Unauthorized));
+    }
+    let key = lua.create_registry_value(callback)?;
+    let key = match inner.borrow_mut().join_usage(source, key) {
+        Ok(()) => return Ok(()),
+        Err(key) => key,
+    };
+    if let Some(cached) = cached_usage(source) {
+        return queue_usage(inner, source, key, cached, false);
+    }
+    let roots = inner
+        .borrow()
+        .usage_roots
+        .clone()
+        .unwrap_or_else(UsageRoots::from_env);
+    match prepare_usage(source, &roots, unix_now_ms()) {
+        Ok(call) => spawn_usage(inner, source, key, call),
+        Err(err) => queue_usage(inner, source, key, Err(err), true),
+    }
+}
+
+fn queue_usage(
+    inner: &Rc<RefCell<Inner>>,
+    source: UsageSource,
+    key: RegistryKey,
+    outcome: Result<UsageSnapshot, UsageError>,
+    remember: bool,
+) -> mlua::Result<()> {
+    let (tx, rx) = mpsc::channel();
+    let _ = tx.send(FlightOutcome::Usage(outcome));
+    inner.borrow_mut().inflight.push(Inflight {
+        rx,
+        callbacks: vec![key],
+        kind: FlightKind::Usage { source, remember },
+    });
+    Ok(())
+}
+
+fn spawn_usage(
+    inner: &Rc<RefCell<Inner>>,
+    source: UsageSource,
+    key: RegistryKey,
+    call: crate::usage::UsageCall,
+) -> mlua::Result<()> {
+    if !call.outgoing.url.starts_with("https://") {
+        inner.borrow_mut().note(UsageError::Failed.text());
+        return queue_usage(inner, source, key, Err(UsageError::Failed), true);
+    }
+    let crate::usage::UsageCall {
+        outgoing,
+        sensitive,
+    } = call;
+    let transport = Arc::clone(&inner.borrow().transport);
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("toolhost-usage".to_string())
+        .spawn(move || {
+            let outcome = match transport.send(&outgoing) {
+                Ok(response) => {
+                    interpret_usage(source, response.status, &response.body, &sensitive)
+                }
+                Err(_) => Err(UsageError::Failed),
+            };
+            let _ = tx.send(FlightOutcome::Usage(outcome));
+        })
+        .map_err(|_| mlua::Error::runtime("请求失败"))?;
+    let mut inner = inner.borrow_mut();
+    inner.http_sends += 1;
+    inner.inflight.push(Inflight {
+        rx,
+        callbacks: vec![key],
+        kind: FlightKind::Usage {
+            source,
+            remember: true,
+        },
+    });
+    Ok(())
+}
+
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+impl Inner {
+    fn join_usage(&mut self, source: UsageSource, key: RegistryKey) -> Result<(), RegistryKey> {
+        for item in &mut self.inflight {
+            if let FlightKind::Usage {
+                source: existing, ..
+            } = &item.kind
+                && *existing == source
+            {
+                item.callbacks.push(key);
+                return Ok(());
+            }
+        }
+        Err(key)
+    }
+}
+
+fn deliver_usage(
+    lua: &Lua,
+    callback: &Function,
+    outcome: &Result<UsageSnapshot, UsageError>,
+) -> mlua::Result<()> {
+    let result = lua.create_table()?;
+    match outcome {
+        Ok(snapshot) => {
+            result.set("ok", true)?;
+            if let Some(plan) = &snapshot.plan {
+                result.set("plan", plan.as_str())?;
+            }
+            if let Some(flag) = snapshot.limit_reached {
+                result.set("limit_reached", flag)?;
+            }
+            let windows = lua.create_table()?;
+            for (index, window) in snapshot.windows.iter().enumerate() {
+                let item = lua.create_table()?;
+                item.set("name", window.name.as_str())?;
+                item.set("used_percent", window.used_percent)?;
+                if let Some(ms) = window.resets_at_ms {
+                    item.set("resets_at_ms", ms)?;
+                }
+                if let Some(seconds) = window.limit_seconds {
+                    item.set("limit_seconds", seconds)?;
+                }
+                let lua_index = i64::try_from(index + 1).unwrap_or(i64::MAX);
+                windows.set(lua_index, item)?;
+            }
+            result.set("windows", windows)?;
+        }
+        Err(err) => {
+            result.set("ok", false)?;
+            result.set("error", err.text())?;
+        }
+    }
+    let _guard = crate::pattern::enter_host(lua)?;
+    callback.call::<()>(result)
 }
 
 fn read_attaches(options: &Table) -> Result<Vec<SecretAttach>, &'static str> {
@@ -1633,26 +1887,16 @@ fn binding(
     declared: &crate::manifest::SecretDecl,
     attach: &SecretAttach,
 ) -> Result<(String, String), &'static str> {
-    let header = if let Some(declared_header) = &declared.header {
-        if attach.header.is_empty() || attach.header.eq_ignore_ascii_case(declared_header) {
-            declared_header.clone()
-        } else {
-            return Err(HttpDeny::BadAddress.text());
-        }
-    } else if attach.header.is_empty() {
+    let Some(header) = declared.header.clone() else {
         return Err(HttpDeny::BadAddress.text());
-    } else {
-        attach.header.clone()
     };
-    let prefix = if declared.header.is_some() {
-        if attach.prefix_set && attach.prefix != declared.prefix {
-            return Err(HttpDeny::BadAddress.text());
-        }
-        declared.prefix.clone()
-    } else {
-        attach.prefix.clone()
-    };
-    Ok((header, prefix))
+    if !attach.header.is_empty() && !attach.header.eq_ignore_ascii_case(&header) {
+        return Err(HttpDeny::BadAddress.text());
+    }
+    if attach.prefix_set && attach.prefix != declared.prefix {
+        return Err(HttpDeny::BadAddress.text());
+    }
+    Ok((header, declared.prefix.clone()))
 }
 
 fn deliver(

@@ -144,7 +144,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
         Err(err) => services.store.log_warn(&format!("工具的网络不可用：{err}")),
     }
 
-    let session = match Session::open(&dir, options) {
+    let session = match Session::open_manifest(loaded, options) {
         Ok(session) => session,
         Err(message) => {
             services
