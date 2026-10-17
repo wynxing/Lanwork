@@ -15,6 +15,8 @@ pub const DEFAULT_PORT: u16 = 39217;
 const MAX_HEADER: usize = 16 * 1024;
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 16;
+/// 同时写 503 的短线程上限。满了就丢掉套接字，不再开线程。
+const MAX_BUSY: usize = 4;
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPPORTED_PROTOCOLS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
 const DEFAULT_PROTOCOL: &str = "2025-03-26";
@@ -30,11 +32,21 @@ pub(super) fn accept_loop(listener: TcpListener, shared: Arc<Shared>, shutdown: 
                     shared.notify(Notice::Clients);
                 }
                 if !try_acquire(&shared) {
-                    // 排空请求会等到读超时。放到短线程里，接受循环不被这 5 秒堵住。
-                    // 线程没起来时闭包连同套接字一起丢掉，不在接受线程上等待。
-                    let _ = std::thread::Builder::new()
+                    // 写出和排空共用 5 秒。放到短线程里，接受循环不被堵住。
+                    // 同时最多 4 个。再多就直接丢掉套接字，不再开线程。
+                    if !try_acquire_busy(&shared) {
+                        continue;
+                    }
+                    let task = Arc::clone(&shared);
+                    let spawned = std::thread::Builder::new()
                         .name("lanwork-mcp-busy".to_owned())
-                        .spawn(move || reject_busy(stream));
+                        .spawn(move || {
+                            let _guard = BusyGuard(task);
+                            reject_busy(stream);
+                        });
+                    if spawned.is_err() {
+                        release_busy(&shared);
+                    }
                     continue;
                 }
                 let task = Arc::clone(&shared);
@@ -91,25 +103,62 @@ fn release(shared: &Shared) {
     shared.connections.fetch_sub(1, Ordering::AcqRel);
 }
 
-/// 第 17 个连接直接回 503。在独立线程里做完：整段写出去、关掉写方向、再按读超时排空请求。
+struct BusyGuard(Arc<Shared>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        release_busy(&self.0);
+    }
+}
+
+fn try_acquire_busy(shared: &Shared) -> bool {
+    let mut current = shared.busy.load(Ordering::Relaxed);
+    loop {
+        if current >= MAX_BUSY {
+            return false;
+        }
+        match shared.busy.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn release_busy(shared: &Shared) {
+    shared.busy.fetch_sub(1, Ordering::AcqRel);
+}
+
+/// 第 17 个连接直接回 503。在独立线程里做完：整段写出去、关掉写方向、再排空请求。
 ///
-/// 写出限时与普通请求相同。写满之前不关闭。Windows 在关闭时如果接收缓冲还有数据，
-/// 会发 RST，把还没送达的响应丢掉，所以先 `shutdown(Write)` 再读掉请求。
+/// 写出和排空共用一个 5 秒的截止时间。对方一直发数据也会在到点时停，占着的名额会空出来。
+/// 写满之前不关闭。Windows 在关闭时如果接收缓冲还有数据，会发 RST，把还没送达的响应丢掉，
+/// 所以先 `shutdown(Write)` 再读掉请求。
 fn reject_busy(mut stream: TcpStream) {
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
+    let deadline = std::time::Instant::now() + READ_TIMEOUT;
     let bytes = http_response(
         503,
         "Service Unavailable",
         &[],
         error_body(None, "连接过多"),
     );
-    if write_entire(&mut stream, &bytes).is_ok() {
+    if write_entire(&mut stream, &bytes, deadline).is_ok() {
         let _ = stream.shutdown(std::net::Shutdown::Write);
     }
     let mut tmp = [0u8; 2048];
     loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if stream.set_read_timeout(Some(remaining)).is_err() {
+            break;
+        }
         match stream.read(&mut tmp) {
             Ok(0) => break,
             Ok(_) => {}
@@ -119,16 +168,22 @@ fn reject_busy(mut stream: TcpStream) {
     }
 }
 
-/// 在写出限时内把整段响应写完。超时或 `WouldBlock` 不丢掉已经写出去的前半段。
-fn write_entire(stream: &mut TcpStream, mut bytes: &[u8]) -> std::io::Result<()> {
-    let start = std::time::Instant::now();
+/// 在截止时间前把整段响应写完。每一次写出的超时用剩余时间，总时间不超过这 5 秒。
+/// 超时或 `WouldBlock` 不丢掉已经写出去的前半段。
+fn write_entire(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: std::time::Instant,
+) -> std::io::Result<()> {
     while !bytes.is_empty() {
-        if start.elapsed() >= READ_TIMEOUT {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "write timed out",
             ));
         }
+        stream.set_write_timeout(Some(remaining))?;
         match stream.write(bytes) {
             Ok(0) => {
                 return Err(std::io::Error::new(

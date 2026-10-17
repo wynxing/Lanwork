@@ -3,8 +3,9 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::backup::BackupCommands;
 use lanwork_core::external_ai::{CLIENTS_FILE, ExternalAi};
@@ -468,6 +469,155 @@ fn the_seventeenth_connection_gets_503() {
     };
     assert!(body(&response).contains("连接过多"), "{response}");
     drop(held);
+}
+
+/// 16 个连接占满之后，同时只允许 4 个 503 线程。第 5 个直接丢掉。
+/// 对方一直发送时，5 秒到点这些线程退出，后来的连接又能拿到完整的 503。
+#[test]
+fn busy_reject_cap_drops_the_fifth_and_frees_on_deadline() {
+    let harness = Harness::new();
+    let port = harness.listen();
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut held = Vec::new();
+    let mut joins = JoinOnDrop {
+        stop: Arc::clone(&stop),
+        threads: Vec::new(),
+    };
+    for _ in 0..16 {
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let stop = Arc::clone(&stop);
+        joins.threads.push(std::thread::spawn(move || {
+            let _ = writer.set_write_timeout(Some(Duration::from_secs(1)));
+            while !stop.load(Ordering::Relaxed) {
+                if writer.write_all(b"P").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }));
+        held.push(stream);
+    }
+    let _held = held;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let response = post(
+            port,
+            "lw_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            None,
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+        );
+        if status(&response) == 503 && body(&response).contains("连接过多") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "16 个连接没有占满：{response}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // 上面这次 503 的短线程要先退出，否则它占着 4 个名额里的一个。
+    std::thread::sleep(Duration::from_millis(200));
+
+    let mut ready = Vec::new();
+    for _ in 0..4 {
+        let (rx, thread) = spawn_busy_peer(port);
+        ready.push(rx);
+        joins.threads.push(thread);
+    }
+    let mut full_at = None;
+    for rx in &ready {
+        let got = rx.recv_timeout(Duration::from_secs(3)).unwrap_or(false);
+        assert!(got, "拒绝线程没有回「连接过多」");
+        full_at = Some(Instant::now());
+    }
+    let full_at = full_at.expect("没有占满拒绝名额");
+
+    let (elapsed, text) = read_dropped_overflow(port);
+    assert!(
+        !text.contains("HTTP/1.1"),
+        "超过 4 个拒绝线程时仍回了响应：{text}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "丢掉套接字用了 {elapsed:?}"
+    );
+
+    let rest = Duration::from_secs(6).saturating_sub(full_at.elapsed());
+    std::thread::sleep(rest);
+    let response = post(
+        port,
+        "lw_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        None,
+        r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+    );
+    assert_eq!(status(&response), 503, "{response}");
+    assert!(body(&response).contains("连接过多"), "{response}");
+}
+
+struct JoinOnDrop {
+    stop: Arc<AtomicBool>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for JoinOnDrop {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// 拿到 503 之后继续发送，让排空停不下来，直到服务端的截止时间。
+fn spawn_busy_peer(port: u16) -> (std::sync::mpsc::Receiver<bool>, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let Ok(mut stream) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)) else {
+            let _ = tx.send(false);
+            return;
+        };
+        let _ = stream.set_nodelay(true);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let request = format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        if stream.write_all(request.as_bytes()).is_err() {
+            let _ = tx.send(false);
+            return;
+        }
+        let mut buf = Vec::new();
+        let _ = stream.read_to_end(&mut buf);
+        let text = String::from_utf8_lossy(&buf);
+        let _ = tx.send(text.contains("连接过多"));
+        let junk = [b'a'; 1024];
+        let until = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < until {
+            if stream.write_all(&junk).is_err() {
+                break;
+            }
+        }
+    });
+    (rx, thread)
+}
+
+fn read_dropped_overflow(port: u16) -> (Duration, String) {
+    let start = Instant::now();
+    let Ok(mut stream) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)) else {
+        return (start.elapsed(), String::new());
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut buf = Vec::new();
+    if stream.write_all(request.as_bytes()).is_ok() {
+        let _ = stream.read_to_end(&mut buf);
+    }
+    (start.elapsed(), String::from_utf8_lossy(&buf).into_owned())
 }
 
 #[test]

@@ -144,6 +144,8 @@ struct Shared {
     enabled: AtomicBool,
     port: AtomicU16,
     connections: AtomicUsize,
+    /// 正在回 503 的短线程。不计入 `connections`。
+    busy: AtomicUsize,
     /// 会话多久没有请求就不再算已连接。默认 60 秒。
     session_idle_ms: AtomicU64,
 }
@@ -189,6 +191,7 @@ impl ExternalAi {
                 enabled: AtomicBool::new(false),
                 port: AtomicU16::new(0),
                 connections: AtomicUsize::new(0),
+                busy: AtomicUsize::new(0),
                 session_idle_ms: AtomicU64::new(60_000),
             }),
             listener: Arc::new(Mutex::new(None)),
