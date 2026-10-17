@@ -125,6 +125,8 @@ export component Field inherits Rectangle {
     callback committed(string);
     // 每次文字改变都调用，参数是整个文本。
     callback edited(string);
+    // 输入法正在组合时为真。
+    callback composing(bool);
     callback escape();
 
     out property <bool> has-focus: input.has-focus;
@@ -186,6 +188,10 @@ export component Field inherits Rectangle {
 
             edited => {
                 root.edited(self.text);
+            }
+
+            changed preedit-text => {
+                root.composing(self.preedit-text != "");
             }
 
             cursor-position-changed(cursor-position) => {

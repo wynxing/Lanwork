@@ -4,10 +4,46 @@
 //! 目标不存在时用 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`。
 //! 替换失败时删除临时文件，不改原文件。
 
+use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::fsutil;
+
+thread_local! {
+    static BEFORE_REPLACE: RefCell<Option<Arc<dyn Fn() -> bool + Send + Sync>>> = const { RefCell::new(None) };
+}
+
+/// 替换正式文件之前调用。返回假则删掉临时文件，不改正式文件。
+///
+/// 只影响当前线程。外部写入用它在向前落盘前再看一次未写盘的修改。
+/// 回滚和修复用 [`without_before_replace`]，这段时间不调用钩子。
+pub(crate) fn set_before_replace(hook: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {
+    BEFORE_REPLACE.with(|slot| *slot.borrow_mut() = hook);
+}
+
+/// 暂时卸下当前线程的替换钩子。`body` 里的替换照常落盘，结束时把钩子装回去。
+pub(crate) fn without_before_replace<T>(body: impl FnOnce() -> T) -> T {
+    let previous = BEFORE_REPLACE.with(|slot| slot.borrow_mut().take());
+    let _restore = RestoreHook { previous };
+    body()
+}
+
+struct RestoreHook {
+    previous: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
+
+impl Drop for RestoreHook {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        BEFORE_REPLACE.with(|slot| *slot.borrow_mut() = previous);
+    }
+}
+
+pub(crate) fn is_replace_aborted(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::Interrupted && err.to_string().contains("replace aborted")
+}
 
 pub fn atomic_write(dest: &Path, bytes: &[u8]) -> io::Result<()> {
     let dest = fsutil::io_path(dest)?;
@@ -16,6 +52,15 @@ pub fn atomic_write(dest: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Err(err) = write_result {
         let _ = fsutil::remove_file(&tmp);
         return Err(err);
+    }
+    let allowed =
+        BEFORE_REPLACE.with(|slot| slot.borrow().as_ref().map(|hook| hook()).unwrap_or(true));
+    if !allowed {
+        let _ = fsutil::remove_file(&tmp);
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "replace aborted",
+        ));
     }
     if let Err(err) = replace_file(&tmp, &dest) {
         let _ = fsutil::remove_file(&tmp);

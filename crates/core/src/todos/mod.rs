@@ -30,7 +30,7 @@ pub use error::{PendingTopic, TodoError};
 pub use float_file::{FLOAT_FILE, FloatWindowFile, FloatWindowRecord};
 pub use model::{
     ClockTime, GeneratedNext, ListKind, NewTodo, Recurrence, RecurrenceRule, SourceKind, TodoItem,
-    TodoList, TodoSource, is_http_source_url,
+    TodoList, TodoPatch, TodoSource, is_http_source_url,
 };
 pub use purge_record::PURGE_PENDING_FILE;
 pub use remind::{

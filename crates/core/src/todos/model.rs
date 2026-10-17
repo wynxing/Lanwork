@@ -273,6 +273,9 @@ pub struct TodoItem {
     pub origin_list_id: Option<String>,
     #[serde(default, rename = "movedAt", skip_serializing_if = "Option::is_none")]
     pub moved_at: Option<i64>,
+    /// 成功写入后加一。旧文件没有这一项时按 0 读。界面不展示。
+    #[serde(default)]
+    pub revision: u64,
 }
 
 impl TodoItem {
@@ -294,6 +297,7 @@ impl TodoItem {
             deleted_at: None,
             origin_list_id: None,
             moved_at: None,
+            revision: 0,
         }
     }
 
@@ -339,6 +343,18 @@ pub struct NewTodo {
     pub remind_at: Option<ClockTime>,
     pub recurrence: Option<Recurrence>,
     pub source: Option<TodoSource>,
+}
+
+/// 外部工具一次改完的字段。`None` 表示这一项保持原值。
+///
+/// 内层 `None` 是清空到期日、提醒或周期。来源不在这里，外部工具不写来源。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TodoPatch {
+    pub title: Option<String>,
+    pub list_id: Option<String>,
+    pub due: Option<Option<CivilDate>>,
+    pub remind_at: Option<Option<ClockTime>>,
+    pub recurrence: Option<Option<Recurrence>>,
 }
 
 pub(crate) fn normalize_required(text: &str) -> Option<String> {
@@ -462,6 +478,7 @@ mod tests {
         assert!(item.deleted_at.is_none());
         assert!(item.origin_list_id.is_none());
         assert!(item.moved_at.is_none());
+        assert_eq!(item.revision, 0);
     }
 
     #[test]

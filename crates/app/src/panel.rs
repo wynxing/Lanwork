@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use lanwork_core::CivilDate;
 use lanwork_core::apps::{LaunchTarget, launch};
 use lanwork_core::dispatch::IconCache;
+use lanwork_core::external_ai::{ExternalAi, Notice};
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::{
     self, DropZone, PanelTab, PanelTarget, RECURRENCE_CHOICES, Row, TodoView, format_date,
@@ -142,11 +143,15 @@ pub(crate) fn install(
         store.log_warn(&format!("面板窗口初始化未排队：{err}"));
     }
 
+    let external = ExternalAi::open(store.clone(), todos.clone(), notes.clone());
+    let notices = external.subscribe();
+    let log = store.clone();
     let controller = Controller {
         notes: NotesPage::new(&ui, notes, store.clone()),
         shelves: ShelvesPage::new(&ui, shelves, todos.clone(), icons, store.clone()),
         apps: AppsPage::new(&ui, store.clone()),
-        settings: SettingsPage::new(&ui, settings, store.clone()),
+        settings: SettingsPage::new(&ui, settings, store.clone(), external.clone()),
+        external,
         drop_state: Arc::new(DropState::default()),
         drop_registration: None,
         linked: HashSet::new(),
@@ -172,8 +177,22 @@ pub(crate) fn install(
         dark: false,
         hwnd_ready: false,
         from_notification: false,
+        drafts: FieldDrafts::default(),
+        composing: false,
     };
     PANEL.with(|cell| *cell.borrow_mut() = Some(controller));
+    let spawned = std::thread::Builder::new()
+        .name("lanwork-external-ai".to_owned())
+        .spawn(move || {
+            while let Ok(notice) = notices.recv() {
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_panel(move |panel| panel.on_external(notice));
+                });
+            }
+        });
+    if spawned.is_err() {
+        log.log_warn("外部 AI 的界面通知没有启动");
+    }
 }
 
 /// 进程退出前调用：录入热键中就结束录入，把热键注册回去。
@@ -334,6 +353,25 @@ fn wire(ui: &Panel) {
         let text = text.to_string();
         with_panel(move |panel| panel.commit_until(&text));
     });
+    ui.on_edit_title(|text| {
+        let text = text.to_string();
+        with_panel(move |panel| panel.edit_title(&text));
+    });
+    ui.on_edit_due(|text| {
+        let text = text.to_string();
+        with_panel(move |panel| panel.edit_due(&text));
+    });
+    ui.on_edit_remind(|text| {
+        let text = text.to_string();
+        with_panel(move |panel| panel.edit_remind(&text));
+    });
+    ui.on_edit_until(|text| {
+        let text = text.to_string();
+        with_panel(move |panel| panel.edit_until(&text));
+    });
+    ui.on_compose_field(|active| with_panel(move |panel| panel.compose_field(active)));
+    ui.on_keep_local_todo(|| with_panel(Controller::keep_local_todo));
+    ui.on_keep_external_todo(|| with_panel(Controller::keep_external_todo));
     ui.on_start_triage(|| with_panel(Controller::enter_triage));
     ui.on_triage_key(|code, modified| {
         let handled = Rc::new(Cell::new(false));
@@ -380,6 +418,35 @@ pub(crate) struct Controller {
     hwnd_ready: bool,
     /// 这次显示来自到期通知。前台失败时不收起，并再显示一次以盖过 `SW_HIDE`。
     from_notification: bool,
+    external: ExternalAi,
+    drafts: FieldDrafts,
+    composing: bool,
+}
+
+#[derive(Default)]
+struct FieldDrafts {
+    title: Option<String>,
+    due: Option<String>,
+    remind: Option<String>,
+    until: Option<String>,
+}
+
+fn draft_of(saved: &str, text: &str) -> Option<String> {
+    if text == saved {
+        None
+    } else {
+        Some(text.to_owned())
+    }
+}
+
+impl FieldDrafts {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn any(&self) -> bool {
+        self.title.is_some() || self.due.is_some() || self.remind.is_some() || self.until.is_some()
+    }
 }
 
 impl Controller {
@@ -513,7 +580,9 @@ impl Controller {
             self.settings.entered(&self.ui);
         } else {
             self.settings.cancel_recording(&self.ui);
+            self.settings.stop_session_refresh();
         }
+        self.push_conflict();
     }
 
     fn present(&mut self) {
@@ -602,6 +671,7 @@ impl Controller {
     fn hide(&mut self) {
         self.exit_triage();
         self.settings.cancel_recording(&self.ui);
+        self.settings.stop_session_refresh();
         self.apps.dismiss(&self.ui);
         self.visible = false;
         self.error = None;
@@ -634,6 +704,7 @@ impl Controller {
         self.ui.set_tab(i32::try_from(tab.index()).unwrap_or(0));
         if tab != PanelTab::Settings {
             self.settings.cancel_recording(&self.ui);
+            self.settings.stop_session_refresh();
         }
         if tab != PanelTab::Apps {
             self.apps.dismiss(&self.ui);
@@ -676,6 +747,7 @@ impl Controller {
         if self.reload_lists() {
             self.follow_triage();
         }
+        self.push_conflict();
     }
 
     /// 重新读清单并重排。不移动处理模式的光标。清单没读到时返回假。
@@ -735,6 +807,7 @@ impl Controller {
             .is_some_and(|id| !self.rows.iter().any(|row| &row.id == id))
         {
             self.selected = None;
+            self.clear_drafts();
         }
         let models: Vec<PanelRow> = self
             .rows
@@ -779,8 +852,12 @@ impl Controller {
     }
 
     /// `reset` 为真时输入框回到条目里的值；写入失败时不重置，保留用户正在改的文字。
+    /// 未写盘的修改还在时，不用磁盘上的新值盖住输入框。
     fn push_detail(&mut self, reset: bool) {
+        let keep_draft = !reset && self.editor_dirty();
+        let previous = keep_draft.then(|| self.ui.get_detail());
         if reset {
+            self.clear_drafts();
             self.detail_version = self.detail_version.wrapping_add(1);
         }
         self.ui.set_detail_version(self.detail_version);
@@ -788,7 +865,7 @@ impl Controller {
             self.ui.set_detail(PanelDetail::default());
             return;
         };
-        let detail = PanelDetail {
+        let mut detail = PanelDetail {
             title: item.title.as_str().into(),
             due: item.due.map(format_date).unwrap_or_default().into(),
             remind: item
@@ -810,7 +887,35 @@ impl Controller {
             can_up: reordered_ids(&self.lists, &list.id, &item.id, true).is_some(),
             can_down: reordered_ids(&self.lists, &list.id, &item.id, false).is_some(),
         };
+        if let Some(previous) = previous.filter(|_| self.editor_dirty()) {
+            let all = self.composing
+                || self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|id| self.external.is_dirty(id));
+            if all || self.drafts.title.is_some() {
+                detail.title = previous.title;
+            }
+            if all || self.drafts.due.is_some() {
+                detail.due = previous.due;
+            }
+            if all || self.drafts.remind.is_some() {
+                detail.remind = previous.remind;
+            }
+            if all || self.drafts.until.is_some() {
+                detail.until = previous.until;
+            }
+        }
         self.ui.set_detail(detail);
+    }
+
+    fn editor_dirty(&self) -> bool {
+        self.composing
+            || self.drafts.any()
+            || self
+                .selected
+                .as_ref()
+                .is_some_and(|id| self.external.is_dirty(id))
     }
 
     /// 面板自己的错误优先；没有时显示设置页留着的热键没注册上的提示，它收起时不清。
@@ -1065,6 +1170,111 @@ impl Controller {
         };
         let result = self.todos.purge(&id).map_err(|err| err.to_string());
         self.finish(result, true);
+    }
+
+    fn on_external(&mut self, notice: Notice) {
+        match notice {
+            Notice::Clients => self.settings.push_external(&self.ui),
+            Notice::Conflict => self.push_conflict(),
+        }
+    }
+
+    fn push_conflict(&mut self) {
+        let Some(conflict) = self.external.conflicts().into_iter().next() else {
+            self.ui
+                .set_todo_conflict_title(slint::SharedString::default());
+            return;
+        };
+        let title = self
+            .lists
+            .iter()
+            .flat_map(|list| list.items.iter())
+            .find(|item| item.id == conflict.id)
+            .map(|item| item.title.clone())
+            .filter(|title| !title.is_empty())
+            .unwrap_or(conflict.title);
+        let label = match (conflict.client.is_empty(), title.is_empty()) {
+            (true, true) => conflict.id,
+            (true, false) => title,
+            (false, true) => conflict.client,
+            (false, false) => format!("{} {title}", conflict.client),
+        };
+        self.ui.set_todo_conflict_title(label.into());
+    }
+
+    fn keep_local_todo(&mut self) {
+        if let Some(conflict) = self.external.conflicts().into_iter().next() {
+            self.external.keep_local(&conflict.id);
+        }
+        self.push_conflict();
+    }
+
+    fn keep_external_todo(&mut self) {
+        let Some(conflict) = self.external.conflicts().into_iter().next() else {
+            self.push_conflict();
+            return;
+        };
+        let id = conflict.id;
+        match self.external.keep_external(&id) {
+            Ok(()) => {
+                if self.selected.as_deref() == Some(id.as_str()) {
+                    self.clear_drafts();
+                }
+                self.reload();
+                self.push_detail(true);
+                self.push_conflict();
+            }
+            Err(message) => {
+                self.error = Some(message);
+                self.push_error();
+                self.push_conflict();
+            }
+        }
+    }
+
+    fn edit_title(&mut self, text: &str) {
+        let saved = self.ui.get_detail().title.to_string();
+        self.drafts.title = draft_of(&saved, text);
+        self.sync_dirty();
+    }
+
+    fn edit_due(&mut self, text: &str) {
+        let saved = self.ui.get_detail().due.to_string();
+        self.drafts.due = draft_of(&saved, text);
+        self.sync_dirty();
+    }
+
+    fn edit_remind(&mut self, text: &str) {
+        let saved = self.ui.get_detail().remind.to_string();
+        self.drafts.remind = draft_of(&saved, text);
+        self.sync_dirty();
+    }
+
+    fn edit_until(&mut self, text: &str) {
+        let saved = self.ui.get_detail().until.to_string();
+        self.drafts.until = draft_of(&saved, text);
+        self.sync_dirty();
+    }
+
+    fn compose_field(&mut self, active: bool) {
+        self.composing = active;
+        self.sync_dirty();
+    }
+
+    fn clear_drafts(&mut self) {
+        self.drafts.clear();
+        self.composing = false;
+        self.sync_dirty();
+    }
+
+    fn sync_dirty(&self) {
+        let mut ids = HashSet::new();
+        if (self.composing || self.drafts.any())
+            && let Some(id) = &self.selected
+        {
+            ids.insert(id.clone());
+        }
+        self.external.set_dirty(ids);
     }
 
     fn commit_title(&mut self, text: &str) {

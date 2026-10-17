@@ -1,7 +1,7 @@
 //! `logs/app.log`，按大小轮转。
 //!
 //! 不写入文件内容。调用方因此不能通过这里记录便签正文。
-//! 名称像密钥的环境变量值，以及常见 GitHub token 形态，会在落盘前换成 `[redacted]`。
+//! 名称像密钥的环境变量值、常见 GitHub token 形态，以及 `lw_` 开头的外部 AI token，会在落盘前换成 `[redacted]`。
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -70,6 +70,11 @@ impl Log {
         let _ = self.write_line("ERROR", message);
     }
 
+    /// 把一把密钥记进这次进程的删节表。原文不写日志。
+    pub fn remember_secret(&self, secret: &str) {
+        self.redactor.remember(secret);
+    }
+
     fn write_line(&self, level: &str, message: &str) -> std::io::Result<()> {
         let _guard = lock_mutex(&self.lock);
         let redacted = self.redactor.redact(message);
@@ -122,7 +127,7 @@ impl Log {
 
 #[derive(Debug)]
 struct Redactor {
-    secrets: Vec<String>,
+    secrets: Mutex<Vec<String>>,
 }
 
 impl Redactor {
@@ -130,15 +135,29 @@ impl Redactor {
         secrets.retain(|secret| secret.len() >= 8);
         secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
         secrets.dedup();
-        Self { secrets }
+        Self {
+            secrets: Mutex::new(secrets),
+        }
     }
 
     fn redact(&self, message: &str) -> String {
         let mut output = message.to_owned();
-        for secret in &self.secrets {
+        for secret in lock_mutex(&self.secrets).iter() {
             output = output.replace(secret, "[redacted]");
         }
-        redact_github_tokens(&output)
+        redact_lanwork_tokens(&redact_github_tokens(&output))
+    }
+
+    fn remember(&self, secret: &str) {
+        if secret.len() < 8 {
+            return;
+        }
+        let mut secrets = lock_mutex(&self.secrets);
+        if secrets.iter().any(|known| known == secret) {
+            return;
+        }
+        secrets.push(secret.to_owned());
+        secrets.sort_by_key(|item| std::cmp::Reverse(item.len()));
     }
 }
 
@@ -157,6 +176,31 @@ fn is_secret_env_name(name: &str) -> bool {
         || upper.contains("CREDENTIAL")
         || upper == "KEY"
         || upper.ends_with("_KEY")
+}
+
+/// `lw_` 后面紧跟 64 位十六进制，是外部 AI 的 token 原文。日志里换成 `[redacted]`。
+fn redact_lanwork_tokens(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index..].starts_with(b"lw_") && token_tail(&bytes[index + 3..]) {
+            output.push_str("[redacted]");
+            index += 3 + 64;
+            continue;
+        }
+        let ch = input[index..]
+            .chars()
+            .next()
+            .expect("index is on a char boundary");
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+    output
+}
+
+fn token_tail(bytes: &[u8]) -> bool {
+    bytes.len() >= 64 && bytes[..64].iter().all(u8::is_ascii_hexdigit)
 }
 
 fn redact_github_tokens(input: &str) -> String {

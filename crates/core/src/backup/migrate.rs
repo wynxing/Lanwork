@@ -166,6 +166,10 @@ fn migrate_holding(
     let preexisting = has_lanwork_data(target)?;
     let mut written = Vec::new();
     if preexisting {
+        // 授权文件不在复制名单里。目标里已经有一份时，不能当成空目录或上次没写完的复制。
+        if storage::fs_exists(&join(target, crate::external_ai::CLIENTS_FILE)) {
+            return Err(MigrateError::AlreadyHasData);
+        }
         let target_names = migration_names(target)?;
         if target_names != names || !all_match(source, target, &names)? {
             return Err(MigrateError::AlreadyHasData);
@@ -315,6 +319,7 @@ fn has_lanwork_data(dir: &Path) -> Result<bool, MigrateError> {
         "import.pending",
         "github/watchlist.json",
         "tool-enabled.json",
+        crate::external_ai::CLIENTS_FILE,
     ] {
         if storage::fs_exists(&join(dir, name)) {
             return Ok(true);
@@ -851,6 +856,26 @@ mod tests {
             purge
         );
         assert!(old.join("todo-purge-pending.json").is_file());
+    }
+
+    #[test]
+    fn a_directory_with_only_the_external_ai_file_is_not_empty() {
+        let temp = TempDir::new();
+        let store = open(temp.path());
+        seed(&store);
+        let old = store.data_dir();
+        let target = temp.path().join("next");
+        std::fs::create_dir_all(&target).unwrap();
+        let auth = b"{\"schemaVersion\":1,\"enabled\":true,\"clients\":[]}\n";
+        std::fs::write(target.join(crate::external_ai::CLIENTS_FILE), auth).unwrap();
+        let err = run(&store, &target).unwrap_err();
+        assert!(matches!(err, MigrateError::AlreadyHasData));
+        assert_eq!(store.data_dir(), old);
+        assert_eq!(
+            std::fs::read(target.join(crate::external_ai::CLIENTS_FILE)).unwrap(),
+            auth
+        );
+        assert!(!target.join("notes").join("n1.json").exists());
     }
 
     #[test]

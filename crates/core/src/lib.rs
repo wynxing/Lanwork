@@ -8,6 +8,7 @@ pub mod apps;
 pub mod backup;
 pub mod config;
 pub mod dispatch;
+pub mod external_ai;
 pub mod files;
 pub mod notes;
 pub mod panel;

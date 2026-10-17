@@ -5,6 +5,7 @@
 // 布局测试按这些坐标点（窗口里，标题 48px，其下 1px 分隔线，本页从 y=49 开始）：
 // 左栏宽 132。分类从 y=8 起，步长 40，行高 36。第 i 行中心相对本页是 8+40*i+18。
 // 右栏从 x=132 起，内边距左 16、上 8，行高 48，标签宽 120。
+// 其他页：版本块高 88，其下「外部 AI」一行高 48，再是「隐藏的应用」。
 // 控件左缘相对窗口是 132+16+120=268。第 i 行中心相对本页是 8+48*i+24。
 // 数据页「更换」「立即备份」「导出」「导入」贴在行的右边，右边距 16。按钮宽是文字宽加 20。
 // 「导入未完成」为真时，右侧每一类的内容下移 36。
@@ -15,6 +16,11 @@ import { Btn, Field, Ink, Segments, ToggleSwitch } from "widgets.slint";
 
 export struct SettingsHiddenApp {
     name: string,
+}
+
+export struct SettingsExternalClient {
+    name: string,
+    status: string,
 }
 
 export struct SettingsBackup {
@@ -84,6 +90,17 @@ export global SettingsPageData {
 
     in property <[SettingsHiddenApp]> hidden-apps;
     callback restore-hidden(int);
+
+    in property <bool> external-ai: false;
+    in property <bool> external-unavailable: false;
+    in property <string> external-token;
+    in property <string> external-endpoint;
+    in property <int> external-name-reset: 0;
+    in property <[SettingsExternalClient]> external-clients;
+    callback set-external-ai(bool);
+    callback external-name-edited(string);
+    callback authorize-external();
+    callback revoke-external(int);
 }
 
 component Row inherits Rectangle {
@@ -513,6 +530,7 @@ component DataPage inherits Rectangle {
 
 component OtherPage inherits Rectangle {
     in property <Ink> c;
+    in property <bool> dark;
 
     VerticalLayout {
         padding-left: 16px;
@@ -580,6 +598,152 @@ component OtherPage inherits Rectangle {
                 c: root.c;
                 clicked => {
                     SettingsPageData.update-clicked();
+                }
+            }
+        }
+
+        Row {
+            name: "外部 AI";
+            c: root.c;
+
+            ToggleSwitch {
+                x: 120px;
+                y: (parent.height - self.height) / 2;
+                checked: SettingsPageData.external-ai;
+                label: "外部 AI";
+                c: root.c;
+                on-fill: root.dark ? #000000 : #ffffff;
+                toggled(value) => {
+                    SettingsPageData.set-external-ai(value);
+                }
+            }
+
+            if SettingsPageData.external-unavailable: Text {
+                x: 172px;
+                width: parent.width - 172px;
+                height: parent.height - 1px;
+                text: "无法监听";
+                color: root.c.critical;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        if SettingsPageData.external-ai: Rectangle {
+            height: 40px;
+
+            Field {
+                y: 5px;
+                width: 180px;
+                name: "名称";
+                reset: SettingsPageData.external-name-reset;
+                c: root.c;
+                edited(text) => {
+                    SettingsPageData.external-name-edited(text);
+                }
+                committed(text) => {
+                    SettingsPageData.external-name-edited(text);
+                    SettingsPageData.authorize-external();
+                }
+            }
+
+            Btn {
+                x: 188px;
+                y: 5px;
+                text: "授权";
+                c: root.c;
+                clicked => {
+                    SettingsPageData.authorize-external();
+                }
+            }
+        }
+
+        if SettingsPageData.external-ai && SettingsPageData.external-token != "": Rectangle {
+            height: 30px;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: root.c.divider;
+            background: root.c.field;
+
+            TextInput {
+                x: 10px;
+                width: parent.width - 20px;
+                height: parent.height;
+                text: SettingsPageData.external-token;
+                read-only: true;
+                font-size: 12px;
+                color: root.c.ink;
+                vertical-alignment: center;
+                selection-background-color: root.c.accent.with-alpha(0.35);
+                selection-foreground-color: root.c.ink;
+            }
+        }
+
+        if SettingsPageData.external-ai && SettingsPageData.external-endpoint != "": Text {
+            height: 28px;
+            text: SettingsPageData.external-endpoint;
+            color: root.c.secondary;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if SettingsPageData.external-ai && SettingsPageData.external-clients.length == 0: Text {
+            height: 36px;
+            text: "没有客户端";
+            color: root.c.secondary;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        if SettingsPageData.external-ai && SettingsPageData.external-clients.length > 0: external-list := Flickable {
+            height: min(SettingsPageData.external-clients.length * 44px, 176px);
+            content-width: self.width;
+            content-height: max(self.height, SettingsPageData.external-clients.length * 44px);
+
+            for client[index] in SettingsPageData.external-clients: Rectangle {
+                y: index * 44px;
+                width: external-list.width;
+                height: 44px;
+
+                Text {
+                    width: parent.width - 160px;
+                    height: parent.height;
+                    text: client.name;
+                    color: root.c.ink;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Text {
+                    x: parent.width - 148px;
+                    width: 64px;
+                    height: parent.height;
+                    text: client.status;
+                    color: root.c.secondary;
+                    font-size: 13px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Btn {
+                    x: parent.width - self.width;
+                    y: (parent.height - self.height) / 2;
+                    text: "撤销";
+                    c: root.c;
+                    clicked => {
+                        SettingsPageData.revoke-external(index);
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: parent.width;
+                    background: root.c.divider;
                 }
             }
         }
@@ -792,5 +956,6 @@ export component SettingsPage inherits Rectangle {
         width: parent.width - 132px;
         height: parent.height - root.content-shift;
         c: root.c;
+        dark: root.dark;
     }
 }

@@ -7,6 +7,8 @@
 //! 这里不投递 Win32 窗口消息，也不依赖 Slint。应用外壳订阅变更消息。
 
 mod atomic;
+
+pub(crate) use atomic::{set_before_replace, without_before_replace};
 mod boot;
 mod change;
 mod error;
