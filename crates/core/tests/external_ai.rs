@@ -449,14 +449,24 @@ fn the_seventeenth_connection_gets_503() {
     for _ in 0..16 {
         held.push(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap());
     }
-    let response = post(
-        port,
-        "lw_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        None,
-        r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
-    );
-    assert_eq!(status(&response), 503, "{response}");
-    assert!(body(&response).contains("连接过多"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let response = loop {
+        let response = post(
+            port,
+            "lw_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            None,
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+        );
+        if status(&response) == 503 {
+            break response;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "16 个连接没有占满：{response}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert!(body(&response).contains("连接过多"), "{response}");
     drop(held);
 }
 

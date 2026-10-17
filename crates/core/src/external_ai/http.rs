@@ -23,6 +23,9 @@ pub(super) fn accept_loop(listener: TcpListener, shared: Arc<Shared>, shutdown: 
     while !shutdown.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
+                // 监听套接字是非阻塞的。Windows 上 accept 出来的套接字会继承这一点，
+                // 空读会立刻返回，连接计数马上放掉。先改回阻塞，读超时才算数。
+                let _ = stream.set_nonblocking(false);
                 if shared.expire_sessions() {
                     shared.notify(Notice::Clients);
                 }
