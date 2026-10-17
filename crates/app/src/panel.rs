@@ -744,6 +744,7 @@ impl Controller {
         if self.reload_lists() {
             self.follow_triage();
         }
+        self.push_conflict();
     }
 
     /// 重新读清单并重排。不移动处理模式的光标。清单没读到时返回假。
@@ -848,7 +849,10 @@ impl Controller {
     }
 
     /// `reset` 为真时输入框回到条目里的值；写入失败时不重置，保留用户正在改的文字。
+    /// 未写盘的修改还在时，不用磁盘上的新值盖住输入框。
     fn push_detail(&mut self, reset: bool) {
+        let keep_draft = !reset && self.editor_dirty();
+        let previous = keep_draft.then(|| self.ui.get_detail());
         if reset {
             self.clear_drafts();
             self.detail_version = self.detail_version.wrapping_add(1);
@@ -858,7 +862,7 @@ impl Controller {
             self.ui.set_detail(PanelDetail::default());
             return;
         };
-        let detail = PanelDetail {
+        let mut detail = PanelDetail {
             title: item.title.as_str().into(),
             due: item.due.map(format_date).unwrap_or_default().into(),
             remind: item
@@ -880,7 +884,35 @@ impl Controller {
             can_up: reordered_ids(&self.lists, &list.id, &item.id, true).is_some(),
             can_down: reordered_ids(&self.lists, &list.id, &item.id, false).is_some(),
         };
+        if let Some(previous) = previous.filter(|_| self.editor_dirty()) {
+            let all = self.composing
+                || self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|id| self.external.is_dirty(id));
+            if all || self.drafts.title.is_some() {
+                detail.title = previous.title;
+            }
+            if all || self.drafts.due.is_some() {
+                detail.due = previous.due;
+            }
+            if all || self.drafts.remind.is_some() {
+                detail.remind = previous.remind;
+            }
+            if all || self.drafts.until.is_some() {
+                detail.until = previous.until;
+            }
+        }
         self.ui.set_detail(detail);
+    }
+
+    fn editor_dirty(&self) -> bool {
+        self.composing
+            || self.drafts.any()
+            || self
+                .selected
+                .as_ref()
+                .is_some_and(|id| self.external.is_dirty(id))
     }
 
     /// 面板自己的错误优先；没有时显示设置页留着的热键没注册上的提示，它收起时不清。
@@ -1145,28 +1177,41 @@ impl Controller {
     }
 
     fn push_conflict(&mut self) {
+        let Some(conflict) = self.external.conflicts().into_iter().next() else {
+            self.ui
+                .set_todo_conflict_title(slint::SharedString::default());
+            return;
+        };
         let title = self
-            .external
-            .conflicts()
-            .into_iter()
-            .next()
-            .map(|(_, title)| title)
-            .unwrap_or_default();
-        self.ui.set_todo_conflict_title(title.into());
+            .lists
+            .iter()
+            .flat_map(|list| list.items.iter())
+            .find(|item| item.id == conflict.id)
+            .map(|item| item.title.clone())
+            .filter(|title| !title.is_empty())
+            .unwrap_or(conflict.title);
+        let label = match (conflict.client.is_empty(), title.is_empty()) {
+            (true, true) => conflict.id,
+            (true, false) => title,
+            (false, true) => conflict.client,
+            (false, false) => format!("{} {title}", conflict.client),
+        };
+        self.ui.set_todo_conflict_title(label.into());
     }
 
     fn keep_local_todo(&mut self) {
-        if let Some((id, _)) = self.external.conflicts().into_iter().next() {
-            self.external.keep_local(&id);
+        if let Some(conflict) = self.external.conflicts().into_iter().next() {
+            self.external.keep_local(&conflict.id);
         }
         self.push_conflict();
     }
 
     fn keep_external_todo(&mut self) {
-        let Some((id, _)) = self.external.conflicts().into_iter().next() else {
+        let Some(conflict) = self.external.conflicts().into_iter().next() else {
             self.push_conflict();
             return;
         };
+        let id = conflict.id;
         match self.external.keep_external(&id) {
             Ok(()) => {
                 if self.selected.as_deref() == Some(id.as_str()) {

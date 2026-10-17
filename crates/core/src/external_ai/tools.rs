@@ -172,7 +172,12 @@ fn todo_write_schema() -> Value {
     })
 }
 
-pub(super) fn call(shared: &Shared, name: &str, args: &Value) -> Result<Value, String> {
+pub(super) fn call(
+    shared: &Shared,
+    client: &str,
+    name: &str,
+    args: &Value,
+) -> Result<Value, String> {
     if !shared.enabled.load(Ordering::Acquire) {
         return Err("未授权".to_owned());
     }
@@ -186,22 +191,35 @@ pub(super) fn call(shared: &Shared, name: &str, args: &Value) -> Result<Value, S
         "list_todos" => list_todos(shared, args),
         "get_todo" => get_todo(shared, args),
         "create_todo" => create_todo(shared, args),
-        "update_todo" => update_todo(shared, args),
-        "complete_todo" => todo_gate(shared, args, PendingOp::Complete, |todos, id, revision| {
-            todos.complete_at(id, revision)
-        }),
+        "update_todo" => update_todo(shared, client, args),
+        "complete_todo" => todo_gate(
+            shared,
+            client,
+            args,
+            PendingOp::Complete,
+            |todos, id, revision| todos.complete_at(id, revision),
+        ),
         "uncomplete_todo" => todo_gate(
             shared,
+            client,
             args,
             PendingOp::Uncomplete,
             |todos, id, revision| todos.uncomplete_at(id, revision),
         ),
-        "delete_todo" => todo_gate(shared, args, PendingOp::Delete, |todos, id, revision| {
-            todos.soft_delete_at(id, revision)
-        }),
-        "restore_todo" => todo_gate(shared, args, PendingOp::Restore, |todos, id, revision| {
-            todos.restore_at(id, revision)
-        }),
+        "delete_todo" => todo_gate(
+            shared,
+            client,
+            args,
+            PendingOp::Delete,
+            |todos, id, revision| todos.soft_delete_at(id, revision),
+        ),
+        "restore_todo" => todo_gate(
+            shared,
+            client,
+            args,
+            PendingOp::Restore,
+            |todos, id, revision| todos.restore_at(id, revision),
+        ),
         "list_notes" => list_notes(shared, args),
         "get_note" => get_note(shared, args),
         "create_note" => create_note(shared, args),
@@ -358,7 +376,7 @@ fn create_todo(shared: &Shared, args: &Value) -> Result<Value, String> {
     Ok(todo_json(&stored.list_id, &stored.item))
 }
 
-fn update_todo(shared: &Shared, args: &Value) -> Result<Value, String> {
+fn update_todo(shared: &Shared, client: &str, args: &Value) -> Result<Value, String> {
     let map = object(args, TODO_WRITE)?;
     let id = require_id(map)?;
     let revision = require_revision(map)?;
@@ -377,14 +395,10 @@ fn update_todo(shared: &Shared, args: &Value) -> Result<Value, String> {
         remind_at: optional_time(map, "remindAt")?,
         recurrence: optional_recurrence(map)?,
     };
-    if shared.dirty(&id) || shared.conflict_pending(&id) {
-        ready(shared)?;
-        let title = shared.todo_title(&id);
-        shared.store_conflict(&id, &title, PendingOp::Update(patch));
-        return Err(format!("待办保存冲突：{id}"));
-    }
     ready(shared)?;
-    match shared.todos.apply_patch(&id, Some(revision), patch.clone()) {
+    match shared.guarded_todo(&id, || {
+        shared.todos.apply_patch(&id, Some(revision), patch.clone())
+    }) {
         Ok(item) => {
             let stored = shared
                 .todos
@@ -395,7 +409,7 @@ fn update_todo(shared: &Shared, args: &Value) -> Result<Value, String> {
         Err(TodoError::Conflict { id }) => {
             ready(shared)?;
             let title = shared.todo_title(&id);
-            shared.store_conflict(&id, &title, PendingOp::Update(patch));
+            shared.store_conflict(&id, &title, client, PendingOp::Update(patch));
             Err(format!("待办保存冲突：{id}"))
         }
         Err(err) => Err(todo_message(&err)),
@@ -404,6 +418,7 @@ fn update_todo(shared: &Shared, args: &Value) -> Result<Value, String> {
 
 fn todo_gate(
     shared: &Shared,
+    client: &str,
     args: &Value,
     op: PendingOp,
     write: impl Fn(&crate::todos::TodoCommands, &str, u64) -> Result<(), TodoError>,
@@ -411,14 +426,8 @@ fn todo_gate(
     let map = object(args, &["id", "revision"])?;
     let id = require_id(map)?;
     let revision = require_revision(map)?;
-    if shared.dirty(&id) || shared.conflict_pending(&id) {
-        ready(shared)?;
-        let title = shared.todo_title(&id);
-        shared.store_conflict(&id, &title, op);
-        return Err(format!("待办保存冲突：{id}"));
-    }
     ready(shared)?;
-    match write(&shared.todos, &id, revision) {
+    match shared.guarded_todo(&id, || write(&shared.todos, &id, revision)) {
         Ok(()) => {
             let stored = shared.todos.item(&id).map_err(|err| todo_message(&err))?;
             Ok(todo_json(&stored.list_id, &stored.item))
@@ -426,7 +435,7 @@ fn todo_gate(
         Err(TodoError::Conflict { id }) => {
             ready(shared)?;
             let title = shared.todo_title(&id);
-            shared.store_conflict(&id, &title, op);
+            shared.store_conflict(&id, &title, client, op);
             Err(format!("待办保存冲突：{id}"))
         }
         Err(err) => Err(todo_message(&err)),

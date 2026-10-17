@@ -173,11 +173,7 @@ impl SettingsPage {
             shown_token: RefCell::new(None),
             external_name_reset: Cell::new(0),
         };
-        let not_listening = external.enabled() && external.port().is_none();
         page.push(ui);
-        if not_listening {
-            ui.set_error("无法监听".into());
-        }
         page
     }
 
@@ -265,6 +261,7 @@ impl SettingsPage {
     pub(crate) fn push_external(&self, ui: &Panel) {
         let data = ui.global::<SettingsPageData>();
         data.set_external_ai(self.external.enabled());
+        data.set_external_unavailable(self.external.unavailable());
         let token = self
             .shown_token
             .borrow()
@@ -420,6 +417,7 @@ impl SettingsPage {
         self.reopen_migrated_windows();
         match result {
             Ok(dir) => {
+                self.external.reload_auth();
                 self.store
                     .log_info(&format!("数据目录已切换：{}", dir.display()));
                 ui.set_error(self.hotkey_error().unwrap_or_default().into());

@@ -440,3 +440,51 @@ fn export_and_backup_omit_the_token_and_shelf_bytes_stay() {
     assert!(!package.contains(CLIENTS_FILE), "导出包含有授权文件");
     assert!(!package.contains("tokenHash"), "导出包含有 token 哈希");
 }
+
+#[test]
+fn the_seventeenth_connection_gets_503() {
+    let harness = Harness::new();
+    let port = harness.listen();
+    let mut held = Vec::new();
+    for _ in 0..16 {
+        held.push(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap());
+    }
+    let response = post(
+        port,
+        "lw_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        None,
+        r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+    );
+    assert_eq!(status(&response), 503, "{response}");
+    assert!(body(&response).contains("连接过多"));
+    drop(held);
+}
+
+#[test]
+fn migrating_drops_the_in_memory_token() {
+    let harness = Harness::new();
+    harness.listen();
+    harness.ai.authorize("Claude").unwrap();
+    let old = harness.store.data_dir();
+    let blocked = harness.temp.path.join("blocked");
+    std::fs::create_dir_all(&blocked).unwrap();
+    std::fs::write(blocked.join(CLIENTS_FILE), b"{}\n").unwrap();
+    let err = lanwork_core::backup::migrate_data_dir(&harness.store, &blocked, false, |_| {})
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        lanwork_core::backup::MigrateError::AlreadyHasData
+    ));
+    assert_eq!(harness.store.data_dir(), old);
+    assert!(blocked.join(CLIENTS_FILE).is_file());
+
+    let target = harness.temp.path.join("next");
+    lanwork_core::backup::migrate_data_dir(&harness.store, &target, false, |_| {}).unwrap();
+    assert_eq!(harness.store.data_dir(), target);
+    assert!(old.join(CLIENTS_FILE).is_file());
+    assert!(!target.join(CLIENTS_FILE).exists());
+    harness.ai.reload_auth();
+    assert!(!harness.ai.enabled());
+    assert!(harness.ai.clients().is_empty());
+    assert!(harness.ai.port().is_none());
+}

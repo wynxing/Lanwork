@@ -431,19 +431,20 @@ export component Panel inherits Window {
                 }
             }
 
-            Rectangle {
+            todo-body := Rectangle {
                 visible: root.tab == 0;
                 x: 0px;
                 y: title-height + 1px;
                 width: parent.width;
                 height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                property <length> conflict-h: root.todo-conflict-title != "" ? 40px : 0px;
 
                 // 左侧清单。处理模式时整页换成一张卡片，清单栏先让开。
                 Rectangle {
                     visible: !root.triage-open;
                     x: 0px;
                     width: rail-width;
-                    height: parent.height;
+                    height: parent.height - todo-body.conflict-h;
 
                     VerticalLayout {
                         padding: 8px;
@@ -538,7 +539,7 @@ export component Panel inherits Window {
                     visible: !root.triage-open;
                     x: rail-width;
                     width: 1px;
-                    height: parent.height;
+                    height: parent.height - todo-body.conflict-h;
                     background: c.divider;
                 }
 
@@ -547,7 +548,7 @@ export component Panel inherits Window {
                     visible: !root.triage-open;
                     x: rail-width + 1px;
                     width: parent.width - rail-width - 1px;
-                    height: parent.height;
+                    height: parent.height - todo-body.conflict-h;
 
                     VerticalLayout {
                         HorizontalLayout {
@@ -1143,29 +1144,27 @@ export component Panel inherits Window {
                 }
 
                 if todo-conflict-title != "": Rectangle {
-                    x: 0px;
-                    y: parent.height - 44px;
+                    y: parent.height - todo-body.conflict-h;
                     width: parent.width;
-                    height: 44px;
-                    background: c.field;
+                    height: todo-body.conflict-h;
 
                     Rectangle {
-                        height: 1px;
                         width: parent.width;
+                        height: 1px;
                         background: c.divider;
                     }
 
                     HorizontalLayout {
-                        x: 12px;
-                        y: 1px;
-                        width: parent.width - 24px;
-                        height: 43px;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-top: 5px;
+                        padding-bottom: 5px;
                         spacing: 8px;
 
                         Text {
                             horizontal-stretch: 1;
                             text: "待办保存冲突 " + todo-conflict-title;
-                            color: c.ink;
+                            color: c.critical;
                             font-size: 13px;
                             vertical-alignment: center;
                             overflow: elide;

@@ -7,11 +7,11 @@ mod http;
 mod tools;
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -20,7 +20,7 @@ use crate::notes::NoteCommands;
 use crate::storage::{
     self, Error as StorageError, IoAction, Store, is_supported_schema, lock_mutex,
 };
-use crate::todos::{TodoCommands, TodoPatch};
+use crate::todos::{TodoCommands, TodoError, TodoPatch};
 
 pub use http::DEFAULT_PORT;
 
@@ -42,6 +42,14 @@ pub struct ClientView {
     pub id: String,
     pub name: String,
     pub connected: bool,
+}
+
+/// 还没选定的外部提交。名称是先到的那个客户端。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictView {
+    pub id: String,
+    pub title: String,
+    pub client: String,
 }
 
 /// 授权刚完成时交还的原文。调用方只展示这一次，本结构不进入日志。
@@ -105,7 +113,13 @@ enum PendingOp {
 struct Pending {
     id: String,
     title: String,
+    client: String,
     op: PendingOp,
+}
+
+struct LiveSession {
+    client_id: String,
+    seen: Instant,
 }
 
 struct FileState {
@@ -120,14 +134,18 @@ struct Shared {
     todos: TodoCommands,
     notes: Option<NoteCommands>,
     file: Mutex<FileState>,
-    sessions: Mutex<HashMap<String, String>>,
+    sessions: Mutex<HashMap<String, LiveSession>>,
     inflight: Mutex<HashMap<String, usize>>,
-    dirty: Mutex<HashSet<String>>,
-    pending: Mutex<VecDeque<Pending>>,
+    dirty: Arc<Mutex<HashSet<String>>>,
+    pending: Arc<Mutex<VecDeque<Pending>>>,
+    /// 测试在替换正式文件之前调用，用来模拟这一刻才出现的未写盘修改。
+    replace_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     listeners: Mutex<Vec<Sender<Notice>>>,
     enabled: AtomicBool,
     port: AtomicU16,
     connections: AtomicUsize,
+    /// 会话多久没有请求就不再算已连接。默认 60 秒。
+    session_idle_ms: AtomicU64,
 }
 
 struct Running {
@@ -144,6 +162,16 @@ pub struct ExternalAi {
 
 impl ExternalAi {
     pub fn open(store: Store, todos: TodoCommands, notes: Option<NoteCommands>) -> Self {
+        Self::open_at(store, todos, notes, DEFAULT_PORT)
+    }
+
+    /// `port` 为启动时尝试绑定的端口。绑定失败时保留文件里的开关。
+    pub fn open_at(
+        store: Store,
+        todos: TodoCommands,
+        notes: Option<NoteCommands>,
+        port: u16,
+    ) -> Self {
         let file = load_file(&store);
         let enabled = file.enabled && !file.refused;
         let ai = Self {
@@ -154,17 +182,19 @@ impl ExternalAi {
                 file: Mutex::new(file),
                 sessions: Mutex::new(HashMap::new()),
                 inflight: Mutex::new(HashMap::new()),
-                dirty: Mutex::new(HashSet::new()),
-                pending: Mutex::new(VecDeque::new()),
+                dirty: Arc::new(Mutex::new(HashSet::new())),
+                pending: Arc::new(Mutex::new(VecDeque::new())),
+                replace_probe: Mutex::new(None),
                 listeners: Mutex::new(Vec::new()),
                 enabled: AtomicBool::new(false),
                 port: AtomicU16::new(0),
                 connections: AtomicUsize::new(0),
+                session_idle_ms: AtomicU64::new(60_000),
             }),
             listener: Arc::new(Mutex::new(None)),
         };
         if enabled {
-            match ai.start(DEFAULT_PORT) {
+            match ai.start(port) {
                 Ok(port) => {
                     ai.shared
                         .store
@@ -207,6 +237,9 @@ impl ExternalAi {
     }
 
     pub fn clients(&self) -> Vec<ClientView> {
+        if self.shared.expire_sessions() {
+            self.shared.notify(Notice::Clients);
+        }
         let file = lock_mutex(&self.shared.file);
         let sessions = lock_mutex(&self.shared.sessions);
         let inflight = lock_mutex(&self.shared.inflight);
@@ -215,10 +248,40 @@ impl ExternalAi {
             .map(|client| ClientView {
                 id: client.id.clone(),
                 name: client.name.clone(),
-                connected: sessions.values().any(|id| id == &client.id)
+                connected: sessions
+                    .values()
+                    .any(|session| session.client_id == client.id)
                     || inflight.get(&client.id).is_some_and(|count| *count > 0),
             })
             .collect()
+    }
+
+    /// 文件里开关是开的，但是没有在听。设置这一行显示「无法监听」。
+    #[must_use]
+    pub fn unavailable(&self) -> bool {
+        let file = lock_mutex(&self.shared.file);
+        file.enabled && !file.refused && self.port().is_none()
+    }
+
+    /// 数据目录已经换过。按新目录重读授权，丢掉旧 token 和会话。
+    pub fn reload_auth(&self) {
+        let file = load_file(&self.shared.store);
+        let start = file.enabled && !file.refused;
+        *lock_mutex(&self.shared.file) = file;
+        self.stop();
+        if start {
+            match self.start(DEFAULT_PORT) {
+                Ok(port) => {
+                    self.shared
+                        .store
+                        .log_info(&format!("外部 AI 正在监听 127.0.0.1:{port}"));
+                }
+                Err(_) => {
+                    self.shared.store.log_warn("外部 AI 无法监听");
+                }
+            }
+        }
+        self.notify(Notice::Clients);
     }
 
     /// 先写授权文件，写成了才开始监听。写盘或监听失败时开关保持关闭。
@@ -301,17 +364,21 @@ impl ExternalAi {
             return Err(err);
         }
         drop(file);
-        lock_mutex(&self.shared.sessions).retain(|_, client| client != id);
+        lock_mutex(&self.shared.sessions).retain(|_, session| session.client_id != id);
         self.notify(Notice::Clients);
         Ok(())
     }
 
     /// 待办页上还没选定的冲突。按出现顺序，先来的在前。
     #[must_use]
-    pub fn conflicts(&self) -> Vec<(String, String)> {
+    pub fn conflicts(&self) -> Vec<ConflictView> {
         lock_mutex(&self.shared.pending)
             .iter()
-            .map(|pending| (pending.id.clone(), pending.title.clone()))
+            .map(|pending| ConflictView {
+                id: pending.id.clone(),
+                title: pending.title.clone(),
+                client: pending.client.clone(),
+            })
             .collect()
     }
 
@@ -322,6 +389,8 @@ impl ExternalAi {
     }
 
     /// 把外部提交的字段写下去。省略的字段保持磁盘上现在的值。
+    ///
+    /// 这是用户已经看见提示之后的选择。开关关掉或 token 撤销之后仍然写。
     pub fn keep_external(&self, id: &str) -> Result<(), String> {
         let pending = lock_mutex(&self.shared.pending)
             .iter()
@@ -330,9 +399,6 @@ impl ExternalAi {
         let Some(pending) = pending else {
             return Ok(());
         };
-        if !self.shared.enabled.load(Ordering::Acquire) {
-            return Err("未授权".to_owned());
-        }
         let result = apply_pending(&self.shared, &pending);
         if result.is_ok() {
             lock_mutex(&self.shared.pending).retain(|item| item.id != id);
@@ -344,6 +410,24 @@ impl ExternalAi {
     /// 本机还没写盘的待办。外部再改这些 id 时不覆盖。
     pub fn set_dirty(&self, ids: HashSet<String>) {
         *lock_mutex(&self.shared.dirty) = ids;
+    }
+
+    #[must_use]
+    pub fn is_dirty(&self, id: &str) -> bool {
+        self.shared.dirty(id)
+    }
+
+    /// 测试把会话空闲改短。正式路径是 60 秒。
+    #[cfg(test)]
+    pub fn set_session_idle(&self, idle: Duration) {
+        let millis = u64::try_from(idle.as_millis()).unwrap_or(u64::MAX);
+        self.shared.session_idle_ms.store(millis, Ordering::Release);
+    }
+
+    /// 测试在替换正式文件之前插入动作。
+    #[cfg(test)]
+    pub fn set_replace_probe(&self, probe: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *lock_mutex(&self.shared.replace_probe) = probe;
     }
 
     /// 停掉监听。测试在临时目录删掉之前调用。
@@ -422,7 +506,8 @@ impl Shared {
         };
         self.bump_inflight(&client_id, 1);
         self.notify(Notice::Clients);
-        let result = tools::call(self, tool, args);
+        let name = self.client_name(&client_id);
+        let result = tools::call(self, &name, tool, args);
         self.bump_inflight(&client_id, -1);
         self.notify(Notice::Clients);
         result
@@ -457,18 +542,30 @@ impl Shared {
     }
 
     fn remember_session(&self, session: String, client_id: String) {
-        lock_mutex(&self.sessions).insert(session, client_id);
+        lock_mutex(&self.sessions).insert(
+            session,
+            LiveSession {
+                client_id,
+                seen: Instant::now(),
+            },
+        );
         self.notify(Notice::Clients);
     }
 
     fn session_owner(&self, session: &str) -> Option<String> {
-        lock_mutex(&self.sessions).get(session).cloned()
+        if self.expire_sessions() {
+            self.notify(Notice::Clients);
+        }
+        let mut sessions = lock_mutex(&self.sessions);
+        let live = sessions.get_mut(session)?;
+        live.seen = Instant::now();
+        Some(live.client_id.clone())
     }
 
     fn end_session(&self, session: &str, client_id: &str) -> bool {
         let mut sessions = lock_mutex(&self.sessions);
         match sessions.get(session) {
-            Some(owner) if owner == client_id => {
+            Some(live) if live.client_id == client_id => {
                 sessions.remove(session);
                 drop(sessions);
                 self.notify(Notice::Clients);
@@ -478,7 +575,24 @@ impl Shared {
         }
     }
 
-    fn store_conflict(&self, id: &str, title: &str, op: PendingOp) {
+    fn expire_sessions(&self) -> bool {
+        let idle = Duration::from_millis(self.session_idle_ms.load(Ordering::Acquire));
+        let mut sessions = lock_mutex(&self.sessions);
+        let before = sessions.len();
+        sessions.retain(|_, session| session.seen.elapsed() < idle);
+        sessions.len() != before
+    }
+
+    fn client_name(&self, id: &str) -> String {
+        lock_mutex(&self.file)
+            .clients
+            .iter()
+            .find(|client| client.id == id)
+            .map(|client| client.name.clone())
+            .unwrap_or_default()
+    }
+
+    fn store_conflict(&self, id: &str, title: &str, client: &str, op: PendingOp) {
         let mut pending = lock_mutex(&self.pending);
         if pending.iter().any(|item| item.id == id) {
             return;
@@ -486,10 +600,49 @@ impl Shared {
         pending.push_back(Pending {
             id: id.to_owned(),
             title: title.to_owned(),
+            client: client.to_owned(),
             op,
         });
         drop(pending);
         self.notify(Notice::Conflict);
+    }
+
+    /// 替换正式文件之前再看一次未写盘的修改。看见了就不替换，磁盘保持原字节。
+    fn guarded_todo<T>(
+        &self,
+        id: &str,
+        body: impl FnOnce() -> Result<T, TodoError>,
+    ) -> Result<T, TodoError> {
+        if self.dirty(id) || self.conflict_pending(id) {
+            return Err(TodoError::Conflict { id: id.to_owned() });
+        }
+        let tripped = Arc::new(AtomicBool::new(false));
+        let tripped_hook = Arc::clone(&tripped);
+        let dirty = Arc::clone(&self.dirty);
+        let pending = Arc::clone(&self.pending);
+        let item = id.to_owned();
+        let probe = lock_mutex(&self.replace_probe).clone();
+        let hook = Arc::new(move || {
+            if let Some(probe) = probe.as_ref() {
+                probe();
+            }
+            let blocked = lock_mutex(&dirty).contains(&item)
+                || lock_mutex(&pending)
+                    .iter()
+                    .any(|pending| pending.id == item);
+            if blocked {
+                tripped_hook.store(true, Ordering::Release);
+            }
+            !blocked
+        });
+        crate::storage::set_before_replace(Some(hook));
+        let _clear = ReplaceHook;
+        let result = body();
+        drop(_clear);
+        if tripped.load(Ordering::Acquire) {
+            return Err(TodoError::Conflict { id: id.to_owned() });
+        }
+        result
     }
 
     fn todo_title(&self, id: &str) -> String {
@@ -508,10 +661,15 @@ impl Shared {
     }
 }
 
-fn apply_pending(shared: &Shared, pending: &Pending) -> Result<(), String> {
-    if !shared.enabled.load(Ordering::Acquire) {
-        return Err("未授权".to_owned());
+struct ReplaceHook;
+
+impl Drop for ReplaceHook {
+    fn drop(&mut self) {
+        crate::storage::set_before_replace(None);
     }
+}
+
+fn apply_pending(shared: &Shared, pending: &Pending) -> Result<(), String> {
     let result = match &pending.op {
         PendingOp::Update(patch) => shared
             .todos
@@ -846,6 +1004,7 @@ mod tests {
         );
         assert_eq!(conflict.unwrap_err(), format!("待办保存冲突：{id}"));
         assert_eq!(ai.shared.todos.item(&id).unwrap().item.title, "本机");
+        assert_eq!(ai.conflicts()[0].client, "Cursor");
         let again = ai.shared.invoke(
             &issued.token,
             "update_todo",
@@ -865,6 +1024,155 @@ mod tests {
         ai.keep_local(&id);
         assert!(ai.conflicts().is_empty());
         assert_eq!(ai.shared.todos.item(&id).unwrap().item.title, "外部一");
+        ai.shutdown();
+    }
+
+    #[test]
+    fn a_keystroke_during_replace_conflicts_and_leaves_the_file() {
+        let (_temp, ai) = opened();
+        ai.set_enabled_at(true, 0).unwrap();
+        let issued = ai.authorize("Claude").unwrap();
+        let created = ai
+            .shared
+            .invoke(&issued.token, "create_todo", &json!({ "title": "本机" }))
+            .unwrap();
+        let id = created["id"].as_str().unwrap().to_owned();
+        let list_id = created["listId"].as_str().unwrap();
+        let path = ai
+            .shared
+            .store
+            .data_dir()
+            .join("todos")
+            .join(format!("{list_id}.json"));
+        let before = std::fs::read(&path).unwrap();
+        let marker = ai.clone();
+        let marked = id.clone();
+        ai.set_replace_probe(Some(Arc::new(move || {
+            marker.set_dirty(HashSet::from([marked.clone()]));
+        })));
+        let conflict = ai.shared.invoke(
+            &issued.token,
+            "update_todo",
+            &json!({ "id": id, "revision": 1, "title": "外部" }),
+        );
+        assert_eq!(conflict.unwrap_err(), format!("待办保存冲突：{id}"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(ai.shared.todos.item(&id).unwrap().item.title, "本机");
+        assert_eq!(ai.conflicts()[0].client, "Claude");
+        ai.set_replace_probe(None);
+        ai.shutdown();
+    }
+
+    #[test]
+    fn keep_external_still_writes_after_the_switch_is_off() {
+        let (_temp, ai) = opened();
+        ai.set_enabled_at(true, 0).unwrap();
+        let issued = ai.authorize("Claude").unwrap();
+        let created = ai
+            .shared
+            .invoke(&issued.token, "create_todo", &json!({ "title": "本机" }))
+            .unwrap();
+        let id = created["id"].as_str().unwrap().to_owned();
+        ai.set_dirty(HashSet::from([id.clone()]));
+        let conflict = ai.shared.invoke(
+            &issued.token,
+            "update_todo",
+            &json!({ "id": id, "revision": 1, "title": "外部" }),
+        );
+        assert!(conflict.unwrap_err().starts_with("待办保存冲突"));
+        ai.set_enabled(false).unwrap();
+        ai.revoke(&issued.id).unwrap();
+        ai.set_dirty(HashSet::new());
+        ai.keep_external(&id).unwrap();
+        assert_eq!(ai.shared.todos.item(&id).unwrap().item.title, "外部");
+        assert!(ai.conflicts().is_empty());
+        ai.shutdown();
+    }
+
+    #[test]
+    fn saved_switch_stays_on_when_the_port_is_taken() {
+        let temp = crate::storage::test_temp::TempDir::new();
+        let store = Store::open(StorePaths {
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            user_profile: temp.path().join("profile"),
+            local_app_data: temp.path().join("local"),
+        })
+        .unwrap();
+        let todos = TodoCommands::open(store.clone());
+        todos.boot().unwrap();
+        let notes = NoteCommands::open(store.clone()).unwrap();
+        std::fs::create_dir_all(store.data_dir()).unwrap();
+        std::fs::write(
+            store.data_dir().join(CLIENTS_FILE),
+            b"{\"schemaVersion\":1,\"enabled\":true,\"clients\":[]}\n",
+        )
+        .unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let ai = ExternalAi::open_at(store, todos, Some(notes), port);
+        assert!(ai.enabled());
+        assert!(ai.unavailable());
+        assert!(ai.port().is_none());
+        let saved = std::fs::read_to_string(ai.shared.store.data_dir().join(CLIENTS_FILE)).unwrap();
+        assert!(saved.contains("\"enabled\": true") || saved.contains("\"enabled\":true"));
+        drop(listener);
+        ai.set_enabled_at(true, port).unwrap();
+        assert!(!ai.unavailable());
+        assert_eq!(ai.port(), Some(port));
+        ai.shutdown();
+    }
+
+    #[test]
+    fn deleting_a_session_or_letting_it_idle_clears_connected() {
+        let (_temp, ai) = opened();
+        ai.set_enabled_at(true, 0).unwrap();
+        let issued = ai.authorize("Claude").unwrap();
+        let port = ai.port().unwrap();
+        let init_body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}"#;
+        let init = format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\n\r\n{init_body}",
+            issued.token,
+            init_body.len()
+        );
+        let response =
+            String::from_utf8(http::handle_http(&ai.shared, true, init.as_bytes())).unwrap();
+        let session = response
+            .split("\r\n")
+            .find_map(|line| line.strip_prefix("Mcp-Session-Id: "))
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert!(ai.clients()[0].connected);
+        let delete = format!(
+            "DELETE /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nMcp-Session-Id: {session}\r\nContent-Length: 0\r\n\r\n",
+            issued.token
+        );
+        let deleted =
+            String::from_utf8(http::handle_http(&ai.shared, true, delete.as_bytes())).unwrap();
+        assert!(deleted.starts_with("HTTP/1.1 204"));
+        assert!(!ai.clients()[0].connected);
+
+        let again =
+            String::from_utf8(http::handle_http(&ai.shared, true, init.as_bytes())).unwrap();
+        let session = again
+            .split("\r\n")
+            .find_map(|line| line.strip_prefix("Mcp-Session-Id: "))
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert!(ai.clients()[0].connected);
+        ai.set_session_idle(Duration::ZERO);
+        assert!(!ai.clients()[0].connected);
+        let ping_body = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+        let ping = format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nMcp-Session-Id: {session}\r\nContent-Length: {}\r\n\r\n{ping_body}",
+            issued.token,
+            ping_body.len()
+        );
+        let stale =
+            String::from_utf8(http::handle_http(&ai.shared, true, ping.as_bytes())).unwrap();
+        assert!(stale.contains("未授权"));
         ai.shutdown();
     }
 

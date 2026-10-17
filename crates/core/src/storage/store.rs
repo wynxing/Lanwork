@@ -594,8 +594,11 @@ impl Inner {
         require_written_schema(&bytes)?;
         bytes.push(b'\n');
         if let Err(source) = atomic_write(&path, &bytes) {
+            let aborted = super::atomic::is_replace_aborted(&source);
             let err = Error::io(IoAction::Replace, &path, source);
-            self.log.warn(&err.to_string());
+            if !aborted {
+                self.log.warn(&err.to_string());
+            }
             return Err(err);
         }
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;

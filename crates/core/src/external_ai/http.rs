@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Shared, fresh_id};
+use super::{Notice, Shared, fresh_id};
 
 pub const DEFAULT_PORT: u16 = 39217;
 
@@ -23,8 +23,17 @@ pub(super) fn accept_loop(listener: TcpListener, shared: Arc<Shared>, shutdown: 
     while !shutdown.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
+                if shared.expire_sessions() {
+                    shared.notify(Notice::Clients);
+                }
                 if !try_acquire(&shared) {
-                    drop(stream);
+                    let mut stream = stream;
+                    let _ = stream.write_all(&http_response(
+                        503,
+                        "Service Unavailable",
+                        &[],
+                        error_body(None, "连接过多"),
+                    ));
                     continue;
                 }
                 let task = Arc::clone(&shared);

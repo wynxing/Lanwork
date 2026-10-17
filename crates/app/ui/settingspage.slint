@@ -92,6 +92,7 @@ export global SettingsPageData {
     callback restore-hidden(int);
 
     in property <bool> external-ai: false;
+    in property <bool> external-unavailable: false;
     in property <string> external-token;
     in property <string> external-endpoint;
     in property <int> external-name-reset: 0;
@@ -529,6 +530,7 @@ component DataPage inherits Rectangle {
 
 component OtherPage inherits Rectangle {
     in property <Ink> c;
+    in property <bool> dark;
 
     VerticalLayout {
         padding-left: 16px;
@@ -610,9 +612,21 @@ component OtherPage inherits Rectangle {
                 checked: SettingsPageData.external-ai;
                 label: "外部 AI";
                 c: root.c;
+                on-fill: root.dark ? #000000 : #ffffff;
                 toggled(value) => {
                     SettingsPageData.set-external-ai(value);
                 }
+            }
+
+            if SettingsPageData.external-unavailable: Text {
+                x: 172px;
+                width: parent.width - 172px;
+                height: parent.height - 1px;
+                text: "无法监听";
+                color: root.c.critical;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
             }
         }
 
@@ -942,5 +956,6 @@ export component SettingsPage inherits Rectangle {
         width: parent.width - 132px;
         height: parent.height - root.content-shift;
         c: root.c;
+        dark: root.dark;
     }
 }
