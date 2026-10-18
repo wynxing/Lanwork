@@ -1,0 +1,69 @@
+id = "example.claude-usage"
+name = "Claude 用量"
+description = "本机 Claude 登录的 5 小时和 7 天用量"
+entry = "main.lua"
+services = ["http", "timer"]
+
+[http]
+domains = ["api.anthropic.com"]
+
+[[login]]
+id = "claude"
+label = "Claude 登录"
+file = ".claude/.credentials.json"
+
+[[login.fields]]
+name = "token"
+path = "claudeAiOauth.accessToken"
+header = "Authorization"
+prefix = "Bearer "
+
+[login.expires]
+path = "claudeAiOauth.expiresAt"
+format = "epoch_ms"
+
+[login.request]
+method = "GET"
+url = "https://api.anthropic.com/api/oauth/usage"
+headers = [
+  { name = "anthropic-beta", value = "oauth-2025-04-20" },
+  { name = "Accept", value = "application/json" },
+]
+
+[[login.extract]]
+name = "five_percent"
+path = "five_hour.utilization"
+type = "number"
+
+[[login.extract]]
+name = "five_reset"
+path = "five_hour.resets_at"
+type = "string"
+
+[[login.extract]]
+name = "week_percent"
+path = "seven_day.utilization"
+type = "number"
+
+[[login.extract]]
+name = "week_reset"
+path = "seven_day.resets_at"
+type = "string"
+
+[[component]]
+id = "five"
+component = "text"
+text = "没有数据"
+
+[[component]]
+id = "five_bar"
+component = "progress"
+
+[[component]]
+id = "week"
+component = "text"
+text = ""
+
+[[component]]
+id = "week_bar"
+component = "progress"
