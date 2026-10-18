@@ -1611,259 +1611,6 @@ fn usage_body() -> String {
     r#"{"plan_type":"plus","rate_limit":{"limit_reached":false,"primary_window":{"used_percent":12.5,"limit_window_seconds":18000,"reset_at":1577836800},"secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_at":1578441600}}}"#.to_string()
 }
 
-fn open_chatgpt(dir: &Path, transport: Arc<Recorded>, roots: crate::usage::UsageRoots) -> Session {
-    crate::guide::write_example(dir, "chatgpt").unwrap();
-    let mut options = Options::default();
-    options.transport = transport;
-    options.usage_roots = Some(roots);
-    let session = open_at(dir, options).unwrap();
-    session.on_load();
-    session
-}
-
-#[test]
-fn chatgpt_usage_example_hides_the_login_and_caches() {
-    crate::usage::reset_usage_cache_for_test();
-    let token = future_access_token();
-    let account = "acct-leak-9f3a";
-    let dir = Scratch::new("chatgpt-usage");
-    let codex = dir.join("codex");
-    std::fs::create_dir_all(&codex).unwrap();
-    std::fs::write(
-        codex.join("auth.json"),
-        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
-    )
-    .unwrap();
-    let transport = Arc::new(Recorded {
-        log: Mutex::new(Vec::new()),
-        status: 200,
-        body: usage_body(),
-    });
-    let roots = crate::usage::UsageRoots {
-        chatgpt: Some(codex.clone()),
-        claude: Some(dir.join("claude")),
-        grok: Some(dir.join("grok")),
-    };
-    let session = open_chatgpt(&dir, transport.clone(), roots);
-    assert_eq!(caption(&session, "five"), "5小时 12.5% · 01-01 00:00");
-    assert_eq!(caption(&session, "week"), "每周 40% · 01-08 00:00");
-    assert!((session.widget("five_bar").unwrap().progress - 0.125).abs() < 1e-9);
-    assert!((session.widget("week_bar").unwrap().progress - 0.4).abs() < 1e-9);
-    let sent = transport.log.lock().unwrap().clone();
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].url, crate::usage::CHATGPT_USAGE_URL);
-    assert!(
-        sent[0].headers.iter().any(|(name, value)| {
-            name == "Authorization" && value == &format!("Bearer {token}")
-        })
-    );
-    assert!(
-        sent[0]
-            .headers
-            .iter()
-            .any(|(name, value)| name == "ChatGPT-Account-Id" && value == account)
-    );
-    let debug = format!("{:?}", sent[0]);
-    assert!(debug.contains("<redacted>"), "{debug}");
-    assert!(!debug.contains(&token), "{debug}");
-    assert!(!debug.contains(account), "{debug}");
-    for text in [caption(&session, "five"), caption(&session, "week")] {
-        assert!(!text.contains(&token), "{text}");
-        assert!(!text.contains(account), "{text}");
-        assert!(!text.contains("chatgpt.com"), "{text}");
-    }
-    assert!(
-        session
-            .notices()
-            .iter()
-            .all(|note| { !note.text.contains(&token) && !note.text.contains(account) })
-    );
-    session.advance(300.0);
-    assert_eq!(session.http_sends(), 1);
-    assert_eq!(transport.log.lock().unwrap().len(), 1);
-    crate::usage::age_usage_cache_for_test(Duration::from_secs(61));
-    session.advance(300.0);
-    assert_eq!(session.http_sends(), 2);
-    assert_eq!(transport.log.lock().unwrap().len(), 2);
-
-    crate::usage::reset_usage_cache_for_test();
-    let denied = Scratch::new("chatgpt-401");
-    std::fs::create_dir_all(denied.join("codex")).unwrap();
-    std::fs::write(
-        denied.join("codex").join("auth.json"),
-        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
-    )
-    .unwrap();
-    let transport = Arc::new(Recorded {
-        log: Mutex::new(Vec::new()),
-        status: 401,
-        body: token.clone(),
-    });
-    let session = open_chatgpt(
-        &denied,
-        transport,
-        crate::usage::UsageRoots {
-            chatgpt: Some(denied.join("codex")),
-            claude: Some(denied.join("claude")),
-            grok: Some(denied.join("grok")),
-        },
-    );
-    assert_eq!(caption(&session, "five"), "登录已过期");
-    assert_eq!(caption(&session, "week"), "");
-    assert!(!caption(&session, "five").contains(&token));
-    assert!(
-        session
-            .notices()
-            .iter()
-            .all(|note| { note.text == "登录已过期" && !note.text.contains(&token) })
-    );
-
-    crate::usage::reset_usage_cache_for_test();
-    let missing = Scratch::new("chatgpt-missing");
-    std::fs::create_dir_all(missing.join("codex")).unwrap();
-    let transport = Arc::new(Recorded {
-        log: Mutex::new(Vec::new()),
-        status: 200,
-        body: token.clone(),
-    });
-    let session = open_chatgpt(
-        &missing,
-        transport.clone(),
-        crate::usage::UsageRoots {
-            chatgpt: Some(missing.join("codex")),
-            claude: Some(missing.join("claude")),
-            grok: Some(missing.join("grok")),
-        },
-    );
-    assert_eq!(caption(&session, "five"), "登录已过期");
-    assert!(transport.log.lock().unwrap().is_empty());
-    assert_eq!(session.http_sends(), 0);
-    assert!(!caption(&session, "five").contains(&token));
-
-    crate::usage::reset_usage_cache_for_test();
-    let broken = Scratch::new("chatgpt-bad-json");
-    std::fs::create_dir_all(broken.join("codex")).unwrap();
-    std::fs::write(
-        broken.join("codex").join("auth.json"),
-        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
-    )
-    .unwrap();
-    let transport = Arc::new(Recorded {
-        log: Mutex::new(Vec::new()),
-        status: 200,
-        body: format!("not-json {token}"),
-    });
-    let session = open_chatgpt(
-        &broken,
-        transport,
-        crate::usage::UsageRoots {
-            chatgpt: Some(broken.join("codex")),
-            claude: Some(broken.join("claude")),
-            grok: Some(broken.join("grok")),
-        },
-    );
-    assert_eq!(caption(&session, "five"), "数据无效");
-    assert!(!caption(&session, "five").contains(&token));
-    assert!(!caption(&session, "five").contains(account));
-    assert!(session.notices().iter().all(|note| {
-        !note.text.contains(&token) && !note.text.contains(account) && note.text == "数据无效"
-    }));
-}
-
-#[test]
-fn relative_usage_root_is_expired_and_sends_nothing() {
-    crate::usage::reset_usage_cache_for_test();
-    let dir = Scratch::new("usage-relative");
-    let transport = recorded(r#"{"plan_type":"plus"}"#);
-    let mut options = Options::default();
-    options.transport = transport.clone();
-    options.usage_roots = Some(crate::usage::UsageRoots {
-        chatgpt: Some(PathBuf::from("codex")),
-        claude: Some(PathBuf::from(".")),
-        grok: None,
-    });
-    crate::guide::write_example(&dir, "chatgpt").unwrap();
-    let session = open_at(&dir, options).unwrap();
-    session.on_load();
-    assert_eq!(caption(&session, "five"), "登录已过期");
-    assert_eq!(session.http_sends(), 0);
-    assert!(transport.log.lock().unwrap().is_empty());
-}
-
-#[test]
-fn undeclared_source_cannot_read_another_tools_cached_usage() {
-    crate::usage::reset_usage_cache_for_test();
-    let token = future_access_token();
-    let account = "acct-leak-9f3a";
-    let dir = Scratch::new("usage-owner");
-    let codex = dir.join("codex");
-    std::fs::create_dir_all(&codex).unwrap();
-    std::fs::write(
-        codex.join("auth.json"),
-        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
-    )
-    .unwrap();
-    let transport = Arc::new(Recorded {
-        log: Mutex::new(Vec::new()),
-        status: 200,
-        body: usage_body(),
-    });
-    let owner = open_chatgpt(
-        &dir,
-        transport,
-        crate::usage::UsageRoots {
-            chatgpt: Some(codex),
-            claude: Some(dir.join("claude")),
-            grok: Some(dir.join("grok")),
-        },
-    );
-    assert!(caption(&owner, "five").contains("12.5%"));
-
-    let other = Scratch::new("usage-other");
-    write_tool(
-        &other,
-        &tool(
-            "example.other",
-            "",
-            "[[usage]]\nsource = \"claude\"\n",
-            &text_widgets(&["out"]),
-        ),
-        r#"
-function on_load()
-  usage.fetch("chatgpt", function(result)
-    local text = result.error or ""
-    if result.plan then
-      text = text .. result.plan
-    end
-    if type(result.windows) == "table" then
-      for _, window in ipairs(result.windows) do
-        text = text .. tostring(window.name) .. tostring(window.used_percent)
-      end
-    end
-    ui.text("out", text)
-  end)
-end
-"#,
-    );
-    let transport = recorded("{}");
-    let mut options = Options::default();
-    options.transport = transport.clone();
-    let session = open_at(&other, options).unwrap();
-    session.on_load();
-    let text = caption(&session, "out");
-    assert_eq!(text, "未授权");
-    assert!(!text.contains("12.5"), "{text}");
-    assert!(!text.contains("plus"), "{text}");
-    assert!(!text.contains("5小时"), "{text}");
-    assert!(!text.contains(&token), "{text}");
-    assert_eq!(session.http_sends(), 0);
-    assert!(transport.log.lock().unwrap().is_empty());
-    assert!(session.notices().iter().any(|note| note.text == "未授权"));
-    assert!(session.notices().iter().all(|note| {
-        note.text == "未授权" && !note.text.contains("12.5") && !note.text.contains(&token)
-    }));
-}
-
 fn write_login_file(home: &Path, token: &str, account: &str) {
     let dir = home.join(".codex");
     std::fs::create_dir_all(&dir).unwrap();
@@ -1875,7 +1622,7 @@ fn write_login_file(home: &Path, token: &str, account: &str) {
 }
 
 fn open_generic(dir: &Path, transport: Arc<Recorded>, home: &Path) -> Session {
-    crate::guide::write_example(dir, "chatgpt-generic").unwrap();
+    crate::guide::write_example(dir, "chatgpt").unwrap();
     let mut options = Options::default();
     options.transport = transport;
     options.login_roots = Some(crate::login::LoginRoots {
@@ -1900,12 +1647,15 @@ fn generic_chatgpt_login_hides_the_file_and_caches_per_tool() {
         body: usage_body(),
     });
     let session = open_generic(&dir, transport.clone(), &home);
-    assert_eq!(caption(&session, "five"), "5小时 12.5% · 01-01 00:00");
+    assert_eq!(
+        caption(&session, "five"),
+        "plus · 5小时 12.5% · 01-01 00:00"
+    );
     assert_eq!(caption(&session, "week"), "每周 40% · 01-08 00:00");
     let sent = transport.log.lock().unwrap().clone();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].method, "GET");
-    assert_eq!(sent[0].url, crate::usage::CHATGPT_USAGE_URL);
+    assert_eq!(sent[0].url, "https://chatgpt.com/backend-api/wham/usage");
     assert!(sent[0].body.is_empty());
     assert_eq!(
         sent[0].headers,
@@ -1996,7 +1746,10 @@ fn changed_login_descriptor_does_not_reuse_the_cached_extract() {
         body: usage_body(),
     });
     let session = open_generic(&dir, transport.clone(), &home);
-    assert_eq!(caption(&session, "five"), "5小时 12.5% · 01-01 00:00");
+    assert_eq!(
+        caption(&session, "five"),
+        "plus · 5小时 12.5% · 01-01 00:00"
+    );
     drop(session);
     let manifest = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
     let manifest = manifest.replace(
@@ -2034,7 +1787,7 @@ fn login_fetch_cannot_change_the_request_or_read_another_tools_cache() {
     let mut options = Options::default();
     options.transport = transport.clone();
     options.login_roots = Some(crate::login::LoginRoots { home: Some(home) });
-    crate::guide::write_example(&owner, "chatgpt-generic").unwrap();
+    crate::guide::write_example(&owner, "chatgpt").unwrap();
     let script = r#"
 function on_load()
   login.fetch("chatgpt", function(result)
@@ -2047,7 +1800,7 @@ end
     session.on_load();
     let sent = transport.log.lock().unwrap().clone();
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].url, crate::usage::CHATGPT_USAGE_URL);
+    assert_eq!(sent[0].url, "https://chatgpt.com/backend-api/wham/usage");
     assert_eq!(sent[0].method, "GET");
     assert!(sent[0].body.is_empty());
     assert!(!format!("{:?}", sent[0]).contains(&token));
@@ -2061,7 +1814,7 @@ end
     options.login_roots = Some(crate::login::LoginRoots {
         home: Some(home.clone()),
     });
-    crate::guide::write_example(&blocked, "chatgpt-generic").unwrap();
+    crate::guide::write_example(&blocked, "chatgpt").unwrap();
     std::fs::write(
         blocked.join("main.lua"),
         r#"

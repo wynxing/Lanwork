@@ -2,10 +2,72 @@ id = "example.chatgpt-usage"
 name = "ChatGPT 用量"
 description = "本机 ChatGPT 登录的 5 小时和每周用量"
 entry = "main.lua"
-services = ["timer"]
+services = ["http", "timer"]
 
-[[usage]]
-source = "chatgpt"
+[http]
+domains = ["chatgpt.com"]
+
+[[login]]
+id = "chatgpt"
+label = "ChatGPT 登录"
+file = ".codex/auth.json"
+
+[[login.fields]]
+name = "token"
+path = "tokens.access_token"
+header = "Authorization"
+prefix = "Bearer "
+
+[[login.fields]]
+name = "account"
+path = "tokens.account_id"
+header = "ChatGPT-Account-Id"
+
+[login.expires]
+field = "token"
+format = "jwt_exp"
+
+[login.request]
+method = "GET"
+url = "https://chatgpt.com/backend-api/wham/usage"
+headers = [
+  { name = "Accept", value = "application/json" },
+]
+
+[[login.extract]]
+name = "plan"
+path = "plan_type"
+type = "string"
+
+[[login.extract]]
+name = "five_percent"
+path = "rate_limit.primary_window.used_percent"
+type = "number"
+
+[[login.extract]]
+name = "five_seconds"
+path = "rate_limit.primary_window.limit_window_seconds"
+type = "number"
+
+[[login.extract]]
+name = "five_reset"
+path = "rate_limit.primary_window.reset_at"
+type = "number"
+
+[[login.extract]]
+name = "week_percent"
+path = "rate_limit.secondary_window.used_percent"
+type = "number"
+
+[[login.extract]]
+name = "week_seconds"
+path = "rate_limit.secondary_window.limit_window_seconds"
+type = "number"
+
+[[login.extract]]
+name = "week_reset"
+path = "rate_limit.secondary_window.reset_at"
+type = "number"
 
 [[component]]
 id = "five"

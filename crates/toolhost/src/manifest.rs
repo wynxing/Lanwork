@@ -5,7 +5,6 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::id::{imported_prefix_forbidden, valid_id};
 use crate::login::LoginDecl;
-use crate::usage::UsageSource;
 
 const SERVICES: &[&str] = &[
     "timer",
@@ -85,8 +84,6 @@ pub struct Manifest {
     pub post: bool,
     pub headers: Vec<FixedHeader>,
     pub secrets: Vec<SecretDecl>,
-    /// 本机登录用量。顺序与清单一致。脚本不能改路径和网址。
-    pub usage: Vec<UsageSource>,
     /// 插件自己声明的登录描述。顺序与清单一致。
     pub logins: Vec<LoginDecl>,
     pub widgets: Vec<WidgetDecl>,
@@ -122,7 +119,6 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
             "services",
             "http",
             "secret",
-            "usage",
             "login",
             "component",
         ],
@@ -168,10 +164,6 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
         Vec::new()
     };
     reject_header_collisions(&headers, &secrets)?;
-    let usage = match table.get("usage") {
-        None => Vec::new(),
-        Some(value) => parse_usage(value)?,
-    };
     let logins = match table.get("login") {
         None => Vec::new(),
         Some(value) => crate::login::parse_login_array(value, &domains)?,
@@ -188,7 +180,6 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
             post,
             headers,
             secrets,
-            usage,
             logins,
             widgets,
             entry: entry.clone(),
@@ -409,27 +400,6 @@ fn parse_secrets(value: &toml::Value) -> Result<Vec<SecretDecl>, String> {
         });
     }
     Ok(secrets)
-}
-
-fn parse_usage(value: &toml::Value) -> Result<Vec<UsageSource>, String> {
-    let array = value.as_array().ok_or("usage 不是数组")?;
-    if array.is_empty() {
-        return Err("声明了 usage 但没有来源".to_string());
-    }
-    let mut sources = Vec::new();
-    for item in array {
-        let table = item.as_table().ok_or("来源不是表")?;
-        require_keys(table.keys().map(String::as_str), &["source"])?;
-        let name = required_str(table, "source")?;
-        let Some(source) = UsageSource::parse(name) else {
-            return Err(format!("不认识的来源 {name}"));
-        };
-        if sources.contains(&source) {
-            return Err("来源重复".to_string());
-        }
-        sources.push(source);
-    }
-    Ok(sources)
 }
 
 fn parse_widgets(value: &toml::Value) -> Result<Vec<WidgetDecl>, String> {
