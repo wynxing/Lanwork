@@ -40,10 +40,6 @@ use crate::login::{
 };
 use crate::manifest::{Manifest, WidgetDecl, WidgetKind, load_dir};
 use crate::secret::SecretStore;
-use crate::usage::{
-    UsageError, UsageRoots, UsageSnapshot, UsageSource, cached_usage, interpret_usage,
-    prepare_usage, store_usage,
-};
 
 const CALLBACK_MS: u64 = 1000;
 const HOOK_INSTRUCTIONS: u32 = 4_096;
@@ -63,7 +59,7 @@ const STORAGE_COUNT_MAX: usize = 256;
 /// 回调里再发请求会再等一轮。不停地一轮接一轮，规格没有写。最多 8 轮，避免宿主停不下来。
 const HTTP_DRAIN_ROUNDS: u32 = 8;
 const SERVICE_NAMES: &[&str] = &[
-    "timer", "notify", "storage", "todo", "http", "secret", "usage", "login",
+    "timer", "notify", "storage", "todo", "http", "secret", "login",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,8 +135,6 @@ pub struct Options {
     /// 把完成交给待办存储。`Ok` 表示完成或已经完成。`Err` 的文字原样返回给脚本。
     /// 找不到时调用方应返回「找不到待办」。没有这个回调时只改注入的列表。
     pub complete_todo: Option<TodoComplete>,
-    /// 本机登录文件所在的目录。空着则按 `USERPROFILE` 和对应的环境变量现查。
-    pub usage_roots: Option<UsageRoots>,
     /// 插件登录文件用的家目录。空着则按 `USERPROFILE`，没有再用 `HOME`。
     /// 插件描述不读 `CODEX_HOME` 这一类目录变量。
     pub login_roots: Option<LoginRoots>,
@@ -159,7 +153,6 @@ impl Default for Options {
             storage: BTreeMap::new(),
             persist_storage: None,
             complete_todo: None,
-            usage_roots: None,
             login_roots: None,
             data_dir: None,
         }
@@ -242,7 +235,6 @@ struct Inner {
     inflight: Vec<Inflight>,
     persist_storage: Option<StoragePersist>,
     complete_todo: Option<TodoComplete>,
-    usage_roots: Option<UsageRoots>,
     login_roots: Option<LoginRoots>,
     data_dir: Option<std::path::PathBuf>,
 }
@@ -251,10 +243,6 @@ enum FlightKind {
     Http {
         secrets: Vec<String>,
         header_values: Vec<String>,
-    },
-    Usage {
-        source: UsageSource,
-        remember: bool,
     },
     Login {
         tool_id: String,
@@ -266,7 +254,6 @@ enum FlightKind {
 
 enum FlightOutcome {
     Http(Result<crate::http::HttpResponse, crate::http::TransportError>),
-    Usage(Result<UsageSnapshot, UsageError>),
     Login(Result<Vec<LoginValue>, LoginError>),
 }
 
@@ -350,7 +337,6 @@ impl Session {
             inflight: Vec::new(),
             persist_storage: options.persist_storage,
             complete_todo: options.complete_todo,
-            usage_roots: options.usage_roots,
             login_roots: options.login_roots,
             data_dir: options.data_dir,
         }));
@@ -592,9 +578,6 @@ impl Session {
                 secrets,
                 header_values,
             } => self.settle_tool_http(item.callbacks, secrets, header_values, response),
-            FlightKind::Usage { source, remember } => {
-                self.settle_usage(item.callbacks, source, remember, response);
-            }
             FlightKind::Login {
                 tool_id,
                 id,
@@ -628,9 +611,7 @@ impl Session {
         };
         let http = match response {
             Ok(FlightOutcome::Http(result)) => result,
-            Ok(FlightOutcome::Usage(_) | FlightOutcome::Login(_)) | Err(_) => {
-                Err(crate::http::TransportError)
-            }
+            Ok(FlightOutcome::Login(_)) | Err(_) => Err(crate::http::TransportError),
         };
         let (ok, status, body, error) = match http {
             Ok(response) => {
@@ -663,36 +644,6 @@ impl Session {
         );
     }
 
-    fn settle_usage(
-        &self,
-        callbacks: Vec<RegistryKey>,
-        source: UsageSource,
-        remember: bool,
-        response: Result<FlightOutcome, mpsc::RecvTimeoutError>,
-    ) {
-        let outcome = match response {
-            Ok(FlightOutcome::Usage(result)) => result,
-            Ok(FlightOutcome::Http(_) | FlightOutcome::Login(_)) | Err(_) => {
-                Err(UsageError::Failed)
-            }
-        };
-        if remember {
-            store_usage(source, outcome.clone());
-        }
-        if let Err(err) = &outcome {
-            self.inner.borrow_mut().note(err.text());
-        }
-        for key in callbacks {
-            let callback = self.lua.registry_value::<Function>(&key).ok();
-            self.lua.remove_registry_value(key).ok();
-            let Some(callback) = callback else {
-                continue;
-            };
-            let outcome = outcome.clone();
-            self.run_lua(|| deliver_usage(&self.lua, &callback, &outcome), false);
-        }
-    }
-
     fn settle_login(
         &self,
         callbacks: Vec<RegistryKey>,
@@ -704,9 +655,7 @@ impl Session {
     ) {
         let outcome = match response {
             Ok(FlightOutcome::Login(result)) => result,
-            Ok(FlightOutcome::Http(_) | FlightOutcome::Usage(_)) | Err(_) => {
-                Err(LoginError::Failed)
-            }
+            Ok(FlightOutcome::Http(_)) | Err(_) => Err(LoginError::Failed),
         };
         if remember {
             store_login(tool_id, id, fingerprint, outcome.clone());
@@ -1235,9 +1184,6 @@ fn bind(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
             .set("secret", lua.create_table().map_err(|err| err.to_string())?)
             .map_err(|err| err.to_string())?;
     }
-    if !inner.borrow().manifest.usage.is_empty() {
-        bind_usage(lua, Rc::clone(&inner))?;
-    }
     if !inner.borrow().manifest.logins.is_empty() {
         bind_login(lua, inner)?;
     }
@@ -1664,114 +1610,6 @@ fn http_request(
     }
 }
 
-fn bind_usage(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
-    let usage = lua.create_table().map_err(|err| err.to_string())?;
-    usage
-        .set(
-            "fetch",
-            lua.create_function(move |lua, (name, callback): (String, Function)| {
-                usage_fetch(lua, &inner, &name, callback)
-            })
-            .map_err(|err| err.to_string())?,
-        )
-        .map_err(|err| err.to_string())?;
-    lua.globals()
-        .set("usage", usage)
-        .map_err(|err| err.to_string())?;
-    Ok(())
-}
-
-fn usage_fetch(
-    lua: &Lua,
-    inner: &Rc<RefCell<Inner>>,
-    name: &str,
-    callback: Function,
-) -> mlua::Result<()> {
-    let Some(source) = UsageSource::parse(name) else {
-        inner.borrow_mut().note(UsageError::Invalid.text());
-        return deliver_usage(lua, &callback, &Err(UsageError::Invalid));
-    };
-    if !inner.borrow().manifest.usage.contains(&source) {
-        inner.borrow_mut().note(UsageError::Unauthorized.text());
-        return deliver_usage(lua, &callback, &Err(UsageError::Unauthorized));
-    }
-    let key = lua.create_registry_value(callback)?;
-    let key = match inner.borrow_mut().join_usage(source, key) {
-        Ok(()) => return Ok(()),
-        Err(key) => key,
-    };
-    if let Some(cached) = cached_usage(source) {
-        return queue_usage(inner, source, key, cached, false);
-    }
-    let roots = inner
-        .borrow()
-        .usage_roots
-        .clone()
-        .unwrap_or_else(UsageRoots::from_env);
-    match prepare_usage(source, &roots, unix_now_ms()) {
-        Ok(call) => spawn_usage(inner, source, key, call),
-        Err(err) => queue_usage(inner, source, key, Err(err), true),
-    }
-}
-
-fn queue_usage(
-    inner: &Rc<RefCell<Inner>>,
-    source: UsageSource,
-    key: RegistryKey,
-    outcome: Result<UsageSnapshot, UsageError>,
-    remember: bool,
-) -> mlua::Result<()> {
-    let (tx, rx) = mpsc::channel();
-    let _ = tx.send(FlightOutcome::Usage(outcome));
-    inner.borrow_mut().inflight.push(Inflight {
-        rx,
-        callbacks: vec![key],
-        kind: FlightKind::Usage { source, remember },
-    });
-    Ok(())
-}
-
-fn spawn_usage(
-    inner: &Rc<RefCell<Inner>>,
-    source: UsageSource,
-    key: RegistryKey,
-    call: crate::usage::UsageCall,
-) -> mlua::Result<()> {
-    if !call.outgoing.url.starts_with("https://") {
-        inner.borrow_mut().note(UsageError::Failed.text());
-        return queue_usage(inner, source, key, Err(UsageError::Failed), true);
-    }
-    let crate::usage::UsageCall {
-        outgoing,
-        sensitive,
-    } = call;
-    let transport = Arc::clone(&inner.borrow().transport);
-    let (tx, rx) = mpsc::channel();
-    thread::Builder::new()
-        .name("toolhost-usage".to_string())
-        .spawn(move || {
-            let outcome = match transport.send(&outgoing) {
-                Ok(response) => {
-                    interpret_usage(source, response.status, &response.body, &sensitive)
-                }
-                Err(_) => Err(UsageError::Failed),
-            };
-            let _ = tx.send(FlightOutcome::Usage(outcome));
-        })
-        .map_err(|_| mlua::Error::runtime("请求失败"))?;
-    let mut inner = inner.borrow_mut();
-    inner.http_sends += 1;
-    inner.inflight.push(Inflight {
-        rx,
-        callbacks: vec![key],
-        kind: FlightKind::Usage {
-            source,
-            remember: true,
-        },
-    });
-    Ok(())
-}
-
 fn unix_now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1780,20 +1618,6 @@ fn unix_now_ms() -> i64 {
 }
 
 impl Inner {
-    fn join_usage(&mut self, source: UsageSource, key: RegistryKey) -> Result<(), RegistryKey> {
-        for item in &mut self.inflight {
-            if let FlightKind::Usage {
-                source: existing, ..
-            } = &item.kind
-                && *existing == source
-            {
-                item.callbacks.push(key);
-                return Ok(());
-            }
-        }
-        Err(key)
-    }
-
     fn join_login(&mut self, id: &str, key: RegistryKey) -> Result<(), RegistryKey> {
         for item in &mut self.inflight {
             if let FlightKind::Login { id: existing, .. } = &item.kind
@@ -1805,46 +1629,6 @@ impl Inner {
         }
         Err(key)
     }
-}
-
-fn deliver_usage(
-    lua: &Lua,
-    callback: &Function,
-    outcome: &Result<UsageSnapshot, UsageError>,
-) -> mlua::Result<()> {
-    let result = lua.create_table()?;
-    match outcome {
-        Ok(snapshot) => {
-            result.set("ok", true)?;
-            if let Some(plan) = &snapshot.plan {
-                result.set("plan", plan.as_str())?;
-            }
-            if let Some(flag) = snapshot.limit_reached {
-                result.set("limit_reached", flag)?;
-            }
-            let windows = lua.create_table()?;
-            for (index, window) in snapshot.windows.iter().enumerate() {
-                let item = lua.create_table()?;
-                item.set("name", window.name.as_str())?;
-                item.set("used_percent", window.used_percent)?;
-                if let Some(ms) = window.resets_at_ms {
-                    item.set("resets_at_ms", ms)?;
-                }
-                if let Some(seconds) = window.limit_seconds {
-                    item.set("limit_seconds", seconds)?;
-                }
-                let lua_index = i64::try_from(index + 1).unwrap_or(i64::MAX);
-                windows.set(lua_index, item)?;
-            }
-            result.set("windows", windows)?;
-        }
-        Err(err) => {
-            result.set("ok", false)?;
-            result.set("error", err.text())?;
-        }
-    }
-    let _guard = crate::pattern::enter_host(lua)?;
-    callback.call::<()>(result)
 }
 
 fn bind_login(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {

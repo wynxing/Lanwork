@@ -78,7 +78,6 @@ component = "progress"
 | `services` | 字符串数组。可以是空的。名字只能是下表里的服务。同一个名字写两次，按一次算 |
 | `http` | 仅当 `services` 含 `http`。表里可以有 `domains`、`post`、`headers` |
 | `secret` | 仅当 `services` 含 `secret`。数组，至少一项。每项有 `id`、`label` 和 `header`，`prefix` 可以不写 |
-| `usage` | 可以不写。数组，至少一项。每项只有 `source`，只能是 `chatgpt`、`claude` 或 `grok`。这不是 `services` 里的名字 |
 | `login` | 可以不写。数组，至少一项。插件自己的登录描述，不是 `services` 里的名字。字段见「插件登录」 |
 | `component` | 数组，必须有这个键，可以是空的。内容区从上到下排 |
 
@@ -95,10 +94,9 @@ component = "progress"
 | `todo.complete` | 完成你的待办 |
 | `http` | 每个域名一句「访问 <主机名>」，不另写「联网」。`post = true` 时，每个域名紧接着「向 <主机> 提交数据」。每个固定请求头一句「请求头 <名称>: <值>」 |
 | `secret` | 每个密钥一句。没有前缀时是「使用你填写的 <名称>，请求头 <名称>」。写了前缀再接「，前缀 <前缀>」，前缀按清单逐字显示，末尾空格也留着 |
-| `usage` | 每个来源一句：「使用本机的 ChatGPT 登录」「使用本机的 Claude 登录」或「使用本机的 Grok 登录」 |
 | `login` | 每一项先写「读取本机文件 ~/路径 中的 名称，发往 地址」。POST 把「发往」写成「提交到」。然后是这次请求的固定请求头、每个登录字段的请求头，最后「交给脚本：名字、名字」 |
 
-句子顺序是固定的，不跟着 `services` 数组的书写顺序。先按清单顺序，每个域名一句「访问」，允许提交时紧接着「向 <主机> 提交数据」。然后按清单顺序列出每个固定请求头，再按清单顺序列出每个密钥，再按清单顺序列出每个本机登录来源，再按清单顺序列出每个插件登录描述，然后是通知、读取待办、完成待办、保存数据、定时刷新。额度示例的三句是：
+句子顺序是固定的，不跟着 `services` 数组的书写顺序。先按清单顺序，每个域名一句「访问」，允许提交时紧接着「向 <主机> 提交数据」。然后按清单顺序列出每个固定请求头，再按清单顺序列出每个密钥，再按清单顺序列出每个插件登录描述，然后是通知、读取待办、完成待办、保存数据、定时刷新。额度示例的三句是：
 
 ```text
 访问 api.example.com
@@ -108,7 +106,7 @@ component = "progress"
 
 确认页上没有密钥的值，也没有密钥 id。固定请求头的值会写在确认页上，不要把密钥填进 `headers`。密钥的请求头名字和前缀会出现在确认页上，值不会。
 
-更新时确认页仍整份列出这些句子。新版本比上次确认多了密钥、改了或拿掉密钥的请求头或前缀、多了固定请求头、主机名、`post` 或本机登录来源，或者多了插件登录、改了已有插件登录的任何一处，必须再确认一次，新的那几句就在这份列表里。只改密钥的 `label` 不用再确认。少了来源、少了密钥或少了插件登录不算扩大。导出包和备份的那一次确认用同一套句子。
+更新时确认页仍整份列出这些句子。新版本比上次确认多了密钥、改了或拿掉密钥的请求头或前缀、多了固定请求头、主机名、`post`，或者多了插件登录、改了已有插件登录的任何一处，必须再确认一次，新的那几句就在这份列表里。只改密钥的 `label` 不用再确认。少了密钥或少了插件登录不算扩大。导出包和备份的那一次确认用同一套句子。
 
 已经确认过、但授权记录里没有请求头的旧工具，窗口显示「未授权」，要再确认一次。清单里不写 `header` 的密钥不安装。
 
@@ -273,7 +271,7 @@ header = "ChatGPT-Account-Id"
 
 `secret` 声明了之后会有一个空表 `secret`，上面没有读取函数。没声明时，读 `secret` 也是「未授权」。
 
-`usage` 不是 `services` 里的名字。清单写了 `[[usage]]` 才有 `usage.fetch`。没写时读 `usage` 也是「未授权」。
+清单里写 `usage` 是不认识的字段，界面是「清单无效」，日志写「不认识的字段 usage」。没有 `usage.fetch`。
 
 ### `timer`
 
@@ -425,65 +423,9 @@ end)
 
 检查的形式：密钥原文；`Bearer ` 加原文和 `bearer ` 加原文；这次实际发出的请求头的值；上面每一项的标准 Base64 和 URL 安全 Base64，带填充和不带填充；把 `%XX` 按十六进制解码后再找，十六进制忽略大小写，连续解码最多四次。原文或解码结果里的 `+` 再按空格看一次。
 
-## 本机登录用量
-
-清单用 `[[usage]]` 声明来源，不写进 `services`。宿主读本机的登录文件，向写死的地址发 GET，把响应收成一张表交给脚本。脚本看不到令牌、账号、网址和原始正文。清单不能改路径、网址、方法或请求头，也不能把请求指到别的主机。宿主不写、不刷新、不修改这些文件。
-
-| 来源 | 文件 | 目录可以被这个环境变量换掉 |
-| --- | --- | --- |
-| `chatgpt` | `%USERPROFILE%\.codex\auth.json` | `CODEX_HOME` |
-| `claude` | `%USERPROFILE%\.claude\.credentials.json` | `CLAUDE_CONFIG_DIR` |
-| `grok` | `%USERPROFILE%\.grok\auth.json` | `GROK_HOME` |
-
-环境变量没设或是空的，就用 `%USERPROFILE%` 拼默认目录。`USERPROFILE` 也没有或是空的，才用 `HOME`。某一项自己的目录变量优先于这两个。拼出来的目录必须是绝对路径。两个家目录都没有，这一项也没有自己的绝对路径目录，就当作没有登录，窗口是「登录已过期」，不发请求。不会去读当前工作目录。三个地址是：
-
-- ChatGPT：`GET https://chatgpt.com/backend-api/wham/usage`。文件里用 `tokens.access_token` 和 `tokens.account_id`。过期看 access token 的 JWT `exp`，不校验签名。请求头是 `Authorization: Bearer <令牌>`、`ChatGPT-Account-Id`、`Accept: application/json`，`User-Agent` 固定为 `Lanwork`。
-- Claude：`GET https://api.anthropic.com/api/oauth/usage`。文件里用 `claudeAiOauth.accessToken`，过期看 `claudeAiOauth.expiresAt`（毫秒）。请求头另有 `anthropic-beta: oauth-2025-04-20`。
-- Grok：`GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`。文件顶层的键是 OIDC 范围网址。优先用键等于 `https://auth.x.ai`，或后面紧跟 `/`、`:` 的那一项（有多项时取键的字典序最小、还没过期的）。`https://auth.x.ai.evil.example` 不算。否则用同样的规则匹配 `https://accounts.x.ai/sign-in`。令牌在该项的 `key`，过期看 `expires_at`。请求头另有 `X-XAI-Token-Auth: xai-grok-cli`。
-
-只走 https，不跟随重定向。等待和正文 1 MiB 上限与 `http` 相同。同一来源 60 秒内再取，不再读文件、不再发请求，把上次规范化的结果交回去。成功和失败都这样。这 60 秒按宿主线程计，同一进程里的工具共用。
-
-Claude 的订阅令牌按 Anthropic 的条款只用于 Claude Code 和 claude.ai。使用 `claude` 这个来源由用户自行承担风险。
-
-```lua
-usage.fetch("chatgpt", function(result)
-end)
-```
-
-`usage.fetch` 不等待网络。来源名字不是那三个之一时，马上回调，「数据无效」。名字对、但清单没声明时，马上回调，「未授权」。其余在脚本返回之后回调。
-
-`result` 里没有的字段就不出现，不会放一个 `nil`。
-
-| 字段 | 含义 |
-| --- | --- |
-| `ok` | 取到了数字时为 `true` |
-| `error` | `ok` 为假时的说明 |
-| `plan` | 只有 ChatGPT，而且 `plan_type` 是去掉首尾空白后 1 到 64 个字符、不含控制字符的字符串。更长或是空的就省略。不是字符串则整份是「数据无效」 |
-| `limit_reached` | 只有 ChatGPT，布尔。响应里没有这个字段就省略 |
-| `windows` | 数组。每一项有 `name` 和 `used_percent`。`used_percent` 已经是百分数，不是 0 到 1。能解析出重置时间时才有 `resets_at_ms`（Unix 毫秒）。ChatGPT 能解析出窗口长度时才有 `limit_seconds` |
-
-窗口名字：
-
-| 来源 | `name` | 百分数从哪来 |
-| --- | --- | --- |
-| ChatGPT | 先 `primary_window`，再 `secondary_window`。`limit_window_seconds` 为 18000 时是「5小时」，604800 是「每周」，整天是「N天」，整小时是「N小时」，其余是「窗口」 | `used_percent` |
-| Claude | 按这个顺序，空的或 `null` 跳过：「5小时」「7天」「7天 Opus」「7天 Sonnet」 | `utilization` 原样写入，不把 0 到 1 乘成百分数 |
-| Grok | 一项，名字是「额度」 | 优先 `config.creditUsagePercent`。没有则用 `onDemandUsed.val / onDemandCap.val * 100`。这两个字段可以在根上，也可以在 `config` 里 |
-
-ChatGPT 的 `reset_at`、Grok 的 `config.currentPeriod.end`（没有再用 `config.billingPeriodEnd`）可以是数字、数字字符串或 RFC3339。大于等于 1e12 的正数当作毫秒，大于等于 1e9 的当作秒。解析不了就省略 `resets_at_ms`，百分数仍保留。Claude 的 `resets_at` 只认 RFC3339。
-
-| 情况 | `error` |
-| --- | --- |
-| 文件没有、读不了、不是 JSON、令牌过期，或正文超过 1 MiB | 「登录已过期」 |
-| HTTP 401 或 403 | 「登录已过期」。不解析正文 |
-| 连接失败、超时、其它状态码、重定向 | 「请求失败」 |
-| 正文不是预期的 JSON | 「数据无效」 |
-
-这些句子里没有令牌、账号和原始正文。日志也不写。用户要刷新登录，就打开对应的应用。
-
 ## 插件登录
 
-新的服务商写成 `[[login]]`，不要再为每一个服务商加内置来源。`chatgpt`、`claude`、`grok` 这三个 `[[usage]]` 仍按上一节，清单和脚本都不用改。
+用量这一类请求写成 `[[login]]`。宿主不为某一个服务商内置来源。清单里出现 `usage` 时不安装，日志写「不认识的字段 usage」。ChatGPT、Claude 和 Grok 的示例在文末。
 
 `login` 不是 `services` 里的名字。清单写了 `[[login]]` 才有 `login.fetch`。没写时读 `login` 也是「未授权」。要声明登录，工具必须同时声明 `http`，并把请求的主机名写进 `domains`。这不自动打开脚本自己的 POST。
 
@@ -546,7 +488,7 @@ end)
 
 `login.fetch` 不等待网络。id 不是这个工具声明过的，马上回调，「未授权」，也不看缓存。`result.ok` 为真时有 `values`，里面只有 `extract` 的名字。为假时有 `error`，没有 `values`。
 
-同一个工具、同一个 id、同一份描述，60 秒内再取，把上次的结果交回去，不再读文件、不再发请求。成功和失败都这样。缓存键带有整份描述的指纹，描述改过之后不会把上次的结果交回去。这 60 秒按工具、id 和描述分开，不和 `[[usage]]` 的缓存混在一起，另一个工具也读不到。
+同一个工具、同一个 id、同一份描述，60 秒内再取，把上次的结果交回去，不再读文件、不再发请求。成功和失败都这样。缓存键带有整份描述的指纹，描述改过之后不会把上次的结果交回去。这 60 秒按工具、id 和描述分开，另一个工具也读不到。
 
 确认页第一句是「读取本机文件 ~/.codex/auth.json 中的 ChatGPT 登录，发往 https://chatgpt.com/backend-api/wham/usage」。POST 把「发往」写成「提交到」。后面每个固定请求头一行「请求头 名称: 值」，每个登录字段一行「请求头 名称」或「请求头 名称，前缀 前缀」，最后「交给脚本：five_percent、week_percent」。授权记下整份描述。多了一项，或文件、字段、请求头、前缀、过期、请求、提取有任何一处改动，都要再确认。少了一项不算扩大。备份和导出用同一套句子。
 
@@ -558,7 +500,7 @@ end)
 
 新导入的工具启用开关是打开的。程序使用数据目录里的副本，不移动、不删除用户原来的文件夹。
 
-同一 id 已经安装时，再导入视为更新。确认页标明是更新，并有一句「保留数据」。新版本多了密钥、改了或拿掉密钥的请求头或前缀、多了固定请求头、主机名、提交权限或本机登录来源时，这些句子出现在同一张确认页上，必须再确认一次。确认后用新副本替换旧副本。同一 id 已有的存储、密钥、窗口位置、大小、贴边和钉住保留。这扇窗口如果开着，按「生命周期」重载。未确认则不替换。
+同一 id 已经安装时，再导入视为更新。确认页标明是更新，并有一句「保留数据」。新版本多了密钥、改了或拿掉密钥的请求头或前缀、多了固定请求头、主机名、提交权限，或改了插件登录的任何一处时，这些句子出现在同一张确认页上，必须再确认一次。确认后用新副本替换旧副本。同一 id 已有的存储、密钥、窗口位置、大小、贴边和钉住保留。这扇窗口如果开着，按「生命周期」重载。未确认则不替换。
 
 从某一张卡片的「更新」选到的包，id 必须是这张卡片的。不是时显示「不是这个工具的更新包」，不打开确认，也不导入。「导入+」和拖入不按某一张卡片核对 id。
 
@@ -572,16 +514,15 @@ end)
 
 | 情况 | 界面 |
 | --- | --- |
-| 清单解析不了，字段、组件或服务不认识，id 不合法，域名不合法，请求头不合法，密钥没有请求头，来源不认识，`http` / `secret` 对不齐，文件过大，不是文件夹或 zip | 「清单无效」。不安装 |
+| 清单解析不了，字段、组件或服务不认识，写了 `usage`，id 不合法，域名不合法，请求头不合法，密钥没有请求头，`http` / `secret` 对不齐，文件过大，不是文件夹或 zip | 「清单无效」。不安装。日志写明原因 |
 | 副本上的清单超出已经确认的范围，或权限记录读不了 | 窗口显示「未授权」，脚本不跑 |
 | 脚本访问未授予的服务 | 「未授权」 |
 | 未允许的 POST，或 GET、POST 以外的方法，或 GET 带了正文 | 「不在范围内」 |
 | POST 正文不是 JSON | 「数据无效」 |
 | POST 正文超过 64 KiB | 「数据过大」 |
 | 地址无效，附带密钥但不是 `https`，或脚本写的请求头、前缀和清单不一致 | 「地址无效」 |
-| 本机登录文件没有、读不了、令牌过期，或用量接口返回 401 / 403 | 「登录已过期」。说明里没有令牌 |
 | 插件登录的文件没有、读不了、已经过期，或接口返回 401 / 403 | 「登录已过期」。说明里没有令牌 |
-| 用量接口的正文解析不了，或插件登录的响应对不上、取出的字符串含有登录文件里的值 | 「数据无效」。说明里没有正文 |
+| 插件登录的响应对不上、取出的字符串含有登录文件里的值 | 「数据无效」。说明里没有正文 |
 | 不附带密钥的明文 `http` | 「不允许明文 http」 |
 | 主机名不在已确认的清单里 | 「域名未允许」 |
 | 密钥未填写 | 「未填写密钥」 |
@@ -771,7 +712,7 @@ end
 
 ## 示例：ChatGPT 用量
 
-[examples/chatgpt-usage](../examples/chatgpt-usage) 不声明 `http` 和 `secret`。确认页两句是「使用本机的 ChatGPT 登录」和「定时刷新」。打开时取一次，之后每 300 秒再取。文本各一行：5 小时和每周的已用百分数，以及 UTC 的重置时刻。沙箱没有 `os.date`，时刻用纯算术从 `resets_at_ms` 算出来。
+[examples/chatgpt-usage](../examples/chatgpt-usage) 用 `[[login]]` 读取 `~/.codex/auth.json`。确认页写出文件路径、发往的地址、请求头，以及交给脚本的字段名。窗口分两行显示 5 小时和每周的已用百分数，以及 UTC 的重置时刻。`reset_at` 可能是秒或毫秒，脚本自己换算。能取到 `plan_type` 时，写在第一行前面。沙箱没有 `os.date`。
 
 `manifest.toml`：
 
@@ -779,123 +720,6 @@ end
 id = "example.chatgpt-usage"
 name = "ChatGPT 用量"
 description = "本机 ChatGPT 登录的 5 小时和每周用量"
-entry = "main.lua"
-services = ["timer"]
-
-[[usage]]
-source = "chatgpt"
-
-[[component]]
-id = "five"
-component = "text"
-text = "没有数据"
-
-[[component]]
-id = "five_bar"
-component = "progress"
-
-[[component]]
-id = "week"
-component = "text"
-text = ""
-
-[[component]]
-id = "week_bar"
-component = "progress"
-```
-
-`main.lua`：
-
-```lua
-local function format_utc(ms)
-  local secs = math.floor(ms / 1000)
-  local days = math.floor(secs / 86400)
-  local sod = secs - days * 86400
-  local hour = math.floor(sod / 3600)
-  local minute = math.floor((sod % 3600) / 60)
-  local z = days + 719468
-  local era = math.floor(z / 146097)
-  local doe = z - era * 146097
-  local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
-  local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
-  local mp = math.floor((5 * doy + 2) / 153)
-  local day = doy - math.floor((153 * mp + 2) / 5) + 1
-  local month = mp + 3
-  if month > 12 then
-    month = month - 12
-  end
-  return string.format("%02d-%02d %02d:%02d", month, day, hour, minute)
-end
-
-local function find_window(windows, name)
-  if type(windows) ~= "table" then
-    return nil
-  end
-  for _, window in ipairs(windows) do
-    if type(window) == "table" and window.name == name then
-      return window
-    end
-  end
-  return nil
-end
-
-local function show(text_id, bar_id, window)
-  if type(window) ~= "table" or type(window.used_percent) ~= "number" then
-    ui.text(text_id, "没有数据")
-    ui.progress(bar_id, 0)
-    return
-  end
-  local when = ""
-  if type(window.resets_at_ms) == "number" then
-    when = " · " .. format_utc(window.resets_at_ms)
-  end
-  ui.text(text_id, string.format("%s %g%%%s", window.name, window.used_percent, when))
-  local ratio = window.used_percent / 100
-  if ratio < 0 then
-    ratio = 0
-  end
-  if ratio > 1 then
-    ratio = 1
-  end
-  ui.progress(bar_id, ratio)
-end
-
-local function show_error(message)
-  ui.text("five", message)
-  ui.text("week", "")
-  ui.progress("five_bar", 0)
-  ui.progress("week_bar", 0)
-end
-
-local function refresh()
-  usage.fetch("chatgpt", function(result)
-    if not result.ok then
-      show_error(result.error or "请求失败")
-      return
-    end
-    show("five", "five_bar", find_window(result.windows, "5小时"))
-    show("week", "week_bar", find_window(result.windows, "每周"))
-  end)
-end
-
-function on_load()
-  refresh()
-  timer.every(300, refresh)
-end
-```
-
-登录文件没有或已经过期时，文本是「登录已过期」，请求不会发出。用户打开 ChatGPT 应用刷新登录即可。脚本里没有能把令牌打出来的调用。
-
-## 示例：通用 ChatGPT 用量
-
-[examples/chatgpt-usage-generic](../examples/chatgpt-usage-generic) 用 `[[login]]` 做和上一节相同的窗口，不声明 `[[usage]]`。确认页会写出文件路径、发往的地址、两个请求头，以及交给脚本的字段名。脚本只按这些数字排成 5 小时和每周两行。
-
-`manifest.toml`：
-
-```toml
-id = "example.chatgpt-usage-generic"
-name = "ChatGPT 用量"
-description = "用登录描述读取本机 ChatGPT 的 5 小时和每周用量"
 entry = "main.lua"
 services = ["http", "timer"]
 
@@ -928,6 +752,11 @@ url = "https://chatgpt.com/backend-api/wham/usage"
 headers = [
   { name = "Accept", value = "application/json" },
 ]
+
+[[login.extract]]
+name = "plan"
+path = "plan_type"
+type = "string"
 
 [[login.extract]]
 name = "five_percent"
@@ -1030,7 +859,7 @@ local function reset_ms(value)
   return nil
 end
 
-local function show(text_id, bar_id, percent, seconds, reset)
+local function show(text_id, bar_id, percent, seconds, reset, plan)
   if type(percent) ~= "number" then
     ui.text(text_id, "没有数据")
     ui.progress(bar_id, 0)
@@ -1045,7 +874,11 @@ local function show(text_id, bar_id, percent, seconds, reset)
   if ms ~= nil then
     when = " · " .. format_utc(ms)
   end
-  ui.text(text_id, string.format("%s %g%%%s", name, percent, when))
+  local label = string.format("%s %g%%%s", name, percent, when)
+  if type(plan) == "string" and plan ~= "" then
+    label = plan .. " · " .. label
+  end
+  ui.text(text_id, label)
   local ratio = percent / 100
   if ratio < 0 then
     ratio = 0
@@ -1070,8 +903,462 @@ local function refresh()
       return
     end
     local values = result.values or {}
-    show("five", "five_bar", values.five_percent, values.five_seconds, values.five_reset)
-    show("week", "week_bar", values.week_percent, values.week_seconds, values.week_reset)
+    show("five", "five_bar", values.five_percent, values.five_seconds, values.five_reset, values.plan)
+    show("week", "week_bar", values.week_percent, values.week_seconds, values.week_reset, nil)
+  end)
+end
+
+function on_load()
+  refresh()
+  timer.every(300, refresh)
+end
+```
+
+登录文件没有、已经过期，或接口返回 401 / 403 时，文本是「登录已过期」，请求不会发出。脚本里没有能把令牌或文件内容打出来的调用。
+
+## 示例：Claude 用量
+
+[examples/claude-usage](../examples/claude-usage) 用 `[[login]]` 读取 `~/.claude/.credentials.json`。窗口两行是 5 小时和 7 天的已用百分数，以及重置时刻。`resets_at` 是 RFC3339 字符串，由脚本换算成 UTC；解析不了时原样显示。Anthropic 的条款把订阅令牌限制在 Claude Code 和 claude.ai，使用由用户自行承担风险，见该目录的 README。
+
+`manifest.toml`：
+
+```toml
+id = "example.claude-usage"
+name = "Claude 用量"
+description = "本机 Claude 登录的 5 小时和 7 天用量"
+entry = "main.lua"
+services = ["http", "timer"]
+
+[http]
+domains = ["api.anthropic.com"]
+
+[[login]]
+id = "claude"
+label = "Claude 登录"
+file = ".claude/.credentials.json"
+
+[[login.fields]]
+name = "token"
+path = "claudeAiOauth.accessToken"
+header = "Authorization"
+prefix = "Bearer "
+
+[login.expires]
+path = "claudeAiOauth.expiresAt"
+format = "epoch_ms"
+
+[login.request]
+method = "GET"
+url = "https://api.anthropic.com/api/oauth/usage"
+headers = [
+  { name = "anthropic-beta", value = "oauth-2025-04-20" },
+  { name = "Accept", value = "application/json" },
+]
+
+[[login.extract]]
+name = "five_percent"
+path = "five_hour.utilization"
+type = "number"
+
+[[login.extract]]
+name = "five_reset"
+path = "five_hour.resets_at"
+type = "string"
+
+[[login.extract]]
+name = "week_percent"
+path = "seven_day.utilization"
+type = "number"
+
+[[login.extract]]
+name = "week_reset"
+path = "seven_day.resets_at"
+type = "string"
+
+[[component]]
+id = "five"
+component = "text"
+text = "没有数据"
+
+[[component]]
+id = "five_bar"
+component = "progress"
+
+[[component]]
+id = "week"
+component = "text"
+text = ""
+
+[[component]]
+id = "week_bar"
+component = "progress"
+```
+
+`main.lua`：
+
+```lua
+local function format_utc(ms)
+  local secs = math.floor(ms / 1000)
+  local days = math.floor(secs / 86400)
+  local sod = secs - days * 86400
+  local hour = math.floor(sod / 3600)
+  local minute = math.floor((sod % 3600) / 60)
+  local z = days + 719468
+  local era = math.floor(z / 146097)
+  local doe = z - era * 146097
+  local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
+  local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+  local mp = math.floor((5 * doy + 2) / 153)
+  local day = doy - math.floor((153 * mp + 2) / 5) + 1
+  local month = mp + 3
+  if month > 12 then
+    month = month - 12
+  end
+  return string.format("%02d-%02d %02d:%02d", month, day, hour, minute)
+end
+
+local function days_from_civil(year, month, day)
+  local y = year
+  if month <= 2 then
+    y = y - 1
+  end
+  local era
+  if y >= 0 then
+    era = math.floor(y / 400)
+  else
+    era = math.floor((y - 399) / 400)
+  end
+  local yoe = y - era * 400
+  local shifted
+  if month > 2 then
+    shifted = month - 3
+  else
+    shifted = month + 9
+  end
+  local doy = math.floor((153 * shifted + 2) / 5) + day - 1
+  local doe = yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy
+  return era * 146097 + doe - 719468
+end
+
+local function rfc3339_ms(text)
+  if type(text) ~= "string" then
+    return nil
+  end
+  local year, month, day, hour, minute, second, rest =
+    text:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[T ](%d%d):(%d%d):(%d%d)(.*)$")
+  year = tonumber(year)
+  month = tonumber(month)
+  day = tonumber(day)
+  hour = tonumber(hour)
+  minute = tonumber(minute)
+  second = tonumber(second)
+  if year == nil or month == nil or day == nil or hour == nil or minute == nil or second == nil then
+    return nil
+  end
+  if month < 1 or month > 12 or day < 1 or day > 31 or hour > 23 or minute > 59 or second > 59 then
+    return nil
+  end
+  local frac = 0
+  if rest:sub(1, 1) == "." then
+    local digits = rest:match("^%.(%d+)")
+    if digits == nil then
+      return nil
+    end
+    local scale = 100
+    for index = 1, math.min(3, #digits) do
+      frac = frac + tonumber(digits:sub(index, index)) * scale
+      scale = scale / 10
+    end
+    rest = rest:sub(2 + #digits)
+  end
+  local offset = 0
+  if rest == "Z" then
+    offset = 0
+  else
+    local sign, off_hour, off_minute = rest:match("^([%+%-])(%d%d):?(%d%d)$")
+    off_hour = tonumber(off_hour)
+    off_minute = tonumber(off_minute)
+    if sign == nil or off_hour == nil or off_minute == nil or off_minute > 59 then
+      return nil
+    end
+    offset = off_hour * 60 + off_minute
+    if sign == "-" then
+      offset = -offset
+    end
+  end
+  local days = days_from_civil(year, month, day)
+  local secs = days * 86400 + hour * 3600 + minute * 60 + second - offset * 60
+  return secs * 1000 + frac
+end
+
+local function show(text_id, bar_id, name, percent, reset)
+  if type(percent) ~= "number" then
+    ui.text(text_id, "没有数据")
+    ui.progress(bar_id, 0)
+    return
+  end
+  local when = ""
+  local ms = rfc3339_ms(reset)
+  if ms ~= nil then
+    when = " · " .. format_utc(ms)
+  elseif type(reset) == "string" and reset ~= "" then
+    when = " · " .. reset
+  end
+  ui.text(text_id, string.format("%s %g%%%s", name, percent, when))
+  local ratio = percent / 100
+  if ratio < 0 then
+    ratio = 0
+  end
+  if ratio > 1 then
+    ratio = 1
+  end
+  ui.progress(bar_id, ratio)
+end
+
+local function show_error(message)
+  ui.text("five", message)
+  ui.text("week", "")
+  ui.progress("five_bar", 0)
+  ui.progress("week_bar", 0)
+end
+
+local function refresh()
+  login.fetch("claude", function(result)
+    if not result.ok then
+      show_error(result.error or "请求失败")
+      return
+    end
+    local values = result.values or {}
+    show("five", "five_bar", "5小时", values.five_percent, values.five_reset)
+    show("week", "week_bar", "7天", values.week_percent, values.week_reset)
+  end)
+end
+
+function on_load()
+  refresh()
+  timer.every(300, refresh)
+end
+```
+
+登录文件没有、已经过期，或接口返回 401 / 403 时，文本是「登录已过期」，请求不会发出。脚本里没有能把令牌或文件内容打出来的调用。
+
+## 示例：Grok 用量
+
+[examples/grok-usage](../examples/grok-usage) 用 `[[login]]` 读取 `~/.grok/auth.json`。窗口一行显示额度的已用百分数和重置时刻。`key_prefix` 只写了 `https://auth.x.ai`。`expires_at` 按毫秒。`currentPeriod.end` 按字符串提取，解析不了时用数字 `billingPeriodEnd`。格式不确定和另一条键前缀的改法，见该目录的 README。
+
+`manifest.toml`：
+
+```toml
+id = "example.grok-usage"
+name = "Grok 用量"
+description = "本机 Grok 登录的额度用量"
+entry = "main.lua"
+services = ["http", "timer"]
+
+[http]
+domains = ["cli-chat-proxy.grok.com"]
+
+[[login]]
+id = "grok"
+label = "Grok 登录"
+file = ".grok/auth.json"
+
+[[login.fields]]
+name = "token"
+path = "key"
+header = "Authorization"
+prefix = "Bearer "
+key_prefix = "https://auth.x.ai"
+
+[login.expires]
+path = "expires_at"
+format = "epoch_ms"
+key_prefix = "https://auth.x.ai"
+
+[login.request]
+method = "GET"
+url = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+headers = [
+  { name = "X-XAI-Token-Auth", value = "xai-grok-cli" },
+  { name = "Accept", value = "application/json" },
+]
+
+[[login.extract]]
+name = "used_percent"
+path = "config.creditUsagePercent"
+type = "number"
+
+[[login.extract]]
+name = "period_end"
+path = "config.currentPeriod.end"
+type = "string"
+
+[[login.extract]]
+name = "billing_end"
+path = "config.billingPeriodEnd"
+type = "number"
+
+[[component]]
+id = "quota"
+component = "text"
+text = "没有数据"
+
+[[component]]
+id = "quota_bar"
+component = "progress"
+```
+
+`main.lua`：
+
+```lua
+local function format_utc(ms)
+  local secs = math.floor(ms / 1000)
+  local days = math.floor(secs / 86400)
+  local sod = secs - days * 86400
+  local hour = math.floor(sod / 3600)
+  local minute = math.floor((sod % 3600) / 60)
+  local z = days + 719468
+  local era = math.floor(z / 146097)
+  local doe = z - era * 146097
+  local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
+  local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+  local mp = math.floor((5 * doy + 2) / 153)
+  local day = doy - math.floor((153 * mp + 2) / 5) + 1
+  local month = mp + 3
+  if month > 12 then
+    month = month - 12
+  end
+  return string.format("%02d-%02d %02d:%02d", month, day, hour, minute)
+end
+
+local function days_from_civil(year, month, day)
+  local y = year
+  if month <= 2 then
+    y = y - 1
+  end
+  local era
+  if y >= 0 then
+    era = math.floor(y / 400)
+  else
+    era = math.floor((y - 399) / 400)
+  end
+  local yoe = y - era * 400
+  local shifted
+  if month > 2 then
+    shifted = month - 3
+  else
+    shifted = month + 9
+  end
+  local doy = math.floor((153 * shifted + 2) / 5) + day - 1
+  local doe = yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy
+  return era * 146097 + doe - 719468
+end
+
+local function rfc3339_ms(text)
+  if type(text) ~= "string" then
+    return nil
+  end
+  local year, month, day, hour, minute, second, rest =
+    text:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[T ](%d%d):(%d%d):(%d%d)(.*)$")
+  year = tonumber(year)
+  month = tonumber(month)
+  day = tonumber(day)
+  hour = tonumber(hour)
+  minute = tonumber(minute)
+  second = tonumber(second)
+  if year == nil or month == nil or day == nil or hour == nil or minute == nil or second == nil then
+    return nil
+  end
+  if month < 1 or month > 12 or day < 1 or day > 31 or hour > 23 or minute > 59 or second > 59 then
+    return nil
+  end
+  local frac = 0
+  if rest:sub(1, 1) == "." then
+    local digits = rest:match("^%.(%d+)")
+    if digits == nil then
+      return nil
+    end
+    local scale = 100
+    for index = 1, math.min(3, #digits) do
+      frac = frac + tonumber(digits:sub(index, index)) * scale
+      scale = scale / 10
+    end
+    rest = rest:sub(2 + #digits)
+  end
+  local offset = 0
+  if rest == "Z" then
+    offset = 0
+  else
+    local sign, off_hour, off_minute = rest:match("^([%+%-])(%d%d):?(%d%d)$")
+    off_hour = tonumber(off_hour)
+    off_minute = tonumber(off_minute)
+    if sign == nil or off_hour == nil or off_minute == nil or off_minute > 59 then
+      return nil
+    end
+    offset = off_hour * 60 + off_minute
+    if sign == "-" then
+      offset = -offset
+    end
+  end
+  local days = days_from_civil(year, month, day)
+  local secs = days * 86400 + hour * 3600 + minute * 60 + second - offset * 60
+  return secs * 1000 + frac
+end
+
+local function scaled_ms(value)
+  if type(value) ~= "number" then
+    return nil
+  end
+  if value >= 1000000000000 then
+    return value
+  end
+  if value >= 1000000000 then
+    return value * 1000
+  end
+  return nil
+end
+
+local function reset_ms(period_end, billing_end)
+  local parsed = rfc3339_ms(period_end)
+  if parsed == nil and type(period_end) == "string" then
+    parsed = scaled_ms(tonumber(period_end))
+  end
+  if parsed ~= nil then
+    return parsed
+  end
+  return scaled_ms(billing_end)
+end
+
+local function show(percent, reset)
+  if type(percent) ~= "number" then
+    ui.text("quota", "没有数据")
+    ui.progress("quota_bar", 0)
+    return
+  end
+  local when = ""
+  if reset ~= nil then
+    when = " · " .. format_utc(reset)
+  end
+  ui.text("quota", string.format("额度 %g%%%s", percent, when))
+  local ratio = percent / 100
+  if ratio < 0 then
+    ratio = 0
+  end
+  if ratio > 1 then
+    ratio = 1
+  end
+  ui.progress("quota_bar", ratio)
+end
+
+local function refresh()
+  login.fetch("grok", function(result)
+    if not result.ok then
+      ui.text("quota", result.error or "请求失败")
+      ui.progress("quota_bar", 0)
+      return
+    end
+    local values = result.values or {}
+    show(values.used_percent, reset_ms(values.period_end, values.billing_end))
   end)
 end
 

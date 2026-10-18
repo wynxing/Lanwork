@@ -18,30 +18,56 @@ local function format_utc(ms)
   return string.format("%02d-%02d %02d:%02d", month, day, hour, minute)
 end
 
-local function find_window(windows, name)
-  if type(windows) ~= "table" then
+local function window_name(seconds)
+  if seconds == 18000 then
+    return "5小时"
+  end
+  if seconds == 604800 then
+    return "每周"
+  end
+  if seconds > 0 and seconds % 86400 == 0 then
+    return string.format("%d天", seconds / 86400)
+  end
+  if seconds > 0 and seconds % 3600 == 0 then
+    return string.format("%d小时", seconds / 3600)
+  end
+  return "窗口"
+end
+
+local function reset_ms(value)
+  if type(value) ~= "number" then
     return nil
   end
-  for _, window in ipairs(windows) do
-    if type(window) == "table" and window.name == name then
-      return window
-    end
+  if value >= 1000000000000 then
+    return value
+  end
+  if value >= 1000000000 then
+    return value * 1000
   end
   return nil
 end
 
-local function show(text_id, bar_id, window)
-  if type(window) ~= "table" or type(window.used_percent) ~= "number" then
+local function show(text_id, bar_id, percent, seconds, reset, plan)
+  if type(percent) ~= "number" then
     ui.text(text_id, "没有数据")
     ui.progress(bar_id, 0)
     return
   end
-  local when = ""
-  if type(window.resets_at_ms) == "number" then
-    when = " · " .. format_utc(window.resets_at_ms)
+  local name = "窗口"
+  if type(seconds) == "number" then
+    name = window_name(seconds)
   end
-  ui.text(text_id, string.format("%s %g%%%s", window.name, window.used_percent, when))
-  local ratio = window.used_percent / 100
+  local when = ""
+  local ms = reset_ms(reset)
+  if ms ~= nil then
+    when = " · " .. format_utc(ms)
+  end
+  local label = string.format("%s %g%%%s", name, percent, when)
+  if type(plan) == "string" and plan ~= "" then
+    label = plan .. " · " .. label
+  end
+  ui.text(text_id, label)
+  local ratio = percent / 100
   if ratio < 0 then
     ratio = 0
   end
@@ -59,13 +85,14 @@ local function show_error(message)
 end
 
 local function refresh()
-  usage.fetch("chatgpt", function(result)
+  login.fetch("chatgpt", function(result)
     if not result.ok then
       show_error(result.error or "请求失败")
       return
     end
-    show("five", "five_bar", find_window(result.windows, "5小时"))
-    show("week", "week_bar", find_window(result.windows, "每周"))
+    local values = result.values or {}
+    show("five", "five_bar", values.five_percent, values.five_seconds, values.five_reset, values.plan)
+    show("week", "week_bar", values.week_percent, values.week_seconds, values.week_reset, nil)
   end)
 end
 

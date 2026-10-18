@@ -44,8 +44,12 @@ pub fn chatgpt_usage() -> Result<(String, String), String> {
     example("## 示例：ChatGPT 用量")
 }
 
-pub fn chatgpt_usage_generic() -> Result<(String, String), String> {
-    example("## 示例：通用 ChatGPT 用量")
+pub fn claude_usage() -> Result<(String, String), String> {
+    example("## 示例：Claude 用量")
+}
+
+pub fn grok_usage() -> Result<(String, String), String> {
+    example("## 示例：Grok 用量")
 }
 
 pub fn write_example(dir: &std::path::Path, which: &str) -> Result<(), String> {
@@ -53,7 +57,8 @@ pub fn write_example(dir: &std::path::Path, which: &str) -> Result<(), String> {
         "quota" => quota()?,
         "countdown" => countdown()?,
         "chatgpt" => chatgpt_usage()?,
-        "chatgpt-generic" => chatgpt_usage_generic()?,
+        "claude" => claude_usage()?,
+        "grok" => grok_usage()?,
         _ => return Err(format!("没有这个示例：{which}")),
     };
     crate::manifest::materialize(dir, &manifest, &script)

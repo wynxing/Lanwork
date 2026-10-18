@@ -11,7 +11,6 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::login::{ExpiryFormat, ExtractType, LoginDecl, confirm_lines};
 use crate::manifest::{FixedHeader, Manifest, SecretDecl, load_dir, parse};
-use crate::usage::UsageSource;
 
 /// 系统文件对话框里用来选中当前文件夹的占位名。不是产品界面上的句子。
 pub const FOLDER_SENTINEL: &str = "Folder Selection.";
@@ -30,7 +29,7 @@ pub struct StagedPackage {
     pub files: Vec<(String, Vec<u8>)>,
 }
 
-/// 用户确认过的服务、域名、固定请求头、提交权限、密钥和本机登录来源。运行时清单不能超出这份范围。
+/// 用户确认过的服务、域名、固定请求头、提交权限、密钥和插件登录。运行时清单不能超出这份范围。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
     pub services: BTreeSet<String>,
@@ -38,7 +37,6 @@ pub struct Grant {
     pub post: bool,
     pub headers: Vec<FixedHeader>,
     pub secrets: Vec<SecretDecl>,
-    pub usage: Vec<UsageSource>,
     pub logins: Vec<LoginDecl>,
 }
 
@@ -51,14 +49,13 @@ impl Grant {
             post: manifest.post,
             headers: manifest.headers.clone(),
             secrets: manifest.secrets.clone(),
-            usage: manifest.usage.clone(),
             logins: manifest.logins.clone(),
         }
     }
 
-    /// 清单里的服务、域名、固定请求头、提交权限、密钥和登录来源都在确认过的范围内。
+    /// 清单里的服务、域名、固定请求头、提交权限、密钥和插件登录都在确认过的范围内。
     ///
-    /// 新版本多了密钥、固定请求头、主机名、提交权限或登录来源时返回假。
+    /// 新版本多了密钥、固定请求头、主机名、提交权限或插件登录时返回假。
     /// 密钥的请求头或前缀变了、或者拿掉了，也返回假。少了权限仍返回真。
     #[must_use]
     pub fn allows(&self, manifest: &Manifest) -> bool {
@@ -85,13 +82,6 @@ impl Grant {
                 granted.name.eq_ignore_ascii_case(&header.name) && granted.value == header.value
             })
         }) {
-            return false;
-        }
-        if manifest
-            .usage
-            .iter()
-            .any(|source| !self.usage.contains(source))
-        {
             return false;
         }
         if manifest
@@ -390,7 +380,6 @@ pub fn permission_lines(manifest: &Manifest) -> Vec<String> {
         manifest.post,
         &manifest.headers,
         &manifest.secrets,
-        &manifest.usage,
         &manifest.logins,
     )
 }
@@ -403,7 +392,6 @@ pub fn grant_lines(grant: &Grant) -> Vec<String> {
         grant.post,
         &grant.headers,
         &grant.secrets,
-        &grant.usage,
         &grant.logins,
     )
 }
@@ -425,7 +413,6 @@ fn lines_for(
     post: bool,
     headers: &[FixedHeader],
     secrets: &[SecretDecl],
-    usage: &[UsageSource],
     logins: &[LoginDecl],
 ) -> Vec<String> {
     let mut lines = Vec::new();
@@ -440,9 +427,6 @@ fn lines_for(
     }
     for secret in secrets {
         lines.push(secret_line(secret));
-    }
-    for source in usage {
-        lines.push(source.confirm_line().to_string());
     }
     for login in logins {
         lines.extend(confirm_lines(login));
@@ -498,7 +482,6 @@ pub fn encode_grant(grant: &Grant) -> Vec<u8> {
         "post": grant.post,
         "headers": headers,
         "secrets": secrets,
-        "usage": grant.usage.iter().map(UsageSource::as_str).collect::<Vec<_>>(),
         "logins": grant.logins.iter().map(encode_login).collect::<Vec<_>>(),
     });
     let mut bytes = serde_json::to_vec(&value).expect("确认记录可以编码");
@@ -553,10 +536,7 @@ pub fn decode_grant(bytes: &[u8]) -> Option<Grant> {
             prefix,
         });
     }
-    let usage = match obj.get("usage") {
-        None => Vec::new(),
-        Some(value) => decode_usage(value)?,
-    };
+    // 旧授权文件里的 `usage` 是已经去掉的内置来源。忽略这个键，不因此拒绝整份记录。
     let logins = match obj.get("logins") {
         None => Vec::new(),
         Some(value) => decode_logins(value)?,
@@ -567,7 +547,6 @@ pub fn decode_grant(bytes: &[u8]) -> Option<Grant> {
         post,
         headers,
         secrets,
-        usage,
         logins,
     })
 }
@@ -746,14 +725,6 @@ fn decode_expires(value: &serde_json::Value) -> Option<crate::login::LoginExpire
         field,
         key_prefix,
     })
-}
-
-fn decode_usage(value: &serde_json::Value) -> Option<Vec<UsageSource>> {
-    let mut sources = Vec::new();
-    for item in value.as_array()? {
-        sources.push(UsageSource::parse(item.as_str()?)?);
-    }
-    Some(sources)
 }
 
 fn decode_headers(value: &serde_json::Value) -> Option<Vec<FixedHeader>> {
@@ -1073,7 +1044,7 @@ pub(crate) fn png_signature(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guide::{chatgpt_usage, chatgpt_usage_generic, countdown, quota};
+    use crate::guide::{chatgpt_usage, claude_usage, countdown, grok_usage, quota};
     use crate::manifest::materialize;
 
     fn scratch(name: &str) -> PathBuf {
@@ -1158,51 +1129,82 @@ mod tests {
         assert_eq!(names, ["manifest.toml", "main.lua"]);
     }
 
-    #[test]
-    fn shipped_chatgpt_usage_matches_the_guide() {
-        let (manifest, script) = chatgpt_usage().unwrap();
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/chatgpt-usage");
+    fn assert_login_example(
+        load: fn() -> Result<(String, String), String>,
+        folder: &str,
+        id: &str,
+        lines: &[&str],
+    ) {
+        let (manifest, script) = load().unwrap();
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../examples/{folder}"));
         let on_disk_manifest = std::fs::read_to_string(root.join("manifest.toml"))
             .unwrap()
             .replace("\r\n", "\n");
         let on_disk_script = std::fs::read_to_string(root.join("main.lua"))
             .unwrap()
             .replace("\r\n", "\n");
-        assert_eq!(on_disk_manifest.trim_end(), manifest.trim_end());
-        assert_eq!(on_disk_script.trim_end(), script.trim_end());
+        assert_eq!(on_disk_manifest.trim_end(), manifest.trim_end(), "{folder}");
+        assert_eq!(on_disk_script.trim_end(), script.trim_end(), "{folder}");
         let staged = inspect_path(&root).unwrap();
-        assert_eq!(staged.manifest.id, "example.chatgpt-usage");
-        assert_eq!(
-            staged.manifest.usage,
-            vec![crate::usage::UsageSource::Chatgpt]
+        assert_eq!(staged.manifest.id, id);
+        assert_eq!(staged.manifest.logins.len(), 1, "{folder}");
+        let rendered = permission_lines(&staged.manifest);
+        let expected: Vec<String> = lines.iter().map(|line| (*line).to_string()).collect();
+        assert_eq!(rendered, expected, "{folder}");
+    }
+
+    #[test]
+    fn shipped_login_examples_parse_and_render_confirmation() {
+        assert_login_example(
+            chatgpt_usage,
+            "chatgpt-usage",
+            "example.chatgpt-usage",
+            &[
+                "访问 chatgpt.com",
+                "读取本机文件 ~/.codex/auth.json 中的 ChatGPT 登录，发往 https://chatgpt.com/backend-api/wham/usage",
+                "请求头 Accept: application/json",
+                "请求头 Authorization，前缀 Bearer ",
+                "请求头 ChatGPT-Account-Id",
+                "交给脚本：plan、five_percent、five_seconds、five_reset、week_percent、week_seconds、week_reset",
+                "定时刷新",
+            ],
         );
-        let lines = permission_lines(&staged.manifest);
-        assert_eq!(
-            lines,
-            vec![
-                "使用本机的 ChatGPT 登录".to_string(),
-                "定时刷新".to_string(),
-            ]
+        assert_login_example(
+            claude_usage,
+            "claude-usage",
+            "example.claude-usage",
+            &[
+                "访问 api.anthropic.com",
+                "读取本机文件 ~/.claude/.credentials.json 中的 Claude 登录，发往 https://api.anthropic.com/api/oauth/usage",
+                "请求头 anthropic-beta: oauth-2025-04-20",
+                "请求头 Accept: application/json",
+                "请求头 Authorization，前缀 Bearer ",
+                "交给脚本：five_percent、five_reset、week_percent、week_reset",
+                "定时刷新",
+            ],
+        );
+        assert_login_example(
+            grok_usage,
+            "grok-usage",
+            "example.grok-usage",
+            &[
+                "访问 cli-chat-proxy.grok.com",
+                "读取本机文件 ~/.grok/auth.json 中的 Grok 登录，发往 https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+                "请求头 X-XAI-Token-Auth: xai-grok-cli",
+                "请求头 Accept: application/json",
+                "请求头 Authorization，前缀 Bearer ",
+                "交给脚本：used_percent、period_end、billing_end",
+                "定时刷新",
+            ],
         );
     }
 
     #[test]
-    fn shipped_generic_chatgpt_login_matches_the_guide_and_reconfirms() {
-        let (manifest, script) = chatgpt_usage_generic().unwrap();
-        let root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/chatgpt-usage-generic");
-        let on_disk_manifest = std::fs::read_to_string(root.join("manifest.toml"))
-            .unwrap()
-            .replace("\r\n", "\n");
-        let on_disk_script = std::fs::read_to_string(root.join("main.lua"))
-            .unwrap()
-            .replace("\r\n", "\n");
-        assert_eq!(on_disk_manifest.trim_end(), manifest.trim_end());
-        assert_eq!(on_disk_script.trim_end(), script.trim_end());
+    fn shipped_chatgpt_login_reconfirms_when_the_descriptor_changes() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/chatgpt-usage");
         let staged = inspect_path(&root).unwrap();
-        assert_eq!(staged.manifest.id, "example.chatgpt-usage-generic");
-        assert!(staged.manifest.usage.is_empty());
-        assert_eq!(staged.manifest.logins.len(), 1);
+        assert_eq!(staged.manifest.id, "example.chatgpt-usage");
         let lines = permission_lines(&staged.manifest);
         assert_eq!(
             lines,
@@ -1212,7 +1214,7 @@ mod tests {
                 "请求头 Accept: application/json".to_string(),
                 "请求头 Authorization，前缀 Bearer ".to_string(),
                 "请求头 ChatGPT-Account-Id".to_string(),
-                "交给脚本：five_percent、five_seconds、five_reset、week_percent、week_seconds、week_reset".to_string(),
+                "交给脚本：plan、five_percent、five_seconds、five_reset、week_percent、week_seconds、week_reset".to_string(),
                 "定时刷新".to_string(),
             ]
         );
@@ -1331,6 +1333,54 @@ mod tests {
     }
 
     #[test]
+    fn old_grant_usage_key_is_ignored_and_new_grants_omit_it() {
+        let raw = r#"{"schemaVersion":1,"services":["timer"],"domains":[],"post":false,"headers":[],"secrets":[],"usage":["chatgpt","nope"],"logins":[]}"#;
+        let decoded = decode_grant(raw.as_bytes()).unwrap();
+        assert!(decoded.services.contains("timer"));
+        assert!(decoded.domains.is_empty());
+        assert!(decoded.logins.is_empty());
+        let encoded = encode_grant(&decoded);
+        let text = String::from_utf8(encoded.clone()).unwrap();
+        assert!(!text.contains("usage"), "{text}");
+        assert_eq!(decode_grant(&encoded).unwrap(), decoded);
+
+        let weird = r#"{"schemaVersion":1,"services":["timer"],"domains":[],"secrets":[],"usage":{"chatgpt":true}}"#;
+        let decoded = decode_grant(weird.as_bytes()).unwrap();
+        assert!(decoded.services.contains("timer"));
+        assert!(!decoded.post);
+        assert!(decoded.logins.is_empty());
+    }
+
+    #[test]
+    fn usage_manifest_fails_import_with_the_existing_invalid_message() {
+        let dir = scratch("usage-manifest");
+        std::fs::write(
+            dir.join("manifest.toml"),
+            r#"
+id = "example.old-usage"
+name = "旧用量"
+description = "说明"
+entry = "main.lua"
+services = ["timer"]
+component = []
+
+[[usage]]
+source = "chatgpt"
+"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("main.lua"), "function on_load() end\n").unwrap();
+        let err = inspect_path(&dir).unwrap_err();
+        assert_eq!(err.to_string(), "清单无效");
+        assert!(
+            err.detail().contains("不认识的字段 usage"),
+            "{}",
+            err.detail()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn adding_a_secret_header_host_or_post_requires_confirmation_again() {
         let base = r#"
 id = "example.quota"
@@ -1360,7 +1410,6 @@ prefix = "Bearer "
             !decoded.allows(&manifest),
             "旧授权没有请求头，不能盖住现在的声明"
         );
-        assert!(decoded.usage.is_empty());
         assert!(decoded.logins.is_empty());
         assert!(!decoded.post);
         assert!(decoded.headers.is_empty());
@@ -1388,16 +1437,8 @@ prefix = "Bearer "
         );
 
         let with_usage = format!("{base}\n[[usage]]\nsource = \"chatgpt\"\n");
-        let (with_usage, _) = parse(&with_usage).unwrap();
-        assert!(!grant.allows(&with_usage));
-        assert!(
-            permission_lines(&with_usage)
-                .iter()
-                .any(|line| line == "使用本机的 ChatGPT 登录")
-        );
-        let usage_grant = Grant::from_manifest(&with_usage);
-        assert!(usage_grant.allows(&with_usage));
-        assert!(usage_grant.allows(&manifest));
+        let err = parse(&with_usage).unwrap_err();
+        assert!(err.contains("usage"), "{err}");
         let dropped_header = manifest.clone();
         let mut removed = manifest.clone();
         removed.secrets[0].header = None;

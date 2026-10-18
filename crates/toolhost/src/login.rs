@@ -1,7 +1,6 @@
 //! 插件自己声明的登录描述。路径、字段、过期和请求都写在清单里。
 //!
 //! 宿主只读登录文件，不写、不刷新、不修改。脚本只能拿到清单点名的字段。
-//! 内置 `[[usage]]` 不走这里。
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -16,7 +15,6 @@ use crate::manifest::{
     FixedHeader, header_name_reason, optional_str, parse_headers, prefix_reason, require_keys,
     required_str, trimmed_line, valid_domain,
 };
-use crate::usage::{jwt_expiry_ms, origin_match, parse_rfc3339_ms};
 
 /// 登录文件超过这个字节数就当作没有登录，不发请求。
 pub const LOGIN_FILE_MAX: usize = 256 * 1024;
@@ -1421,6 +1419,206 @@ fn read_capped_handle(file: &mut std::fs::File) -> Result<Vec<u8>, LoginError> {
         return Err(LoginError::LoginExpired);
     }
     Ok(buf)
+}
+
+/// 键等于这个前缀，或者紧接着的字符是 `/` 或 `:`。
+/// `https://auth.x.ai.evil.example` 不算同一来源。
+pub(crate) fn origin_match(key: &str, origin: &str) -> bool {
+    let Some(rest) = key.strip_prefix(origin) else {
+        return false;
+    };
+    matches!(rest.chars().next(), None | Some('/' | ':'))
+}
+
+pub(crate) fn jwt_expiry_ms(token: &str) -> Option<i64> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    let _signature = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let bytes = b64url_decode(payload)?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let secs = json_i64(value.get("exp"))?;
+    if secs < 0 {
+        return Some(0);
+    }
+    Some(secs.checked_mul(1000).unwrap_or(i64::MAX))
+}
+
+fn json_i64(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(number) => number.as_i64().or_else(|| {
+            number.as_f64().and_then(|value| {
+                if value.is_finite() {
+                    Some(value as i64)
+                } else {
+                    None
+                }
+            })
+        }),
+        _ => None,
+    }
+}
+
+fn b64url_decode(input: &str) -> Option<Vec<u8>> {
+    let mut alphabet = [255u8; 256];
+    for (index, byte) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        .iter()
+        .enumerate()
+    {
+        alphabet[usize::from(*byte)] = u8::try_from(index).unwrap_or(255);
+    }
+    alphabet[usize::from(b'-')] = 62;
+    alphabet[usize::from(b'_')] = 63;
+    let mut out = Vec::new();
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+    for byte in input.as_bytes() {
+        if *byte == b'=' {
+            break;
+        }
+        let value = alphabet[usize::from(*byte)];
+        if value == 255 {
+            return None;
+        }
+        buf = (buf << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from((buf >> bits) & 0xff).unwrap_or(0));
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+pub(crate) fn parse_rfc3339_ms(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    if bytes.len() < 20 {
+        return None;
+    }
+    let year = parse_digits(&bytes[0..4])?;
+    if bytes[4] != b'-' || bytes[7] != b'-' || (bytes[10] != b'T' && bytes[10] != b' ') {
+        return None;
+    }
+    let month = parse_digits(&bytes[5..7])?;
+    let day = parse_digits(&bytes[8..10])?;
+    if bytes[13] != b':' || bytes[16] != b':' {
+        return None;
+    }
+    let hour = parse_digits(&bytes[11..13])?;
+    let minute = parse_digits(&bytes[14..16])?;
+    let second = parse_digits(&bytes[17..19])?;
+    let mut index = 19;
+    let mut frac_ms = 0i64;
+    if index < bytes.len() && bytes[index] == b'.' {
+        index += 1;
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if start == index {
+            return None;
+        }
+        let mut scale = 100i64;
+        for digit in bytes[start..index].iter().take(3) {
+            frac_ms += i64::from(digit - b'0') * scale;
+            scale /= 10;
+        }
+    }
+    let offset_minutes = if index < bytes.len() && bytes[index] == b'Z' {
+        if index + 1 != bytes.len() {
+            return None;
+        }
+        0
+    } else if index < bytes.len() && (bytes[index] == b'+' || bytes[index] == b'-') {
+        let sign = if bytes[index] == b'+' { 1 } else { -1 };
+        index += 1;
+        let (off_hour, off_minute, next) = if bytes.len() >= index + 5 && bytes[index + 2] == b':' {
+            (
+                parse_digits(&bytes[index..index + 2])?,
+                parse_digits(&bytes[index + 3..index + 5])?,
+                index + 5,
+            )
+        } else if bytes.len() >= index + 4 {
+            (
+                parse_digits(&bytes[index..index + 2])?,
+                parse_digits(&bytes[index + 2..index + 4])?,
+                index + 4,
+            )
+        } else {
+            return None;
+        };
+        if next != bytes.len() || off_minute > 59 {
+            return None;
+        }
+        sign * (off_hour * 60 + off_minute)
+    } else {
+        return None;
+    };
+    civil_to_unix_ms(CivilClock {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        frac_ms,
+        offset_minutes,
+    })
+}
+
+struct CivilClock {
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+    frac_ms: i64,
+    offset_minutes: i32,
+}
+
+fn parse_digits(bytes: &[u8]) -> Option<i32> {
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(bytes).ok()?.parse().ok()
+}
+
+fn civil_to_unix_ms(clock: CivilClock) -> Option<i64> {
+    if !(1..=12).contains(&clock.month)
+        || !(1..=31).contains(&clock.day)
+        || !(0..=23).contains(&clock.hour)
+        || !(0..=59).contains(&clock.minute)
+        || !(0..=59).contains(&clock.second)
+    {
+        return None;
+    }
+    let days = days_from_civil(clock.year, clock.month, clock.day)?;
+    let secs = days
+        .checked_mul(86_400)?
+        .checked_add(i64::from(clock.hour) * 3_600)?
+        .checked_add(i64::from(clock.minute) * 60)?
+        .checked_add(i64::from(clock.second))?
+        .checked_sub(i64::from(clock.offset_minutes) * 60)?;
+    secs.checked_mul(1000)?.checked_add(clock.frac_ms)
+}
+
+/// Howard Hinnant 的公历转 Unix 日。1970-01-01 是 0。
+fn days_from_civil(mut year: i32, month: i32, day: i32) -> Option<i64> {
+    if month <= 2 {
+        year -= 1;
+    }
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = u32::try_from(year - era * 400).ok()?;
+    let month = u32::try_from(month).ok()?;
+    let day = u32::try_from(day).ok()?;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(i64::from(era) * 146_097 + i64::from(doe) - 719_468)
 }
 
 struct CacheSlot {

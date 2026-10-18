@@ -1,0 +1,57 @@
+id = "example.grok-usage"
+name = "Grok 用量"
+description = "本机 Grok 登录的额度用量"
+entry = "main.lua"
+services = ["http", "timer"]
+
+[http]
+domains = ["cli-chat-proxy.grok.com"]
+
+[[login]]
+id = "grok"
+label = "Grok 登录"
+file = ".grok/auth.json"
+
+[[login.fields]]
+name = "token"
+path = "key"
+header = "Authorization"
+prefix = "Bearer "
+key_prefix = "https://auth.x.ai"
+
+[login.expires]
+path = "expires_at"
+format = "epoch_ms"
+key_prefix = "https://auth.x.ai"
+
+[login.request]
+method = "GET"
+url = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+headers = [
+  { name = "X-XAI-Token-Auth", value = "xai-grok-cli" },
+  { name = "Accept", value = "application/json" },
+]
+
+[[login.extract]]
+name = "used_percent"
+path = "config.creditUsagePercent"
+type = "number"
+
+[[login.extract]]
+name = "period_end"
+path = "config.currentPeriod.end"
+type = "string"
+
+[[login.extract]]
+name = "billing_end"
+path = "config.billingPeriodEnd"
+type = "number"
+
+[[component]]
+id = "quota"
+component = "text"
+text = "没有数据"
+
+[[component]]
+id = "quota_bar"
+component = "progress"
