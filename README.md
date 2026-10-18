@@ -4,7 +4,7 @@
 
 # Lanwork
 
-**一个热键呼出的 Windows 11 桌面效率工具：搜索、待办、便签、收纳，都在手边。**
+**一个热键呼出的 Windows 11 桌面效率工具：搜索、待办、便签、收纳和应用，都在手边。**
 
 用 Rust 和 [Slint](https://slint.dev/) 原生编写，不带 Vue、Tauri 或 WebView2。
 
@@ -29,6 +29,9 @@
     2. 面板：待办页
     3. 便签悬浮窗（始终在最上层，可贴边收成把手）
     4. 收纳分组悬浮窗
+    5. 面板「应用」：一列工具卡片，「导入+」在最后
+    6. 工具悬浮窗（可拖动、钉住、贴边）
+    7. 设置「其他」里的「外部 AI」
   截图应取自 Windows 11 上的真实运行界面，浅色和深色各一张更好。
 -->
 
@@ -41,6 +44,7 @@
 - **数据留在本机。** 数据放在 Lanwork 自己的目录，默认 `%USERPROFILE%\Documents\Lanwork`，格式是 JSON。没有云同步，没有账号。
 - **界面只说事实。** 只显示名称、数量、时间和状态。没有欢迎语和功能介绍，没有「今日」页。
 - **中文友好。** 应用名、待办标题、便签标题和标签支持全拼和拼音首字母，中文输入法的组合输入期间不会误触 Enter。
+- **可导入的工具。** 面板「应用」里导入悬浮窗工具，先看权限，整份确认后才安装。设置「其他」里可以打开本机外部 AI，只改待办和便签。
 
 <a id="features"></a>
 
@@ -112,7 +116,7 @@
 - 每张卡片可以打开悬浮窗、开关启用，或更新、卸载、查看权限；声明了密钥时可以填写密钥。密钥写入凭据管理器，不进入导出和备份
 - 悬浮窗可以拖动、钉住和贴边，并记住位置和大小。退出时开着、并且启用开关开着的，下次启动再打开
 - 工具用清单和沙箱 Lua。可以定时刷新、发通知、保存自己的数据、读取和完成待办，以及访问确认过的网站。清单允许时可以向这些网站 POST JSON，一次请求可以带多个密钥
-- 清单可以用 `[[login]]` 读取本机登录文件里点名的字段。示例在仓库的 `examples/`：ChatGPT、Claude 和 Grok 的用量。以前导入的旧 ChatGPT 示例（清单里是内置 `usage`）要按新的 `examples/chatgpt-usage` 再导入一次
+- 清单可以用 `[[login]]` 读取本机登录文件里点名的字段。示例在仓库的 `examples/`，不随安装包分发：ChatGPT、Claude 和 Grok 的用量，以及离线倒计时 `countdown` 和额度示例 `api-quota`。以前导入的旧 ChatGPT 示例（清单里是内置 `usage`）要按新的 `examples/chatgpt-usage` 再导入一次
 
 ### 🛠️ 更多
 
@@ -178,6 +182,7 @@
 3. 用 `↑` `↓` 选择后按 `Enter` 打开，或直接按 `Alt+1` 至 `Alt+9`；`Esc` 收起。
 4. 在搜索条里找到待办或便签，按 `Enter` 会打开面板并定位到该条。
 5. 右键托盘图标，打开面板或新建便签。收纳页里把文件拖进来即可建立引用。
+6. 面板「应用」里点「导入+」，或把文件夹、zip 拖到这一页，确认权限后安装工具。设置「其他」里可以打开「外部 AI」。
 
 | 默认值 | |
 | --- | --- |
@@ -223,7 +228,9 @@ CI 在 `windows-latest` 上运行，还会检查 `lanwork-core` 的依赖树里�
 | 路径 | 内容 |
 | --- | --- |
 | `crates/core` | 包名 `lanwork-core`。模型、服务、存储、搜索匹配与调度、备份等，不依赖 Slint，也不依赖 Win32 窗口 API |
-| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。程序外壳（单实例、托盘、热键、主题、开机启动）、搜索条、面板、便签与收纳悬浮窗；Slint 界面文件在 `ui/` |
+| `crates/app` | 包名 `lanwork`，产物 `lanwork.exe`。程序外壳（单实例、托盘、热键、主题、开机启动）、搜索条、面板（含「应用」和设置里的外部 AI）、便签、收纳、待办和工具悬浮窗；Slint 界面文件在 `ui/` |
+| `crates/toolhost` | 包名 `lanwork-toolhost`。已安装工具的沙箱、清单和权限。不依赖 Slint。凭据探测是 `lanwork --toolhost-cred` |
+| `examples/` | 可导入的工具示例：`countdown`、`api-quota`、`chatgpt-usage`、`claude-usage`、`grok-usage`。不随安装包分发 |
 | `spikes/` | 技术验证程序：渲染与背景（`lanwork-render-spike`）、热角（`hotcorner`）、工具宿主（`lanwork-toolhost-spike`）。已通过的 spike 已归档清理 |
 | `tools/` | 测量工具：固定数据夹具 `lanwork-fixture`、进程采样 `lanwork-sample`，以及图标渲染脚本 |
 | `third_party/` | 第三方许可与随附文件：Unihan 读音摘录、Everything SDK |
