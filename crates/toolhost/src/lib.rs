@@ -11,6 +11,7 @@ mod guide;
 mod host;
 mod http;
 mod id;
+pub mod login;
 mod manifest;
 mod package;
 mod pattern;

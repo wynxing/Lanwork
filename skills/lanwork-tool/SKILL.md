@@ -19,7 +19,7 @@ description: >-
 4. 打包成文件夹，或根上带清单的 zip。告诉用户怎么导入，见文末。
 5. 用文末的自检清单过一遍，再把文件交给用户。
 
-参考实现：联网的额度工具在 `examples/api-quota`，不联网的倒计时在 `examples/countdown`，本机 ChatGPT 登录用量在 `examples/chatgpt-usage`。倒计时的 `services` 是空数组，确认页上没有权限句子。
+参考实现：联网的额度工具在 `examples/api-quota`，不联网的倒计时在 `examples/countdown`，本机 ChatGPT 登录用量在 `examples/chatgpt-usage`。新的登录来源按 `examples/chatgpt-usage-generic` 写 `[[login]]`，不要再加内置适配。倒计时的 `services` 是空数组，确认页上没有权限句子。
 
 ## 清单模板
 
@@ -71,7 +71,7 @@ headers = [
 
 `domains` 只写主机名，不写 `https://`、端口、路径和通配符。密钥的 `label` 是确认页和「填写密钥」里给用户看的名称。每个要发出的密钥都必须写 `header`，`prefix` 可以不写。脚本只按 id 附带，不能另选请求头。多个密钥各用各的头，名字不能重复，也不能和 `headers` 重名。`User-Agent` 写进 `headers` 就替换默认的 `Lanwork`。
 
-要用本机已登录的 ChatGPT、Claude 或 Grok 用量时，不要自己去读登录文件，写：
+要用本机已登录的 ChatGPT、Claude 或 Grok 用量，并且接受宿主写死的地址时，不要自己去读登录文件，写：
 
 ```toml
 services = ["timer"]
@@ -81,6 +81,41 @@ source = "chatgpt"
 ```
 
 `source` 只能是 `chatgpt`、`claude` 或 `grok`。确认页是「使用本机的 ChatGPT 登录」这一类句子。地址和请求头写死在宿主里，清单改不了。脚本用 `usage.fetch("chatgpt", fn)`，只拿到 `windows` 里的百分数和重置时间。登录文件默认在 `%USERPROFILE%` 下的 `.codex`、`.claude`、`.grok`。`USERPROFILE` 没有或是空的，才用 `HOME`。`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`GROK_HOME` 可以分别换掉这三个目录。目录必须是绝对路径。两个家目录都没有，或者路径不是绝对路径，就不发请求，窗口是「登录已过期」。Claude 订阅令牌按 Anthropic 的条款只用于 Claude Code 和 claude.ai，用 `claude` 由用户自行承担风险。
+
+新的服务商不要再加内置来源，写成 `[[login]]`。同时声明 `http`，并把主机名放进 `domains`。参考 `examples/chatgpt-usage-generic`：
+
+```toml
+services = ["http", "timer"]
+
+[http]
+domains = ["chatgpt.com"]
+
+[[login]]
+id = "chatgpt"
+label = "ChatGPT 登录"
+file = ".codex/auth.json"
+
+[[login.fields]]
+name = "token"
+path = "tokens.access_token"
+header = "Authorization"
+prefix = "Bearer "
+
+[login.expires]
+field = "token"
+format = "jwt_exp"
+
+[login.request]
+method = "GET"
+url = "https://chatgpt.com/backend-api/wham/usage"
+
+[[login.extract]]
+name = "five_percent"
+path = "rate_limit.primary_window.used_percent"
+type = "number"
+```
+
+`file` 相对家目录，只接受 JSON。不能写 `..`、绝对路径、盘符或 `:`，也不能指向 `.ssh`、`.gnupg`、浏览器用户数据目录或 Lanwork 自己的数据目录。插件描述不能用环境变量换目录。`path` 是点号加 `[下标]`。顶层键要用前缀挑选时写 `key_prefix`，匹配规则和内置 Grok 一样。过期格式是 `epoch_s`、`epoch_ms`、`rfc3339` 或 `jwt_exp`。地址的主机、路径和查询都写死，脚本改不了。POST 把静态 JSON 写在 `request.body`。确认页会写出文件路径、发往的地址、请求头和交给脚本的字段名。改了描述的任何一处都要再确认。脚本用 `login.fetch("chatgpt", fn)`，只拿到 `values` 里点名的字段。登录过期是「登录已过期」。
 
 ## 脚本模板
 
@@ -129,6 +164,7 @@ timer.every(300, refresh)
 | `http` | `http.request({ method = "GET" 或 "POST", url = "...", secret 或 secrets = 可省略, body = POST 时的 JSON 字符串 }, fn)` | 每个域名一句「访问 <主机名>」。`post = true` 时再加「向 <主机> 提交数据」。每个固定请求头一句「请求头 <名称>: <值>」 |
 | `secret` | 没有读取函数。只在 `http.request` 里按 id 附带 | 「使用你填写的 <名称>，请求头 <名称>」。有前缀再接「，前缀 <前缀>」 |
 | `[[usage]]` | `usage.fetch("chatgpt" 或 "claude" 或 "grok", fn)`。不是 `services` 里的名字 | 「使用本机的 ChatGPT 登录」/「使用本机的 Claude 登录」/「使用本机的 Grok 登录」 |
+| `[[login]]` | `login.fetch("id", fn)`。不是 `services` 里的名字。回调里是 `values` | 「读取本机文件 ~/路径 中的 名称，发往 地址」，加上请求头和「交给脚本：字段名」 |
 
 `http` 只发往已声明的主机。GET 可以发。POST 要清单里 `post = true`，`body` 用 `json.encode` 得到的 JSON 字符串，不超过 64 KiB。宿主写 `Content-Type: application/json`。不跟随重定向，同一台主机上的也不跟随。不附带密钥的明文 `http` 不发送，回调里的 `error` 是「不允许明文 http」。附带密钥时必须是 `https`。没填密钥时回调里的 `error` 是「未填写密钥」，请求不会发出。一次请求可以带多个密钥，最多 8 个，每个进清单里写死的头。脚本不能另选请求头，也不能另加请求头。`usage.fetch` 的回调里只有规范化数字；登录过期是「登录已过期」，正文解析不了是「数据无效」。
 
@@ -163,13 +199,13 @@ timer.every(300, refresh)
 - [ ] 只声明了脚本真正调用的服务
 - [ ] 没有 `version` 和其它未列出的字段
 - [ ] `id` 不以 `lanwork.` 开头，大小写不论
-- [ ] 有 `http` 就有 `domains`，有 `secret` 就至少有一项 `id`、`label` 和 `header`，两边都和 `services` 对齐。`[[usage]]` 的 `source` 只能是 `chatgpt`、`claude`、`grok`
+- [ ] 有 `http` 就有 `domains`，有 `secret` 就至少有一项 `id`、`label` 和 `header`，两边都和 `services` 对齐。`[[usage]]` 的 `source` 只能是 `chatgpt`、`claude`、`grok`。新的服务商用 `[[login]]`，主机名写进 `domains`，文件是家目录下的 JSON，地址整段写死
 - [ ] 域名是纯主机名
 - [ ] 固定请求头的名字不与密钥头重名，也不用 `Host`、`Cookie`、`Content-Type` 这些被拒绝的名字；`User-Agent` 只有在要替换 `Lanwork` 时才写
 - [ ] 组件只用 `text`、`button`、`timer`、`progress`，id 不重复
 - [ ] 计时组件在需要倒数时调用了 `ui.timer_running`
 - [ ] `timer.every` 的秒数大于或等于 30
-- [ ] 请求的主机名写在 `domains` 里。GET 直接发；POST 先写 `post = true`，正文是 JSON 字符串。密钥只按 id 引用，请求头用清单里的。明文 `http` 不发，窗口是「不允许明文 http」，也不跟随重定向。本机用量只用 `usage.fetch`，不自己拼令牌
+- [ ] 请求的主机名写在 `domains` 里。GET 直接发；POST 先写 `post = true`，正文是 JSON 字符串。密钥只按 id 引用，请求头用清单里的。明文 `http` 不发，窗口是「不允许明文 http」，也不跟随重定向。内置用量只用 `usage.fetch`。插件登录只用 `login.fetch`，不自己拼令牌，也不改地址
 - [ ] 没有 `print`、`require`、`io`、`os`、协程
 - [ ] 文件夹根上有 `manifest.toml` 和入口脚本；zip 根上有清单，或只有一个顶层文件夹
 - [ ] 告诉了用户从「应用」页导入，以及密钥要在「填写密钥」里填

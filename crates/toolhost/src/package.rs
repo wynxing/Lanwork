@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+use crate::login::{ExpiryFormat, ExtractType, LoginDecl, confirm_lines};
 use crate::manifest::{FixedHeader, Manifest, SecretDecl, load_dir, parse};
 use crate::usage::UsageSource;
 
@@ -38,6 +39,7 @@ pub struct Grant {
     pub headers: Vec<FixedHeader>,
     pub secrets: Vec<SecretDecl>,
     pub usage: Vec<UsageSource>,
+    pub logins: Vec<LoginDecl>,
 }
 
 impl Grant {
@@ -50,6 +52,7 @@ impl Grant {
             headers: manifest.headers.clone(),
             secrets: manifest.secrets.clone(),
             usage: manifest.usage.clone(),
+            logins: manifest.logins.clone(),
         }
     }
 
@@ -88,6 +91,13 @@ impl Grant {
             .usage
             .iter()
             .any(|source| !self.usage.contains(source))
+        {
+            return false;
+        }
+        if manifest
+            .logins
+            .iter()
+            .any(|login| !self.logins.iter().any(|granted| granted == login))
         {
             return false;
         }
@@ -381,6 +391,7 @@ pub fn permission_lines(manifest: &Manifest) -> Vec<String> {
         &manifest.headers,
         &manifest.secrets,
         &manifest.usage,
+        &manifest.logins,
     )
 }
 
@@ -393,6 +404,7 @@ pub fn grant_lines(grant: &Grant) -> Vec<String> {
         &grant.headers,
         &grant.secrets,
         &grant.usage,
+        &grant.logins,
     )
 }
 
@@ -414,6 +426,7 @@ fn lines_for(
     headers: &[FixedHeader],
     secrets: &[SecretDecl],
     usage: &[UsageSource],
+    logins: &[LoginDecl],
 ) -> Vec<String> {
     let mut lines = Vec::new();
     for domain in domains {
@@ -430,6 +443,9 @@ fn lines_for(
     }
     for source in usage {
         lines.push(source.confirm_line().to_string());
+    }
+    for login in logins {
+        lines.extend(confirm_lines(login));
     }
     if services.contains("notify") {
         lines.push("发送通知".to_string());
@@ -483,6 +499,7 @@ pub fn encode_grant(grant: &Grant) -> Vec<u8> {
         "headers": headers,
         "secrets": secrets,
         "usage": grant.usage.iter().map(UsageSource::as_str).collect::<Vec<_>>(),
+        "logins": grant.logins.iter().map(encode_login).collect::<Vec<_>>(),
     });
     let mut bytes = serde_json::to_vec(&value).expect("确认记录可以编码");
     bytes.push(b'\n');
@@ -540,6 +557,10 @@ pub fn decode_grant(bytes: &[u8]) -> Option<Grant> {
         None => Vec::new(),
         Some(value) => decode_usage(value)?,
     };
+    let logins = match obj.get("logins") {
+        None => Vec::new(),
+        Some(value) => decode_logins(value)?,
+    };
     Some(Grant {
         services,
         domains,
@@ -547,6 +568,183 @@ pub fn decode_grant(bytes: &[u8]) -> Option<Grant> {
         headers,
         secrets,
         usage,
+        logins,
+    })
+}
+
+fn encode_login(login: &LoginDecl) -> serde_json::Value {
+    let fields: Vec<serde_json::Value> = login
+        .fields
+        .iter()
+        .map(|field| {
+            let mut item = serde_json::json!({
+                "name": field.name,
+                "path": field.path,
+                "header": field.header,
+                "prefix": field.prefix,
+            });
+            if let Some(prefix) = &field.key_prefix {
+                item["key_prefix"] = serde_json::Value::String(prefix.clone());
+            }
+            item
+        })
+        .collect();
+    let extract: Vec<serde_json::Value> = login
+        .extract
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "name": item.name,
+                "path": item.path,
+                "type": item.kind.as_str(),
+            })
+        })
+        .collect();
+    let mut request = serde_json::json!({
+        "method": login.request.method,
+        "url": login.request.url,
+        "headers": login.request.headers.iter().map(|header| serde_json::json!({
+            "name": header.name,
+            "value": header.value,
+        })).collect::<Vec<_>>(),
+    });
+    if let Some(body) = &login.request.body {
+        request["body"] = serde_json::Value::String(body.clone());
+    }
+    let mut item = serde_json::json!({
+        "id": login.id,
+        "label": login.label,
+        "file": login.file,
+        "fields": fields,
+        "request": request,
+        "extract": extract,
+    });
+    if let Some(expires) = &login.expires {
+        let mut encoded = serde_json::json!({ "format": expires.format.as_str() });
+        if let Some(path) = &expires.path {
+            encoded["path"] = serde_json::Value::String(path.clone());
+        }
+        if let Some(field) = &expires.field {
+            encoded["field"] = serde_json::Value::String(field.clone());
+        }
+        if let Some(prefix) = &expires.key_prefix {
+            encoded["key_prefix"] = serde_json::Value::String(prefix.clone());
+        }
+        item["expires"] = encoded;
+    }
+    item
+}
+
+fn decode_logins(value: &serde_json::Value) -> Option<Vec<LoginDecl>> {
+    let mut logins = Vec::new();
+    for item in value.as_array()? {
+        let item = item.as_object()?;
+        let id = item.get("id")?.as_str()?.to_string();
+        let label = item.get("label")?.as_str()?.to_string();
+        let file = item.get("file")?.as_str()?.to_string();
+        if crate::login::normalize_login_file(&file).ok()?.as_str() != file {
+            return None;
+        }
+        let mut fields = Vec::new();
+        for field in item.get("fields")?.as_array()? {
+            let field = field.as_object()?;
+            let name = field.get("name")?.as_str()?.to_string();
+            let path = field.get("path")?.as_str()?.to_string();
+            let header = field.get("header")?.as_str()?.to_string();
+            let prefix = match field.get("prefix") {
+                None => String::new(),
+                Some(serde_json::Value::String(value)) => value.clone(),
+                Some(_) => return None,
+            };
+            let key_prefix = match field.get("key_prefix") {
+                None => None,
+                Some(serde_json::Value::String(value)) => Some(value.clone()),
+                Some(_) => return None,
+            };
+            fields.push(crate::login::LoginField {
+                name,
+                path,
+                header,
+                prefix,
+                key_prefix,
+            });
+        }
+        let expires = match item.get("expires") {
+            None => None,
+            Some(value) => Some(decode_expires(value)?),
+        };
+        let request_value = item.get("request")?.as_object()?;
+        let method = request_value.get("method")?.as_str()?.to_string();
+        let url = request_value.get("url")?.as_str()?.to_string();
+        let headers = match request_value.get("headers") {
+            None => Vec::new(),
+            Some(value) => decode_headers(value)?,
+        };
+        let body = match request_value.get("body") {
+            None => None,
+            Some(serde_json::Value::String(value)) => Some(value.clone()),
+            Some(_) => return None,
+        };
+        let mut extract = Vec::new();
+        for item in item.get("extract")?.as_array()? {
+            let item = item.as_object()?;
+            let name = item.get("name")?.as_str()?.to_string();
+            let path = item.get("path")?.as_str()?.to_string();
+            let kind = match item.get("type")?.as_str()? {
+                "number" => ExtractType::Number,
+                "string" => ExtractType::String,
+                "bool" => ExtractType::Bool,
+                _ => return None,
+            };
+            extract.push(crate::login::LoginExtract { name, path, kind });
+        }
+        logins.push(LoginDecl {
+            id,
+            label,
+            file,
+            fields,
+            expires,
+            request: crate::login::LoginRequest {
+                method,
+                url,
+                headers,
+                body,
+            },
+            extract,
+        });
+    }
+    Some(logins)
+}
+
+fn decode_expires(value: &serde_json::Value) -> Option<crate::login::LoginExpires> {
+    let item = value.as_object()?;
+    let format = match item.get("format")?.as_str()? {
+        "epoch_s" => ExpiryFormat::EpochS,
+        "epoch_ms" => ExpiryFormat::EpochMs,
+        "rfc3339" => ExpiryFormat::Rfc3339,
+        "jwt_exp" => ExpiryFormat::JwtExp,
+        _ => return None,
+    };
+    let path = match item.get("path") {
+        None => None,
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(_) => return None,
+    };
+    let field = match item.get("field") {
+        None => None,
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(_) => return None,
+    };
+    let key_prefix = match item.get("key_prefix") {
+        None => None,
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(_) => return None,
+    };
+    Some(crate::login::LoginExpires {
+        format,
+        path,
+        field,
+        key_prefix,
     })
 }
 
@@ -875,7 +1073,7 @@ pub(crate) fn png_signature(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guide::{chatgpt_usage, countdown, quota};
+    use crate::guide::{chatgpt_usage, chatgpt_usage_generic, countdown, quota};
     use crate::manifest::materialize;
 
     fn scratch(name: &str) -> PathBuf {
@@ -986,6 +1184,58 @@ mod tests {
                 "定时刷新".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn shipped_generic_chatgpt_login_matches_the_guide_and_reconfirms() {
+        let (manifest, script) = chatgpt_usage_generic().unwrap();
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/chatgpt-usage-generic");
+        let on_disk_manifest = std::fs::read_to_string(root.join("manifest.toml"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let on_disk_script = std::fs::read_to_string(root.join("main.lua"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(on_disk_manifest.trim_end(), manifest.trim_end());
+        assert_eq!(on_disk_script.trim_end(), script.trim_end());
+        let staged = inspect_path(&root).unwrap();
+        assert_eq!(staged.manifest.id, "example.chatgpt-usage-generic");
+        assert!(staged.manifest.usage.is_empty());
+        assert_eq!(staged.manifest.logins.len(), 1);
+        let lines = permission_lines(&staged.manifest);
+        assert_eq!(
+            lines,
+            vec![
+                "访问 chatgpt.com".to_string(),
+                "读取本机文件 ~/.codex/auth.json 中的 ChatGPT 登录，发往 https://chatgpt.com/backend-api/wham/usage".to_string(),
+                "请求头 Accept: application/json".to_string(),
+                "请求头 Authorization，前缀 Bearer ".to_string(),
+                "请求头 ChatGPT-Account-Id".to_string(),
+                "交给脚本：five_percent、five_seconds、five_reset、week_percent、week_seconds、week_reset".to_string(),
+                "定时刷新".to_string(),
+            ]
+        );
+        let grant = Grant::from_manifest(&staged.manifest);
+        assert!(grant.allows(&staged.manifest));
+        assert_eq!(decode_grant(&encode_grant(&grant)).unwrap(), grant);
+        let mut changed = staged.manifest.clone();
+        changed.logins[0].file = "other/auth.json".to_string();
+        assert!(!grant.allows(&changed));
+        changed.logins[0].file = staged.manifest.logins[0].file.clone();
+        changed.logins[0].fields[0].prefix = "Token ".to_string();
+        assert!(!grant.allows(&changed));
+        changed.logins[0].fields[0].prefix = staged.manifest.logins[0].fields[0].prefix.clone();
+        changed.logins[0].request.url = "https://chatgpt.com/backend-api/wham/other".to_string();
+        assert!(!grant.allows(&changed));
+        changed.logins[0].request.url = staged.manifest.logins[0].request.url.clone();
+        changed.logins[0].extract[0].name = "other".to_string();
+        assert!(!grant.allows(&changed));
+        let mut dropped = staged.manifest.clone();
+        dropped.logins.clear();
+        assert!(grant.allows(&dropped));
+        let old = Grant::from_manifest(&dropped);
+        assert!(!old.allows(&staged.manifest));
     }
 
     #[test]
@@ -1111,6 +1361,7 @@ prefix = "Bearer "
             "旧授权没有请求头，不能盖住现在的声明"
         );
         assert!(decoded.usage.is_empty());
+        assert!(decoded.logins.is_empty());
         assert!(!decoded.post);
         assert!(decoded.headers.is_empty());
 

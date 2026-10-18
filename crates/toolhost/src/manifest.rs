@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use crate::id::{imported_prefix_forbidden, valid_id};
+use crate::login::LoginDecl;
 use crate::usage::UsageSource;
 
 const SERVICES: &[&str] = &[
@@ -86,6 +87,8 @@ pub struct Manifest {
     pub secrets: Vec<SecretDecl>,
     /// 本机登录用量。顺序与清单一致。脚本不能改路径和网址。
     pub usage: Vec<UsageSource>,
+    /// 插件自己声明的登录描述。顺序与清单一致。
+    pub logins: Vec<LoginDecl>,
     pub widgets: Vec<WidgetDecl>,
     /// 入口脚本相对工具文件夹的路径。不含 `..`。
     pub entry: String,
@@ -120,6 +123,7 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
             "http",
             "secret",
             "usage",
+            "login",
             "component",
         ],
     )?;
@@ -168,6 +172,10 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
         None => Vec::new(),
         Some(value) => parse_usage(value)?,
     };
+    let logins = match table.get("login") {
+        None => Vec::new(),
+        Some(value) => crate::login::parse_login_array(value, &domains)?,
+    };
     let widgets = parse_widgets(table.get("component").ok_or("缺少 component")?)?;
 
     Ok((
@@ -181,6 +189,7 @@ pub fn parse(text: &str) -> Result<(Manifest, String), String> {
             headers,
             secrets,
             usage,
+            logins,
             widgets,
             entry: entry.clone(),
             script: String::new(),
@@ -235,7 +244,7 @@ fn parse_http(value: &toml::Value) -> Result<(Vec<String>, bool, Vec<FixedHeader
     Ok((domains, post, headers))
 }
 
-fn parse_headers(value: &toml::Value) -> Result<Vec<FixedHeader>, String> {
+pub(crate) fn parse_headers(value: &toml::Value) -> Result<Vec<FixedHeader>, String> {
     let array = value.as_array().ok_or("headers 不是数组")?;
     if array.len() > HEADER_LIMIT {
         return Err("请求头过多".to_string());
@@ -524,7 +533,10 @@ fn entry_file(dir: &Path, entry: &str) -> Result<PathBuf, String> {
     Ok(file)
 }
 
-fn require_keys<'a>(keys: impl Iterator<Item = &'a str>, allowed: &[&str]) -> Result<(), String> {
+pub(crate) fn require_keys<'a>(
+    keys: impl Iterator<Item = &'a str>,
+    allowed: &[&str],
+) -> Result<(), String> {
     for key in keys {
         if !allowed.contains(&key) {
             return Err(format!("不认识的字段 {key}"));
@@ -533,7 +545,7 @@ fn require_keys<'a>(keys: impl Iterator<Item = &'a str>, allowed: &[&str]) -> Re
     Ok(())
 }
 
-fn required_str<'a>(
+pub(crate) fn required_str<'a>(
     table: &'a toml::map::Map<String, toml::Value>,
     key: &str,
 ) -> Result<&'a str, String> {
@@ -543,7 +555,7 @@ fn required_str<'a>(
         .ok_or_else(|| format!("缺少 {key}"))
 }
 
-fn optional_str<'a>(
+pub(crate) fn optional_str<'a>(
     table: &'a toml::map::Map<String, toml::Value>,
     key: &str,
 ) -> Result<Option<&'a str>, String> {
@@ -554,7 +566,7 @@ fn optional_str<'a>(
     }
 }
 
-fn trimmed_line(value: &str, label: &str) -> Result<String, String> {
+pub(crate) fn trimmed_line(value: &str, label: &str) -> Result<String, String> {
     if value.contains('\n') || value.contains('\r') {
         return Err(format!("{label}不能含换行"));
     }
