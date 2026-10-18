@@ -339,7 +339,8 @@ fn grok_credential(
 
 /// 键等于这个来源，或者紧接着的字符是 `/` 或 `:`。
 /// `https://auth.x.ai.evil.example` 不算同一来源。
-fn origin_match(key: &str, origin: &str) -> bool {
+/// 插件 `[[login]]` 的 `key_prefix` 用同一条规则。
+pub(crate) fn origin_match(key: &str, origin: &str) -> bool {
     let Some(rest) = key.strip_prefix(origin) else {
         return false;
     };
@@ -632,7 +633,7 @@ fn scale_unix(value: i64) -> Option<i64> {
     }
 }
 
-fn jwt_expiry_ms(token: &str) -> Option<i64> {
+pub(crate) fn jwt_expiry_ms(token: &str) -> Option<i64> {
     let mut parts = token.split('.');
     let _header = parts.next()?;
     let payload = parts.next()?;
@@ -681,7 +682,7 @@ fn b64url_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn parse_rfc3339_ms(text: &str) -> Option<i64> {
+pub(crate) fn parse_rfc3339_ms(text: &str) -> Option<i64> {
     let bytes = text.as_bytes();
     if bytes.len() < 20 {
         return None;

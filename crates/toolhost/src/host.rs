@@ -34,6 +34,10 @@ use mlua::{
 use crate::http::{
     HttpDeny, HttpRequest, HttpTransport, Outgoing, ResolvedSecret, SecretAttach, prepare,
 };
+use crate::login::{
+    LoginError, LoginRoots, LoginValue, cached_login, interpret_login, login_fingerprint,
+    prepare_login, store_login,
+};
 use crate::manifest::{Manifest, WidgetDecl, WidgetKind, load_dir};
 use crate::secret::SecretStore;
 use crate::usage::{
@@ -59,7 +63,7 @@ const STORAGE_COUNT_MAX: usize = 256;
 /// 回调里再发请求会再等一轮。不停地一轮接一轮，规格没有写。最多 8 轮，避免宿主停不下来。
 const HTTP_DRAIN_ROUNDS: u32 = 8;
 const SERVICE_NAMES: &[&str] = &[
-    "timer", "notify", "storage", "todo", "http", "secret", "usage",
+    "timer", "notify", "storage", "todo", "http", "secret", "usage", "login",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +141,11 @@ pub struct Options {
     pub complete_todo: Option<TodoComplete>,
     /// 本机登录文件所在的目录。空着则按 `USERPROFILE` 和对应的环境变量现查。
     pub usage_roots: Option<UsageRoots>,
+    /// 插件登录文件用的家目录。空着则按 `USERPROFILE`，没有再用 `HOME`。
+    /// 插件描述不读 `CODEX_HOME` 这一类目录变量。
+    pub login_roots: Option<LoginRoots>,
+    /// Lanwork 正在使用的数据目录。登录文件解析进这里时拒绝。空着仍拒绝默认的 `Documents/Lanwork`。
+    pub data_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
@@ -151,6 +160,8 @@ impl Default for Options {
             persist_storage: None,
             complete_todo: None,
             usage_roots: None,
+            login_roots: None,
+            data_dir: None,
         }
     }
 }
@@ -232,6 +243,8 @@ struct Inner {
     persist_storage: Option<StoragePersist>,
     complete_todo: Option<TodoComplete>,
     usage_roots: Option<UsageRoots>,
+    login_roots: Option<LoginRoots>,
+    data_dir: Option<std::path::PathBuf>,
 }
 
 enum FlightKind {
@@ -243,11 +256,18 @@ enum FlightKind {
         source: UsageSource,
         remember: bool,
     },
+    Login {
+        tool_id: String,
+        id: String,
+        fingerprint: u64,
+        remember: bool,
+    },
 }
 
 enum FlightOutcome {
     Http(Result<crate::http::HttpResponse, crate::http::TransportError>),
     Usage(Result<UsageSnapshot, UsageError>),
+    Login(Result<Vec<LoginValue>, LoginError>),
 }
 
 struct Inflight {
@@ -331,6 +351,8 @@ impl Session {
             persist_storage: options.persist_storage,
             complete_todo: options.complete_todo,
             usage_roots: options.usage_roots,
+            login_roots: options.login_roots,
+            data_dir: options.data_dir,
         }));
         lua.set_app_data(Rc::clone(&inner));
         bind(&lua, Rc::clone(&inner))?;
@@ -573,6 +595,19 @@ impl Session {
             FlightKind::Usage { source, remember } => {
                 self.settle_usage(item.callbacks, source, remember, response);
             }
+            FlightKind::Login {
+                tool_id,
+                id,
+                fingerprint,
+                remember,
+            } => self.settle_login(
+                item.callbacks,
+                &tool_id,
+                &id,
+                fingerprint,
+                remember,
+                response,
+            ),
         }
     }
 
@@ -593,7 +628,9 @@ impl Session {
         };
         let http = match response {
             Ok(FlightOutcome::Http(result)) => result,
-            Ok(FlightOutcome::Usage(_)) | Err(_) => Err(crate::http::TransportError),
+            Ok(FlightOutcome::Usage(_) | FlightOutcome::Login(_)) | Err(_) => {
+                Err(crate::http::TransportError)
+            }
         };
         let (ok, status, body, error) = match http {
             Ok(response) => {
@@ -635,7 +672,9 @@ impl Session {
     ) {
         let outcome = match response {
             Ok(FlightOutcome::Usage(result)) => result,
-            Ok(FlightOutcome::Http(_)) | Err(_) => Err(UsageError::Failed),
+            Ok(FlightOutcome::Http(_) | FlightOutcome::Login(_)) | Err(_) => {
+                Err(UsageError::Failed)
+            }
         };
         if remember {
             store_usage(source, outcome.clone());
@@ -651,6 +690,38 @@ impl Session {
             };
             let outcome = outcome.clone();
             self.run_lua(|| deliver_usage(&self.lua, &callback, &outcome), false);
+        }
+    }
+
+    fn settle_login(
+        &self,
+        callbacks: Vec<RegistryKey>,
+        tool_id: &str,
+        id: &str,
+        fingerprint: u64,
+        remember: bool,
+        response: Result<FlightOutcome, mpsc::RecvTimeoutError>,
+    ) {
+        let outcome = match response {
+            Ok(FlightOutcome::Login(result)) => result,
+            Ok(FlightOutcome::Http(_) | FlightOutcome::Usage(_)) | Err(_) => {
+                Err(LoginError::Failed)
+            }
+        };
+        if remember {
+            store_login(tool_id, id, fingerprint, outcome.clone());
+        }
+        if let Err(err) = &outcome {
+            self.inner.borrow_mut().note(err.text());
+        }
+        for key in callbacks {
+            let callback = self.lua.registry_value::<Function>(&key).ok();
+            self.lua.remove_registry_value(key).ok();
+            let Some(callback) = callback else {
+                continue;
+            };
+            let outcome = outcome.clone();
+            self.run_lua(|| deliver_login(&self.lua, &callback, &outcome), false);
         }
     }
 
@@ -1165,7 +1236,10 @@ fn bind(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
             .map_err(|err| err.to_string())?;
     }
     if !inner.borrow().manifest.usage.is_empty() {
-        bind_usage(lua, inner)?;
+        bind_usage(lua, Rc::clone(&inner))?;
+    }
+    if !inner.borrow().manifest.logins.is_empty() {
+        bind_login(lua, inner)?;
     }
     Ok(())
 }
@@ -1719,6 +1793,18 @@ impl Inner {
         }
         Err(key)
     }
+
+    fn join_login(&mut self, id: &str, key: RegistryKey) -> Result<(), RegistryKey> {
+        for item in &mut self.inflight {
+            if let FlightKind::Login { id: existing, .. } = &item.kind
+                && existing == id
+            {
+                item.callbacks.push(key);
+                return Ok(());
+            }
+        }
+        Err(key)
+    }
 }
 
 fn deliver_usage(
@@ -1751,6 +1837,212 @@ fn deliver_usage(
                 windows.set(lua_index, item)?;
             }
             result.set("windows", windows)?;
+        }
+        Err(err) => {
+            result.set("ok", false)?;
+            result.set("error", err.text())?;
+        }
+    }
+    let _guard = crate::pattern::enter_host(lua)?;
+    callback.call::<()>(result)
+}
+
+fn bind_login(lua: &Lua, inner: Rc<RefCell<Inner>>) -> Result<(), String> {
+    let login = lua.create_table().map_err(|err| err.to_string())?;
+    login
+        .set(
+            "fetch",
+            lua.create_function(move |lua, (name, callback): (String, Function)| {
+                login_fetch(lua, &inner, &name, callback)
+            })
+            .map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| err.to_string())?;
+    lua.globals()
+        .set("login", login)
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn login_fetch(
+    lua: &Lua,
+    inner: &Rc<RefCell<Inner>>,
+    name: &str,
+    callback: Function,
+) -> mlua::Result<()> {
+    // 先核对这个工具自己声明的描述，再查缓存。别的工具同名 id 不能从这里读走。
+    let (tool_id, descriptor) = {
+        let inner = inner.borrow();
+        let tool_id = inner.manifest.id.clone();
+        let descriptor = inner
+            .manifest
+            .logins
+            .iter()
+            .find(|item| item.id == name)
+            .cloned();
+        (tool_id, descriptor)
+    };
+    let Some(descriptor) = descriptor else {
+        inner.borrow_mut().note(LoginError::Unauthorized.text());
+        return deliver_login(lua, &callback, &Err(LoginError::Unauthorized));
+    };
+    let fingerprint = login_fingerprint(&descriptor);
+    let key = lua.create_registry_value(callback)?;
+    let key = match inner.borrow_mut().join_login(&descriptor.id, key) {
+        Ok(()) => return Ok(()),
+        Err(key) => key,
+    };
+    if let Some(cached) = cached_login(&tool_id, &descriptor.id, fingerprint) {
+        return queue_login(
+            inner,
+            &tool_id,
+            &descriptor.id,
+            fingerprint,
+            key,
+            cached,
+            false,
+        );
+    }
+    let roots = inner
+        .borrow()
+        .login_roots
+        .clone()
+        .unwrap_or_else(LoginRoots::from_env);
+    let data_dir = inner.borrow().data_dir.clone();
+    match prepare_login(&descriptor, &roots, data_dir.as_deref(), unix_now_ms()) {
+        Ok(call) => spawn_login(inner, &tool_id, &descriptor.id, fingerprint, key, call),
+        Err(err) => queue_login(
+            inner,
+            &tool_id,
+            &descriptor.id,
+            fingerprint,
+            key,
+            Err(err),
+            true,
+        ),
+    }
+}
+
+fn queue_login(
+    inner: &Rc<RefCell<Inner>>,
+    tool_id: &str,
+    id: &str,
+    fingerprint: u64,
+    key: RegistryKey,
+    outcome: Result<Vec<LoginValue>, LoginError>,
+    remember: bool,
+) -> mlua::Result<()> {
+    let (tx, rx) = mpsc::channel();
+    let _ = tx.send(FlightOutcome::Login(outcome));
+    inner.borrow_mut().inflight.push(Inflight {
+        rx,
+        callbacks: vec![key],
+        kind: FlightKind::Login {
+            tool_id: tool_id.to_string(),
+            id: id.to_string(),
+            fingerprint,
+            remember,
+        },
+    });
+    Ok(())
+}
+
+fn spawn_login(
+    inner: &Rc<RefCell<Inner>>,
+    tool_id: &str,
+    id: &str,
+    fingerprint: u64,
+    key: RegistryKey,
+    call: crate::login::LoginCall,
+) -> mlua::Result<()> {
+    if !call.outgoing.url.starts_with("https://") {
+        inner.borrow_mut().note(LoginError::Failed.text());
+        return queue_login(
+            inner,
+            tool_id,
+            id,
+            fingerprint,
+            key,
+            Err(LoginError::Failed),
+            true,
+        );
+    }
+    let descriptor = inner
+        .borrow()
+        .manifest
+        .logins
+        .iter()
+        .find(|item| item.id == id)
+        .cloned();
+    let Some(descriptor) = descriptor else {
+        inner.borrow_mut().note(LoginError::Unauthorized.text());
+        return queue_login(
+            inner,
+            tool_id,
+            id,
+            fingerprint,
+            key,
+            Err(LoginError::Unauthorized),
+            false,
+        );
+    };
+    let crate::login::LoginCall {
+        outgoing,
+        sensitive,
+    } = call;
+    let transport = Arc::clone(&inner.borrow().transport);
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("toolhost-login".to_string())
+        .spawn(move || {
+            let outcome = match transport.send(&outgoing) {
+                Ok(response) => {
+                    interpret_login(&descriptor, response.status, &response.body, &sensitive)
+                }
+                Err(_) => Err(LoginError::Failed),
+            };
+            let _ = tx.send(FlightOutcome::Login(outcome));
+        })
+        .map_err(|_| mlua::Error::runtime("请求失败"))?;
+    let mut inner = inner.borrow_mut();
+    inner.http_sends += 1;
+    inner.inflight.push(Inflight {
+        rx,
+        callbacks: vec![key],
+        kind: FlightKind::Login {
+            tool_id: tool_id.to_string(),
+            id: id.to_string(),
+            fingerprint,
+            remember: true,
+        },
+    });
+    Ok(())
+}
+
+fn deliver_login(
+    lua: &Lua,
+    callback: &Function,
+    outcome: &Result<Vec<LoginValue>, LoginError>,
+) -> mlua::Result<()> {
+    let result = lua.create_table()?;
+    match outcome {
+        Ok(values) => {
+            result.set("ok", true)?;
+            let table = lua.create_table()?;
+            for item in values {
+                match &item.value {
+                    crate::login::LoginScalar::Number(number) => {
+                        table.set(item.name.as_str(), *number)?;
+                    }
+                    crate::login::LoginScalar::String(text) => {
+                        table.set(item.name.as_str(), text.as_str())?;
+                    }
+                    crate::login::LoginScalar::Bool(flag) => {
+                        table.set(item.name.as_str(), *flag)?;
+                    }
+                }
+            }
+            result.set("values", table)?;
         }
         Err(err) => {
             result.set("ok", false)?;

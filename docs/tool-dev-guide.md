@@ -79,6 +79,7 @@ component = "progress"
 | `http` | 仅当 `services` 含 `http`。表里可以有 `domains`、`post`、`headers` |
 | `secret` | 仅当 `services` 含 `secret`。数组，至少一项。每项有 `id`、`label` 和 `header`，`prefix` 可以不写 |
 | `usage` | 可以不写。数组，至少一项。每项只有 `source`，只能是 `chatgpt`、`claude` 或 `grok`。这不是 `services` 里的名字 |
+| `login` | 可以不写。数组，至少一项。插件自己的登录描述，不是 `services` 里的名字。字段见「插件登录」 |
 | `component` | 数组，必须有这个键，可以是空的。内容区从上到下排 |
 
 `services` 里有 `http` 就必须有 `[http]`，有 `[http]` 就必须声明 `http`。`secret` 一样。对不齐就是「清单无效」。
@@ -95,8 +96,9 @@ component = "progress"
 | `http` | 每个域名一句「访问 <主机名>」，不另写「联网」。`post = true` 时，每个域名紧接着「向 <主机> 提交数据」。每个固定请求头一句「请求头 <名称>: <值>」 |
 | `secret` | 每个密钥一句。没有前缀时是「使用你填写的 <名称>，请求头 <名称>」。写了前缀再接「，前缀 <前缀>」，前缀按清单逐字显示，末尾空格也留着 |
 | `usage` | 每个来源一句：「使用本机的 ChatGPT 登录」「使用本机的 Claude 登录」或「使用本机的 Grok 登录」 |
+| `login` | 每一项先写「读取本机文件 ~/路径 中的 名称，发往 地址」。POST 把「发往」写成「提交到」。然后是这次请求的固定请求头、每个登录字段的请求头，最后「交给脚本：名字、名字」 |
 
-句子顺序是固定的，不跟着 `services` 数组的书写顺序。先按清单顺序，每个域名一句「访问」，允许提交时紧接着「向 <主机> 提交数据」。然后按清单顺序列出每个固定请求头，再按清单顺序列出每个密钥，再按清单顺序列出每个本机登录来源，然后是通知、读取待办、完成待办、保存数据、定时刷新。额度示例的三句是：
+句子顺序是固定的，不跟着 `services` 数组的书写顺序。先按清单顺序，每个域名一句「访问」，允许提交时紧接着「向 <主机> 提交数据」。然后按清单顺序列出每个固定请求头，再按清单顺序列出每个密钥，再按清单顺序列出每个本机登录来源，再按清单顺序列出每个插件登录描述，然后是通知、读取待办、完成待办、保存数据、定时刷新。额度示例的三句是：
 
 ```text
 访问 api.example.com
@@ -106,7 +108,7 @@ component = "progress"
 
 确认页上没有密钥的值，也没有密钥 id。固定请求头的值会写在确认页上，不要把密钥填进 `headers`。密钥的请求头名字和前缀会出现在确认页上，值不会。
 
-更新时确认页仍整份列出这些句子。新版本比上次确认多了密钥、改了或拿掉密钥的请求头或前缀、多了固定请求头、主机名、`post` 或本机登录来源，必须再确认一次，新的那几句就在这份列表里。只改密钥的 `label` 不用再确认。少了来源或少了密钥不算扩大。导出包和备份的那一次确认用同一套句子。
+更新时确认页仍整份列出这些句子。新版本比上次确认多了密钥、改了或拿掉密钥的请求头或前缀、多了固定请求头、主机名、`post` 或本机登录来源，或者多了插件登录、改了已有插件登录的任何一处，必须再确认一次，新的那几句就在这份列表里。只改密钥的 `label` 不用再确认。少了来源、少了密钥或少了插件登录不算扩大。导出包和备份的那一次确认用同一套句子。
 
 已经确认过、但授权记录里没有请求头的旧工具，窗口显示「未授权」，要再确认一次。清单里不写 `header` 的密钥不安装。
 
@@ -479,6 +481,75 @@ ChatGPT 的 `reset_at`、Grok 的 `config.currentPeriod.end`（没有再用 `con
 
 这些句子里没有令牌、账号和原始正文。日志也不写。用户要刷新登录，就打开对应的应用。
 
+## 插件登录
+
+新的服务商写成 `[[login]]`，不要再为每一个服务商加内置来源。`chatgpt`、`claude`、`grok` 这三个 `[[usage]]` 仍按上一节，清单和脚本都不用改。
+
+`login` 不是 `services` 里的名字。清单写了 `[[login]]` 才有 `login.fetch`。没写时读 `login` 也是「未授权」。要声明登录，工具必须同时声明 `http`，并把请求的主机名写进 `domains`。这不自动打开脚本自己的 POST。
+
+一份描述的字段只有这些：
+
+| 字段 | 规则 |
+| --- | --- |
+| `id` | 这个工具里唯一。规则与密钥 id 相同 |
+| `label` | 确认页第一句里的名称。去掉首尾空白后 1 到 64 个字符，不能含换行 |
+| `file` | 相对用户家目录的 JSON 路径。可以写成 `~/.codex/auth.json`，宿主去掉开头的 `~/` |
+| `fields` | 至少一项，最多 8 项。从文件里取出、放进请求头的值 |
+| `expires` | 可以不写。过期或字段不在时不发请求 |
+| `request` | 方法、完整的 https 地址、固定请求头，POST 时还有静态 JSON 正文 |
+| `extract` | 至少一项，最多 32 项。响应里交给脚本的字段 |
+
+`fields` 的每一项：
+
+| 字段 | 规则 |
+| --- | --- |
+| `name` | 这一项里唯一。`jwt_exp` 用它点名 |
+| `path` | 点号分开对象的键，`[下标]` 取数组。下标从 0 起，不能有前导零，最大 4096。路径最长 512 字节，最多 16 段。键里不能有 `.`、`[`、`]` 和控制字符 |
+| `header` | 请求头名字。规则与密钥的 `header` 相同 |
+| `prefix` | 可以不写。规则与密钥的 `prefix` 相同，按清单逐字发出，末尾空格也留着 |
+| `key_prefix` | 可以不写。用来挑 JSON 顶层的键：键等于这个前缀，或者后面紧跟 `/`、`:`。`https://auth.x.ai.evil.example` 不算。有多项时取字典序最小、字段都能读到、并且还没过期的那一个。`path` 相对这个对象。同一个前缀的字段共用一个键 |
+
+读到的值必须是非空的可打印 ASCII 字符串。不是字符串、空的、或含有控制字符，当作没有登录。
+
+`expires.format` 只能是这四个：
+
+| 格式 | 要写的字段 | 值 |
+| --- | --- | --- |
+| `epoch_s` | `path`，可选 `key_prefix` | 整数或整数字符串，单位是秒。不把小的数当成毫秒 |
+| `epoch_ms` | `path`，可选 `key_prefix` | 整数或整数字符串，单位是毫秒 |
+| `rfc3339` | `path`，可选 `key_prefix` | RFC3339 字符串。写成数字不算 |
+| `jwt_exp` | `field` | 指向 `fields` 里的一个 `name`。从那段 JWT 的载荷取 `exp`（秒），不校验签名。缺段、解码不了、载荷不是 JSON、没有数字 `exp`，都当作过期，不因此崩溃 |
+
+`jwt_exp` 不能再写 `path` 或 `key_prefix`。另外三种必须写 `path`，不能写 `field`。文件没有、读不了、字段不在、格式对不上或已经到期，窗口是「登录已过期」，请求不发出。
+
+`request`：
+
+| 字段 | 规则 |
+| --- | --- |
+| `method` | 大写的 `GET` 或 `POST` |
+| `url` | 完整的 `https://主机/路径`，查询要写就写在这个字符串里。不能带用户名、密码、端口或片段。主机名必须在 `domains` 里，并且和解析出来的地址逐字相同，主机名用小写。路径里不能有 `.` 或 `..` |
+| `headers` | 可以不写。规则与 `[http]` 的固定请求头相同，最多 16 条。不能和登录字段的请求头重名 |
+| `body` | 只有 POST 能写，而且必须写。静态 JSON，最长 64 KiB。GET 不能写 |
+
+脚本不能改方法、主机、路径、查询或请求头。`login.fetch` 只收 id。没写 `User-Agent` 时仍是 `Lanwork`，没写 `Accept` 时仍是 `*/*`。只走 https，不跟随重定向。3xx 是「请求失败」。401 或 403 是「登录已过期」，不解析正文。
+
+`extract` 的每一项有 `name`、`path`、`type`。`type` 是 `number`、`string` 或 `bool`。`name` 在这一项里唯一。宿主解析 JSON，只把这些名字放进 `values`。路径不在或值是 `null` 时，这个名字不出现。类型对不上，整份是「数据无效」。一个都没取到，也是「数据无效」。
+
+字符串去掉控制字符，最长 128 个字符，多出来的丢掉。交给脚本之前，宿主把每个字符串提取，以及按声明顺序拼起来的全部字符串提取，拿去和登录文件里的值比对。要比的值是放进请求头的每个字段值，再加上文件里其余每一个不少于 8 字节的字符串，不设条数上限。比对是尽力检查，形式与密钥回显相同：原文、实际发出的请求头值、标准 Base64 和 URL 安全 Base64（带填充和不带填充）、百分号编码、十六进制。比对前先去掉 Unicode 格式字符（Cf，含零宽字符）和空白。任一处对上，整份就是「数据无效」。数字和布尔不参与这道检查。
+
+文件相对家目录。家目录先用 `USERPROFILE`，没有或是空的才用 `HOME`，而且必须是绝对路径。两个都没有就不发请求，也不读当前工作目录。不能用环境变量另换这一份文件的目录。路径里不能有 `..`、盘符、UNC、`:`。下面这些位置不安装：`.ssh`、`.gnupg`、`AppData` 之下的 `User Data`、`Firefox` 之下的 `Profiles`、`AppData\Roaming\Microsoft\Credentials`、`AppData\Roaming\Microsoft\Protect`、`Documents\Lanwork`。读的时候只打开一次：从这次的句柄取出最终路径，检查家目录、拒绝位置和数据目录，再从同一个句柄读取。Windows 上 8.3 短名会展开成原名。硬链接数大于 1 的文件拒绝。走出家目录、走进上面这些位置、走进 Lanwork 正在使用的数据目录，或者文件大于 256 KiB，都是「登录已过期」，不发请求。数据目录就是家目录时，家目录下的登录文件全部拒绝。宿主不写、不刷新、不修改这个文件。
+
+```lua
+login.fetch("chatgpt", function(result)
+end)
+```
+
+`login.fetch` 不等待网络。id 不是这个工具声明过的，马上回调，「未授权」，也不看缓存。`result.ok` 为真时有 `values`，里面只有 `extract` 的名字。为假时有 `error`，没有 `values`。
+
+同一个工具、同一个 id、同一份描述，60 秒内再取，把上次的结果交回去，不再读文件、不再发请求。成功和失败都这样。缓存键带有整份描述的指纹，描述改过之后不会把上次的结果交回去。这 60 秒按工具、id 和描述分开，不和 `[[usage]]` 的缓存混在一起，另一个工具也读不到。
+
+确认页第一句是「读取本机文件 ~/.codex/auth.json 中的 ChatGPT 登录，发往 https://chatgpt.com/backend-api/wham/usage」。POST 把「发往」写成「提交到」。后面每个固定请求头一行「请求头 名称: 值」，每个登录字段一行「请求头 名称」或「请求头 名称，前缀 前缀」，最后「交给脚本：five_percent、week_percent」。授权记下整份描述。多了一项，或文件、字段、请求头、前缀、过期、请求、提取有任何一处改动，都要再确认。少了一项不算扩大。备份和导出用同一套句子。
+
 ## 导入和更新
 
 入口是应用页的「导入+」。可以选择一个文件夹，或一个 zip。把文件夹或 zip 拖到应用页上，同样开始导入。
@@ -509,7 +580,8 @@ ChatGPT 的 `reset_at`、Grok 的 `config.currentPeriod.end`（没有再用 `con
 | POST 正文超过 64 KiB | 「数据过大」 |
 | 地址无效，附带密钥但不是 `https`，或脚本写的请求头、前缀和清单不一致 | 「地址无效」 |
 | 本机登录文件没有、读不了、令牌过期，或用量接口返回 401 / 403 | 「登录已过期」。说明里没有令牌 |
-| 用量接口的正文解析不了 | 「数据无效」。说明里没有正文 |
+| 插件登录的文件没有、读不了、已经过期，或接口返回 401 / 403 | 「登录已过期」。说明里没有令牌 |
+| 用量接口的正文解析不了，或插件登录的响应对不上、取出的字符串含有登录文件里的值 | 「数据无效」。说明里没有正文 |
 | 不附带密钥的明文 `http` | 「不允许明文 http」 |
 | 主机名不在已确认的清单里 | 「域名未允许」 |
 | 密钥未填写 | 「未填写密钥」 |
@@ -813,3 +885,200 @@ end
 ```
 
 登录文件没有或已经过期时，文本是「登录已过期」，请求不会发出。用户打开 ChatGPT 应用刷新登录即可。脚本里没有能把令牌打出来的调用。
+
+## 示例：通用 ChatGPT 用量
+
+[examples/chatgpt-usage-generic](../examples/chatgpt-usage-generic) 用 `[[login]]` 做和上一节相同的窗口，不声明 `[[usage]]`。确认页会写出文件路径、发往的地址、两个请求头，以及交给脚本的字段名。脚本只按这些数字排成 5 小时和每周两行。
+
+`manifest.toml`：
+
+```toml
+id = "example.chatgpt-usage-generic"
+name = "ChatGPT 用量"
+description = "用登录描述读取本机 ChatGPT 的 5 小时和每周用量"
+entry = "main.lua"
+services = ["http", "timer"]
+
+[http]
+domains = ["chatgpt.com"]
+
+[[login]]
+id = "chatgpt"
+label = "ChatGPT 登录"
+file = ".codex/auth.json"
+
+[[login.fields]]
+name = "token"
+path = "tokens.access_token"
+header = "Authorization"
+prefix = "Bearer "
+
+[[login.fields]]
+name = "account"
+path = "tokens.account_id"
+header = "ChatGPT-Account-Id"
+
+[login.expires]
+field = "token"
+format = "jwt_exp"
+
+[login.request]
+method = "GET"
+url = "https://chatgpt.com/backend-api/wham/usage"
+headers = [
+  { name = "Accept", value = "application/json" },
+]
+
+[[login.extract]]
+name = "five_percent"
+path = "rate_limit.primary_window.used_percent"
+type = "number"
+
+[[login.extract]]
+name = "five_seconds"
+path = "rate_limit.primary_window.limit_window_seconds"
+type = "number"
+
+[[login.extract]]
+name = "five_reset"
+path = "rate_limit.primary_window.reset_at"
+type = "number"
+
+[[login.extract]]
+name = "week_percent"
+path = "rate_limit.secondary_window.used_percent"
+type = "number"
+
+[[login.extract]]
+name = "week_seconds"
+path = "rate_limit.secondary_window.limit_window_seconds"
+type = "number"
+
+[[login.extract]]
+name = "week_reset"
+path = "rate_limit.secondary_window.reset_at"
+type = "number"
+
+[[component]]
+id = "five"
+component = "text"
+text = "没有数据"
+
+[[component]]
+id = "five_bar"
+component = "progress"
+
+[[component]]
+id = "week"
+component = "text"
+text = ""
+
+[[component]]
+id = "week_bar"
+component = "progress"
+```
+
+`main.lua`：
+
+```lua
+local function format_utc(ms)
+  local secs = math.floor(ms / 1000)
+  local days = math.floor(secs / 86400)
+  local sod = secs - days * 86400
+  local hour = math.floor(sod / 3600)
+  local minute = math.floor((sod % 3600) / 60)
+  local z = days + 719468
+  local era = math.floor(z / 146097)
+  local doe = z - era * 146097
+  local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
+  local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+  local mp = math.floor((5 * doy + 2) / 153)
+  local day = doy - math.floor((153 * mp + 2) / 5) + 1
+  local month = mp + 3
+  if month > 12 then
+    month = month - 12
+  end
+  return string.format("%02d-%02d %02d:%02d", month, day, hour, minute)
+end
+
+local function window_name(seconds)
+  if seconds == 18000 then
+    return "5小时"
+  end
+  if seconds == 604800 then
+    return "每周"
+  end
+  if seconds > 0 and seconds % 86400 == 0 then
+    return string.format("%d天", seconds / 86400)
+  end
+  if seconds > 0 and seconds % 3600 == 0 then
+    return string.format("%d小时", seconds / 3600)
+  end
+  return "窗口"
+end
+
+local function reset_ms(value)
+  if type(value) ~= "number" then
+    return nil
+  end
+  if value >= 1000000000000 then
+    return value
+  end
+  if value >= 1000000000 then
+    return value * 1000
+  end
+  return nil
+end
+
+local function show(text_id, bar_id, percent, seconds, reset)
+  if type(percent) ~= "number" then
+    ui.text(text_id, "没有数据")
+    ui.progress(bar_id, 0)
+    return
+  end
+  local name = "窗口"
+  if type(seconds) == "number" then
+    name = window_name(seconds)
+  end
+  local when = ""
+  local ms = reset_ms(reset)
+  if ms ~= nil then
+    when = " · " .. format_utc(ms)
+  end
+  ui.text(text_id, string.format("%s %g%%%s", name, percent, when))
+  local ratio = percent / 100
+  if ratio < 0 then
+    ratio = 0
+  end
+  if ratio > 1 then
+    ratio = 1
+  end
+  ui.progress(bar_id, ratio)
+end
+
+local function show_error(message)
+  ui.text("five", message)
+  ui.text("week", "")
+  ui.progress("five_bar", 0)
+  ui.progress("week_bar", 0)
+end
+
+local function refresh()
+  login.fetch("chatgpt", function(result)
+    if not result.ok then
+      show_error(result.error or "请求失败")
+      return
+    end
+    local values = result.values or {}
+    show("five", "five_bar", values.five_percent, values.five_seconds, values.five_reset)
+    show("week", "week_bar", values.week_percent, values.week_seconds, values.week_reset)
+  end)
+end
+
+function on_load()
+  refresh()
+  timer.every(300, refresh)
+end
+```
+
+登录文件没有、已经过期，或接口返回 401 / 403 时，文本是「登录已过期」，请求不会发出。脚本里没有能把令牌或文件内容打出来的调用。

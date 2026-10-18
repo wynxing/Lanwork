@@ -44,11 +44,16 @@ pub fn chatgpt_usage() -> Result<(String, String), String> {
     example("## 示例：ChatGPT 用量")
 }
 
+pub fn chatgpt_usage_generic() -> Result<(String, String), String> {
+    example("## 示例：通用 ChatGPT 用量")
+}
+
 pub fn write_example(dir: &std::path::Path, which: &str) -> Result<(), String> {
     let (manifest, script) = match which {
         "quota" => quota()?,
         "countdown" => countdown()?,
         "chatgpt" => chatgpt_usage()?,
+        "chatgpt-generic" => chatgpt_usage_generic()?,
         _ => return Err(format!("没有这个示例：{which}")),
     };
     crate::manifest::materialize(dir, &manifest, &script)

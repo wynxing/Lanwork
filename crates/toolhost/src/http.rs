@@ -105,8 +105,8 @@ pub struct HttpResponse {
 /// 命中时调用方应把正文清空并显示「请求失败」，而不是逐段替换。
 /// 检查这些形式：原文；`Bearer` / `bearer` 加空格再加原文；实际发出的请求头值；
 /// 上述每一项的标准 Base64 与 URL 安全 Base64（带填充和不带填充）。不按长度丢弃：短密钥的编码可能只有几个字符。
-/// 另外把正文里的 `%XX`（十六进制忽略大小写，未保留字节也可以编码，可以只编码其中一部分）
-/// 反复解码后再找上面的明文和 Base64。原文或解码结果里的 `+` 再按空格看一次。
+/// 上述每一项的十六进制（小写和大写）。另外把正文里的 `%XX`（十六进制忽略大小写，未保留字节也可以编码，可以只编码其中一部分）
+/// 反复解码后再找上面的明文、Base64 和十六进制。原文或解码结果里的 `+` 再按空格看一次。
 pub fn response_exposes_secret(parts: &[&str], secret: &str, header_value: Option<&str>) -> bool {
     if secret.is_empty() {
         return false;
@@ -135,6 +135,14 @@ pub fn response_exposes_secret(parts: &[&str], secret: &str, header_value: Optio
                 encoded.push(trimmed);
             }
             encoded.push(b64);
+        }
+        let lower = hex_encode(item.as_bytes(), false);
+        let upper = hex_encode(item.as_bytes(), true);
+        if !lower.is_empty() {
+            encoded.push(lower);
+        }
+        if !upper.is_empty() {
+            encoded.push(upper);
         }
     }
     encoded.sort();
@@ -222,6 +230,18 @@ fn hex_val(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+fn hex_encode(bytes: &[u8], upper: bool) -> String {
+    const LOWER: &[u8] = b"0123456789abcdef";
+    const UPPER: &[u8] = b"0123456789ABCDEF";
+    let alphabet = if upper { UPPER } else { LOWER };
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(alphabet[(byte >> 4) as usize] as char);
+        out.push(alphabet[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn base64_encode(bytes: &[u8], url_safe: bool) -> String {
@@ -889,5 +909,14 @@ mod tests {
         assert_eq!(base64_encode(b"x", false), "eA==");
         assert!(response_exposes_secret(&["eA=="], "x", None));
         assert!(response_exposes_secret(&["eA"], "x", None));
+        assert!(response_exposes_secret(&["736563726574"], "secret", None));
+        let upper = "736563726574".to_ascii_uppercase();
+        assert!(response_exposes_secret(&[&upper], "secret", None));
+        assert!(response_exposes_secret(
+            &["prefix 736563726574 suffix"],
+            "secret",
+            None
+        ));
+        assert!(!response_exposes_secret(&["736563726573"], "secret", None));
     }
 }

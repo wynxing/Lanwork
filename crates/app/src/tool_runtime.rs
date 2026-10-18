@@ -137,6 +137,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
         storage,
         persist_storage: persist,
         complete_todo: Some(complete),
+        data_dir: Some(services.store.data_dir()),
         ..lanwork_toolhost::Options::default()
     };
     match RustlsTransport::native() {
