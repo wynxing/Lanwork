@@ -32,8 +32,7 @@ const INDEX_MAX: usize = 4096;
 const KEY_PREFIX_MAX: usize = 256;
 const URL_MAX: usize = 2048;
 const EXTRACT_CHARS: usize = 128;
-/// 字段值以外，文件里再拿来做回显检查的字符串上限。字段值始终都查。
-const EXTRA_SENSITIVE: usize = 64;
+/// 字段值以外，文件里每个不少于这么多字节的字符串都参与回显检查。
 const EXTRA_SENSITIVE_MIN: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,10 +197,60 @@ impl LoginError {
     }
 }
 
+/// 从登录文件读到、不能出现在提取结果里的一段文字。
+///
+/// `header` 是实际放进请求头的值（前缀加字段值）。其它文件字符串没有请求头。
+#[derive(Clone)]
+pub struct LoginSecret {
+    value: String,
+    header: Option<String>,
+}
+
 pub struct LoginCall {
     pub outgoing: Outgoing,
     /// 只留在这次请求的线程上，用来确认提取结果里没有这些字。不进脚本，也不进日志。
-    pub sensitive: Vec<String>,
+    pub sensitive: Vec<LoginSecret>,
+}
+
+/// 整份描述的指纹。缓存键带上它，清单改过之后不会交出上次的提取结果。
+#[must_use]
+pub fn login_fingerprint(login: &LoginDecl) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    login.id.hash(&mut hasher);
+    login.label.hash(&mut hasher);
+    login.file.hash(&mut hasher);
+    for field in &login.fields {
+        field.name.hash(&mut hasher);
+        field.path.hash(&mut hasher);
+        field.header.hash(&mut hasher);
+        field.prefix.hash(&mut hasher);
+        field.key_prefix.hash(&mut hasher);
+    }
+    match &login.expires {
+        Some(expires) => {
+            true.hash(&mut hasher);
+            expires.format.as_str().hash(&mut hasher);
+            expires.path.hash(&mut hasher);
+            expires.field.hash(&mut hasher);
+            expires.key_prefix.hash(&mut hasher);
+        }
+        None => false.hash(&mut hasher),
+    }
+    login.request.method.hash(&mut hasher);
+    login.request.url.hash(&mut hasher);
+    for header in &login.request.headers {
+        header.name.hash(&mut hasher);
+        header.value.hash(&mut hasher);
+    }
+    login.request.body.hash(&mut hasher);
+    for item in &login.extract {
+        item.name.hash(&mut hasher);
+        item.path.hash(&mut hasher);
+        item.kind.as_str().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 impl std::fmt::Debug for LoginCall {
@@ -741,8 +790,7 @@ pub fn prepare_login(
     data_dir: Option<&Path>,
     now_ms: i64,
 ) -> Result<LoginCall, LoginError> {
-    let path = resolve_login_file(&login.file, roots, data_dir)?;
-    let bytes = read_capped(&path)?;
+    let bytes = read_login_file(&login.file, roots, data_dir)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| LoginError::LoginExpired)?;
     let root: Value = serde_json::from_str(text).map_err(|_| LoginError::LoginExpired)?;
     let selected = select_prefixes(&root, login, now_ms)?;
@@ -751,6 +799,7 @@ pub fn prepare_login(
         headers.push((header.name.clone(), header.value.clone()));
     }
     let mut field_values = Vec::new();
+    let mut field_pairs = Vec::new();
     for field in &login.fields {
         let base = match &field.key_prefix {
             Some(prefix) => selected
@@ -764,8 +813,10 @@ pub fn prepare_login(
         if !header_safe(text) {
             return Err(LoginError::LoginExpired);
         }
+        let header_value = format!("{}{text}", field.prefix);
         field_values.push(text.to_string());
-        headers.push((field.header.clone(), format!("{}{text}", field.prefix)));
+        field_pairs.push((text.to_string(), header_value.clone()));
+        headers.push((field.header.clone(), header_value));
     }
     if let Some(expires) = &login.expires {
         let exp = expiry_ms(&root, login, expires, &selected, &field_values)
@@ -786,7 +837,7 @@ pub fn prepare_login(
             headers,
             body,
         },
-        sensitive: sensitive_values(&root, &field_values),
+        sensitive: sensitive_values(&root, &field_pairs),
     })
 }
 
@@ -935,24 +986,33 @@ fn integer_ms(value: &Value, scale: i64) -> Option<i64> {
     raw.checked_mul(scale)
 }
 
-fn sensitive_values(root: &Value, field_values: &[String]) -> Vec<String> {
+fn sensitive_values(root: &Value, field_values: &[(String, String)]) -> Vec<LoginSecret> {
     let mut out = Vec::new();
-    for value in field_values {
-        push_unique(&mut out, value);
+    for (value, header) in field_values {
+        push_secret(&mut out, value, Some(header.clone()));
     }
     let mut extra = Vec::new();
     collect_long_strings(root, &mut extra);
-    for value in extra.into_iter().take(EXTRA_SENSITIVE) {
-        push_unique(&mut out, &value);
+    for value in extra {
+        push_secret(&mut out, &value, None);
     }
     out
 }
 
-fn push_unique(out: &mut Vec<String>, value: &str) {
-    if value.is_empty() || out.iter().any(|item| item == value) {
+fn push_secret(out: &mut Vec<LoginSecret>, value: &str, header: Option<String>) {
+    if value.is_empty() {
         return;
     }
-    out.push(value.to_string());
+    if let Some(existing) = out.iter_mut().find(|item| item.value == value) {
+        if existing.header.is_none() {
+            existing.header = header;
+        }
+        return;
+    }
+    out.push(LoginSecret {
+        value: value.to_string(),
+        header,
+    });
 }
 
 fn collect_long_strings(value: &Value, out: &mut Vec<String>) {
@@ -980,7 +1040,7 @@ pub fn interpret_login(
     login: &LoginDecl,
     status: u16,
     body: &str,
-    sensitive: &[String],
+    sensitive: &[LoginSecret],
 ) -> Result<Vec<LoginValue>, LoginError> {
     if status == 401 || status == 403 {
         return Err(LoginError::LoginExpired);
@@ -990,6 +1050,7 @@ pub fn interpret_login(
     }
     let root: Value = serde_json::from_str(body).map_err(|_| LoginError::Invalid)?;
     let mut out = Vec::new();
+    let mut strings = Vec::new();
     for extract in &login.extract {
         let Some(found) = lookup(&root, &extract.path) else {
             continue;
@@ -997,39 +1058,113 @@ pub fn interpret_login(
         if found.is_null() {
             continue;
         }
-        let value = match extract.kind {
+        match extract.kind {
             ExtractType::Number => {
-                let number = found.as_f64().filter(|number| number.is_finite());
-                LoginScalar::Number(number.ok_or(LoginError::Invalid)?)
+                let number = found
+                    .as_f64()
+                    .filter(|number| number.is_finite())
+                    .ok_or(LoginError::Invalid)?;
+                out.push(LoginValue {
+                    name: extract.name.clone(),
+                    value: LoginScalar::Number(number),
+                });
             }
-            ExtractType::Bool => LoginScalar::Bool(found.as_bool().ok_or(LoginError::Invalid)?),
+            ExtractType::Bool => {
+                out.push(LoginValue {
+                    name: extract.name.clone(),
+                    value: LoginScalar::Bool(found.as_bool().ok_or(LoginError::Invalid)?),
+                });
+            }
             ExtractType::String => {
-                let raw = found.as_str().ok_or(LoginError::Invalid)?;
-                if echoes(raw, sensitive) {
-                    return Err(LoginError::Invalid);
-                }
-                let cleaned = clean_string(raw);
-                if echoes(&cleaned, sensitive) {
-                    return Err(LoginError::Invalid);
-                }
-                LoginScalar::String(cleaned)
+                let raw = found.as_str().ok_or(LoginError::Invalid)?.to_string();
+                strings.push(raw);
+                out.push(LoginValue {
+                    name: extract.name.clone(),
+                    value: LoginScalar::String(String::new()),
+                });
             }
-        };
-        out.push(LoginValue {
-            name: extract.name.clone(),
-            value,
-        });
+        }
     }
     if out.is_empty() {
         return Err(LoginError::Invalid);
     }
+    if exposes_login(&strings, sensitive) {
+        return Err(LoginError::Invalid);
+    }
+    let mut strings = strings.into_iter();
+    for item in &mut out {
+        if let LoginScalar::String(text) = &mut item.value {
+            *text = clean_string(&strings.next().unwrap_or_default());
+        }
+    }
     Ok(out)
 }
 
-fn echoes(text: &str, sensitive: &[String]) -> bool {
-    sensitive
+/// 字符串提取对上登录文件里的值。单个字段、以及按声明顺序拼起来的全部字符串都查。
+///
+/// 形式与密钥回显相同，另加十六进制。比对前去掉格式字符和空白。数字和布尔不在这里。
+/// 这是尽力检查。
+fn exposes_login(raw_strings: &[String], sensitive: &[LoginSecret]) -> bool {
+    if raw_strings.is_empty() || sensitive.iter().all(|item| item.value.is_empty()) {
+        return false;
+    }
+    let stripped: Vec<String> = raw_strings
         .iter()
-        .any(|needle| !needle.is_empty() && text.contains(needle.as_str()))
+        .map(|text| strip_format_and_space(text))
+        .collect();
+    let cleaned: Vec<String> = raw_strings.iter().map(|text| clean_string(text)).collect();
+    let cleaned_stripped: Vec<String> = cleaned
+        .iter()
+        .map(|text| strip_format_and_space(text))
+        .collect();
+    let mut parts = Vec::new();
+    parts.extend(raw_strings.iter().cloned());
+    parts.extend(stripped.iter().cloned());
+    parts.extend(cleaned.iter().cloned());
+    parts.extend(cleaned_stripped.iter().cloned());
+    if raw_strings.len() > 1 {
+        parts.push(raw_strings.concat());
+        parts.push(stripped.concat());
+        parts.push(cleaned.concat());
+        parts.push(cleaned_stripped.concat());
+    }
+    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+    sensitive.iter().any(|item| {
+        crate::http::response_exposes_secret(&refs, &item.value, item.header.as_deref())
+    })
+}
+
+fn strip_format_and_space(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_whitespace() && !is_format_char(*ch))
+        .collect()
+}
+
+fn is_format_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
 }
 
 fn clean_string(raw: &str) -> String {
@@ -1039,11 +1174,12 @@ fn clean_string(raw: &str) -> String {
         .collect()
 }
 
-fn resolve_login_file(
+/// 只打开一次。最终路径和硬链接数都从这次的句柄上取，读也读这个句柄。
+fn read_login_file(
     relative: &str,
     roots: &LoginRoots,
     data_dir: Option<&Path>,
-) -> Result<PathBuf, LoginError> {
+) -> Result<Vec<u8>, LoginError> {
     let home = roots
         .home
         .as_deref()
@@ -1052,27 +1188,154 @@ fn resolve_login_file(
     // 清单阶段已经拒绝绝对路径和 `..`。这里再拦一次，避免调用方绕过解析。
     let normalized = normalize_login_file(relative).map_err(|_| LoginError::LoginExpired)?;
     let joined = home.join(normalized.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let canonical = std::fs::canonicalize(&joined).map_err(|_| LoginError::LoginExpired)?;
+    let mut file = open_login_handle(&joined)?;
+    let meta = file.metadata().map_err(|_| LoginError::LoginExpired)?;
+    if !is_single_regular_file(&meta) {
+        return Err(LoginError::LoginExpired);
+    }
+    let final_path = final_path_from_handle(&file)?;
     let home_canon = std::fs::canonicalize(home).map_err(|_| LoginError::LoginExpired)?;
     let relative_parts =
-        components_under(&home_canon, &canonical).ok_or(LoginError::LoginExpired)?;
+        components_under(&home_canon, &final_path).ok_or(LoginError::LoginExpired)?;
     let borrowed: Vec<&str> = relative_parts.iter().map(String::as_str).collect();
     if denied_segments(&borrowed) {
         return Err(LoginError::LoginExpired);
     }
     if let Some(data_dir) = data_dir.filter(|path| path.is_absolute())
-        && path_inside(data_dir, &canonical)
+        && path_inside(data_dir, &final_path)
     {
         return Err(LoginError::LoginExpired);
     }
-    let name = canonical
+    let name = final_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
     if !name.to_ascii_lowercase().ends_with(".json") {
         return Err(LoginError::LoginExpired);
     }
-    Ok(canonical)
+    read_capped_handle(&mut file)
+}
+
+fn is_single_regular_file(meta: &std::fs::Metadata) -> bool {
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.nlink() <= 1
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const DIRECTORY: u32 = 0x10;
+        const REPARSE: u32 = 0x400;
+        let attr = meta.file_attributes();
+        meta.number_of_links() <= 1 && attr & DIRECTORY == 0 && attr & REPARSE == 0
+    }
+}
+
+/// 打开登录文件。Windows 上允许同时读和写，不打开重解析点标志：
+/// 当时已经存在的符号链接和 junction 会跟着走，句柄绑定到目标文件。
+/// 之后换到路径上的重解析点不会再被这次读取跟着走。
+fn open_login_handle(path: &Path) -> Result<std::fs::File, LoginError> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path).map_err(|_| LoginError::LoginExpired)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::FromRawHandle;
+        use windows::Win32::Foundation::{GENERIC_READ, HANDLE};
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        };
+        use windows::core::PCWSTR;
+        let wide = wide_extended(path);
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                GENERIC_READ.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+        }
+        .map_err(|_| LoginError::LoginExpired)?;
+        if handle.is_invalid() {
+            return Err(LoginError::LoginExpired);
+        }
+        Ok(unsafe { std::fs::File::from_raw_handle(handle.0) })
+    }
+}
+
+#[cfg(windows)]
+fn wide_extended(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide = Vec::new();
+    let text = path.as_os_str();
+    let lossy = text.to_string_lossy();
+    if path.is_absolute() && !lossy.starts_with(r"\\?\") {
+        if lossy.starts_with(r"\\") {
+            wide.extend(r"\\?\UNC\".encode_utf16());
+            wide.extend(text.encode_wide().skip(2));
+        } else {
+            wide.extend(r"\\?\".encode_utf16());
+            wide.extend(text.encode_wide());
+        }
+    } else {
+        wide.extend(text.encode_wide());
+    }
+    wide.push(0);
+    wide
+}
+
+fn final_path_from_handle(file: &std::fs::File) -> Result<PathBuf, LoginError> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let link = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|_| LoginError::LoginExpired)?;
+        if !link.is_absolute() {
+            return Err(LoginError::LoginExpired);
+        }
+        let text = link.to_string_lossy();
+        if text.ends_with(" (deleted)") {
+            return Err(LoginError::LoginExpired);
+        }
+        Ok(link)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW,
+        };
+        let handle = HANDLE(file.as_raw_handle());
+        let mut buf = vec![0u16; 512];
+        loop {
+            let n = unsafe { GetFinalPathNameByHandleW(handle, &mut buf, FILE_NAME_NORMALIZED) };
+            if n == 0 {
+                return Err(LoginError::LoginExpired);
+            }
+            let n = n as usize;
+            if n < buf.len() {
+                let path = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]));
+                if path.as_os_str().is_empty() {
+                    return Err(LoginError::LoginExpired);
+                }
+                return Ok(path);
+            }
+            if n > 32 * 1024 {
+                return Err(LoginError::LoginExpired);
+            }
+            buf.resize(n, 0);
+        }
+    }
 }
 
 fn components_under(home: &Path, file: &Path) -> Option<Vec<String>> {
@@ -1130,8 +1393,7 @@ fn strip_verbatim(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn read_capped(path: &Path) -> Result<Vec<u8>, LoginError> {
-    let file = std::fs::File::open(path).map_err(|_| LoginError::LoginExpired)?;
+fn read_capped_handle(file: &mut std::fs::File) -> Result<Vec<u8>, LoginError> {
     let mut reader = file.take(u64::try_from(LOGIN_FILE_MAX).unwrap_or(u64::MAX) + 1);
     let mut buf = Vec::new();
     reader
@@ -1149,15 +1411,19 @@ struct CacheSlot {
 }
 
 thread_local! {
-    static LOGIN_CACHE: std::cell::RefCell<HashMap<(String, String), CacheSlot>> =
+    static LOGIN_CACHE: std::cell::RefCell<HashMap<(String, String, u64), CacheSlot>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
 #[must_use]
-pub fn cached_login(tool: &str, id: &str) -> Option<Result<Vec<LoginValue>, LoginError>> {
+pub fn cached_login(
+    tool: &str,
+    id: &str,
+    fingerprint: u64,
+) -> Option<Result<Vec<LoginValue>, LoginError>> {
     LOGIN_CACHE.with(|slot| {
         let cache = slot.borrow();
-        let entry = cache.get(&(tool.to_string(), id.to_string()))?;
+        let entry = cache.get(&(tool.to_string(), id.to_string(), fingerprint))?;
         if entry.at.elapsed() >= LOGIN_INTERVAL {
             None
         } else {
@@ -1166,10 +1432,15 @@ pub fn cached_login(tool: &str, id: &str) -> Option<Result<Vec<LoginValue>, Logi
     })
 }
 
-pub fn store_login(tool: &str, id: &str, outcome: Result<Vec<LoginValue>, LoginError>) {
+pub fn store_login(
+    tool: &str,
+    id: &str,
+    fingerprint: u64,
+    outcome: Result<Vec<LoginValue>, LoginError>,
+) {
     LOGIN_CACHE.with(|slot| {
         slot.borrow_mut().insert(
-            (tool.to_string(), id.to_string()),
+            (tool.to_string(), id.to_string(), fingerprint),
             CacheSlot {
                 at: Instant::now(),
                 outcome,
@@ -1318,6 +1589,13 @@ mod tests {
             }
         }
         out
+    }
+
+    fn secret(value: &str) -> LoginSecret {
+        LoginSecret {
+            value: value.to_string(),
+            header: None,
+        }
     }
 
     fn jwt(exp: i64) -> String {
@@ -1537,7 +1815,7 @@ mod tests {
                 kind: ExtractType::Bool,
             },
         ];
-        let sensitive = vec!["secret-token-value".to_string()];
+        let sensitive = vec![secret("secret-token-value")];
         let values = interpret_login(
             &login,
             200,
@@ -1672,5 +1950,218 @@ mod tests {
             .unwrap_err(),
             LoginError::LoginExpired
         );
+    }
+
+    #[test]
+    fn hard_link_is_refused_from_the_open_handle() {
+        let dir = TempDir::new("hard");
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("keep")).unwrap();
+        let token = jwt(4_102_444_800);
+        let body = format!(r#"{{"tokens":{{"access_token":"{token}"}}}}"#);
+        let original = home.join("keep").join("auth.json");
+        std::fs::write(&original, &body).unwrap();
+        std::fs::hard_link(&original, home.join("keep").join("linked.json")).unwrap();
+        let roots = LoginRoots {
+            home: Some(home.clone()),
+        };
+        assert_eq!(
+            prepare_login(&sample("keep/auth.json"), &roots, None, 1_700_000_000_000).unwrap_err(),
+            LoginError::LoginExpired
+        );
+        assert_eq!(
+            prepare_login(&sample("keep/linked.json"), &roots, None, 1_700_000_000_000)
+                .unwrap_err(),
+            LoginError::LoginExpired
+        );
+        assert_eq!(std::fs::read(&original).unwrap(), body.as_bytes());
+    }
+
+    #[test]
+    fn echo_covers_encodings_splits_and_every_long_string() {
+        let mut login = sample("notes/auth.json");
+        login.extract = vec![
+            LoginExtract {
+                name: "left".to_string(),
+                path: "left".to_string(),
+                kind: ExtractType::String,
+            },
+            LoginExtract {
+                name: "used".to_string(),
+                path: "used".to_string(),
+                kind: ExtractType::Number,
+            },
+            LoginExtract {
+                name: "right".to_string(),
+                path: "right".to_string(),
+                kind: ExtractType::String,
+            },
+        ];
+        let token = "login-token??";
+        let sensitive = vec![LoginSecret {
+            value: token.to_string(),
+            header: Some(format!("Bearer {token}")),
+        }];
+        let ok = interpret_login(
+            &login,
+            200,
+            r#"{"left":"plain","used":12.5,"right":"text"}"#,
+            &sensitive,
+        )
+        .unwrap();
+        assert_eq!(ok[1].value, LoginScalar::Number(12.5));
+        let rejected = [
+            r#"{"left":"bG9naW4tdG9rZW4/Pw==","used":1,"right":"x"}"#,
+            r#"{"left":"bG9naW4tdG9rZW4_Pw==","used":1,"right":"x"}"#,
+            r#"{"left":"bG9naW4tdG9rZW4/Pw","used":1,"right":"x"}"#,
+            r#"{"left":"bG9naW4tdG9rZW4_Pw","used":1,"right":"x"}"#,
+            r#"{"left":"%6c%6f%67%69%6e%2d%74%6f%6b%65%6e%3f%3f","used":1,"right":"x"}"#,
+            r#"{"left":"6c6f67696e2d746f6b656e3f3f","used":1,"right":"x"}"#,
+            r#"{"left":"6C6F67696E2D746F6B656E3F3F","used":1,"right":"x"}"#,
+            "{\"left\":\"login-\u{200b}token??\",\"used\":1,\"right\":\"x\"}",
+            "{\"left\":\"login- token??\",\"used\":1,\"right\":\"x\"}",
+            "{\"left\":\"login-tok\",\"used\":1,\"right\":\"en??\"}",
+            "{\"left\":\"login-\u{200b}\",\"used\":1,\"right\":\"token??\"}",
+        ];
+        for body in &rejected {
+            assert_eq!(
+                interpret_login(&login, 200, body, &sensitive).unwrap_err(),
+                LoginError::Invalid,
+                "{body}"
+            );
+        }
+
+        let dir = TempDir::new("echo-all");
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("keep")).unwrap();
+        let access = jwt(4_102_444_800);
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "tokens".to_string(),
+            serde_json::json!({ "access_token": access }),
+        );
+        for index in 0..70 {
+            map.insert(
+                format!("k{index:02}"),
+                serde_json::json!(format!("extra-string-{index:02}-xxxx")),
+            );
+        }
+        std::fs::write(
+            home.join("keep").join("auth.json"),
+            serde_json::Value::Object(map).to_string(),
+        )
+        .unwrap();
+        let call = prepare_login(
+            &sample("keep/auth.json"),
+            &LoginRoots {
+                home: Some(home.clone()),
+            },
+            None,
+            1_700_000_000_000,
+        )
+        .unwrap();
+        assert!(call.sensitive.len() > 70, "{}", call.sensitive.len());
+        let mut noted = sample("keep/auth.json");
+        noted.extract = vec![LoginExtract {
+            name: "note".to_string(),
+            path: "note".to_string(),
+            kind: ExtractType::String,
+        }];
+        assert_eq!(
+            interpret_login(
+                &noted,
+                200,
+                r#"{"note":"extra-string-69-xxxx"}"#,
+                &call.sensitive
+            )
+            .unwrap_err(),
+            LoginError::Invalid
+        );
+    }
+
+    #[test]
+    fn cache_misses_when_the_descriptor_changes() {
+        reset_login_cache_for_test();
+        let login = sample("keep/auth.json");
+        let mut other = login.clone();
+        other.request.url = "https://chatgpt.com/backend-api/wham/other".to_string();
+        let fingerprint = login_fingerprint(&login);
+        let other_fingerprint = login_fingerprint(&other);
+        assert_ne!(fingerprint, other_fingerprint);
+        store_login(
+            "example.tool",
+            "chatgpt",
+            fingerprint,
+            Ok(vec![LoginValue {
+                name: "used".to_string(),
+                value: LoginScalar::Number(12.5),
+            }]),
+        );
+        assert!(cached_login("example.tool", "chatgpt", fingerprint).is_some());
+        assert!(cached_login("example.tool", "chatgpt", other_fingerprint).is_none());
+        reset_login_cache_for_test();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn short_name_resolves_to_the_denied_long_path() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+        use windows::core::PCWSTR;
+        let dir = TempDir::new("short");
+        let home = dir.join("home");
+        let nested = home.join("AppData").join("User Data").join("profile");
+        std::fs::create_dir_all(&nested).unwrap();
+        let token = jwt(4_102_444_800);
+        let body = format!(r#"{{"tokens":{{"access_token":"{token}"}}}}"#);
+        let file = nested.join("auth.json");
+        std::fs::write(&file, &body).unwrap();
+        let Some(short_file) = windows_short_path(&file) else {
+            return;
+        };
+        let Some(short_home) = windows_short_path(&home) else {
+            return;
+        };
+        let file_text = short_file.to_string_lossy();
+        let home_text = short_home.to_string_lossy();
+        let file_folded = file_text.to_ascii_lowercase();
+        let home_folded = home_text.to_ascii_lowercase();
+        let Some(rest) = file_folded.strip_prefix(&home_folded) else {
+            return;
+        };
+        if !rest.starts_with('\\') && !rest.starts_with('/') {
+            return;
+        }
+        let declared = rest.trim_start_matches(['\\', '/']).replace('\\', "/");
+        assert!(
+            !declared.to_ascii_lowercase().contains("user data"),
+            "{declared}"
+        );
+        assert_eq!(
+            prepare_login(
+                &sample(&declared),
+                &LoginRoots { home: Some(home) },
+                None,
+                1_700_000_000_000
+            )
+            .unwrap_err(),
+            LoginError::LoginExpired
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), body.as_bytes());
+
+        fn windows_short_path(path: &Path) -> Option<PathBuf> {
+            let wide: Vec<u16> = path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut buf = vec![0u16; 1024];
+            let n = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut buf)) };
+            if n == 0 || n as usize >= buf.len() {
+                return None;
+            }
+            let short = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n as usize]));
+            (short != path).then_some(short)
+        }
     }
 }

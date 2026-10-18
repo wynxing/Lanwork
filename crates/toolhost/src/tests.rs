@@ -1983,6 +1983,42 @@ fn generic_chatgpt_login_hides_the_file_and_caches_per_tool() {
 }
 
 #[test]
+fn changed_login_descriptor_does_not_reuse_the_cached_extract() {
+    crate::login::reset_login_cache_for_test();
+    let token = future_access_token();
+    let account = "acct-leak-9f3a";
+    let dir = Scratch::new("login-reload");
+    let home = dir.join("home");
+    write_login_file(&home, &token, account);
+    let transport = Arc::new(Recorded {
+        log: Mutex::new(Vec::new()),
+        status: 200,
+        body: usage_body(),
+    });
+    let session = open_generic(&dir, transport.clone(), &home);
+    assert_eq!(caption(&session, "five"), "5小时 12.5% · 01-01 00:00");
+    drop(session);
+    let manifest = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
+    let manifest = manifest.replace(
+        "https://chatgpt.com/backend-api/wham/usage",
+        "https://chatgpt.com/backend-api/wham/usage?v=2",
+    );
+    std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+    let mut options = Options::default();
+    options.transport = transport.clone();
+    options.login_roots = Some(crate::login::LoginRoots { home: Some(home) });
+    let session = open_at(&dir, options).unwrap();
+    session.on_load();
+    let sent = transport.log.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(
+        sent[1].url,
+        "https://chatgpt.com/backend-api/wham/usage?v=2"
+    );
+    assert!(!format!("{:?}", sent[1]).contains(&token));
+}
+
+#[test]
 fn login_fetch_cannot_change_the_request_or_read_another_tools_cache() {
     crate::login::reset_login_cache_for_test();
     let token = future_access_token();

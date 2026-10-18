@@ -35,7 +35,8 @@ use crate::http::{
     HttpDeny, HttpRequest, HttpTransport, Outgoing, ResolvedSecret, SecretAttach, prepare,
 };
 use crate::login::{
-    LoginError, LoginRoots, LoginValue, cached_login, interpret_login, prepare_login, store_login,
+    LoginError, LoginRoots, LoginValue, cached_login, interpret_login, login_fingerprint,
+    prepare_login, store_login,
 };
 use crate::manifest::{Manifest, WidgetDecl, WidgetKind, load_dir};
 use crate::secret::SecretStore;
@@ -258,6 +259,7 @@ enum FlightKind {
     Login {
         tool_id: String,
         id: String,
+        fingerprint: u64,
         remember: bool,
     },
 }
@@ -596,8 +598,16 @@ impl Session {
             FlightKind::Login {
                 tool_id,
                 id,
+                fingerprint,
                 remember,
-            } => self.settle_login(item.callbacks, &tool_id, &id, remember, response),
+            } => self.settle_login(
+                item.callbacks,
+                &tool_id,
+                &id,
+                fingerprint,
+                remember,
+                response,
+            ),
         }
     }
 
@@ -688,6 +698,7 @@ impl Session {
         callbacks: Vec<RegistryKey>,
         tool_id: &str,
         id: &str,
+        fingerprint: u64,
         remember: bool,
         response: Result<FlightOutcome, mpsc::RecvTimeoutError>,
     ) {
@@ -698,7 +709,7 @@ impl Session {
             }
         };
         if remember {
-            store_login(tool_id, id, outcome.clone());
+            store_login(tool_id, id, fingerprint, outcome.clone());
         }
         if let Err(err) = &outcome {
             self.inner.borrow_mut().note(err.text());
@@ -1875,13 +1886,22 @@ fn login_fetch(
         inner.borrow_mut().note(LoginError::Unauthorized.text());
         return deliver_login(lua, &callback, &Err(LoginError::Unauthorized));
     };
+    let fingerprint = login_fingerprint(&descriptor);
     let key = lua.create_registry_value(callback)?;
     let key = match inner.borrow_mut().join_login(&descriptor.id, key) {
         Ok(()) => return Ok(()),
         Err(key) => key,
     };
-    if let Some(cached) = cached_login(&tool_id, &descriptor.id) {
-        return queue_login(inner, &tool_id, &descriptor.id, key, cached, false);
+    if let Some(cached) = cached_login(&tool_id, &descriptor.id, fingerprint) {
+        return queue_login(
+            inner,
+            &tool_id,
+            &descriptor.id,
+            fingerprint,
+            key,
+            cached,
+            false,
+        );
     }
     let roots = inner
         .borrow()
@@ -1890,8 +1910,16 @@ fn login_fetch(
         .unwrap_or_else(LoginRoots::from_env);
     let data_dir = inner.borrow().data_dir.clone();
     match prepare_login(&descriptor, &roots, data_dir.as_deref(), unix_now_ms()) {
-        Ok(call) => spawn_login(inner, &tool_id, &descriptor.id, key, call),
-        Err(err) => queue_login(inner, &tool_id, &descriptor.id, key, Err(err), true),
+        Ok(call) => spawn_login(inner, &tool_id, &descriptor.id, fingerprint, key, call),
+        Err(err) => queue_login(
+            inner,
+            &tool_id,
+            &descriptor.id,
+            fingerprint,
+            key,
+            Err(err),
+            true,
+        ),
     }
 }
 
@@ -1899,6 +1927,7 @@ fn queue_login(
     inner: &Rc<RefCell<Inner>>,
     tool_id: &str,
     id: &str,
+    fingerprint: u64,
     key: RegistryKey,
     outcome: Result<Vec<LoginValue>, LoginError>,
     remember: bool,
@@ -1911,6 +1940,7 @@ fn queue_login(
         kind: FlightKind::Login {
             tool_id: tool_id.to_string(),
             id: id.to_string(),
+            fingerprint,
             remember,
         },
     });
@@ -1921,12 +1951,21 @@ fn spawn_login(
     inner: &Rc<RefCell<Inner>>,
     tool_id: &str,
     id: &str,
+    fingerprint: u64,
     key: RegistryKey,
     call: crate::login::LoginCall,
 ) -> mlua::Result<()> {
     if !call.outgoing.url.starts_with("https://") {
         inner.borrow_mut().note(LoginError::Failed.text());
-        return queue_login(inner, tool_id, id, key, Err(LoginError::Failed), true);
+        return queue_login(
+            inner,
+            tool_id,
+            id,
+            fingerprint,
+            key,
+            Err(LoginError::Failed),
+            true,
+        );
     }
     let descriptor = inner
         .borrow()
@@ -1941,6 +1980,7 @@ fn spawn_login(
             inner,
             tool_id,
             id,
+            fingerprint,
             key,
             Err(LoginError::Unauthorized),
             false,
@@ -1972,6 +2012,7 @@ fn spawn_login(
         kind: FlightKind::Login {
             tool_id: tool_id.to_string(),
             id: id.to_string(),
+            fingerprint,
             remember: true,
         },
     });
