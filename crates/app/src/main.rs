@@ -370,17 +370,27 @@ mod tests {
         );
         let session = include_str!("session_close.rs");
         assert!(session.contains("Winit Thread Event Target"));
-        assert!(session.contains("request_quit"));
+        assert!(session.contains("request_quit_from"));
+        assert!(session.contains("QuitSource::SessionEnd"));
+        assert!(session.contains("QuitSource::WmClose"));
         let query = session
             .split("message == WM_QUERYENDSESSION")
             .nth(1)
             .expect("注销询问");
-        let before_sync = query.split("request_quit()").next().unwrap();
+        let before_posted = query.split("request_quit_from").next().unwrap();
         assert!(
-            before_sync.contains("Timer::single_shot"),
+            before_posted.contains("Timer::single_shot"),
             "隐藏目标窗口的注销询问要投递退出后马上返回"
         );
-        assert!(include_str!("platform.rs").contains("external_close_requests_quit"));
+        assert!(
+            query.matches("request_quit_from").count() >= 2,
+            "注销询问投递一次，关闭和会话结束再走一次"
+        );
+        let platform = include_str!("platform.rs");
+        assert!(platform.contains("external_close_requests_quit"));
+        assert!(platform.contains("QuitSource::HotkeyWindow"));
+        assert!(platform.contains("QuitSource::SessionEnd"));
+        assert!(platform.contains("invoke_from_event_loop"));
         assert!(host.contains("session_close::install"));
         assert!(host.contains("EXITING"));
     }

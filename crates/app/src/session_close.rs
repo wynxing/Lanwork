@@ -2,11 +2,13 @@
 //!
 //! `taskkill` 不带 `/F` 时给每个顶层窗口投递 `WM_CLOSE`，包括 winit 的
 //! 「Winit Thread Event Target」。那个窗口的默认过程会把它销毁，事件循环却不走托盘「退出」。
-//! 子类接住关闭、注销和关机，交给 [`crate::host::request_quit`]，不销毁这个窗口。
+//! 子类接住关闭、注销和关机，交给 [`crate::host::request_quit_from`]，不销毁这个窗口。
 
 use std::time::Duration;
 
-use lanwork_core::shell::{WM_QUERYENDSESSION, external_close_requests_quit};
+use lanwork_core::shell::{
+    QuitSource, WM_ENDSESSION, WM_QUERYENDSESSION, external_close_requests_quit,
+};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
@@ -76,12 +78,19 @@ unsafe extern "system" fn on_session(
     if external_close_requests_quit(message, wparam.0) {
         if message == WM_QUERYENDSESSION {
             // 注销询问要马上应答。退出投到下一轮，与热键窗口一样不在这次回调里做完。
-            slint::Timer::single_shot(Duration::ZERO, crate::host::request_quit);
+            slint::Timer::single_shot(Duration::ZERO, || {
+                crate::host::request_quit_from(QuitSource::SessionEnd);
+            });
             return LRESULT(1);
         }
         // 已经在界面线程上。`WM_CLOSE` 直接退出，不要再投一圈，
         // 否则悬浮窗可能先把「下次再打开」写成已关。
-        crate::host::request_quit();
+        let source = if message == WM_ENDSESSION {
+            QuitSource::SessionEnd
+        } else {
+            QuitSource::WmClose
+        };
+        crate::host::request_quit_from(source);
         return LRESULT(0);
     }
     if message == WM_NCDESTROY {

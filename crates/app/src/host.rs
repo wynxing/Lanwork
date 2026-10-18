@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::CivilDate;
 use lanwork_core::apps::{AppIndex, load_user_catalog};
@@ -17,8 +17,9 @@ use lanwork_core::files::FileCommands;
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::PanelTab;
 use lanwork_core::shell::{
-    HotkeyRole, QuitDecision, QuitGate, ShellCommand, SystemLight, TRAY_ICON_PX, quit_decision,
-    resolve_theme, resume_quit_later, tray_icon_marked,
+    HotkeyRole, QUIT_RETRY_DELAY, QuitEffect, QuitGate, QuitLog, QuitLogLevel, QuitSource,
+    QuitTrack, ShellCommand, SystemLight, TRAY_ICON_PX, already_exiting_log, reentered_log,
+    request_log, resolve_theme, resume_quit_later, tray_icon_marked,
 };
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::{
@@ -110,6 +111,7 @@ fn install_log_panic_hook(store: &Store) {
 }
 
 fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> {
+    QUIT_LOG.with(|cell| *cell.borrow_mut() = Some(store.clone()));
     install_log_panic_hook(store);
     let todos = TodoCommands::open(store.clone());
     let mut hooks = BootHooks::new();
@@ -344,7 +346,7 @@ fn wire_tray(tray: &Tray) {
     tray.on_open_settings(|| panel::show(Some(PanelTab::Settings)));
     tray.on_new_note(panel::new_note);
     TRAY.with(|cell| *cell.borrow_mut() = Some(tray.as_weak()));
-    tray.on_quit(request_quit);
+    tray.on_quit(|| request_quit_from(QuitSource::Tray));
 }
 
 fn watch_changes(tray: &Tray, todos: &TodoCommands, store: &Store) {
@@ -509,6 +511,10 @@ pub(crate) fn local_today() -> Option<CivilDate> {
 
 thread_local! {
     static TRAY: RefCell<Option<slint::Weak<Tray>>> = const { RefCell::new(None) };
+    static QUIT_LOG: RefCell<Option<Store>> = const { RefCell::new(None) };
+    static QUIT_TRACK: RefCell<QuitTrack> = const { RefCell::new(QuitTrack::new()) };
+    static QUIT_EPOCH: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    static QUIT_RETRY_ARMED: Cell<bool> = const { Cell::new(false) };
 }
 
 static QUIT: QuitGate = QuitGate::new();
@@ -528,13 +534,18 @@ pub(crate) fn quit_in_progress() -> bool {
 
 /// 先保存便签窗口里没写盘的修改。都写成了才结束进程；有写不成的，留下，等用户在那个窗口里
 /// 重试、放弃修改或选定冲突版本，之后由 [`continue_quit`] 接着退出。
+/// 窗口表正忙（借不出来）时不当成没写盘，约 100ms 后再试；大约 2 秒仍退不出就写警告并提示。
 /// 已经核对过的安装包会在真正退出前交给助手。
 /// 托盘「退出」、隐藏事件目标窗口和热键窗口收到的 `WM_CLOSE`（含不带 `/F` 的 `taskkill`）、
 /// 注销和关机都走这里。搜索条和面板的 Alt+F4 只收起那一扇，不走这里。
-pub(crate) fn request_quit() {
+pub(crate) fn request_quit_from(source: QuitSource) {
     if EXITING.load(Ordering::Acquire) {
+        write_quit_log(&request_log(source));
+        write_quit_log(&already_exiting_log(source));
         return;
     }
+    let request = QUIT_TRACK.with(|cell| cell.borrow_mut().request(source, quit_now()));
+    write_quit_log(&request);
     QUIT.request();
     attempt_quit();
 }
@@ -549,7 +560,10 @@ pub(crate) fn continue_quit() {
 }
 
 fn attempt_quit() {
-    let busy = QUIT_RUNNING.with(|cell| {
+    if EXITING.load(Ordering::Acquire) || !QUIT.is_requested() {
+        return;
+    }
+    let reentered = QUIT_RUNNING.with(|cell| {
         if cell.get() {
             true
         } else {
@@ -557,33 +571,99 @@ fn attempt_quit() {
             false
         }
     });
-    if busy {
+    if reentered {
+        let source = QUIT_TRACK.with(|cell| cell.borrow().source());
+        write_quit_log(&reentered_log(source));
+        schedule_quit_retry(QUIT_RETRY_DELAY);
         return;
     }
-    let unsaved = panel::flush_notes_for_quit() + note_float::flush_for_quit();
-    match quit_decision(unsaved) {
-        QuitDecision::Exit => {
-            EXITING.store(true, Ordering::Release);
-            shelf_float::save_for_quit();
-            todo_float::save_for_quit();
-            float_shell::save_for_quit();
-            if crate::update::spawn_pending_install().is_err() {
-                EXITING.store(false, Ordering::Release);
-                QUIT.clear();
-                crate::update::install_spawn_failed();
-                QUIT_RUNNING.with(|cell| cell.set(false));
-                return;
+    let flush = panel::flush_notes_for_quit().merge(note_float::flush_for_quit());
+    let (logs, effect) = QUIT_TRACK.with(|cell| cell.borrow_mut().advance(flush, quit_now()));
+    for log in &logs {
+        write_quit_log(log);
+    }
+    match effect {
+        QuitEffect::Exit => finish_exit(),
+        QuitEffect::Stay { .. } => {}
+        QuitEffect::Retry { delay, notice } => {
+            if let Some(text) = notice {
+                show_quit_notice(&text);
             }
-            QUIT.clear();
-            let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
-            if let Some(tray) = tray {
-                let _ = tray.hide();
-            }
-            let _ = slint::quit_event_loop();
+            schedule_quit_retry(delay);
         }
-        QuitDecision::Stay => {}
     }
     QUIT_RUNNING.with(|cell| cell.set(false));
+}
+
+fn finish_exit() {
+    EXITING.store(true, Ordering::Release);
+    shelf_float::save_for_quit();
+    todo_float::save_for_quit();
+    float_shell::save_for_quit();
+    if crate::update::spawn_pending_install().is_err() {
+        EXITING.store(false, Ordering::Release);
+        QUIT.clear();
+        crate::update::install_spawn_failed();
+        QUIT_TRACK.with(|cell| cell.borrow_mut().reset());
+        QUIT_RUNNING.with(|cell| cell.set(false));
+        return;
+    }
+    QUIT.clear();
+    QUIT_TRACK.with(|cell| cell.borrow_mut().reset());
+    let tray = TRAY.with(|cell| cell.borrow().as_ref().and_then(slint::Weak::upgrade));
+    if let Some(tray) = tray {
+        let _ = tray.hide();
+    }
+    let _ = slint::quit_event_loop();
+}
+
+fn schedule_quit_retry(delay: Duration) {
+    let already = QUIT_RETRY_ARMED.with(|cell| {
+        if cell.get() {
+            true
+        } else {
+            cell.set(true);
+            false
+        }
+    });
+    if already {
+        return;
+    }
+    slint::Timer::single_shot(delay, || {
+        QUIT_RETRY_ARMED.with(|cell| cell.set(false));
+        if QUIT.is_requested() && !EXITING.load(Ordering::Acquire) {
+            attempt_quit();
+        }
+    });
+}
+
+fn show_quit_notice(text: &str) {
+    panel::show_quit_blocked(text);
+    if let Err(err) = crate::toast::show_text("暂时无法退出", text) {
+        write_quit_log(&QuitLog {
+            level: QuitLogLevel::Warn,
+            message: format!("退出提示没有弹出：{err}"),
+        });
+    }
+}
+
+fn write_quit_log(log: &QuitLog) {
+    let store = QUIT_LOG.with(|cell| cell.borrow().clone());
+    let Some(store) = store else {
+        return;
+    };
+    match log.level {
+        QuitLogLevel::Info => store.log_info(&log.message),
+        QuitLogLevel::Warn => store.log_warn(&log.message),
+    }
+}
+
+fn quit_now() -> Duration {
+    QUIT_EPOCH.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let start = *slot.get_or_insert_with(Instant::now);
+        start.elapsed()
+    })
 }
 
 /// `received_ns` 是平台线程收到热键消息时的单调时间，热召回从这里算起。

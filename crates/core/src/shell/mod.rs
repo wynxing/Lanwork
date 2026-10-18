@@ -4,6 +4,7 @@
 //! 热角的角判定、停留、全屏抑制和按住左键时不计停留也在这里（[`hotcorner`]）；50ms 轮询和左键状态在 `crates/app`。
 //! 置前要等多久、以及零位移鼠标坐标，由 [`nudge_wait`] 和 [`zero_move`] 决定；真正的 `SendInput` 在 `crates/app`。
 //! 这里固定菜单文字、热键修改顺序、图标像素、主题解析，以及退出时是否还有没写盘的便签窗口。
+//! 界面正忙（窗口表借不出来）和没写盘分开，见 [`quit`]。
 
 mod bar;
 mod bind;
@@ -11,6 +12,7 @@ mod capture;
 mod foreground;
 pub mod hotcorner;
 mod icon;
+mod quit;
 mod recording;
 mod startup;
 mod theme;
@@ -39,6 +41,11 @@ pub use foreground::{
     nudge_wait, tick_after, zero_move,
 };
 pub use icon::{TRAY_ICON_PX, has_badge_pixels, has_update_dot, tray_icon_marked, tray_icon_rgba};
+pub use quit::{
+    QUIT_BUSY_LIMIT, QUIT_RETRY_DELAY, QuitEffect, QuitFlush, QuitLog, QuitLogLevel, QuitSource,
+    QuitTrack, already_exiting_log, blocked_notice, flush_while_borrowed, reentered_log,
+    request_log,
+};
 pub use recording::{EndReason, EndReport, Ending, HotkeyRecording};
 pub use startup::{RunValueAction, quoted_executable, run_value_action};
 pub use theme::{
@@ -100,6 +107,8 @@ pub enum QuitDecision {
 
 /// 退出前先按「便签」保存未写入的修改。`unsaved` 是保存之后仍然没有写盘的便签窗口数：
 /// 为 0 才结束进程，否则留下，由用户在那些窗口里选择重试或放弃修改。
+///
+/// 界面正忙（窗口表借不出来）不要算进 `unsaved`。那条路径在 [`QuitTrack`]。
 #[must_use]
 pub fn quit_decision(unsaved: usize) -> QuitDecision {
     if unsaved == 0 {
