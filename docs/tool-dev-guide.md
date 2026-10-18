@@ -2,7 +2,7 @@
 
 这篇按仓库里现在的代码写，给要做悬浮窗工具的人看。用户能看见的规格在 [tools.md](tools.md)。规格里还没落到代码上的交互，这里不写。和规格不一致的地方，以代码为准。
 
-宿主在 `crates/toolhost`，没有界面。窗口用的是应用里的悬浮窗外壳。应用页和导入的句子也按现在的界面代码写。tools.md 记着这些还没有在 Windows 上验收。
+宿主在 `crates/toolhost`。窗口用的是应用里的悬浮窗外壳。应用页和导入的句子也按现在的界面代码写。tools.md 记着这些还没有在 Windows 上验收。
 
 下面用 [examples/api-quota](../examples/api-quota) 串起来。用户导入后，窗口里有一行文本和一条进度条。打开时请求一次，之后这扇窗口开着时每 300 秒再请求。主机名和密钥在导入时确认。示例假定服务商返回 `{"used":20,"limit":100}`，`used` 和 `limit` 是数字，`limit` 大于 0。换成真实服务商时，改 URL 和字段，主机名仍写在 `domains` 里。
 
@@ -271,7 +271,7 @@ header = "ChatGPT-Account-Id"
 
 `secret` 声明了之后会有一个空表 `secret`，上面没有读取函数。没声明时，读 `secret` 也是「未授权」。
 
-清单里写 `usage` 是不认识的字段，界面是「清单无效」，日志写「不认识的字段 usage」。没有 `usage.fetch`。
+清单里写 `usage` 是不认识的字段，界面是「清单无效」，日志写「不认识的字段 usage」。
 
 ### `timer`
 
@@ -425,7 +425,7 @@ end)
 
 ## 插件登录
 
-用量这一类请求写成 `[[login]]`。宿主不为某一个服务商内置来源。清单里出现 `usage` 时不安装，日志写「不认识的字段 usage」。ChatGPT、Claude 和 Grok 的示例在文末。
+用量这一类请求写成 `[[login]]`。清单里出现 `usage` 时不安装，日志写「不认识的字段 usage」。ChatGPT、Claude 和 Grok 的示例在文末。
 
 `login` 不是 `services` 里的名字。清单写了 `[[login]]` 才有 `login.fetch`。没写时读 `login` 也是「未授权」。要声明登录，工具必须同时声明 `http`，并把请求的主机名写进 `domains`。这不自动打开脚本自己的 POST。
 
