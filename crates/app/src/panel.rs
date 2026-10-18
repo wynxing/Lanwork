@@ -22,7 +22,9 @@ use lanwork_core::panel::{
     panel_origin, panel_size, parse_due, parse_remind, recurrence_from_choice, recurrence_index,
     reordered_ids,
 };
-use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
+use lanwork_core::shell::{
+    Backdrop, QuitFlush, WorkArea, flush_while_borrowed, solid_rgb, to_physical,
+};
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
 use lanwork_core::todos::{ListKind, NewTodo, TodoCommands, TodoItem, TodoList};
@@ -177,6 +179,7 @@ pub(crate) fn install(
         dark: false,
         hwnd_ready: false,
         from_notification: false,
+        quit_notice: false,
         drafts: FieldDrafts::default(),
         composing: false,
     };
@@ -240,6 +243,22 @@ pub(crate) fn show_error(message: &str) {
     });
 }
 
+/// 退出还做不到时的提示。面板已经开着就写在错误条上；没开就打开，前台被占住也不收起。
+/// 不走 [`show_error`]：那条在到不了前台时会把面板收起，提示跟着消失。
+pub(crate) fn show_quit_blocked(message: &str) {
+    let message = message.to_owned();
+    with_panel(move |panel| {
+        // `show` 里的 `prepare` 会清掉错误，所以提示写在显示之后。
+        if !panel.visible {
+            panel.quit_notice = true;
+            panel.show(None);
+            panel.quit_notice = false;
+        }
+        panel.error = Some(message);
+        panel.push_error();
+    });
+}
+
 /// 托盘「新建便签」：创建一篇，打开面板的便签页并选中它。
 pub(crate) fn new_note() {
     with_panel(Controller::new_note);
@@ -255,20 +274,19 @@ pub(crate) fn on_notes_changed() {
     });
 }
 
-/// 退出前保存便签页里没写盘的修改。返回保存之后仍没写盘的窗口数，有的话面板显示出来，让用户选择。
-pub(crate) fn flush_notes_for_quit() -> usize {
+/// 退出前保存便签页里没写盘的修改。借不到表是正忙，不是没写盘。真有没写盘的，面板打开到便签页。
+pub(crate) fn flush_notes_for_quit() -> QuitFlush {
     PANEL.with(|cell| {
-        let Ok(mut slot) = cell.try_borrow_mut() else {
-            return 1;
-        };
-        let Some(panel) = slot.as_mut() else {
-            return 0;
-        };
-        let blocked = panel.notes.flush_for_quit(&panel.ui);
-        if blocked > 0 {
-            panel.show(Some(PanelTab::Notes));
-        }
-        blocked
+        flush_while_borrowed(cell, |slot| {
+            let Some(panel) = slot.as_mut() else {
+                return 0;
+            };
+            let blocked = panel.notes.flush_for_quit(&panel.ui);
+            if blocked > 0 {
+                panel.show(Some(PanelTab::Notes));
+            }
+            blocked
+        })
     })
 }
 
@@ -418,6 +436,8 @@ pub(crate) struct Controller {
     hwnd_ready: bool,
     /// 这次显示来自到期通知。前台失败时不收起，并再显示一次以盖过 `SW_HIDE`。
     from_notification: bool,
+    /// 这次显示是退出受阻的提示。前台失败时不收起，错误条要留在窗口上。
+    quit_notice: bool,
     external: ExternalAi,
     drafts: FieldDrafts,
     composing: bool,
@@ -634,8 +654,12 @@ impl Controller {
                 self.store.log_info("面板在注入输入后到前台");
             }
             Some(bar_win::ForegroundTake::Failed) | None => {
-                if self.from_notification {
-                    self.store.log_warn("到期通知已打开面板，但没有到前台");
+                if self.from_notification || self.quit_notice {
+                    self.store.log_warn(if self.from_notification {
+                        "到期通知已打开面板，但没有到前台"
+                    } else {
+                        "退出提示已打开面板，但没有到前台"
+                    });
                     return;
                 }
                 self.store.log_warn(if hwnd.is_none() {

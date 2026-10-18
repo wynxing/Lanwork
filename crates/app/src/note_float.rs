@@ -17,7 +17,9 @@ use lanwork_core::panel::{
     DropEffect, FLOAT_HEIGHT, FLOAT_WIDTH, Flip, PxBox, StackPage, float_default_origin,
     note_source,
 };
-use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
+use lanwork_core::shell::{
+    Backdrop, QuitFlush, WorkArea, flush_while_borrowed, solid_rgb, to_physical,
+};
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle};
@@ -241,34 +243,34 @@ pub(crate) fn on_note_changed(note_id: &str) {
     with_window(note_id, FloatWindow::adopt_latest);
 }
 
-/// 退出前保存所有悬浮窗里没写盘的修改。返回保存之后仍没写盘的窗口数，这些窗口会被显示出来。
-pub(crate) fn flush_for_quit() -> usize {
+/// 退出前保存所有悬浮窗里没写盘的修改。借不到表是正忙，不是没写盘。
+/// 真有没写盘的，那些窗口提到前面，上面是错误，可以重试或放弃。
+pub(crate) fn flush_for_quit() -> QuitFlush {
     FLOATS.with(|cell| {
-        let Ok(mut slot) = cell.try_borrow_mut() else {
-            return 1;
-        };
-        let Some(floats) = slot.as_mut() else {
-            return 0;
-        };
-        let notes = floats.notes.clone();
-        let mut blocked = 0;
-        for window in floats.windows.values_mut() {
-            if window.editor.flush(&notes) {
-                let saved = window.session.saved();
-                let id = window.editor.session.id().to_owned();
-                if let Err(message) = persist_saved(&notes, &id, saved) {
-                    floats
-                        .store
-                        .log_warn(&format!("悬浮窗位置没有写进便签：{message}"));
+        flush_while_borrowed(cell, |slot| {
+            let Some(floats) = slot.as_mut() else {
+                return 0;
+            };
+            let notes = floats.notes.clone();
+            let mut blocked = 0;
+            for window in floats.windows.values_mut() {
+                if window.editor.flush(&notes) {
+                    let saved = window.session.saved();
+                    let id = window.editor.session.id().to_owned();
+                    if let Err(message) = persist_saved(&notes, &id, saved) {
+                        floats
+                            .store
+                            .log_warn(&format!("悬浮窗位置没有写进便签：{message}"));
+                    }
+                    continue;
                 }
-                continue;
+                window.editor.after = Some(After::Quit);
+                window.push_problem();
+                window.raise();
+                blocked += 1;
             }
-            window.editor.after = Some(After::Quit);
-            window.push_problem();
-            window.raise();
-            blocked += 1;
-        }
-        blocked
+            blocked
+        })
     })
 }
 

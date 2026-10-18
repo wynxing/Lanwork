@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use lanwork_core::shell::QuitSource;
 use lanwork_core::storage::Store;
 use lanwork_core::update::{
     ButtonAction, CHECK_INTERVAL, CheckOutcome, ContentHash, Edition, GetBytes,
@@ -259,7 +260,7 @@ fn download_then_install(
                     });
                     SESSION.with(|cell| cell.borrow_mut().begin_install_phase());
                     push_ui();
-                    crate::host::request_quit();
+                    crate::host::request_quit_from(QuitSource::Update);
                 });
             });
         }
