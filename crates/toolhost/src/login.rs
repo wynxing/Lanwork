@@ -1236,12 +1236,24 @@ mod tests {
         std::os::unix::fs::symlink(target, link).expect("符号链接");
         #[cfg(windows)]
         {
-            let script = format!("mklink /J \"{}\" \"{}\"", link.display(), target.display());
-            let status = std::process::Command::new("cmd")
-                .args(["/C", &script])
-                .status()
+            use std::os::windows::process::CommandExt;
+            // `cmd /C` 会剥掉首尾引号。raw_arg 不再让 Rust 包一层，mklink 才能看见路径上的引号。
+            let output = std::process::Command::new("cmd")
+                .raw_arg(format!(
+                    "/C mklink /J \"{}\" \"{}\"",
+                    link.display(),
+                    target.display()
+                ))
+                .output()
                 .expect("cmd");
-            assert!(status.success(), "junction");
+            assert!(
+                output.status.success(),
+                "junction {} -> {}: {}{}",
+                link.display(),
+                target.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 
