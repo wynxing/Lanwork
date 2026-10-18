@@ -1189,8 +1189,7 @@ fn read_login_file(
     let normalized = normalize_login_file(relative).map_err(|_| LoginError::LoginExpired)?;
     let joined = home.join(normalized.replace('/', std::path::MAIN_SEPARATOR_STR));
     let mut file = open_login_handle(&joined)?;
-    let meta = file.metadata().map_err(|_| LoginError::LoginExpired)?;
-    if !is_single_regular_file(&meta) {
+    if !is_single_regular_file(&file) {
         return Err(LoginError::LoginExpired);
     }
     let final_path = final_path_from_handle(&file)?;
@@ -1216,23 +1215,42 @@ fn read_login_file(
     read_capped_handle(&mut file)
 }
 
-fn is_single_regular_file(meta: &std::fs::Metadata) -> bool {
-    if !meta.is_file() {
-        return false;
-    }
+fn is_single_regular_file(file: &std::fs::File) -> bool {
     #[cfg(unix)]
     {
+        let Ok(meta) = file.metadata() else {
+            return false;
+        };
+        if !meta.is_file() {
+            return false;
+        }
         use std::os::unix::fs::MetadataExt;
         meta.nlink() <= 1
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        const DIRECTORY: u32 = 0x10;
-        const REPARSE: u32 = 0x400;
-        let attr = meta.file_attributes();
-        meta.number_of_links() <= 1 && attr & DIRECTORY == 0 && attr & REPARSE == 0
+        windows_single_regular_file(file)
     }
+}
+
+/// 硬链接数、目录和重解析点都从这次的句柄上读，不用尚未稳定的 `MetadataExt`。
+#[cfg(windows)]
+fn windows_single_regular_file(file: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        GetFileInformationByHandle,
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    let handle = HANDLE(file.as_raw_handle());
+    if unsafe { GetFileInformationByHandle(handle, &raw mut info) }.is_err() {
+        return false;
+    }
+    let attr = info.dwFileAttributes;
+    info.nNumberOfLinks <= 1
+        && attr & FILE_ATTRIBUTE_DIRECTORY.0 == 0
+        && attr & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
 }
 
 /// 打开登录文件。Windows 上允许同时读和写，不打开重解析点标志：
@@ -1246,7 +1264,7 @@ fn open_login_handle(path: &Path) -> Result<std::fs::File, LoginError> {
     #[cfg(windows)]
     {
         use std::os::windows::io::FromRawHandle;
-        use windows::Win32::Foundation::{GENERIC_READ, HANDLE};
+        use windows::Win32::Foundation::GENERIC_READ;
         use windows::Win32::Storage::FileSystem::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         };
