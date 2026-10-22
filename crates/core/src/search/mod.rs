@@ -2,6 +2,7 @@
 //!
 //! [`classify_prefix`] 只供搜索条调用。组内排序和 20 条名额见 [`rank_hits`]、[`allocate_display`]。
 //! 应用枚举、文件索引和查询调度不在这里。本机路径的判断和列目录在 [`path`]。
+//! 使用次数由查询调度保存。
 
 mod corpus;
 mod order;

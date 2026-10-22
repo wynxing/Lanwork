@@ -15,8 +15,8 @@ use lanwork_core::apps::{LaunchError, LaunchTarget, launch, launch_as_user, laun
 use lanwork_core::config::{ConfigCommands, SearchBarOrigin};
 use lanwork_core::dispatch::{
     Dispatch, FILE_QUERY_DELAY_MS, FileProgress, IconKey, LATENCY_SOURCE_LOCAL, Monotonic,
-    QueryView, RgbaImage, RowDetail, SearchGroup, SearchRow, Surface, SystemClock, UsageKey,
-    ViewPhase,
+    QueryView, RgbaImage, RowDetail, SearchGroup, SearchRow, Surface, SystemClock,
+    USAGE_SAVE_DELAY, UsageKey, ViewPhase,
 };
 use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::{classify_prefix, folder_tab_target, looks_like_local_path};
@@ -50,6 +50,7 @@ const PATH_POLL: Duration = Duration::from_millis(15);
 
 thread_local! {
     static BAR: RefCell<Option<Bar>> = const { RefCell::new(None) };
+    static USAGE_DISPATCH: RefCell<Option<Arc<Dispatch>>> = const { RefCell::new(None) };
 }
 
 /// 按键回调要立刻知道有没有接住。借不到搜索条时不接住，把键交回输入框。
@@ -153,6 +154,7 @@ pub(crate) fn install(
         store.log_warn(&format!("搜索条窗口初始化未排队：{err}"));
     }
 
+    USAGE_DISPATCH.with(|cell| *cell.borrow_mut() = Some(Arc::clone(&dispatch)));
     let bar = Bar {
         ui,
         config,
@@ -186,6 +188,7 @@ pub(crate) fn install(
         hover: HoverArm::new(),
         path_up: None,
         path_count: 0,
+        usage_save: slint::Timer::default(),
     };
     BAR.with(|cell| *cell.borrow_mut() = Some(bar));
 }
@@ -221,7 +224,16 @@ pub(crate) fn apply_theme(dark: bool) {
 }
 
 pub(crate) fn shutdown() {
+    flush_usage();
     with_bar(|bar| bar.flush_latency());
+}
+
+/// 把尚未落盘的使用次数写上。退出时调用，不等待防抖计时。
+pub(crate) fn flush_usage() {
+    let dispatch = USAGE_DISPATCH.with(|cell| cell.borrow().clone());
+    if let Some(dispatch) = dispatch {
+        dispatch.flush_usage();
+    }
 }
 
 struct Bar {
@@ -263,6 +275,7 @@ struct Bar {
     path_up: Option<String>,
     /// 当前结果最前面有多少条本机路径行。用来判断这一组是不是这次新接上的。
     path_count: usize,
+    usage_save: slint::Timer,
 }
 
 impl Bar {
@@ -815,8 +828,9 @@ impl Bar {
             return;
         };
         let usage = row.usage.clone();
+        let query = self.view_text.clone();
         self.close_menu();
-        self.perform(command, usage);
+        self.perform(command, usage, query);
     }
 
     fn close_menu(&mut self) {
@@ -960,10 +974,11 @@ impl Bar {
             return;
         };
         let usage = row.usage.clone();
-        self.perform(action, usage);
+        let query = self.view_text.clone();
+        self.perform(action, usage, query);
     }
 
-    fn perform(&mut self, action: RowAction, usage: UsageKey) {
+    fn perform(&mut self, action: RowAction, usage: UsageKey, query: String) {
         match action {
             RowAction::HideApp { key } => self.hide_app(&key),
             RowAction::Shell(_)
@@ -971,20 +986,29 @@ impl Bar {
             | RowAction::RunAsUser(_)
             | RowAction::OpenFolder(_)
             | RowAction::WebSearch { .. } => {
-                self.launch(action, usage);
+                self.launch(action, usage, query);
             }
             RowAction::PanelTodo { .. }
             | RowAction::PanelNote { .. }
             | RowAction::FloatNote { .. } => {
-                self.dispatch.record_open(&usage);
+                self.note_usage(&usage, &query);
                 self.hide();
                 hand_off(action);
             }
         }
     }
 
+    fn note_usage(&mut self, key: &UsageKey, query: &str) {
+        if self.dispatch.record_open_for_query(key, query) {
+            self.usage_save
+                .start(slint::TimerMode::SingleShot, USAGE_SAVE_DELAY, || {
+                    flush_usage();
+                });
+        }
+    }
+
     /// Shell 调用可能等提权提示或慢速网络路径，不放在界面线程上。
-    fn launch(&mut self, action: RowAction, usage: UsageKey) {
+    fn launch(&mut self, action: RowAction, usage: UsageKey, query: String) {
         self.launching = true;
         let counts = action.counts_as_open();
         let spawned = std::thread::Builder::new()
@@ -992,7 +1016,7 @@ impl Bar {
             .spawn(move || {
                 let result = run_shell(&action);
                 let _ = slint::invoke_from_event_loop(move || {
-                    with_bar(move |bar| bar.launched(result, &usage, counts));
+                    with_bar(move |bar| bar.launched(result, &usage, counts, &query));
                 });
             });
         if let Err(err) = spawned {
@@ -1002,12 +1026,18 @@ impl Bar {
         }
     }
 
-    fn launched(&mut self, result: Result<(), LaunchError>, usage: &UsageKey, counts: bool) {
+    fn launched(
+        &mut self,
+        result: Result<(), LaunchError>,
+        usage: &UsageKey,
+        counts: bool,
+        query: &str,
+    ) {
         self.launching = false;
         match result {
             Ok(()) => {
                 if counts {
-                    self.dispatch.record_open(usage);
+                    self.note_usage(usage, query);
                 }
                 if self.visible {
                     self.hide();

@@ -13,6 +13,7 @@ use crate::shelves::{ShelfCommands, normalize_web_url, web_display_name};
 use crate::todos::TodoCommands;
 
 use super::model::{RowDetail, SearchRow, UsageKey};
+use super::usage::{UsageBook, rank_weight};
 
 pub(crate) struct MemoryIndex {
     todos: Vec<IndexedTodo>,
@@ -200,12 +201,17 @@ impl MemoryIndex {
         self.notes.iter().map(|row| row.id.clone()).collect()
     }
 
-    pub(crate) fn rank_todos(&self, text: &str, freq: &HashMap<UsageKey, u64>) -> Vec<SearchRow> {
+    pub(crate) fn rank_todos(
+        &self,
+        text: &str,
+        usage: &UsageBook,
+        query_hash: Option<&str>,
+    ) -> Vec<SearchRow> {
         let hits = self.todo_match.query(text);
         let counts = self
             .todos
             .iter()
-            .map(|row| count(freq, &UsageKey::Todo(row.item_id.clone())))
+            .map(|row| rank_weight(usage, query_hash, &UsageKey::Todo(row.item_id.clone())))
             .collect::<Vec<_>>();
         rank_hits(&hits, |id| counts.get(id as usize).copied().unwrap_or(0))
             .into_iter()
@@ -213,12 +219,17 @@ impl MemoryIndex {
             .collect()
     }
 
-    pub(crate) fn rank_notes(&self, text: &str, freq: &HashMap<UsageKey, u64>) -> Vec<SearchRow> {
+    pub(crate) fn rank_notes(
+        &self,
+        text: &str,
+        usage: &UsageBook,
+        query_hash: Option<&str>,
+    ) -> Vec<SearchRow> {
         let hits = self.note_match.query(text);
         let counts = self
             .notes
             .iter()
-            .map(|row| count(freq, &UsageKey::Note(row.id.clone())))
+            .map(|row| rank_weight(usage, query_hash, &UsageKey::Note(row.id.clone())))
             .collect::<Vec<_>>();
         rank_hits(&hits, |id| counts.get(id as usize).copied().unwrap_or(0))
             .into_iter()
@@ -226,12 +237,17 @@ impl MemoryIndex {
             .collect()
     }
 
-    pub(crate) fn rank_shelves(&self, text: &str, freq: &HashMap<UsageKey, u64>) -> Vec<SearchRow> {
+    pub(crate) fn rank_shelves(
+        &self,
+        text: &str,
+        usage: &UsageBook,
+        query_hash: Option<&str>,
+    ) -> Vec<SearchRow> {
         let hits = self.shelf_match.query(text);
         let counts = self
             .shelves
             .iter()
-            .map(|row| count(freq, &row.usage()))
+            .map(|row| rank_weight(usage, query_hash, &row.usage()))
             .collect::<Vec<_>>();
         rank_hits(&hits, |id| counts.get(id as usize).copied().unwrap_or(0))
             .into_iter()
@@ -334,10 +350,6 @@ fn icon_for_path(path: &str) -> Option<super::model::IconKey> {
 fn list_names(todos: &TodoCommands) -> Result<HashMap<String, String>, String> {
     let lists = todos.lists().map_err(|err| err.to_string())?;
     Ok(lists.into_iter().map(|list| (list.id, list.name)).collect())
-}
-
-fn count(freq: &HashMap<UsageKey, u64>, key: &UsageKey) -> u64 {
-    freq.get(key).copied().unwrap_or(0)
 }
 
 /// 正文命中时，返回第一次单独命中的那一行。

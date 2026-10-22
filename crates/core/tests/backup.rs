@@ -332,6 +332,45 @@ fn import_replaces_data_and_drops_files_absent_from_the_package() {
 }
 
 #[test]
+fn export_and_import_round_trip_search_usage() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    let marker = "a1b2c3d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00";
+    write_rel(
+        &fx.store,
+        "notes/n.json",
+        r#"{"schemaVersion":1,"body":"note-for-usage"}"#,
+    );
+    write_rel(
+        &fx.store,
+        "search-usage.json",
+        &format!(
+            r#"{{"schemaVersion":1,"items":[{{"kind":"todo","id":"t1","count":4}}],"queries":[{{"queryHash":"{marker}","kind":"todo","id":"t1","count":2}}]}}"#
+        ),
+    );
+    let package = fx._temp.path().join("pkg.zip");
+    commands.export(&package, 90).unwrap();
+    let exported = String::from_utf8_lossy(&std::fs::read(&package).unwrap()).into_owned();
+    assert!(exported.contains("search-usage.json"));
+    assert!(exported.contains(marker));
+
+    write_rel(
+        &fx.store,
+        "search-usage.json",
+        r#"{"schemaVersion":1,"items":[],"queries":[]}"#,
+    );
+    commands.import(&package, 100).unwrap();
+    let restored = read_rel(&fx.store, "search-usage.json");
+    assert!(restored.contains(marker));
+    assert!(restored.contains("\"count\":4"));
+
+    let manual = commands.backup_manual(110).unwrap();
+    let backed = String::from_utf8_lossy(&std::fs::read(manual).unwrap()).into_owned();
+    assert!(backed.contains("search-usage.json"));
+    assert!(backed.contains(marker));
+}
+
+#[test]
 fn interrupted_import_restores_on_boot() {
     let fx = fixture();
     let commands = BackupCommands::open(fx.store.clone());

@@ -41,6 +41,8 @@ pub(crate) enum Kind {
     Shelf,
     /// 待办悬浮窗的位置。`manifest` 的 `counts` 不为它加一项，缺这项的旧包仍能导入。
     TodoFloat,
+    /// 搜索使用次数。`counts` 不为它加一项，旧包照常导入。
+    SearchUsage,
     /// 旧包里的 `github/watchlist.json`。导入时忽略，不写入。
     LegacyWatchlist,
     /// 旧包里的 `github/cache/<id>.json`。导入时忽略，不写入。
@@ -206,6 +208,7 @@ pub(crate) fn data_file_names(data_dir: &Path) -> Result<Vec<String>, BackupErro
     for name in [
         "config.json",
         "user-apps.json",
+        "search-usage.json",
         "todo-float.json",
         "tool-enabled.json",
     ] {
@@ -230,6 +233,7 @@ pub(crate) fn disk_path(store: &Store, name: &str) -> Result<PathBuf, BackupErro
         }
         Kind::Config => store.document_path(&DocumentId::Config)?,
         Kind::UserApps => store.user_apps_path(),
+        Kind::SearchUsage => store.search_usage_path(),
         Kind::TodoFloat => store.data_dir().join("todo-float.json"),
         Kind::ToolEnabled => store.data_dir().join("tool-enabled.json"),
         Kind::ToolStorage | Kind::ToolWindow | Kind::ToolCopy => join(&store.data_dir(), name),
@@ -285,6 +289,7 @@ fn recount_refs(
             Kind::Config => overview.config = true,
             Kind::UserApps => overview.user_apps = true,
             Kind::TodoFloat
+            | Kind::SearchUsage
             | Kind::ToolEnabled
             | Kind::ToolStorage
             | Kind::ToolWindow
@@ -431,6 +436,7 @@ pub(crate) fn classify(name: &str) -> Result<Kind, BackupError> {
         MANIFEST => Kind::Manifest,
         "config.json" => Kind::Config,
         "user-apps.json" => Kind::UserApps,
+        "search-usage.json" => Kind::SearchUsage,
         "todo-float.json" => Kind::TodoFloat,
         "tool-enabled.json" => Kind::ToolEnabled,
         "github/watchlist.json" => Kind::LegacyWatchlist,

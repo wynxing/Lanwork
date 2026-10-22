@@ -2,7 +2,7 @@
 //!
 //! 组合中的预编辑不要调用 [`Dispatch::submit`]。起点时间是已提交文本变化的时刻。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use crate::apps::{
@@ -18,7 +18,7 @@ use crate::search::{
     READ_TIMEOUT_LABEL, RankedGroup, SearchGroup, WebSearchEngine, allocate_display,
     classify_prefix, load_system, looks_like_local_path, open_website, present, rank_hits,
 };
-use crate::shelves::{ShelfCommands, normalize_path};
+use crate::shelves::{ShelfCommands, normalize_path, normalize_web_url};
 use crate::storage::{self, EntityKind, Error as StorageError, StartupError, Store};
 use crate::todos::TodoCommands;
 
@@ -29,6 +29,7 @@ use super::model::{
     LATENCY_SOURCE_LOCAL, LATENCY_SOURCE_WINDOWS_SEARCH, LatencyRecord, QueryView, RowDetail,
     SearchRow, Surface, UsageKey, ViewPhase,
 };
+use super::usage::{UsageHandle, UsageKeep, rank_query_hash, rank_weight};
 
 /// 单调时钟的纳秒。测量工具只做减法，不把它当成 Unix 时间。
 pub trait Monotonic: Send {
@@ -137,6 +138,7 @@ pub struct Sides<A, F, C, I> {
 pub struct Dispatch {
     store: Store,
     inner: Mutex<Inner>,
+    usage: Arc<UsageHandle>,
     apps: Mutex<Box<dyn AppLookup>>,
     files: Mutex<Box<dyn FileLookup>>,
     clock: Mutex<Box<dyn Monotonic>>,
@@ -155,7 +157,6 @@ struct Inner {
     generation: u64,
     sequence: u64,
     mode: Mode,
-    freq: HashMap<UsageKey, u64>,
     latency: Vec<LatencyRecord>,
     web_engine: WebSearchEngine,
 }
@@ -265,8 +266,10 @@ impl Dispatch {
         I: IconLoader + 'static,
     {
         let changes = store.subscribe();
+        let usage = UsageHandle::open(store.clone());
         Self {
             store,
+            usage,
             inner: Mutex::new(Inner {
                 todos: services.todos,
                 notes: services.notes,
@@ -277,7 +280,6 @@ impl Dispatch {
                 generation: 0,
                 sequence: 0,
                 mode: Mode::Empty,
-                freq: HashMap::new(),
                 latency: Vec::new(),
                 web_engine: WebSearchEngine::default(),
             }),
@@ -299,6 +301,9 @@ impl Dispatch {
             inner.built = true;
             Ok(())
         });
+        if built.is_ok() {
+            self.flush_usage();
+        }
         match built {
             Ok(()) => Ok(()),
             Err(StorageError::NotReady) => Err(DispatchError::NotReady),
@@ -359,7 +364,7 @@ impl Dispatch {
             Begun::NeedApps(plan) => {
                 let apps = storage::lock_mutex(&self.apps).query(&plan.text);
                 let mut inner = storage::lock_mutex(&self.inner);
-                Ok(inner.finish_local(plan, apps))
+                Ok(inner.finish_local(plan, apps, &self.usage))
             }
         }
     }
@@ -422,7 +427,21 @@ impl Dispatch {
         if !current {
             return false;
         }
-        inner.apply_path(read);
+        let query = match &inner.mode {
+            Mode::Search(state) => state.text.clone(),
+            Mode::Empty | Mode::Capture => String::new(),
+        };
+        let hash = rank_query_hash(&query);
+        self.usage.with_book(|book| {
+            inner.apply_path(read, |path, folder| {
+                let key = if folder {
+                    UsageKey::Folder(path.to_owned())
+                } else {
+                    UsageKey::File(path.to_owned())
+                };
+                rank_weight(book, hash.as_deref(), &key)
+            });
+        });
         true
     }
 
@@ -457,20 +476,39 @@ impl Dispatch {
         storage::lock_mutex(&self.inner).web_engine = engine;
     }
 
-    /// 从搜索结果打开一项。次数加 1，只影响之后的组内排序。
-    pub fn record_open(&self, key: &UsageKey) {
-        let mut inner = storage::lock_mutex(&self.inner);
-        let count = inner.freq.entry(key.clone()).or_default();
-        *count = count.saturating_add(1);
+    /// 从搜索结果打开一项。总次数和当前这次输入的次数各加 1。
+    ///
+    /// 当前输入已经清掉时，只加总次数。写盘由 [`Self::flush_usage`] 完成。
+    pub fn record_open(&self, key: &UsageKey) -> bool {
+        let query = {
+            let inner = storage::lock_mutex(&self.inner);
+            match &inner.mode {
+                Mode::Search(state) => state.text.clone(),
+                Mode::Empty | Mode::Capture => String::new(),
+            }
+        };
+        self.record_open_for_query(key, &query)
+    }
+
+    /// 用打开当时的输入计次。搜索条收起之后仍用这一份。
+    pub fn record_open_for_query(&self, key: &UsageKey, query: &str) -> bool {
+        self.usage.record(key, query)
+    }
+
+    /// 把内存里的次数写入 `search-usage.json`。没有变化时不写。
+    pub fn flush_usage(&self) {
+        let keep = storage::lock_mutex(&self.inner).usage_keep();
+        self.usage.flush(&keep);
     }
 
     #[must_use]
     pub fn usage_count(&self, key: &UsageKey) -> u64 {
-        storage::lock_mutex(&self.inner)
-            .freq
-            .get(key)
-            .copied()
-            .unwrap_or(0)
+        self.usage.item_count(key)
+    }
+
+    #[must_use]
+    pub fn usage_query_count(&self, key: &UsageKey, query: &str) -> u64 {
+        self.usage.query_count_text(key, query)
     }
 
     #[must_use]
@@ -580,6 +618,46 @@ impl Inner {
         Ok(())
     }
 
+    fn usage_keep(&self) -> UsageKeep {
+        let mut keep = UsageKeep::default();
+        if let Ok(lists) = self.todos.lists() {
+            keep.todos_known = true;
+            for list in lists {
+                for item in list.items {
+                    keep.todos.insert(item.id);
+                }
+            }
+        }
+        keep.notes_known = true;
+        for note in self.notes.list() {
+            keep.notes.insert(note.id);
+        }
+        for note in self.notes.deleted() {
+            keep.notes.insert(note.id);
+        }
+        if let Some(shelves) = &self.shelves
+            && let Ok(groups) = shelves.list()
+        {
+            keep.shelves_known = true;
+            for group in groups {
+                for item in &group.refs {
+                    let token = UsageKeep::shelf_token(&group.id, &item.path);
+                    if item.folder {
+                        keep.shelf_folders.insert(token);
+                    } else {
+                        keep.shelf_files.insert(token);
+                    }
+                }
+                for web in &group.web_refs {
+                    if let Some(normalized) = normalize_web_url(&web.url) {
+                        keep.webs.insert(normalized.key);
+                    }
+                }
+            }
+        }
+        keep
+    }
+
     fn begin(&mut self, surface: Surface, text: &str, now: u64) -> Result<Begun, DispatchError> {
         if !self.built {
             return Err(DispatchError::NotReady);
@@ -661,7 +739,12 @@ impl Inner {
         self.mode = mode;
     }
 
-    fn finish_local(&mut self, plan: SearchPlan, apps: Vec<AppHit>) -> QueryView {
+    fn finish_local(
+        &mut self,
+        plan: SearchPlan,
+        apps: Vec<AppHit>,
+        usage: &UsageHandle,
+    ) -> QueryView {
         let current = matches!(
             &self.mode,
             Mode::Search(state)
@@ -670,7 +753,15 @@ impl Inner {
         if !current {
             return self.view();
         }
-        let groups = local_groups(&self.index, &self.freq, &plan.text, &apps);
+        let groups = usage.with_book(|book| {
+            local_groups(
+                &self.index,
+                book,
+                rank_query_hash(&plan.text).as_deref(),
+                &plan.text,
+                &apps,
+            )
+        });
         if let Mode::Search(state) = &mut self.mode {
             state.local_groups = groups;
             state.local_ready = true;
@@ -773,23 +864,14 @@ impl Inner {
         matches!(&self.mode, Mode::Search(state) if state.sequence == sequence)
     }
 
-    fn apply_path(&mut self, read: PathRead) {
-        let presented = present(read, |path, folder| self.usage_of(path, folder));
+    fn apply_path(&mut self, read: PathRead, frequency: impl Fn(&str, bool) -> u64) {
+        let presented = present(read, frequency);
         let Mode::Search(state) = &mut self.mode else {
             return;
         };
         state.path = PathSlot::Done;
         state.path_up = presented.up.clone();
         state.path_rows = path_rows(&presented);
-    }
-
-    fn usage_of(&self, path: &str, folder: bool) -> u64 {
-        let key = if folder {
-            UsageKey::Folder(path.to_owned())
-        } else {
-            UsageKey::File(path.to_owned())
-        };
-        self.freq.get(&key).copied().unwrap_or(0)
     }
 
     fn view(&self) -> QueryView {
@@ -881,7 +963,8 @@ fn web_search_row(text: &str, engine: WebSearchEngine) -> Option<SearchRow> {
 
 fn local_groups(
     index: &MemoryIndex,
-    freq: &HashMap<UsageKey, u64>,
+    usage: &super::usage::UsageBook,
+    query_hash: Option<&str>,
     text: &str,
     apps: &[AppHit],
 ) -> Vec<RankedGroup<SearchRow>> {
@@ -892,28 +975,28 @@ fn local_groups(
             items: vec![row],
         });
     }
-    let app_rows = rank_app_rows(apps, freq);
+    let app_rows = rank_app_rows(apps, usage, query_hash);
     if !app_rows.is_empty() {
         groups.push(RankedGroup {
             group: SearchGroup::Application,
             items: app_rows,
         });
     }
-    let todos = index.rank_todos(text, freq);
+    let todos = index.rank_todos(text, usage, query_hash);
     if !todos.is_empty() {
         groups.push(RankedGroup {
             group: SearchGroup::Todo,
             items: todos,
         });
     }
-    let notes = index.rank_notes(text, freq);
+    let notes = index.rank_notes(text, usage, query_hash);
     if !notes.is_empty() {
         groups.push(RankedGroup {
             group: SearchGroup::Note,
             items: notes,
         });
     }
-    let shelves = index.rank_shelves(text, freq);
+    let shelves = index.rank_shelves(text, usage, query_hash);
     if !shelves.is_empty() {
         groups.push(RankedGroup {
             group: SearchGroup::Shelf,
@@ -937,7 +1020,11 @@ fn browser_row(text: &str) -> Option<SearchRow> {
     })
 }
 
-fn rank_app_rows(hits: &[AppHit], freq: &HashMap<UsageKey, u64>) -> Vec<SearchRow> {
+fn rank_app_rows(
+    hits: &[AppHit],
+    usage: &super::usage::UsageBook,
+    query_hash: Option<&str>,
+) -> Vec<SearchRow> {
     let prepared = hits
         .iter()
         .enumerate()
@@ -955,9 +1042,11 @@ fn rank_app_rows(hits: &[AppHit], freq: &HashMap<UsageKey, u64>) -> Vec<SearchRo
     let counts = hits
         .iter()
         .map(|hit| {
-            freq.get(&UsageKey::App(launch_key(&hit.entry.target)))
-                .copied()
-                .unwrap_or(0)
+            rank_weight(
+                usage,
+                query_hash,
+                &UsageKey::App(launch_key(&hit.entry.target)),
+            )
         })
         .collect::<Vec<_>>();
     rank_hits(&prepared, |id| {

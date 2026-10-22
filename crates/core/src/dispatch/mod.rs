@@ -7,6 +7,7 @@ mod icon;
 mod index;
 mod model;
 mod schedule;
+mod usage;
 
 pub use icon::{
     ICON_CACHE_BYTES, ICON_CACHE_ITEMS, IconCache, IconLoader, MissingIcons, RgbaImage, ShellIcons,
@@ -20,6 +21,7 @@ pub use schedule::{
     AppLookup, Dispatch, FileLookup, Monotonic, PathRequest, PollReport, Services, Sides,
     SystemClock,
 };
+pub use usage::{USAGE_SAVE_DELAY, query_hash};
 
 pub use crate::search::SearchGroup;
 pub use model::DispatchError;
