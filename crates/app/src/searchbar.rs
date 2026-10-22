@@ -21,11 +21,12 @@ use lanwork_core::dispatch::{
 use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::classify_prefix;
 use lanwork_core::shell::{
-    AltRoute, AppMenuAction, BAR_WIDTH, Backdrop, EnterChord, EscapeAction, MonitorArea,
-    ROW_HEIGHT, RowAction, WorkArea, alt_route, app_menu, app_menu_command, draws_type_glyph,
-    escape_action, group_label, location_always_shown, match_span, max_results_height, monitor_at,
-    move_selection, path_target, place_bar, pointed_row, reselect, row_action, row_offsets,
-    shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
+    AltRoute, AppMenuAction, BAR_WIDTH, Backdrop, EnterChord, EscapeAction, HoverArm, MonitorArea,
+    PointerPos, ROW_HEIGHT, RowAction, WorkArea, alt_route, app_menu, app_menu_command,
+    draws_type_glyph, escape_action, group_label, hover_row, location_always_shown, match_span,
+    max_results_height, monitor_at, move_selection, path_target, place_bar, pointed_row, reselect,
+    row_action, row_offsets, shortcut_rows, shortcut_target, solid_rgb, status_line,
+    text_after_hide, to_physical,
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
@@ -94,7 +95,7 @@ pub(crate) fn install(
         let chord = EnterChord::from_modifiers(ctrl, shift, alt, meta);
         with_bar(move |bar| bar.enter(chord));
     });
-    ui.on_hover(|index| with_bar(move |bar| bar.hover(index)));
+    ui.on_hover(|index, x, y| with_bar(move |bar| bar.hover(index, x, y)));
     ui.on_activate(|index| with_bar(move |bar| bar.activate(index)));
     ui.on_shortcut(|digit| with_bar(move |bar| bar.shortcut(digit)));
     ui.on_open_menu(|index, x, y| with_bar(move |bar| bar.open_menu(index, x, y)));
@@ -170,6 +171,7 @@ pub(crate) fn install(
         dragging: false,
         drag_origin: None,
         first_sequence: None,
+        hover: HoverArm::new(),
     };
     BAR.with(|cell| *cell.borrow_mut() = Some(bar));
 }
@@ -241,6 +243,8 @@ struct Bar {
     /// 这次按下时的左上角。松开后没变就不写配置。
     drag_origin: Option<(i32, i32)>,
     first_sequence: Option<u64>,
+    /// 悬停改选中之前，指针要相对打开时和最近一次结果刷新时的位置移动过。
+    hover: HoverArm,
 }
 
 impl Bar {
@@ -281,6 +285,10 @@ impl Bar {
     }
 
     fn show(&mut self, received_ns: u64) {
+        // 先取消上一次的悬停。窗口到位后再记下屏幕上的光标，静止指针不会选中下面的行。
+        self.hover.reset(None);
+        self.selected = 0;
+        self.ui.set_selected(0);
         let (cursor_work, cursor_dpi) = bar_win::cursor_monitor().unwrap_or((
             WorkArea {
                 left: 0,
@@ -360,10 +368,12 @@ impl Bar {
                 return;
             }
         }
+        self.rearm_hover();
         self.ui.invoke_focus_input();
     }
 
     fn hide(&mut self) {
+        self.hover.reset(None);
         self.close_menu();
         self.visible = false;
         self.marks.borrow_mut().hot_start = None;
@@ -551,6 +561,8 @@ impl Bar {
         self.sequence = view.sequence;
         self.file = view.file;
         self.file_unavailable = view.file_unavailable;
+        // 在把新行交给界面之前记下光标。结果画出来时的那一次移动，位置没变就不改选中。
+        self.rearm_hover();
         let visible_keys: Vec<IconKey> = self
             .results
             .iter()
@@ -819,12 +831,30 @@ impl Bar {
         self.ui.invoke_ensure_visible();
     }
 
-    fn hover(&mut self, index: i32) {
-        if let Some(index) = pointed_row(index, self.results.len()) {
-            self.selected = index;
-            self.ui
-                .set_selected(i32::try_from(self.selected).unwrap_or(0));
-        }
+    /// 记下当前屏幕坐标。之后指针相对它移动过，悬停才改选中项。
+    fn rearm_hover(&mut self) {
+        let cursor = bar_win::cursor_screen().map(|(x, y)| PointerPos::from_physical(x, y));
+        self.hover.reset(cursor);
+    }
+
+    /// 行上的逻辑坐标换成屏幕坐标，再和锚点比。窗口在指针下面移动时，屏幕坐标不变。
+    fn hover(&mut self, index: i32, x: f32, y: f32) {
+        let Some(pos) = self.pointer_screen(x, y) else {
+            return;
+        };
+        let Some(index) = hover_row(&mut self.hover, pos, index, self.results.len()) else {
+            return;
+        };
+        self.selected = index;
+        self.ui
+            .set_selected(i32::try_from(self.selected).unwrap_or(0));
+    }
+
+    fn pointer_screen(&self, x: f32, y: f32) -> Option<PointerPos> {
+        let hwnd = self.hwnd()?;
+        let local = PointerPos::from_logical(x, y, self.ui.window().scale_factor())?;
+        let (sx, sy) = bar_win::client_to_screen(hwnd, local.x(), local.y())?;
+        Some(PointerPos::from_physical(sx, sy))
     }
 
     fn activate(&mut self, index: i32) {
