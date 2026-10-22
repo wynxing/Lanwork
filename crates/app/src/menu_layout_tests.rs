@@ -117,6 +117,53 @@ fn item_center(anchor_x: f32, anchor_y: f32, index: f32) -> (f32, f32) {
 }
 
 #[test]
+fn pointer_move_reports_the_row_and_click_opens_it() {
+    let (ui, window) = open();
+    window.set_size(slint::PhysicalSize::new(680, 240));
+    let second_y = ROW_Y + ROW_H;
+    ui.set_rows(ModelRc::new(VecModel::from(vec![
+        sample_row(),
+        BarRow {
+            y: second_y,
+            ..sample_row()
+        },
+    ])));
+    ui.set_list_content_height(second_y + ROW_H + ROW_Y);
+    ui.set_selected(0);
+    slint::platform::update_timers_and_animations();
+
+    let hovers = Rc::new(RefCell::new(Vec::new()));
+    let activates = Rc::new(RefCell::new(Vec::new()));
+    {
+        let hovers = Rc::clone(&hovers);
+        ui.on_hover(move |index, x, y| hovers.borrow_mut().push((index, x, y)));
+        let activates = Rc::clone(&activates);
+        ui.on_activate(move |index| activates.borrow_mut().push(index));
+    }
+
+    let (x, y) = row_point();
+    pointer(&ui, PointerKind::Move, x, y);
+    assert!(
+        hovers.borrow().is_empty(),
+        "已经选中的行不因指针移动再报一次"
+    );
+
+    let second = INPUT + 1.0 + second_y + ROW_H / 2.0;
+    pointer(&ui, PointerKind::Move, x, second);
+    let reported = hovers.borrow().clone();
+    assert_eq!(reported.len(), 1, "移到另一行时报告这一行");
+    assert_eq!(reported[0].0, 1);
+    assert!(
+        (reported[0].1 - x).abs() < 1.0 && (reported[0].2 - second).abs() < 1.0,
+        "坐标是窗口里的指针位置 {:?}，期望 ({x}, {second})",
+        reported[0]
+    );
+
+    click(&ui, PointerEventButton::Left, x, second);
+    assert_eq!(*activates.borrow(), [1], "单击打开点中的那一行");
+}
+
+#[test]
 fn right_click_opens_the_menu_and_clicks_follow_the_pointer() {
     let (ui, _window) = open();
     let opened = Rc::new(RefCell::new(None));

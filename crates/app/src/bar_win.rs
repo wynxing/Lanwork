@@ -19,8 +19,8 @@ use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateRectRgn, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
-    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    ClientToScreen, CreateRectRgn, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC,
+    HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
@@ -59,6 +59,24 @@ pub(crate) fn hwnd_of(window: &slint::Window) -> Option<HWND> {
         RawWindowHandle::Win32(win32) => Some(HWND(win32.hwnd.get() as *mut c_void)),
         _ => None,
     }
+}
+
+/// 光标的屏幕坐标，物理像素。
+pub(crate) fn cursor_screen() -> Option<(i32, i32)> {
+    let mut point = POINT::default();
+    // SAFETY: 输出指针指向局部变量。
+    unsafe { GetCursorPos(&mut point) }.ok()?;
+    Some((point.x, point.y))
+}
+
+/// 客户区物理像素换成屏幕坐标。
+pub(crate) fn client_to_screen(hwnd: HWND, x: i32, y: i32) -> Option<(i32, i32)> {
+    let mut point = POINT { x, y };
+    // SAFETY: hwnd 是本进程的窗口，point 指向局部变量。失败时坐标无意义。
+    if !unsafe { ClientToScreen(hwnd, &mut point) }.as_bool() {
+        return None;
+    }
+    Some((point.x, point.y))
 }
 
 /// 光标所在显示器的工作区和有效 DPI。

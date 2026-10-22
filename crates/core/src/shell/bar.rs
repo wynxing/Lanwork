@@ -620,6 +620,121 @@ pub fn pointed_row(index: i32, len: usize) -> Option<usize> {
     usize::try_from(index).ok().filter(|index| *index < len)
 }
 
+/// 锚点对齐之后，相对锚点至少差这么多物理像素，才算指针又动了。
+pub const HOVER_MOVE_PX: u32 = 2;
+
+/// 打开或结果刷新时采到的光标，和界面第一次报上来的坐标，差不到这么多物理像素
+/// 仍视为同一个点。用来吃掉客户区换算在高 DPI 下大约 1 个逻辑像素的误差。
+pub const HOVER_SNAP_PX: u32 = 12;
+
+/// 物理像素上的指针位置。逻辑坐标先乘窗口缩放，再四舍五入到这里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointerPos {
+    x: i32,
+    y: i32,
+}
+
+impl PointerPos {
+    #[must_use]
+    pub fn from_physical(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+
+    /// 窗口内的逻辑坐标。`scale` 不是有限正数，或乘出来不是有限数时返回 `None`。
+    #[must_use]
+    pub fn from_logical(x: f32, y: f32, scale: f32) -> Option<Self> {
+        Some(Self {
+            x: logical_to_physical(x, scale)?,
+            y: logical_to_physical(y, scale)?,
+        })
+    }
+
+    #[must_use]
+    pub fn x(self) -> i32 {
+        self.x
+    }
+
+    #[must_use]
+    pub fn y(self) -> i32 {
+        self.y
+    }
+}
+
+fn logical_to_physical(logical: f32, scale: f32) -> Option<i32> {
+    if !logical.is_finite() || !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let physical = logical * scale;
+    if !physical.is_finite() {
+        return None;
+    }
+    let rounded = physical.round();
+    if rounded > i32::MAX as f32 || rounded < i32::MIN as f32 {
+        return None;
+    }
+    Some(rounded as i32)
+}
+
+fn pointer_apart(a: PointerPos, b: PointerPos, px: u32) -> bool {
+    a.x.abs_diff(b.x) >= px || a.y.abs_diff(b.y) >= px
+}
+
+/// 悬停能不能改选中项。
+///
+/// 搜索条打开时，以及每次结果刷新时，记下当时的指针位置。界面第一次报上来的坐标如果还在
+/// 这个点附近，只把锚点对齐过去，不改选中。之后指针再移动，悬停才改选中项。
+/// 指针停在原处，或结果在静止的指针下面出现，都不改。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HoverArm {
+    anchor: Option<PointerPos>,
+    /// 已经用界面坐标对齐过锚点。对齐前，靠近采样点的事件只对齐。
+    snapped: bool,
+}
+
+impl HoverArm {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `cursor` 是这一刻的屏幕坐标。还不知道时传 `None`，下一次采样只记下位置。
+    pub fn reset(&mut self, cursor: Option<PointerPos>) {
+        self.anchor = cursor;
+        self.snapped = false;
+    }
+
+    /// 指针到了 `pos`。相对锚点真的移动过才返回 `true`，并把锚点改到这个位置。
+    #[must_use]
+    pub fn moved_to(&mut self, pos: PointerPos) -> bool {
+        let Some(anchor) = self.anchor else {
+            self.anchor = Some(pos);
+            self.snapped = true;
+            return false;
+        };
+        if !self.snapped && !pointer_apart(anchor, pos, HOVER_SNAP_PX) {
+            self.anchor = Some(pos);
+            self.snapped = true;
+            return false;
+        }
+        self.snapped = true;
+        if pointer_apart(anchor, pos, HOVER_MOVE_PX) {
+            self.anchor = Some(pos);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// 悬停改选中项。指针还没相对锚点移动，或行号越界时，保持原来的选中项。
+#[must_use]
+pub fn hover_row(arm: &mut HoverArm, pos: PointerPos, index: i32, len: usize) -> Option<usize> {
+    if !arm.moved_to(pos) {
+        return None;
+    }
+    pointed_row(index, len)
+}
+
 /// 新结果到达后的选中行。同一段输入的后续结果（例如文件结果合并进来）保留原来选中的那一条；
 /// 输入变了，或那一条已经不在，回到第一条。
 #[must_use]
@@ -1385,5 +1500,102 @@ mod tests {
         let gone = UsageKey::File("z".to_owned());
         assert_eq!(reselect(Some(&gone), true, &rows), 0);
         assert_eq!(reselect(None, true, &rows), 0);
+    }
+
+    #[test]
+    fn logical_pointer_rounds_to_physical_pixels() {
+        assert_eq!(
+            PointerPos::from_logical(40.0, 80.0, 1.5),
+            Some(PointerPos::from_physical(60, 120))
+        );
+        assert_eq!(
+            PointerPos::from_logical(10.4, 20.5, 1.0),
+            Some(PointerPos::from_physical(10, 21))
+        );
+        assert_eq!(PointerPos::from_logical(1.0, 1.0, 0.0), None);
+        assert_eq!(PointerPos::from_logical(1.0, 1.0, f32::NAN), None);
+        assert_eq!(PointerPos::from_logical(f32::NAN, 1.0, 1.0), None);
+    }
+
+    #[test]
+    fn stationary_pointer_does_not_change_selection_until_it_moves() {
+        let rows = vec![row("a"), row("b"), row("c"), row("d")];
+        let cursor = PointerPos::from_physical(40, 160);
+        let mut arm = HoverArm::new();
+        arm.reset(Some(cursor));
+
+        let mut selected = reselect(None, false, &rows);
+        assert_eq!(selected, 0, "打开时选中第一条");
+        // 采样点和界面坐标差几个物理像素，仍是静止指针。
+        let reported = PointerPos::from_physical(44, 164);
+        if let Some(index) = hover_row(&mut arm, reported, 2, rows.len()) {
+            selected = index;
+        }
+        assert_eq!(selected, 0, "指针停在原处不改选中");
+        assert_eq!(
+            hover_row(&mut arm, PointerPos::from_physical(45, 165), 2, rows.len()),
+            None,
+            "对齐后再偏 1 像素不算移动"
+        );
+
+        let moved = PointerPos::from_physical(44, 166);
+        selected = hover_row(&mut arm, moved, 2, rows.len()).unwrap_or(selected);
+        assert_eq!(selected, 2, "指针移动后选中悬停的那一行");
+        assert_eq!(
+            hover_row(&mut arm, moved, 3, rows.len()),
+            None,
+            "停住之后不再改选中"
+        );
+
+        // 结果刷新：锚点换成现在的位置。同一段输入仍保留已选中的那一条，静止指针不把它改掉。
+        let key = UsageKey::File("c".to_owned());
+        arm.reset(Some(moved));
+        selected = reselect(Some(&key), true, &rows);
+        assert_eq!(selected, 2);
+        if let Some(index) = hover_row(&mut arm, moved, 0, rows.len()) {
+            selected = index;
+        }
+        assert_eq!(selected, 2, "结果在静止指针下刷新不改选中");
+
+        // 输入变了，回到第一条。指针还停着，也不改。
+        arm.reset(Some(moved));
+        selected = reselect(Some(&key), false, &rows);
+        assert_eq!(selected, 0);
+        if let Some(index) = hover_row(&mut arm, moved, 2, rows.len()) {
+            selected = index;
+        }
+        assert_eq!(selected, 0);
+        selected = hover_row(&mut arm, PointerPos::from_physical(90, 162), 1, rows.len())
+            .unwrap_or(selected);
+        assert_eq!(selected, 1, "刷新后再移动，才选中新的那一行");
+    }
+
+    #[test]
+    fn hover_without_a_sampled_cursor_anchors_on_the_first_event() {
+        let mut arm = HoverArm::new();
+        arm.reset(None);
+        assert_eq!(
+            hover_row(&mut arm, PointerPos::from_physical(10, 10), 1, 3),
+            None
+        );
+        assert_eq!(
+            hover_row(&mut arm, PointerPos::from_physical(10, 40), 1, 3),
+            Some(1)
+        );
+        assert_eq!(
+            hover_row(&mut arm, PointerPos::from_physical(80, 40), 9, 3),
+            None,
+            "越界行号不选"
+        );
+    }
+
+    #[test]
+    fn hover_far_from_the_sample_selects_immediately() {
+        let mut arm = HoverArm::new();
+        arm.reset(Some(PointerPos::from_physical(0, 0)));
+        assert_eq!(
+            hover_row(&mut arm, PointerPos::from_physical(0, 40), 2, 4),
+            Some(2)
+        );
     }
 }
