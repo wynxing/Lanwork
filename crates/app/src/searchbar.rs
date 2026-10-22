@@ -19,14 +19,14 @@ use lanwork_core::dispatch::{
     ViewPhase,
 };
 use lanwork_core::panel::PanelTarget;
-use lanwork_core::search::classify_prefix;
+use lanwork_core::search::{classify_prefix, folder_tab_target, looks_like_local_path};
 use lanwork_core::shell::{
     AltRoute, AppMenuAction, BAR_WIDTH, Backdrop, EnterChord, EscapeAction, HoverArm, MonitorArea,
     PointerPos, ROW_HEIGHT, RowAction, WorkArea, alt_route, app_menu, app_menu_command,
     draws_type_glyph, escape_action, group_label, hover_row, location_always_shown, match_span,
-    max_results_height, monitor_at, move_selection, path_target, place_bar, pointed_row, reselect,
-    row_action, row_offsets, shortcut_rows, shortcut_target, solid_rgb, status_line,
-    text_after_hide, to_physical,
+    max_results_height, monitor_at, move_selection, path_target, place_bar, pointed_row,
+    row_action, row_offsets, selection_after_refresh, shortcut_rows, shortcut_target, solid_rgb,
+    status_line, text_after_hide, to_physical,
 };
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
@@ -45,9 +45,19 @@ const BOTTOM_GAP: u32 = 24;
 const LIST_CAP: u32 = 9 * ROW_HEIGHT + 2 * lanwork_core::shell::LIST_PAD;
 /// 60ms 到点时调度还说要等，就再等这么久。
 const POLL_RETRY: Duration = Duration::from_millis(5);
+/// 路径线程还在读时，隔这么久看一眼它有没有返回。没有路径请求时不轮询。
+const PATH_POLL: Duration = Duration::from_millis(15);
 
 thread_local! {
     static BAR: RefCell<Option<Bar>> = const { RefCell::new(None) };
+}
+
+/// 按键回调要立刻知道有没有接住。借不到搜索条时不接住，把键交回输入框。
+fn with_bar_sync(action: impl FnOnce(&mut Bar) -> bool) -> bool {
+    BAR.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut slot) => slot.as_mut().map(action).unwrap_or(false),
+        Err(_) => false,
+    })
 }
 
 /// 在界面线程上取搜索条。回调里可能已经借用着，这时放到下一轮事件循环。
@@ -95,6 +105,8 @@ pub(crate) fn install(
         let chord = EnterChord::from_modifiers(ctrl, shift, alt, meta);
         with_bar(move |bar| bar.enter(chord));
     });
+    ui.on_complete_folder(|| with_bar_sync(Bar::complete_folder));
+    ui.on_path_up(|| with_bar_sync(Bar::path_up));
     ui.on_hover(|index, x, y| with_bar(move |bar| bar.hover(index, x, y)));
     ui.on_activate(|index| with_bar(move |bar| bar.activate(index)));
     ui.on_shortcut(|digit| with_bar(move |bar| bar.shortcut(digit)));
@@ -172,6 +184,8 @@ pub(crate) fn install(
         drag_origin: None,
         first_sequence: None,
         hover: HoverArm::new(),
+        path_up: None,
+        path_count: 0,
     };
     BAR.with(|cell| *cell.borrow_mut() = Some(bar));
 }
@@ -245,6 +259,10 @@ struct Bar {
     first_sequence: Option<u64>,
     /// 悬停改选中之前，指针要相对打开时和最近一次结果刷新时的位置移动过。
     hover: HoverArm,
+    /// 本机路径时，Ctrl+Backspace 写回这一层。
+    path_up: Option<String>,
+    /// 当前结果最前面有多少条本机路径行。用来判断这一组是不是这次新接上的。
+    path_count: usize,
 }
 
 impl Bar {
@@ -554,13 +572,18 @@ impl Bar {
             .menu_row
             .and_then(|index| self.results.get(index))
             .map(|row| row.usage.clone());
-        self.selected = reselect(previous.as_ref(), same_text, &view.rows);
+        // 同一段输入沿用已选中的那一条。路径这一组是这次新接到最前面时，改选第一条。
+        let path_prepended = self.path_count == 0 && view.path_count > 0;
+        self.selected =
+            selection_after_refresh(previous.as_ref(), same_text, &view.rows, path_prepended);
         self.results = view.rows;
         self.phase = view.phase;
         self.view_text = view.text;
         self.sequence = view.sequence;
         self.file = view.file;
         self.file_unavailable = view.file_unavailable;
+        self.path_up = view.path_up;
+        self.path_count = view.path_count;
         // 在把新行交给界面之前记下光标。结果画出来时的那一次移动，位置没变就不改选中。
         self.rearm_hover();
         let visible_keys: Vec<IconKey> = self
@@ -607,6 +630,11 @@ impl Bar {
                     _ => None,
                 };
                 let icon = shell.or(web);
+                let kind = if matches!(row.detail, RowDetail::PathTimeout) {
+                    String::new()
+                } else {
+                    group_label(row.group).to_owned()
+                };
                 let (head, matched, tail) = match match_span(&row.label, &self.view_text) {
                     Some((start, end)) => (
                         &row.label[..start],
@@ -619,7 +647,7 @@ impl Bar {
                     label_head: head.into(),
                     label_match: matched.into(),
                     label_tail: tail.into(),
-                    kind: group_label(row.group).into(),
+                    kind: kind.into(),
                     location: row.location.clone().into(),
                     location_always: location_always_shown(row.group),
                     icon: icon.cloned().unwrap_or_default(),
@@ -866,6 +894,54 @@ impl Bar {
         }
     }
 
+    /// Tab：当前输入是本机路径、且选中的是文件夹时，把该路径补进输入框并列出下一层。
+    fn complete_folder(&mut self) -> bool {
+        if self.ui.get_menu_open() || !self.ui.get_preedit().is_empty() || self.launching {
+            return false;
+        }
+        let text = self.ui.get_text();
+        if classify_prefix(&text).is_capture() {
+            return false;
+        }
+        let folder = self
+            .results
+            .get(self.selected)
+            .and_then(|row| match &row.detail {
+                RowDetail::Folder { path } => Some(path.as_str()),
+                _ => None,
+            });
+        let Some(next) = folder_tab_target(&text, folder) else {
+            return false;
+        };
+        self.replace_input(&next);
+        true
+    }
+
+    /// Ctrl+Backspace：回到当前列出的上一层。不是路径时不接住，输入框按词删除。
+    /// 已经在盘符根或 UNC 共享根时接住这个键，输入保持不变。
+    fn path_up(&mut self) -> bool {
+        if self.ui.get_menu_open() || !self.ui.get_preedit().is_empty() || self.launching {
+            return false;
+        }
+        let text = self.ui.get_text();
+        if !looks_like_local_path(&text) {
+            return false;
+        }
+        let Some(next) = self.path_up.clone() else {
+            return true;
+        };
+        if next != text.as_str() {
+            self.replace_input(&next);
+        }
+        true
+    }
+
+    fn replace_input(&mut self, text: &str) {
+        let end = i32::try_from(text.len()).unwrap_or(i32::MAX);
+        self.ui.invoke_replace_input(text.into(), end);
+        self.submit(text);
+    }
+
     fn enter(&mut self, chord: EnterChord) {
         if self.ui.get_menu_open() || !self.ui.get_preedit().is_empty() || self.launching {
             return;
@@ -1010,6 +1086,7 @@ fn glyph(detail: &RowDetail) -> i32 {
         RowDetail::Browser { .. } => 5,
         RowDetail::WebSearch { .. } => 6,
         RowDetail::Web { .. } => 7,
+        RowDetail::PathTimeout => 3,
     }
 }
 
@@ -1145,13 +1222,30 @@ impl Worker {
     }
 }
 
-fn worker_main(dispatch: &Dispatch, rx: &Receiver<Job>) {
+fn worker_main(dispatch: &Arc<Dispatch>, rx: &Receiver<Job>) {
+    // 路径线程只回报这次请求是否还有效。投递时再读 view，避免盖住随后合并的文件结果。
+    let (path_tx, path_rx) = mpsc::channel::<bool>();
     let mut deadline: Option<Instant> = None;
+    let mut path_pending = 0u32;
     loop {
+        if path_pending > 0
+            && let Ok(current) = path_rx.try_recv()
+        {
+            path_pending = path_pending.saturating_sub(1);
+            if current {
+                post(Some(dispatch.view()), dispatch.load_visible_icons());
+            }
+            continue;
+        }
         let job = match deadline {
-            None => match rx.recv() {
+            None if path_pending == 0 => match rx.recv() {
                 Ok(job) => Some(job),
                 Err(_) => return,
+            },
+            None => match rx.recv_timeout(PATH_POLL) {
+                Ok(job) => Some(job),
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return,
             },
             Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                 Ok(job) => Some(job),
@@ -1161,6 +1255,20 @@ fn worker_main(dispatch: &Dispatch, rx: &Receiver<Job>) {
         };
         if let Some(job) = job {
             post(None, dispatch.load_visible_icons());
+            if let Some(request) = dispatch.take_path_request() {
+                path_pending = path_pending.saturating_add(1);
+                let tx = path_tx.clone();
+                let dispatch = Arc::clone(dispatch);
+                let spawned = std::thread::Builder::new()
+                    .name("lanwork-path-list".to_owned())
+                    .spawn(move || {
+                        let current = dispatch.complete_path(request);
+                        let _ = tx.send(current);
+                    });
+                if spawned.is_err() {
+                    path_pending = path_pending.saturating_sub(1);
+                }
+            }
             deadline = job
                 .wait_file
                 .then(|| Instant::now() + Duration::from_millis(FILE_QUERY_DELAY_MS));

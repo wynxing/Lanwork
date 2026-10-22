@@ -17,7 +17,8 @@ pub use model::{
     SearchRow, Surface, UsageKey, ViewPhase,
 };
 pub use schedule::{
-    AppLookup, Dispatch, FileLookup, Monotonic, PollReport, Services, Sides, SystemClock,
+    AppLookup, Dispatch, FileLookup, Monotonic, PathRequest, PollReport, Services, Sides,
+    SystemClock,
 };
 
 pub use crate::search::SearchGroup;

@@ -14,8 +14,9 @@ use crate::files::{
 };
 use crate::notes::NoteCommands;
 use crate::search::{
-    DISPLAY_LIMIT, FieldRole, Hit, HitKind, OPEN_WEBSITE_LABEL, RankedGroup, SearchGroup,
-    WebSearchEngine, allocate_display, classify_prefix, open_website, rank_hits,
+    DISPLAY_LIMIT, FieldRole, Hit, HitKind, OPEN_FILE_LABEL, OPEN_WEBSITE_LABEL, PathRead,
+    READ_TIMEOUT_LABEL, RankedGroup, SearchGroup, WebSearchEngine, allocate_display,
+    classify_prefix, load_system, looks_like_local_path, open_website, present, rank_hits,
 };
 use crate::shelves::{ShelfCommands, normalize_path};
 use crate::storage::{self, EntityKind, Error as StorageError, StartupError, Store};
@@ -140,6 +141,8 @@ pub struct Dispatch {
     files: Mutex<Box<dyn FileLookup>>,
     clock: Mutex<Box<dyn Monotonic>>,
     icons: Arc<Mutex<IconCache>>,
+    /// `None` 时用系统读取。测试放进一个替身，避免碰真实磁盘。
+    paths: Mutex<Option<Box<dyn PathLookup>>>,
 }
 
 struct Inner {
@@ -174,6 +177,11 @@ struct SearchState {
     file_hits: Vec<FileHit>,
     file: FileSlot,
     unavailable: Option<&'static str>,
+    /// 本机路径这一组。接在其它分组前面，不占 20 条名额。
+    path_rows: Vec<SearchRow>,
+    /// Ctrl+Backspace 写回的上一层。
+    path_up: Option<String>,
+    path: PathSlot,
 }
 
 enum FileSlot {
@@ -181,6 +189,25 @@ enum FileSlot {
     InFlight,
     Done,
     Skipped,
+}
+
+enum PathSlot {
+    Idle,
+    Pending,
+    InFlight,
+    Done,
+}
+
+/// 后台线程要读的一次路径。序号过期的结果丢掉。
+pub struct PathRequest {
+    sequence: u64,
+    generation: u64,
+    text: String,
+}
+
+/// 测试替换本机路径的读取。正式构建不设置，走 [`load_system`]。
+pub(crate) trait PathLookup: Send {
+    fn load(&mut self, text: &str) -> PathRead;
 }
 
 struct SearchPlan {
@@ -258,6 +285,7 @@ impl Dispatch {
             files: Mutex::new(Box::new(sides.files)),
             clock: Mutex::new(Box::new(sides.clock)),
             icons: Arc::new(Mutex::new(IconCache::new(sides.icons))),
+            paths: Mutex::new(None),
         }
     }
 
@@ -360,6 +388,57 @@ impl Dispatch {
             accepted,
             view,
         })
+    }
+
+    /// 有本机路径要读时取出这一次。界面线程只调用 [`Self::submit`]，不在这里读目录。
+    pub fn take_path_request(&self) -> Option<PathRequest> {
+        let mut inner = storage::lock_mutex(&self.inner);
+        let Mode::Search(state) = &mut inner.mode else {
+            return None;
+        };
+        if !matches!(state.path, PathSlot::Pending) {
+            return None;
+        }
+        let request = PathRequest {
+            sequence: state.sequence,
+            generation: state.generation,
+            text: state.text.clone(),
+        };
+        state.path = PathSlot::InFlight;
+        Some(request)
+    }
+
+    /// 在后台线程里读路径并写入这次搜索。序号已经变了就丢掉，返回 `false`。
+    ///
+    /// 不返回当时的结果。文件阶段可能在这之后才合并，界面投递时再读 [`Self::view`]。
+    pub fn complete_path(&self, request: PathRequest) -> bool {
+        let read = self.read_path(&request.text);
+        let mut inner = storage::lock_mutex(&self.inner);
+        let current = matches!(
+            &inner.mode,
+            Mode::Search(state)
+                if state.sequence == request.sequence && state.generation == request.generation
+        );
+        if !current {
+            return false;
+        }
+        inner.apply_path(read);
+        true
+    }
+
+    /// 测试用。替换之后，[`Self::complete_path`] 不再访问系统目录。
+    #[cfg(test)]
+    pub(crate) fn set_path_source(&self, source: Box<dyn PathLookup>) {
+        *storage::lock_mutex(&self.paths) = Some(source);
+    }
+
+    fn read_path(&self, text: &str) -> PathRead {
+        let mut slot = storage::lock_mutex(&self.paths);
+        if let Some(custom) = slot.as_mut() {
+            return custom.load(text);
+        }
+        drop(slot);
+        load_system(text)
     }
 
     #[must_use]
@@ -552,6 +631,13 @@ impl Inner {
                 }
             },
             unavailable: None,
+            path_rows: Vec::new(),
+            path_up: None,
+            path: if looks_like_local_path(text) {
+                PathSlot::Pending
+            } else {
+                PathSlot::Idle
+            },
         });
         self.latency.push(LatencyRecord {
             metric: LATENCY_METRIC_RESULT,
@@ -687,6 +773,25 @@ impl Inner {
         matches!(&self.mode, Mode::Search(state) if state.sequence == sequence)
     }
 
+    fn apply_path(&mut self, read: PathRead) {
+        let presented = present(read, |path, folder| self.usage_of(path, folder));
+        let Mode::Search(state) = &mut self.mode else {
+            return;
+        };
+        state.path = PathSlot::Done;
+        state.path_up = presented.up.clone();
+        state.path_rows = path_rows(&presented);
+    }
+
+    fn usage_of(&self, path: &str, folder: bool) -> u64 {
+        let key = if folder {
+            UsageKey::Folder(path.to_owned())
+        } else {
+            UsageKey::File(path.to_owned())
+        };
+        self.freq.get(&key).copied().unwrap_or(0)
+    }
+
     fn view(&self) -> QueryView {
         match &self.mode {
             Mode::Empty => QueryView::idle(ViewPhase::Empty),
@@ -701,6 +806,8 @@ impl Inner {
                     rows,
                     file,
                     file_unavailable: state.unavailable,
+                    path_up: state.path_up.clone(),
+                    path_count: state.path_rows.len(),
                 }
             }
         }
@@ -743,6 +850,11 @@ fn project(state: &SearchState, engine: WebSearchEngine) -> (Vec<SearchRow>, Fil
         .map(|(_group, row)| row)
         .collect();
     rows = omit_shown_shelf_files(rows, &state.file_hits);
+    if !state.path_rows.is_empty() {
+        let mut combined = state.path_rows.clone();
+        combined.append(&mut rows);
+        rows = combined;
+    }
     if let Some(row) = web_search_row(&state.text, engine) {
         rows.push(row);
     }
@@ -996,6 +1108,75 @@ fn file_rows(hits: &[FileHit]) -> (Vec<SearchRow>, Vec<SearchRow>) {
     (files, folders)
 }
 
+fn path_rows(presented: &crate::search::PathRows) -> Vec<SearchRow> {
+    if presented.timeout {
+        return vec![SearchRow {
+            group: SearchGroup::File,
+            kind: None,
+            usage: UsageKey::PathTimeout,
+            label: READ_TIMEOUT_LABEL.to_owned(),
+            location: String::new(),
+            icon: None,
+            detail: RowDetail::PathTimeout,
+        }];
+    }
+    let mut rows = Vec::new();
+    if let Some(path) = &presented.open_file {
+        rows.push(open_path_file(path));
+    }
+    rows.extend(presented.listed.iter().map(listed_row));
+    rows
+}
+
+fn open_path_file(path: &str) -> SearchRow {
+    SearchRow {
+        group: SearchGroup::File,
+        kind: None,
+        usage: UsageKey::File(path.to_owned()),
+        label: OPEN_FILE_LABEL.to_owned(),
+        location: path.to_owned(),
+        icon: Some(super::model::IconKey {
+            path: path.to_owned(),
+            index: 0,
+        }),
+        detail: RowDetail::File {
+            path: path.to_owned(),
+        },
+    }
+}
+
+fn listed_row(item: &crate::search::Listed) -> SearchRow {
+    let icon = Some(super::model::IconKey {
+        path: item.path.clone(),
+        index: 0,
+    });
+    if item.folder {
+        SearchRow {
+            group: SearchGroup::Folder,
+            kind: item.kind,
+            usage: UsageKey::Folder(item.path.clone()),
+            label: item.name.clone(),
+            location: item.path.clone(),
+            icon,
+            detail: RowDetail::Folder {
+                path: item.path.clone(),
+            },
+        }
+    } else {
+        SearchRow {
+            group: SearchGroup::File,
+            kind: item.kind,
+            usage: UsageKey::File(item.path.clone()),
+            label: item.name.clone(),
+            location: item.path.clone(),
+            icon,
+            detail: RowDetail::File {
+                path: item.path.clone(),
+            },
+        }
+    }
+}
+
 fn file_row(hit: &FileHit) -> SearchRow {
     let icon = if hit.path.is_empty() {
         None
@@ -1051,14 +1232,19 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use crate::apps::AppHit;
-    use crate::files::{EverythingStatus, FileQueryResult, FileSource, WindowsSearchStatus};
+    use crate::files::{
+        EverythingStatus, FileHit, FileKind, FileQueryResult, FileSource, WindowsSearchStatus,
+    };
     use crate::notes::{NoteCommands, NoteInput};
     use crate::storage::{Store, StorePaths};
     use crate::todos::TodoCommands;
 
+    use crate::search::{DirItem, PathRead};
+
     use super::super::icon::MissingIcons;
-    use super::super::model::Surface;
-    use super::{AppLookup, Dispatch, FileLookup, Monotonic, Services, Sides};
+    use super::super::model::{FileProgress, RowDetail, Surface, UsageKey};
+    use super::FILE_DELAY_NS;
+    use super::{AppLookup, Dispatch, FileLookup, Monotonic, PathLookup, Services, Sides};
 
     struct TempDir {
         path: PathBuf,
@@ -1097,6 +1283,32 @@ mod tests {
     impl AppLookup for NoApps {
         fn query(&mut self, _text: &str) -> Vec<AppHit> {
             Vec::new()
+        }
+    }
+
+    struct SharedClock(Arc<AtomicU64>);
+
+    impl Monotonic for SharedClock {
+        fn now_ns(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    struct OneIndexedFile;
+
+    impl FileLookup for OneIndexedFile {
+        fn query(&mut self, sequence: u64, _text: &str) -> FileQueryResult {
+            FileQueryResult {
+                sequence,
+                everything: EverythingStatus::Ready,
+                windows_search: WindowsSearchStatus::NotChecked,
+                source: FileSource::Everything,
+                hits: vec![FileHit {
+                    name: "indexed.txt".to_owned(),
+                    path: r"C:\Work\indexed.txt".to_owned(),
+                    kind: FileKind::File,
+                }],
+            }
         }
     }
 
@@ -1192,5 +1404,189 @@ mod tests {
             .unwrap();
         store.set_publish_probe(None);
         reader.join().unwrap();
+    }
+
+    struct FixedDir;
+
+    impl PathLookup for FixedDir {
+        fn load(&mut self, text: &str) -> PathRead {
+            let entry = |name: &str, folder: bool| DirItem {
+                name: name.to_owned(),
+                folder,
+                hidden: false,
+                system: false,
+            };
+            if text == r"C:\Work\a" {
+                return PathRead::Directory {
+                    dir: r"C:\Work".to_owned(),
+                    filter: "a".to_owned(),
+                    entries: vec![entry("ab.txt", false), entry("aa.txt", false)],
+                    up: Some(r"C:\".to_owned()),
+                };
+            }
+            if text.starts_with(r"C:\Work") {
+                return PathRead::Directory {
+                    dir: r"C:\Work".to_owned(),
+                    filter: String::new(),
+                    entries: vec![
+                        entry("b-file", false),
+                        entry("a-dir", true),
+                        entry("b-dir", true),
+                        entry("a-file", false),
+                    ],
+                    up: Some(r"C:\".to_owned()),
+                };
+            }
+            if text == r"C:\hang" {
+                return PathRead::Timeout {
+                    up: Some(r"C:\".to_owned()),
+                };
+            }
+            PathRead::NotPath
+        }
+    }
+
+    #[test]
+    fn path_group_is_first_web_search_is_last_and_usage_reorders() {
+        let temp = TempDir::new();
+        let root = temp.path.clone();
+        let store = Store::open(StorePaths {
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            user_profile: root.join("profile"),
+            local_app_data: root.join("local"),
+        })
+        .unwrap();
+        let todos = TodoCommands::open(store.clone());
+        todos.boot().unwrap();
+        let notes = NoteCommands::open(store.clone()).unwrap();
+        let dispatch = Dispatch::new(
+            store,
+            Services {
+                todos,
+                notes,
+                shelves: None,
+            },
+            Sides {
+                apps: NoApps,
+                files: NoFiles,
+                clock: Clock,
+                icons: MissingIcons,
+            },
+        );
+        dispatch.build().unwrap();
+        dispatch.set_path_source(Box::new(FixedDir));
+
+        let pending = dispatch.submit(Surface::SearchBar, r"C:\Work\").unwrap();
+        assert!(pending.rows.iter().all(|row| row.label != "a-dir"));
+        assert_eq!(
+            pending.rows.last().map(|row| row.group),
+            Some(crate::search::SearchGroup::WebSearch)
+        );
+        let request = dispatch.take_path_request().expect("path request");
+        assert!(dispatch.complete_path(request));
+        let view = dispatch.view();
+        let labels: Vec<_> = view.rows.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(&labels[..4], ["a-dir", "b-dir", "a-file", "b-file"]);
+        assert_eq!(view.rows[0].group, crate::search::SearchGroup::Folder);
+        assert_eq!(
+            view.rows.last().unwrap().group,
+            crate::search::SearchGroup::WebSearch
+        );
+        assert_eq!(view.path_up.as_deref(), Some(r"C:\"));
+        assert!(matches!(
+            view.rows[2].detail,
+            RowDetail::File { ref path } if path == r"C:\Work\a-file"
+        ));
+
+        dispatch.record_open(&UsageKey::File(r"C:\Work\aa.txt".to_owned()));
+        assert_eq!(
+            dispatch.usage_count(&UsageKey::File(r"C:\Work\aa.txt".to_owned())),
+            1
+        );
+        dispatch.submit(Surface::SearchBar, r"C:\Work\a").unwrap();
+        let request = dispatch.take_path_request().expect("filtered");
+        assert!(dispatch.complete_path(request));
+        let filtered = dispatch.view();
+        let filtered_labels: Vec<_> = filtered
+            .rows
+            .iter()
+            .filter(|row| row.group != crate::search::SearchGroup::WebSearch)
+            .map(|row| row.label.as_str())
+            .collect();
+        assert_eq!(filtered_labels, ["aa.txt", "ab.txt"]);
+
+        dispatch.submit(Surface::SearchBar, r"C:\hang").unwrap();
+        let request = dispatch.take_path_request().expect("timeout");
+        assert!(dispatch.complete_path(request));
+        let timed = dispatch.view();
+        assert_eq!(timed.rows[0].label, "读取超时");
+        assert!(matches!(timed.rows[0].detail, RowDetail::PathTimeout));
+        assert_eq!(timed.rows[0].usage, UsageKey::PathTimeout);
+        assert_eq!(
+            timed.rows.last().unwrap().group,
+            crate::search::SearchGroup::WebSearch
+        );
+
+        dispatch.submit(Surface::SearchBar, "a:b").unwrap();
+        assert!(dispatch.take_path_request().is_none());
+    }
+
+    #[test]
+    fn path_completion_keeps_a_file_hit_that_settles_afterward() {
+        let now = Arc::new(AtomicU64::new(0));
+        let temp = TempDir::new();
+        let root = temp.path.clone();
+        let store = Store::open(StorePaths {
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            user_profile: root.join("profile"),
+            local_app_data: root.join("local"),
+        })
+        .unwrap();
+        let todos = TodoCommands::open(store.clone());
+        todos.boot().unwrap();
+        let notes = NoteCommands::open(store.clone()).unwrap();
+        let dispatch = Dispatch::new(
+            store,
+            Services {
+                todos,
+                notes,
+                shelves: None,
+            },
+            Sides {
+                apps: NoApps,
+                files: OneIndexedFile,
+                clock: SharedClock(Arc::clone(&now)),
+                icons: MissingIcons,
+            },
+        );
+        dispatch.build().unwrap();
+        dispatch.set_path_source(Box::new(FixedDir));
+        dispatch.submit(Surface::SearchBar, r"C:\Work\").unwrap();
+        let request = dispatch.take_path_request().expect("path request");
+        assert!(dispatch.complete_path(request));
+        let early = dispatch.view();
+        assert_eq!(early.file, FileProgress::Waiting);
+        assert!(early.rows.iter().any(|row| row.label == "a-dir"));
+        assert!(early.rows.iter().all(|row| row.label != "indexed.txt"));
+        assert!(early.path_count > 0);
+
+        now.store(FILE_DELAY_NS, Ordering::Relaxed);
+        let settled = dispatch.poll().unwrap();
+        assert!(settled.sent);
+        assert_eq!(settled.view.file, FileProgress::Settled);
+        assert!(settled.view.rows.iter().any(|row| row.label == "a-dir"));
+        assert!(
+            settled
+                .view
+                .rows
+                .iter()
+                .any(|row| row.label == "indexed.txt")
+        );
+        let posted = dispatch.view();
+        assert_eq!(posted.file, FileProgress::Settled);
+        assert!(posted.rows.iter().any(|row| row.label == "indexed.txt"));
+        assert!(posted.rows.iter().any(|row| row.label == "a-dir"));
     }
 }

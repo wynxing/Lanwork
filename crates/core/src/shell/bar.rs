@@ -255,7 +255,7 @@ pub fn group_label(group: SearchGroup) -> &'static str {
 /// 没有壳层图标或网站图标时，是否画类型图形。收纳里的网页引用留空，不画地球。
 #[must_use]
 pub fn draws_type_glyph(detail: &RowDetail) -> bool {
-    !matches!(detail, RowDetail::Web { .. })
+    !matches!(detail, RowDetail::Web { .. } | RowDetail::PathTimeout)
 }
 
 /// 文件和文件夹在名称下方总是显示路径。收纳在名称下方总是显示所属分组。其它结果选中后才显示。
@@ -745,6 +745,20 @@ pub fn reselect(previous: Option<&UsageKey>, same_text: bool, rows: &[SearchRow]
     previous
         .and_then(|key| rows.iter().position(|row| &row.usage == key))
         .unwrap_or(0)
+}
+
+/// 同一段输入的后续结果沿用 [`reselect`]。`path_prepended` 为真时，路径这一组刚接到最前面，选中新的第一条。
+#[must_use]
+pub fn selection_after_refresh(
+    previous: Option<&UsageKey>,
+    same_text: bool,
+    rows: &[SearchRow],
+    path_prepended: bool,
+) -> usize {
+    if path_prepended {
+        return 0;
+    }
+    reselect(previous, same_text, rows)
 }
 
 #[cfg(test)]
@@ -1500,6 +1514,34 @@ mod tests {
         let gone = UsageKey::File("z".to_owned());
         assert_eq!(reselect(Some(&gone), true, &rows), 0);
         assert_eq!(reselect(None, true, &rows), 0);
+    }
+
+    #[test]
+    fn file_merge_keeps_the_row_and_a_new_path_group_selects_the_first() {
+        let web = SearchRow {
+            group: SearchGroup::WebSearch,
+            kind: None,
+            usage: UsageKey::WebSearch,
+            label: "搜索".to_owned(),
+            location: String::new(),
+            icon: None,
+            detail: RowDetail::WebSearch {
+                url: "https://www.google.com/search?q=x".to_owned(),
+            },
+        };
+        let file = row("indexed");
+        let with_file = vec![file, web.clone()];
+        assert_eq!(
+            selection_after_refresh(Some(&UsageKey::WebSearch), true, &with_file, false),
+            1,
+            "文件结果接在后面时，原来选中的网页搜索留在新位置"
+        );
+        let with_path = vec![row("a-dir"), web];
+        assert_eq!(
+            selection_after_refresh(Some(&UsageKey::WebSearch), true, &with_path, true),
+            0,
+            "路径这一组新接到最前面时选中第一条"
+        );
     }
 
     #[test]
