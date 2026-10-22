@@ -810,6 +810,7 @@ mod tests {
         assert!(again.record(&todo("t1"), "   "));
         assert_eq!(again.query_count_text(&todo("t1"), "pow"), 1);
         assert!(!again.record(&UsageKey::WebSearch, "pow"));
+        assert!(!again.record(&UsageKey::PathTimeout, r"C:\hang"));
     }
 
     fn hit(id: u64, kind: HitKind) -> Hit {

@@ -1612,6 +1612,8 @@ mod tests {
         assert_eq!(timed.rows[0].label, "读取超时");
         assert!(matches!(timed.rows[0].detail, RowDetail::PathTimeout));
         assert_eq!(timed.rows[0].usage, UsageKey::PathTimeout);
+        assert!(!dispatch.record_open(&UsageKey::PathTimeout));
+        assert_eq!(dispatch.usage_count(&UsageKey::PathTimeout), 0);
         assert_eq!(
             timed.rows.last().unwrap().group,
             crate::search::SearchGroup::WebSearch
