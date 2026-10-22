@@ -1,6 +1,7 @@
 //! 导出包的白名单、清单和数据文件集合。
 //!
 //! 包内路径只用 `/`。拒绝 `..` 和绝对路径。JSON 缺少 `schemaVersion` 时按 1。
+//! `search-usage.json` 无法解析或 `schemaVersion` 不是 1 时，不让整包失败。
 //! 工具副本、`tool-storage/`、`tool-enabled.json` 和 `tool-windows/` 在这份名单里。
 //! `tools/` 下以 `.` 开头的临时目录不在。密钥不在名单里。
 
@@ -17,6 +18,28 @@ pub(crate) const PACKAGE_SCHEMA: u64 = 1;
 pub(crate) const RETENTION: usize = 7;
 
 const MANIFEST: &str = "manifest.json";
+const SEARCH_USAGE_FILE: &str = "search-usage.json";
+const SEARCH_USAGE_SKIP_LOG: &str = "搜索使用次数文件无法解析，未写入备份";
+
+enum UsageBytes {
+    Current,
+    Foreign,
+    Unreadable,
+}
+
+fn usage_bytes(bytes: &[u8]) -> UsageBytes {
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return UsageBytes::Unreadable;
+    };
+    let Some(obj) = value.as_object() else {
+        return UsageBytes::Unreadable;
+    };
+    match obj.get("schemaVersion") {
+        None => UsageBytes::Current,
+        Some(Value::Number(number)) if number.as_u64() == Some(1) => UsageBytes::Current,
+        Some(_) => UsageBytes::Foreign,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageOverview {
@@ -74,7 +97,15 @@ pub(crate) fn collect(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
         let path = disk_path(store, &name)?;
         let bytes = read_file(&path)?;
         let kind = classify(&name)?;
-        let bytes = if matches!(kind, Kind::ToolEnabled) {
+        let bytes = if matches!(kind, Kind::SearchUsage) {
+            match usage_bytes(&bytes) {
+                UsageBytes::Unreadable => {
+                    store.log_warn(SEARCH_USAGE_SKIP_LOG);
+                    continue;
+                }
+                UsageBytes::Current | UsageBytes::Foreign => bytes,
+            }
+        } else if matches!(kind, Kind::ToolEnabled) {
             match tools::export_enabled(&bytes) {
                 Some(bytes) => bytes,
                 None => {
@@ -104,12 +135,26 @@ pub(crate) fn collect(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
 }
 
 /// 导入前那份 `import-` 备份。白名单文件按磁盘上的字节复制，不重新校验工具，
-/// 也不去掉 `open`。校验失败的 JSON 让这次导入还没开始就停住。
+/// 也不去掉 `open`。`search-usage.json` 无法解析时跳过并记日志，`schemaVersion`
+/// 不是 1 时按原字节复制。其余校验失败的 JSON 让这次导入还没开始就停住。
 pub(crate) fn collect_raw(store: &Store) -> Result<Vec<StoredFile>, BackupError> {
     let mut files = Vec::new();
     for name in data_file_names(&store.data_dir())? {
         let path = disk_path(store, &name)?;
         let bytes = read_file(&path)?;
+        if matches!(classify(&name)?, Kind::SearchUsage) {
+            match usage_bytes(&bytes) {
+                UsageBytes::Unreadable => {
+                    store.log_warn(SEARCH_USAGE_SKIP_LOG);
+                    continue;
+                }
+                UsageBytes::Foreign => {
+                    files.push(StoredFile { name, bytes });
+                    continue;
+                }
+                UsageBytes::Current => {}
+            }
+        }
         check_entry(&name, &bytes)?;
         files.push(StoredFile { name, bytes });
     }
@@ -167,7 +212,7 @@ pub(crate) fn inspect_files(files: &[StoredFile]) -> Result<PackageOverview, Bac
             return Err(BackupError::entry(&file.name, "压缩包含有重复路径"));
         }
         let kind = classify(&file.name)?;
-        if !matches!(kind, Kind::Manifest | Kind::ToolCopy) {
+        if !matches!(kind, Kind::Manifest | Kind::ToolCopy | Kind::SearchUsage) {
             check_document(&file.bytes).map_err(|err| match err {
                 BackupError::Rejected(message) => BackupError::entry(&file.name, message),
                 other => other,
@@ -387,13 +432,29 @@ fn count_field(counts: &Map<String, Value>, name: &str) -> Result<u64, BackupErr
 }
 
 fn check_entry(name: &str, bytes: &[u8]) -> Result<(), BackupError> {
-    if matches!(classify(name)?, Kind::ToolCopy) {
+    let kind = classify(name)?;
+    if matches!(kind, Kind::ToolCopy) {
+        return Ok(());
+    }
+    if matches!(kind, Kind::SearchUsage) && !matches!(usage_bytes(bytes), UsageBytes::Current) {
         return Ok(());
     }
     check_document(bytes).map_err(|err| match err {
         BackupError::Rejected(message) => BackupError::entry(name, message),
         other => other,
     })
+}
+
+/// 包里没有 `search-usage.json` 时，本机无法解析或 `schemaVersion` 不是 1 的那一份留着。
+/// 可解析且 `schemaVersion` 缺少或为 1 的本机文件仍按白名单删除。读失败时也留着。
+pub(crate) fn preserve_local_search_usage(name: &str, path: &Path) -> bool {
+    if name != SEARCH_USAGE_FILE {
+        return false;
+    }
+    let Ok(bytes) = storage::fs_read(path) else {
+        return true;
+    };
+    !matches!(usage_bytes(&bytes), UsageBytes::Current)
 }
 
 fn check_document(bytes: &[u8]) -> Result<(), BackupError> {
@@ -436,7 +497,7 @@ pub(crate) fn classify(name: &str) -> Result<Kind, BackupError> {
         MANIFEST => Kind::Manifest,
         "config.json" => Kind::Config,
         "user-apps.json" => Kind::UserApps,
-        "search-usage.json" => Kind::SearchUsage,
+        SEARCH_USAGE_FILE => Kind::SearchUsage,
         "todo-float.json" => Kind::TodoFloat,
         "tool-enabled.json" => Kind::ToolEnabled,
         "github/watchlist.json" => Kind::LegacyWatchlist,

@@ -371,6 +371,119 @@ fn export_and_import_round_trip_search_usage() {
 }
 
 #[test]
+fn corrupt_search_usage_does_not_fail_backup_export_or_import() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    write_rel(
+        &fx.store,
+        "notes/n.json",
+        r#"{"schemaVersion":1,"body":"note-beside-corrupt-usage"}"#,
+    );
+    let notes_only = fx._temp.path().join("notes-only.zip");
+    commands.export(&notes_only, 10).unwrap();
+
+    let query = "raw-query-photoshop-marker";
+    let corrupt = format!("{{not json {query}");
+    write_rel(&fx.store, "search-usage.json", &corrupt);
+
+    let manual = commands.backup_manual(20).unwrap();
+    let backed = String::from_utf8_lossy(&std::fs::read(&manual).unwrap()).into_owned();
+    assert!(!backed.contains(query));
+    assert!(!backed.contains("search-usage.json"));
+    assert!(backed.contains("note-beside-corrupt-usage"));
+
+    let exported_path = fx._temp.path().join("with-corrupt.zip");
+    commands.export(&exported_path, 30).unwrap();
+    let exported = String::from_utf8_lossy(&std::fs::read(&exported_path).unwrap()).into_owned();
+    assert!(!exported.contains(query));
+    assert!(!exported.contains("search-usage.json"));
+
+    let log = std::fs::read_to_string(fx.store.log_path()).unwrap();
+    assert!(log.contains("搜索使用次数文件无法解析，未写入备份"));
+    assert!(!log.contains(query));
+
+    match commands.backup_on_launch(day(2026, 10, 22), 40).unwrap() {
+        LaunchBackup::Created { path } => {
+            let auto = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
+            assert!(!auto.contains(query));
+            assert!(auto.contains("note-beside-corrupt-usage"));
+        }
+        LaunchBackup::AlreadyDone => panic!("expected a launch backup"),
+    }
+
+    commands.import(&notes_only, 50).unwrap();
+    assert_eq!(read_rel(&fx.store, "search-usage.json"), corrupt);
+    assert!(read_rel(&fx.store, "notes/n.json").contains("note-beside-corrupt-usage"));
+}
+
+#[test]
+fn foreign_schema_search_usage_is_copied_and_kept_when_package_omits_it() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    let marker = "schema-two-marker-9f3a";
+    let raw = format!(r#"{{"schemaVersion":2,"query":"pow-raw-text","marker":"{marker}"}}"#);
+    write_rel(
+        &fx.store,
+        "notes/n.json",
+        r#"{"schemaVersion":1,"body":"note-beside-schema-two"}"#,
+    );
+    write_rel(&fx.store, "search-usage.json", &raw);
+
+    let manual = commands.backup_manual(60).unwrap();
+    let backed = std::fs::read(manual).unwrap();
+    assert!(
+        backed
+            .windows(raw.len())
+            .any(|window| window == raw.as_bytes())
+    );
+
+    let exported_path = fx._temp.path().join("schema2.zip");
+    commands.export(&exported_path, 70).unwrap();
+    let exported = std::fs::read(&exported_path).unwrap();
+    assert!(
+        exported
+            .windows(raw.len())
+            .any(|window| window == raw.as_bytes())
+    );
+
+    std::fs::remove_file(fx.store.data_dir().join("search-usage.json")).unwrap();
+    let notes_only = fx._temp.path().join("notes-only.zip");
+    commands.export(&notes_only, 80).unwrap();
+    write_rel(&fx.store, "search-usage.json", &raw);
+
+    commands.import(&notes_only, 90).unwrap();
+    assert_eq!(read_rel(&fx.store, "search-usage.json"), raw);
+
+    write_rel(
+        &fx.store,
+        "search-usage.json",
+        r#"{"schemaVersion":1,"items":[],"queries":[]}"#,
+    );
+    commands.import(&exported_path, 100).unwrap();
+    assert_eq!(read_rel(&fx.store, "search-usage.json"), raw);
+}
+
+#[test]
+fn schema_one_search_usage_is_removed_when_package_omits_it() {
+    let fx = fixture();
+    let commands = BackupCommands::open(fx.store.clone());
+    write_rel(
+        &fx.store,
+        "notes/n.json",
+        r#"{"schemaVersion":1,"body":"only-note"}"#,
+    );
+    let package = fx._temp.path().join("notes.zip");
+    commands.export(&package, 110).unwrap();
+    write_rel(
+        &fx.store,
+        "search-usage.json",
+        r#"{"schemaVersion":1,"items":[{"kind":"todo","id":"t","count":1}],"queries":[]}"#,
+    );
+    commands.import(&package, 120).unwrap();
+    assert!(!fx.store.data_dir().join("search-usage.json").exists());
+}
+
+#[test]
 fn interrupted_import_restores_on_boot() {
     let fx = fixture();
     let commands = BackupCommands::open(fx.store.clone());

@@ -322,11 +322,12 @@ fn apply(
         tools::write_restored_sidecars(store, &sidecars, &restored, &skipped, &mut keep)?;
     }
     for (name, path) in package::list_data_files(store)? {
-        if !keep.contains(&name) {
-            storage::fs_remove_file(&path).map_err(|_| BackupError::io("无法删除", &path))?;
-            if let Some(event) = change_for(&name) {
-                events.push(event);
-            }
+        if keep.contains(&name) || package::preserve_local_search_usage(&name, &path) {
+            continue;
+        }
+        storage::fs_remove_file(&path).map_err(|_| BackupError::io("无法删除", &path))?;
+        if let Some(event) = change_for(&name) {
+            events.push(event);
         }
     }
     let mut kept_tools = restored;

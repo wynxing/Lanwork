@@ -913,10 +913,9 @@ fn same_kind_orders_by_use_count_and_exact_stays_first() {
 
 #[test]
 fn per_query_count_beats_plain_count_within_the_same_match_kind() {
-    let open = dispatch;
     let (_temp, store) = open_store();
     let (files, _) = script(file_result(FileSource::Everything, Vec::new()));
-    let (dispatch, _, services) = ready(store.clone(), NoApps, files);
+    let (search, _, services) = ready(store.clone(), NoApps, files);
     let list_id = services.todos.create_list("清单").unwrap();
     let photo = services
         .todos
@@ -927,19 +926,19 @@ fn per_query_count_beats_plain_count_within_the_same_match_kind() {
         .create_item(&list_id, new_todo("powershell"))
         .unwrap();
 
-    dispatch.submit(Surface::Panel, "other").unwrap();
+    search.submit(Surface::Panel, "other").unwrap();
     for _ in 0..5 {
-        dispatch.record_open(&UsageKey::Todo(photo.clone()));
+        search.record_open(&UsageKey::Todo(photo.clone()));
     }
-    assert_eq!(dispatch.usage_count(&UsageKey::Todo(photo.clone())), 5);
+    assert_eq!(search.usage_count(&UsageKey::Todo(photo.clone())), 5);
     assert_eq!(
-        dispatch.usage_query_count(&UsageKey::Todo(photo.clone()), "ps"),
+        search.usage_query_count(&UsageKey::Todo(photo.clone()), "ps"),
         0
     );
 
-    dispatch.submit(Surface::Panel, "ps").unwrap();
-    dispatch.record_open(&UsageKey::Todo(shell.clone()));
-    let ranked = dispatch.submit(Surface::Panel, "ps").unwrap();
+    search.submit(Surface::Panel, "ps").unwrap();
+    search.record_open(&UsageKey::Todo(shell.clone()));
+    let ranked = search.submit(Surface::Panel, "ps").unwrap();
     let names = labels(&ranked);
     let photo_at = names
         .iter()
@@ -965,26 +964,26 @@ fn per_query_count_beats_plain_count_within_the_same_match_kind() {
     assert_eq!(photo_kind, Some(HitKind::Fuzzy));
     assert_eq!(shell_kind, photo_kind);
 
-    dispatch.submit(Surface::Panel, "pow").unwrap();
-    dispatch.record_open(&UsageKey::Todo(shell.clone()));
+    search.submit(Surface::Panel, "pow").unwrap();
+    search.record_open(&UsageKey::Todo(shell.clone()));
     assert_eq!(
-        dispatch.usage_query_count(&UsageKey::Todo(shell.clone()), "pow"),
+        search.usage_query_count(&UsageKey::Todo(shell.clone()), "pow"),
         1
     );
     assert_eq!(
-        dispatch.usage_query_count(&UsageKey::Todo(shell.clone()), "ps"),
+        search.usage_query_count(&UsageKey::Todo(shell.clone()), "ps"),
         1
     );
     assert_eq!(
-        dispatch.usage_query_count(&UsageKey::Todo(photo.clone()), "ps"),
+        search.usage_query_count(&UsageKey::Todo(photo.clone()), "ps"),
         0
     );
     assert_eq!(
-        dispatch.usage_query_count(&UsageKey::Todo(photo.clone()), "pow"),
+        search.usage_query_count(&UsageKey::Todo(photo.clone()), "pow"),
         0
     );
 
-    dispatch.flush_usage();
+    search.flush_usage();
     let text = std::fs::read_to_string(store.search_usage_path()).unwrap();
     assert!(text.contains(&query_hash("ps")));
     assert!(text.contains(&query_hash("pow")));
@@ -992,7 +991,7 @@ fn per_query_count_beats_plain_count_within_the_same_match_kind() {
     assert!(!text.contains("powershell"));
 
     let (files, _) = script(file_result(FileSource::Everything, Vec::new()));
-    let (again, _) = open(
+    let (again, _) = dispatch(
         store,
         Services {
             todos: services.todos.clone(),
