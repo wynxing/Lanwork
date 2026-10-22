@@ -80,6 +80,10 @@ export component SearchBar inherits Window {
     callback escape();
     callback move-selection(bool);
     callback enter(bool, bool, bool, bool);
+    // 选中文件夹时补全路径。返回真表示已经接住 Tab。
+    callback complete-folder() -> bool;
+    // 回到上一层。返回假时 Ctrl+Backspace 仍交给输入框。
+    callback path-up() -> bool;
     // 指针在行上移动。坐标是窗口里的逻辑像素。静止指针下出现的结果不改选择，由 Rust 比较屏幕坐标。
     callback hover(int, length, length);
     // 单击某行，等同在该行上按 Enter。
@@ -163,6 +167,12 @@ export component SearchBar inherits Window {
         list.content-y = 0px;
     }
 
+    // 补全或回到上一层时换掉整段输入，光标停在末尾。`end` 是字节偏移。
+    public function replace-input(value: string, end: int) {
+        input.text = value;
+        input.set-selection-offsets(end, end);
+    }
+
     Path {
         x: 20px;
         y: (input-height - 18px) / 2;
@@ -222,6 +232,16 @@ export component SearchBar inherits Window {
             key-pressed(event) => {
                 if self.preedit-text != "" {
                     return reject;
+                }
+                if event.text == Key.Tab && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.alt && !event.modifiers.meta {
+                    if root.complete-folder() {
+                        return accept;
+                    }
+                }
+                if event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta && event.text == Key.Backspace {
+                    if root.path-up() {
+                        return accept;
+                    }
                 }
                 if event.text == Key.Escape {
                     if root.menu-open {

@@ -70,6 +70,8 @@ pub enum UsageKey {
     Folder(String),
     /// 网页搜索那一条。打开它不计使用次数，这个键只用来保持选中。
     WebSearch,
+    /// 「读取超时」那一行。没有打开动作，不计使用次数。
+    PathTimeout,
 }
 
 /// 壳层图标的键。`index` 来自快捷方式；取图接口没有这一参数时仍用它区分缓存项。
@@ -120,6 +122,8 @@ pub enum RowDetail {
     WebSearch {
         url: String,
     },
+    /// 本机路径在时限内没有读完。Enter 没有动作。
+    PathTimeout,
 }
 
 /// 界面可以画的当前结果。序号不是当前序号时，不要再画这份旧结果。
@@ -132,6 +136,10 @@ pub struct QueryView {
     pub rows: Vec<SearchRow>,
     pub file: FileProgress,
     pub file_unavailable: Option<&'static str>,
+    /// Ctrl+Backspace 要写回输入框的上一层。不是路径，或已经在根上时为 `None`。
+    pub path_up: Option<String>,
+    /// 结果最前面的本机路径行数。这一组还没读完时为 0。
+    pub path_count: usize,
 }
 
 impl QueryView {
@@ -144,6 +152,8 @@ impl QueryView {
             rows: Vec::new(),
             file: FileProgress::Idle,
             file_unavailable: None,
+            path_up: None,
+            path_count: 0,
         }
     }
 }

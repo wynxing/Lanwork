@@ -377,7 +377,7 @@ Lanwork/
 
 ### 匹配引擎
 
-应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。文件名不走这张拼音表。应用索引查询应用名时已经调用 `MatchIndex`（内部是 `prepare` 和 `query`）。文件索引在 `lanwork_core::files`，不调用 `prepare`。查询调度在 `lanwork_core::dispatch`，对应用、待办和便签调用同一个 `prepare` 和 `query_prepared`。
+应用名、待办标题、便签标题、便签标签和别名用同一种 `PreparedCandidate`。调用方把应用名、待办标题和便签标题标成 `FieldRole::Name`，别名标成 `Alias`，标签标成 `Tag`，便签正文标成 `Body`。应用索引查询应用名时已经调用 `MatchIndex`（内部是 `prepare` 和 `query`）。文件索引在 `lanwork_core::files`，不调用 `prepare`。本机路径列表的过滤文字对条目名称调用 `prepare`，见「本机路径」。查询调度在 `lanwork_core::dispatch`，对应用、待办和便签调用同一个 `prepare` 和 `query_prepared`。
 
 拼音表在构建 `lanwork-core` 时生成，查询时不下载、不解析 Unihan 原文，也不把查询里的汉字转成拼音。
 
@@ -443,6 +443,18 @@ Lanwork/
 8. 没有协议、且整个输入只是带一个点的「名称.后缀」时，当前只要后缀是至少两个字母就产生这一条。因此 `readme.md` 也会出现「打开网址」，打开 `https://readme.md`。是否排除这种更像文件名的输入，产品规格待定。
 
 打开和网页搜索是同一条启动路径：`LaunchTarget::Url` 交给 `ShellExecuteExW`，动词 `open`，由系统的默认浏览器处理 `http` / `https`。`crates/core` 不启动浏览器。Alt+数字、悬停选中、单击等同 Enter，都不因为这一条而改变。
+
+### 本机路径
+
+判断、展开和排序在 `lanwork_core::search::path`。`looks_like_local_path` 认盘符加冒号再加 `\` 或 `/`、以 `\\` 开头的 UNC、`~\`、`~/`，以及开头的 `%变量名%`。`a:b` 和 `C:` 不是路径。`submit` 只做这个判断，不读目录。搜索条的后台线程看到待读的路径后另开 `lanwork-path-list`，界面线程不等待。读目录再套一层同样名字的线程和 `PATH_LIST_TIMEOUT`（1.5 秒）：`recv_timeout` 到点就返回「读取超时」，已经读到的条目不显示。断开的 UNC 也走这一限，调用方不把系统调用留在界面线程上。这和收纳 `check_exists` 把存在性检查放进单独线程、到点就返回是同一类做法。用户写下的 UNC 会去读。应用索引扫 PATH 时跳过 UNC，是为了不让一个无关的网络目录挡住其余来源；路径列表的目标是用户指定的，所以用时限而不是跳过。
+
+展开先把开头的 `~` 换成 `USERPROFILE`，没有时用 `HOME`。然后最多 8 轮展开 `%变量名%`，名字比较忽略 ASCII 大小写。未定义的变量保留原文。`/` 收成 `\`。连续的 `\` 收成一个，开头的 `\\` 保留。盘符根保持 `C:\`。
+
+展开后的路径是文件时，第一条是「打开这个文件」，`RowDetail::File`，用法键是 `UsageKey::File`。是文件夹时列出一层，过滤文字为空。还不是已存在的文件或文件夹时，最后一个 `\` 之前是要列出的目录，之后是过滤文字。过滤用 `MatchIndex`，字段角色是 `FieldRole::Name`，所以全拼和首字母对条目名称生效。没有过滤文字时，文件夹和文件各自按名称的小写排序。有过滤文字时，文件夹排在文件前面，各自经 `rank_hits` 按命中类型和使用次数排序。使用次数读调度里已有的 `UsageKey::File` 和 `UsageKey::Folder`。打开走 `record_open`。`FILE_ATTRIBUTE_HIDDEN` 和 `FILE_ATTRIBUTE_SYSTEM` 的条目在扫描时跳过。读目录一直进行到 `PATH_LIST_TIMEOUT`。时限内读完后，按名称过滤和排序，再保留前 `PATH_LIST_LIMIT`（200）条。到点则丢掉已读条目，这一组只有「读取超时」。读目录失败时这一组为空，其它分组保留。`complete_path` 只把路径行写入这次搜索，不交出当时的结果快照。界面在投递时读 `Dispatch::view`，因此文件阶段随后合并的命中留在同一份结果里。
+
+这一组在 `allocate_display` 的结果之前接上，不占 20 条名额。网页搜索接在最后。时限到了时这一组是一行「读取超时」，`RowDetail::PathTimeout`，Enter 没有动作，用法键是 `UsageKey::PathTimeout`，不计次数。
+
+当前输入是本机路径时，Tab 把选中文件夹的路径补进输入框并补上末尾的 `\`，光标在末尾，然后按新输入再查。当前输入不是本机路径时，Tab 交回输入框。Ctrl+Backspace 用这次结果里的上一层：列出目录时是它的父目录，指向文件时是该文件所在的文件夹。盘符根和 UNC 共享根（`\\server\share`）没有上一层，这个键不改输入。查询还没返回时，当前输入是路径则这个键也不改输入。路径这一组新接到结果最前面时，选中项改为这一组的第一条。其它同一次输入的后续结果沿用 `reselect`。
 
 文件和文件夹优先使用 Everything，支持 1.4 和 1.5。随包附带 voidtools 的 Everything SDK x64 DLL：1.4 用 SDK 的 DLL，1.5 用 SDK3 的 DLL。两者固定版本，放在程序目录，并附许可说明。每次查询前按 1.5、1.4 的顺序检查状态并探测，不为每次查询启动命令行。
 

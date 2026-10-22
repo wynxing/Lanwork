@@ -1,10 +1,11 @@
-//! 搜索条前缀分类、像网址的判断，以及应用、待办、便签和收纳网页引用共用的匹配器。
+//! 搜索条前缀分类、像网址的判断、本机路径，以及应用、待办、便签和收纳网页引用共用的匹配器。
 //!
 //! [`classify_prefix`] 只供搜索条调用。组内排序和 20 条名额见 [`rank_hits`]、[`allocate_display`]。
-//! 应用枚举、文件索引和查询调度不在这里。使用频率的增减尚未规定。
+//! 应用枚举、文件索引和查询调度不在这里。本机路径的判断和列目录在 [`path`]。
 
 mod corpus;
 mod order;
+mod path;
 mod pinyin;
 mod prefix;
 mod prepare;
@@ -16,6 +17,11 @@ pub use corpus::benchmark_corpus;
 pub use order::{
     DISPLAY_LIMIT, FrequencySource, GROUP_FIRST_TAKE, GroupOrder, MatchKindOrder, RankedGroup,
     SearchGroup, ZeroFrequency, allocate_display, hit_kind_rank, rank_hits, sort_hits,
+};
+pub use path::{
+    DirItem, Listed, OPEN_FILE_LABEL, PATH_LIST_LIMIT, PATH_LIST_TIMEOUT, PathRead, PathRows,
+    READ_TIMEOUT_LABEL, arrange, expand_path, folder_completion, folder_tab_target, load_system,
+    looks_like_local_path, parent_directory, present,
 };
 pub use pinyin::{
     CHARACTER_COUNT, COVERAGE, READINGS_SHA256, SOURCE_URL, SYLLABLE_COUNT, TABLE_RESIDENT_BYTES,
