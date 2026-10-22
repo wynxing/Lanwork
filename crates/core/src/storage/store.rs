@@ -201,6 +201,11 @@ impl Store {
         self.data_dir().join("user-apps.json")
     }
 
+    /// 搜索使用次数。路径固定为数据目录下的 `search-usage.json`。
+    pub fn search_usage_path(&self) -> PathBuf {
+        self.data_dir().join("search-usage.json")
+    }
+
     pub fn log_path(&self) -> &Path {
         self.inner.log.path()
     }

@@ -47,7 +47,7 @@ pub enum FileProgress {
     Settled,
 }
 
-/// 打开结果时用来给使用次数加 1 的键。调度层只放在内存里。
+/// 打开结果时用来给使用次数加 1 的键。次数写在数据目录的 `search-usage.json`。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum UsageKey {
     Browser(String),

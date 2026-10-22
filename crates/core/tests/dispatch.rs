@@ -11,7 +11,7 @@ use lanwork_core::apps::{
 use lanwork_core::dispatch::{
     AppLookup, Dispatch, DispatchError, FILE_QUERY_DELAY_MS, FileLookup, FileProgress, IconKey,
     IconLoader, MissingIcons, Monotonic, QueryView, RgbaImage, RowDetail, SearchGroup, SearchRow,
-    Services, Sides, Surface, UsageKey, ViewPhase,
+    Services, Sides, Surface, UsageKey, ViewPhase, query_hash,
 };
 use lanwork_core::files::{
     EverythingStatus, FILE_INDEX_UNAVAILABLE, FileHit, FileKind, FileQueryResult, FileSource,
@@ -909,6 +909,111 @@ fn same_kind_orders_by_use_count_and_exact_stays_first() {
     assert_eq!(labels(&still), vec!["wx", "wxed"]);
     assert_eq!(still.rows[0].kind, Some(HitKind::Exact));
     let _ = wx;
+}
+
+#[test]
+fn per_query_count_beats_plain_count_within_the_same_match_kind() {
+    let (_temp, store) = open_store();
+    let (files, _) = script(file_result(FileSource::Everything, Vec::new()));
+    let (search, _, services) = ready(store.clone(), NoApps, files);
+    let list_id = services.todos.create_list("清单").unwrap();
+    let photo = services
+        .todos
+        .create_item(&list_id, new_todo("photoshop"))
+        .unwrap();
+    let shell = services
+        .todos
+        .create_item(&list_id, new_todo("powershell"))
+        .unwrap();
+
+    search.submit(Surface::Panel, "other").unwrap();
+    for _ in 0..5 {
+        search.record_open(&UsageKey::Todo(photo.clone()));
+    }
+    assert_eq!(search.usage_count(&UsageKey::Todo(photo.clone())), 5);
+    assert_eq!(
+        search.usage_query_count(&UsageKey::Todo(photo.clone()), "ps"),
+        0
+    );
+
+    search.submit(Surface::Panel, "ps").unwrap();
+    search.record_open(&UsageKey::Todo(shell.clone()));
+    let ranked = search.submit(Surface::Panel, "ps").unwrap();
+    let names = labels(&ranked);
+    let photo_at = names
+        .iter()
+        .position(|label| *label == "photoshop")
+        .unwrap();
+    let shell_at = names
+        .iter()
+        .position(|label| *label == "powershell")
+        .unwrap();
+    assert!(shell_at < photo_at, "{names:?}");
+    let photo_kind = ranked
+        .rows
+        .iter()
+        .find(|row| row.label == "photoshop")
+        .unwrap()
+        .kind;
+    let shell_kind = ranked
+        .rows
+        .iter()
+        .find(|row| row.label == "powershell")
+        .unwrap()
+        .kind;
+    assert_eq!(photo_kind, Some(HitKind::Fuzzy));
+    assert_eq!(shell_kind, photo_kind);
+
+    search.submit(Surface::Panel, "pow").unwrap();
+    search.record_open(&UsageKey::Todo(shell.clone()));
+    assert_eq!(
+        search.usage_query_count(&UsageKey::Todo(shell.clone()), "pow"),
+        1
+    );
+    assert_eq!(
+        search.usage_query_count(&UsageKey::Todo(shell.clone()), "ps"),
+        1
+    );
+    assert_eq!(
+        search.usage_query_count(&UsageKey::Todo(photo.clone()), "ps"),
+        0
+    );
+    assert_eq!(
+        search.usage_query_count(&UsageKey::Todo(photo.clone()), "pow"),
+        0
+    );
+
+    search.flush_usage();
+    let text = std::fs::read_to_string(store.search_usage_path()).unwrap();
+    assert!(text.contains(&query_hash("ps")));
+    assert!(text.contains(&query_hash("pow")));
+    assert!(!text.contains("photoshop"));
+    assert!(!text.contains("powershell"));
+
+    let (files, _) = script(file_result(FileSource::Everything, Vec::new()));
+    let (again, _) = dispatch(
+        store,
+        Services {
+            todos: services.todos.clone(),
+            notes: services.notes.clone(),
+            shelves: None,
+        },
+        NoApps,
+        files,
+        MissingIcons,
+    );
+    again.build().unwrap();
+    let restored = again.submit(Surface::Panel, "ps").unwrap();
+    let names = labels(&restored);
+    let photo_at = names
+        .iter()
+        .position(|label| *label == "photoshop")
+        .unwrap();
+    let shell_at = names
+        .iter()
+        .position(|label| *label == "powershell")
+        .unwrap();
+    assert!(shell_at < photo_at, "{names:?}");
 }
 
 #[test]

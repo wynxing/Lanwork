@@ -600,6 +600,7 @@ fn finish_exit() {
     shelf_float::save_for_quit();
     todo_float::save_for_quit();
     float_shell::save_for_quit();
+    searchbar::flush_usage();
     if crate::update::spawn_pending_install().is_err() {
         EXITING.store(false, Ordering::Release);
         QUIT.clear();
