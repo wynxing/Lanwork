@@ -42,6 +42,15 @@ struct PageTab {
     ui: StackTab,
     key: Option<isize>,
     drag: Option<TabDrag>,
+    /// 页点当前的所有者。钉住关掉的工具窗口才有。
+    owner: Option<isize>,
+}
+
+/// 页点跟哪一层。句柄还没就绪时先别放进置顶名单。
+enum DotLayer {
+    Topmost,
+    Follow(windows::Win32::Foundation::HWND),
+    Wait,
 }
 
 struct Live {
@@ -115,6 +124,26 @@ pub(crate) fn page_closed(page: StackPage) {
         live.shown.remove(&page);
         live.sync_tabs();
     });
+}
+
+/// 钉住变了，或窗口句柄刚就绪。当前页是这个工具时，让页点跟它的层次。
+pub(crate) fn sync_tool_dots(tool_id: &str) {
+    let page = StackPage::Tool(tool_id.to_owned());
+    with_live(|live| {
+        let Some(stack_id) = live.member.get(&page).cloned() else {
+            return;
+        };
+        if live.shown_current(&stack_id) != Some(page) {
+            return;
+        }
+        live.sync_tabs();
+    });
+}
+
+/// 工具窗口销毁前先放开页点。所有者销毁时系统会把被拥有的窗口一起销毁。
+pub(crate) fn detach_owner_hwnd(owner: windows::Win32::Foundation::HWND) {
+    let key = crate::bar_win::hwnd_key(owner);
+    with_live(|live| live.detach_owner(key));
 }
 
 pub(crate) fn flip(page: StackPage, dir: Flip) {
@@ -1092,19 +1121,21 @@ impl Live {
                 ui: tab,
                 key: None,
                 drag: None,
+                owner: None,
             },
         );
         self.ready_tab(stack_id);
         true
     }
 
-    fn place_tab_ui(&self, stack_id: &str, pages: i32, current: i32, frame: PxBox) {
-        let Some(tab) = self.tabs.get(stack_id) else {
+    fn place_tab_ui(&mut self, stack_id: &str, pages: i32, current: i32, frame: PxBox) {
+        let Some(ui) = self.tabs.get(stack_id).map(|tab| tab.ui.clone_strong()) else {
             return;
         };
-        tab.ui.set_pages(pages.max(0));
-        tab.ui.set_current(current.max(0));
-        tab.ui.set_dark(self.dark);
+        ui.set_pages(pages.max(0));
+        ui.set_current(current.max(0));
+        ui.set_dark(self.dark);
+        ui.set_above_ordinary(matches!(self.dot_layer(stack_id), DotLayer::Topmost));
         let screens = float_dock::screens();
         let dpi = dpi_at(&screens, frame.x, frame.y);
         let count = usize::try_from(pages.max(0)).unwrap_or(0);
@@ -1117,8 +1148,104 @@ impl Live {
             on_screen.then_some(reading.work)
         });
         let placed = fit_dot_row(frame, width, height, work);
-        let _ = tab.ui.show();
-        float_dock::place(tab.ui.window(), self.tab_hwnd(stack_id), placed);
+        let _ = ui.show();
+        ui.window().set_size(slint::PhysicalSize::new(
+            placed.width.max(1),
+            placed.height.max(1),
+        ));
+        ui.window()
+            .set_position(slint::PhysicalPosition::new(placed.x, placed.y));
+        let hwnd = self.tab_hwnd(stack_id);
+        self.layer_tab(stack_id, hwnd, placed);
+    }
+
+    fn dot_layer(&self, stack_id: &str) -> DotLayer {
+        let Some(StackPage::Tool(id)) = self.shown_current(stack_id) else {
+            return DotLayer::Topmost;
+        };
+        if float_shell::above_ordinary(&id) {
+            return DotLayer::Topmost;
+        }
+        match float_shell::content_hwnd(&id) {
+            Some(hwnd) => DotLayer::Follow(hwnd),
+            None => DotLayer::Wait,
+        }
+    }
+
+    fn layer_tab(
+        &mut self,
+        stack_id: &str,
+        hwnd: Option<windows::Win32::Foundation::HWND>,
+        placed: PxBox,
+    ) {
+        let Some(hwnd) = hwnd else {
+            return;
+        };
+        match self.dot_layer(stack_id) {
+            DotLayer::Topmost => {
+                self.clear_tab_owner(stack_id, hwnd);
+                if !crate::bar_win::watch_topmost(hwnd) {
+                    self.store.log_warn("叠页页签没有算进前台置顶");
+                }
+                crate::bar_win::place_topmost(
+                    hwnd,
+                    placed.x,
+                    placed.y,
+                    placed.width,
+                    placed.height,
+                );
+            }
+            DotLayer::Follow(owner) => {
+                if crate::bar_win::watched_topmost(hwnd) {
+                    crate::bar_win::release_topmost(hwnd);
+                }
+                crate::bar_win::set_owner(hwnd, Some(owner));
+                crate::bar_win::place_above(
+                    hwnd,
+                    owner,
+                    placed.x,
+                    placed.y,
+                    placed.width,
+                    placed.height,
+                );
+                if let Some(tab) = self.tabs.get_mut(stack_id) {
+                    tab.owner = Some(crate::bar_win::hwnd_key(owner));
+                }
+            }
+            DotLayer::Wait => {
+                if crate::bar_win::watched_topmost(hwnd) {
+                    crate::bar_win::release_topmost(hwnd);
+                }
+                self.clear_tab_owner(stack_id, hwnd);
+            }
+        }
+        crate::bar_win::apply_clear_plate(hwnd);
+    }
+
+    fn clear_tab_owner(&mut self, stack_id: &str, hwnd: windows::Win32::Foundation::HWND) {
+        let owned = self.tabs.get(stack_id).and_then(|tab| tab.owner).is_some();
+        if owned {
+            crate::bar_win::set_owner(hwnd, None);
+        }
+        if let Some(tab) = self.tabs.get_mut(stack_id) {
+            tab.owner = None;
+        }
+    }
+
+    fn detach_owner(&mut self, owner_key: isize) {
+        let ids: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, tab)| tab.owner == Some(owner_key))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some(hwnd) = self.tab_hwnd(&id) {
+                self.clear_tab_owner(&id, hwnd);
+            } else if let Some(tab) = self.tabs.get_mut(&id) {
+                tab.owner = None;
+            }
+        }
     }
 
     fn ready_tab(&mut self, stack_id: &str) {
@@ -1153,14 +1280,13 @@ impl Live {
         if !crate::bar_win::arm_no_activate(hwnd) {
             self.store.log_warn("叠页页签点下去仍会抢走焦点");
         }
-        if !crate::bar_win::watch_topmost(hwnd) {
-            self.store.log_warn("叠页页签没有算进前台置顶");
-        }
         // 页点不是内容窗，不画来源行。清掉 winit 默认的系统背景，失焦后也不铺不透明的底。
         crate::bar_win::apply_clear_plate(hwnd);
         if let Some(tab) = self.tabs.get_mut(stack_id) {
             tab.key = Some(crate::bar_win::hwnd_key(hwnd));
         }
+        // 句柄刚就绪。钉住开着的页留在置顶名单；钉住关掉的工具改成跟那扇窗口。
+        self.sync_tabs();
     }
 
     fn tab_hwnd(&self, stack_id: &str) -> Option<windows::Win32::Foundation::HWND> {

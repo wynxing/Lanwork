@@ -568,6 +568,16 @@ fn source_line_is_a_single_quiet_row_and_each_page_keeps_its_own() {
         group.contains("apply_clear_plate"),
         "叠页页点应清掉会在失焦时变不透明的系统背景"
     );
+    assert!(
+        group.contains("set_owner"),
+        "钉住关掉时页点应跟工具窗口同一层"
+    );
+    assert!(group.contains("set_above_ordinary"));
+    let tabs = include_str!("../ui/stacktab.slint");
+    assert!(
+        tabs.contains("always-on-top: root.above-ordinary;"),
+        "页点的最上层要能随当前页关掉"
+    );
 
     let widgets = include_str!("../ui/widgets.slint");
     let source = widgets

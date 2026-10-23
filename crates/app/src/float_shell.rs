@@ -237,6 +237,7 @@ fn dismiss(mut window: ShellWindow) {
     window.parked = false;
     window.timer.stop();
     if let Some(hwnd) = window.hwnd() {
+        crate::float_group::detach_owner_hwnd(hwnd);
         bar_win::unwatch_topmost(hwnd);
     }
     let _ = window.ui.hide();
@@ -635,6 +636,10 @@ impl ShellWindow {
         } else {
             bar_win::release_topmost(hwnd);
         }
+        let id = self.id.clone();
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            crate::float_group::sync_tool_dots(&id);
+        });
     }
 
     fn toggle_pin(&mut self, store: &Store) {
@@ -874,6 +879,15 @@ impl ShellWindow {
         let _ = self.ui.hide();
         let id = self.id.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {
+            let hwnd = SHELLS.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .and_then(|shells| shells.windows.get(&id))
+                    .and_then(ShellWindow::hwnd)
+            });
+            if let Some(hwnd) = hwnd {
+                crate::float_group::detach_owner_hwnd(hwnd);
+            }
             let closed = id.clone();
             with_shells(move |shells| {
                 shells.windows.remove(&id);
@@ -1018,6 +1032,28 @@ pub(crate) fn contains(tool_id: &str) -> bool {
     })
 }
 
+/// 钉住开，或还没记过。窗口不在表里时也按开，页点留在最上层。
+pub(crate) fn above_ordinary(tool_id: &str) -> bool {
+    SHELLS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .and_then(|shells| shells.windows.get(tool_id))
+            .is_none_or(|window| !window.closed && window.pinned != Some(false))
+    })
+}
+
+/// 看得见的工具窗口句柄。藏着、已关或句柄还没就绪时没有。
+pub(crate) fn content_hwnd(tool_id: &str) -> Option<HWND> {
+    SHELLS.with(|cell| {
+        let shells = cell.borrow();
+        let window = shells.as_ref()?.windows.get(tool_id)?;
+        if window.closed || window.parked {
+            return None;
+        }
+        window.hwnd()
+    })
+}
+
 /// 当前看得见的展开位置、贴边和窗口矩形。藏着或已经关闭时没有。
 pub(crate) fn view(tool_id: &str) -> Option<(SavedFloat, PxBox)> {
     SHELLS.with(|cell| {
@@ -1085,8 +1121,10 @@ pub(crate) fn write_geometry(tool_id: &str, saved: SavedFloat) {
             let current = window.session.saved();
             if current.geometry != saved.geometry || current.dock != saved.dock {
                 window.session.replace(expanded_of(saved), saved.dock);
-                window.preserve_file = false;
-                window.persist(&shells.store);
+                // `floatWindow` 读不出时留着原文件。启动还原会把叠页的位置写到这里，不能清掉保护。
+                if !window.preserve_file {
+                    window.persist(&shells.store);
+                }
             }
             return false;
         }
@@ -1117,8 +1155,10 @@ pub(crate) fn write_slot(tool_id: &str, slot: Option<FloatStackSlot>) {
         {
             if window.stack != slot {
                 window.stack = slot.clone();
-                window.preserve_file = false;
-                window.persist(&shells.store);
+                // 叠页写回同样留着读不出的 `floatWindow`。用户之后改窗口时再整份记下。
+                if !window.preserve_file {
+                    window.persist(&shells.store);
+                }
             }
             return false;
         }

@@ -34,14 +34,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, GetAncestor,
-    GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_NOTOPMOST,
-    HWND_TOPMOST, IsIconic, IsWindowVisible, MA_NOACTIVATE, MONITORINFOF_PRIMARY, STYLESTRUCT,
-    SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    WINEVENT_OUTOFCONTEXT, WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
-    WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_STYLECHANGING, WM_THEMECHANGED,
-    WS_EX_NOACTIVATE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+    BringWindowToTop, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT,
+    GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+    HWND_NOTOPMOST, HWND_TOPMOST, IsIconic, IsWindowVisible, MA_NOACTIVATE, MONITORINFOF_PRIMARY,
+    STYLESTRUCT, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, WINEVENT_OUTOFCONTEXT, WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE,
+    WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_STYLECHANGING,
+    WM_THEMECHANGED, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
 };
 use windows::core::{BOOL, PCSTR, s, w};
 
@@ -433,6 +433,31 @@ fn set_flag(list: &RefCell<Vec<isize>>, key: isize, on: bool) {
         }
     } else {
         list.retain(|item| *item != key);
+    }
+}
+
+/// 页点是否还在前台置顶名单里。
+pub(crate) fn watched_topmost(hwnd: HWND) -> bool {
+    let key = hwnd_key(hwnd);
+    TOPMOST.with(|list| list.borrow().contains(&key))
+}
+
+/// 改所有者。`None` 去掉所有者。页点用这个跟着一扇普通工具窗口，而不是单独留在最上层。
+pub(crate) fn set_owner(hwnd: HWND, owner: Option<HWND>) {
+    let value = owner.map(hwnd_key).unwrap_or(0);
+    // SAFETY: hwnd 是本进程的页点。owner 是本进程的工具悬浮窗，空值表示去掉所有者。
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, value);
+    }
+}
+
+/// 改位置和大小，并紧挨在 `after` 之上。不激活窗口。
+pub(crate) fn place_above(hwnd: HWND, after: HWND, x: i32, y: i32, width: u32, height: u32) {
+    let width = i32::try_from(width).unwrap_or(i32::MAX);
+    let height = i32::try_from(height).unwrap_or(i32::MAX);
+    // SAFETY: 两个句柄都是本进程的窗口。SWP_NOACTIVATE 不抢走焦点。
+    unsafe {
+        let _ = SetWindowPos(hwnd, Some(after), x, y, width, height, SWP_NOACTIVATE);
     }
 }
 

@@ -7,7 +7,9 @@ import { Palette } from "std-widgets.slint";
 export component StackTab inherits Window {
     title: "Lanwork";
     no-frame: true;
-    always-on-top: true;
+    // 便签、收纳、待办和钉住开着的工具保持最上层。钉住关掉的工具改成假，页点跟那扇窗口同一层。
+    in-out property <bool> above-ordinary: true;
+    always-on-top: root.above-ordinary;
 
     in property <bool> dark;
     in property <int> pages: 1;
