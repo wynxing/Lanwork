@@ -1,6 +1,6 @@
 //! 面板里不调用窗口 API 的决定：标签、定位目标、窗口尺寸与位置，待办页的列表、行和输入解析，
 //! 便签页的列表、多选、便签编辑窗口的保存状态、便签悬浮窗的默认大小和位置，收纳页的分组、引用和拖放判定，
-//! 应用页的列表行和启用状态，以及工具悬浮窗外壳的位置、大小、贴边、钉住和是否开着。
+//! 应用页的列表行和启用状态，以及工具悬浮窗外壳的位置、大小、贴边、钉住、叠页和是否开着。
 //!
 //! 窗口、DWM 和 Shell 调用在 `crates/app`。
 
@@ -40,7 +40,7 @@ pub use float_snap::{
     dock_applies, dpi_at, edge_label, lerp_box, moved_enough, outer_edges, snap_on_release,
     snap_slop, transition, visible_box,
 };
-pub use float_source::{note_source, shelf_source, todo_source};
+pub use float_source::{note_source, shelf_source, todo_source, tool_source};
 pub use float_stack::{
     DOCK_MERGE_GAP_LOGICAL, DOT_DIAMETER_LOGICAL, DOT_GAP_LOGICAL, DOT_ROW_LOGICAL_HEIGHT,
     DetachOutcome, DragOrigin, DropEffect, DropInput, FilteredPages, Flip, HANDLE_DOT_CAP,

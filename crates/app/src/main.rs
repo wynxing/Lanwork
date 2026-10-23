@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn the_float_shell_demo_starts_with_the_app_and_stays_out_of_the_stack() {
+    fn the_float_shell_demo_starts_with_the_app_and_joins_the_stack() {
         let host = include_str!("host.rs");
         assert!(host.contains("--float-shell-demo"));
         assert!(host.contains("float_shell::schedule_restore"));
@@ -260,8 +260,9 @@ mod tests {
         assert!(source.contains("write_failure_text"));
         assert!(source.contains("quit_in_progress"));
         assert!(source.contains("Timer::single_shot"));
-        assert!(!source.contains("float_group"));
-        assert!(!source.contains("floatStack"));
+        assert!(source.contains("float_group"));
+        assert!(source.contains("floatStack"));
+        assert!(source.contains("StackPage::Tool"));
         assert!(source.contains("fn open_tool"));
         assert!(source.contains("fn close_tool"));
         assert!(source.contains("fn reload_tool"));

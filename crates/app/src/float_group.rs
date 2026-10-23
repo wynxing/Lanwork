@@ -1,4 +1,4 @@
-//! 便签和收纳悬浮窗的叠页。几何在 `lanwork_core::panel::float_stack`，这里只接窗口。
+//! 便签、收纳、待办和工具悬浮窗的叠页。几何在 `lanwork_core::panel::float_stack`，这里只接窗口。
 //!
 //! 一叠同一时刻只显示一页。其余页的窗口藏着，不释放。彩色圆点挂在边框外，与窗口左边缘对齐。
 //! 关掉窗口不拆叠，成员还在文件里；再悬浮时用记下的当前页和贴边。
@@ -24,7 +24,7 @@ use slint::ComponentHandle;
 use slint::winit_030::WinitWindowAccessor;
 
 use crate::float_dock::{self, SavedFloat};
-use crate::{StackTab, note_float, shelf_float, todo_float};
+use crate::{StackTab, float_shell, note_float, shelf_float, todo_float};
 
 struct Tracked {
     saved: SavedFloat,
@@ -517,6 +517,19 @@ impl Live {
             }
         }
         self.sync_tabs();
+        self.reopen_tool_orphans();
+    }
+
+    fn reopen_tool_orphans(&self) {
+        let stacked: Vec<String> = self
+            .member
+            .keys()
+            .filter_map(|page| match page {
+                StackPage::Tool(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        float_shell::reopen_orphans(&stacked);
     }
 
     fn startup_pages(&self) -> Option<Vec<StartupPage>> {
@@ -574,6 +587,7 @@ impl Live {
                     .log_warn(&format!("待办悬浮窗位置没有读出来，叠页还原跳过它：{err}"));
             }
         }
+        pages.extend(float_shell::startup_pages());
         Some(pages)
     }
 
@@ -632,6 +646,7 @@ impl Live {
                 slot,
             });
         }
+        members.extend(float_shell::stack_members(id));
         members
     }
 
@@ -648,6 +663,7 @@ impl Live {
                 .and_then(|shelves| shelves.get(id).ok())
                 .and_then(|group| group.float_stack),
             StackPage::Todo => self.todo_record().and_then(|record| record.stack),
+            StackPage::Tool(id) => float_shell::read_slot(id),
         }
     }
 
@@ -674,6 +690,7 @@ impl Live {
                     dock: record.dock,
                 })
             }
+            StackPage::Tool(id) => float_shell::disk_saved(id),
         }
     }
 
@@ -752,6 +769,10 @@ impl Live {
                 .map(|_| ())
                 .map_err(|err| err.to_string())
                 .err(),
+            StackPage::Tool(id) => {
+                float_shell::write_geometry(id, saved);
+                None
+            }
         };
         if let Some(message) = result {
             self.store
@@ -781,6 +802,10 @@ impl Live {
                 .map(|_| ())
                 .map_err(|err| err.to_string())
                 .err(),
+            StackPage::Tool(id) => {
+                float_shell::write_slot(id, slot);
+                None
+            }
         };
         if let Some(message) = result {
             self.store
@@ -801,6 +826,7 @@ impl Live {
                 .and_then(|shelves| shelves.get(id).ok())
                 .is_some(),
             StackPage::Todo => true,
+            StackPage::Tool(id) => float_shell::tool_openable(&self.store, id),
         }
     }
 
@@ -944,6 +970,18 @@ impl Live {
                     true
                 }
             }
+            StackPage::Tool(id) => {
+                if !float_shell::contains(id)
+                    && let Err(message) = float_shell::open_tool(id)
+                {
+                    self.store
+                        .log_warn(&format!("叠页里的应用没有打开：{message}"));
+                    false
+                } else {
+                    float_shell::present(id, saved, pages, index);
+                    true
+                }
+            }
         };
         if opened {
             self.track(page);
@@ -956,6 +994,7 @@ impl Live {
             StackPage::Note(id) => note_float::park(id),
             StackPage::Shelf(id) => shelf_float::park(id),
             StackPage::Todo => todo_float::park(),
+            StackPage::Tool(id) => float_shell::park(id),
         }
         self.shown.remove(page);
     }
@@ -965,6 +1004,7 @@ impl Live {
             StackPage::Note(id) => note_float::set_chrome(id, pages, index),
             StackPage::Shelf(id) => shelf_float::set_chrome(id, pages, index),
             StackPage::Todo => todo_float::set_chrome(pages, index),
+            StackPage::Tool(id) => float_shell::set_chrome(id, pages, index),
         }
     }
 
@@ -973,6 +1013,7 @@ impl Live {
             StackPage::Note(id) => note_float::view(id),
             StackPage::Shelf(id) => shelf_float::view(id),
             StackPage::Todo => todo_float::view(),
+            StackPage::Tool(id) => float_shell::view(id),
         }
     }
 

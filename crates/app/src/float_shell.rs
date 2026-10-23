@@ -1,10 +1,11 @@
-//! 工具悬浮窗。拖动条、关闭、贴边和钉住画在 `FloatChrome`。便签、收纳、待办放进同一块，
-//! 记录仍在各自的文件里，不进 `tool-windows/`。这个模块只负责工具窗口。
+//! 工具悬浮窗。拖动条、关闭、贴边、来源行和钉住画在 `FloatChrome`。便签、收纳、待办放进同一块，
+//! 记录仍在各自的文件里，不进 `tool-windows/`。这个模块负责工具窗口，并把它接进同一套叠页。
 //!
 //! 应用页的「悬浮」走 [`open_tool`]，打开窗口后运行已安装工具。不自动开始计时组件。
 //! 隐藏命令 `lanwork --float-shell-demo` 仍打开一个带「示例」的窗口，不跑清单。
-//! 记录在数据目录的 `tool-windows/<id>.json`。不进叠页。已安装工具的记录进入导出和备份，不含 `open`。
+//! 记录在数据目录的 `tool-windows/<id>.json`，含 `floatStack`。已安装工具的记录进入导出和备份，不含 `open`。
 //! `lanwork.float-shell-demo` 不进入包。启用开关关掉的工具，即使记录里 `open` 为真，启动时也不再打开。
+//! 已经叠在一起的工具页由叠页在启动时打开当前页，不在这里按 `open` 再开一遍。
 //! 恢复和更换数据目录前先关掉窗口。停住期间不把 `open` 写回去。
 
 use std::cell::{Cell, RefCell};
@@ -12,10 +13,12 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use lanwork_core::config::ConfigCommands;
+use lanwork_core::notes::FloatStackSlot;
 use lanwork_core::panel::{
-    EnabledBytes, PxBox, ScanSkip, ScreenBounds, ShellBytes, ShellRecord, geometry_for_open,
-    read_enabled, read_record, record_relative, scan_records, shell_default_origin,
-    shell_logical_size, should_reopen, write_failure_text, write_record,
+    DropEffect, EnabledBytes, Flip, PxBox, ScanSkip, ScreenBounds, ShellBytes, ShellRecord,
+    StackMember, StackPage, StartupPage, geometry_for_open, installed_tools, read_enabled,
+    read_record, record_relative, scan_records, shell_default_origin, shell_logical_size,
+    should_reopen, tool_source, write_failure_text, write_record,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
@@ -29,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::FloatShell;
 use crate::bar_win;
-use crate::float_dock::{self, Motion};
+use crate::float_dock::{self, Motion, SavedFloat};
 
 /// 调试窗口的 id。不是已安装的工具。
 const DEMO_ID: &str = "lanwork.float-shell-demo";
@@ -43,10 +46,20 @@ struct ShellWindow {
     hwnd_ready: bool,
     origin: Option<(i32, i32)>,
     pinned: Option<bool>,
+    stack: Option<FloatStackSlot>,
     closed: bool,
+    /// 叠页里这一页藏着，窗口还在。
+    parked: bool,
     writable: bool,
     /// `floatWindow` 读不出。合成的贴边矩形只用于显示，用户改窗口之前不写回。
     preserve_file: bool,
+    drag_anchor: Option<PxBox>,
+    drag_before: Option<SavedFloat>,
+    drag_collapsed: bool,
+    stack_pages: i32,
+    stack_index: i32,
+    /// 位置或贴边变了，等这次借用结束再告诉叠页。
+    report: bool,
 }
 
 struct Shells {
@@ -218,13 +231,16 @@ fn dismiss_open() -> Vec<String> {
 }
 
 fn dismiss(mut window: ShellWindow) {
+    let id = window.id.clone();
     crate::tool_runtime::detach(&window.id);
     window.closed = true;
+    window.parked = false;
     window.timer.stop();
     if let Some(hwnd) = window.hwnd() {
         bar_win::unwatch_topmost(hwnd);
     }
     let _ = window.ui.hide();
+    crate::float_group::page_closed(StackPage::Tool(id));
 }
 
 fn restore_open() {
@@ -243,6 +259,7 @@ fn restore_open() {
                 let disabled = disabled_ids(&shells.store);
                 stored
                     .into_iter()
+                    .filter(|item| item.record.stack.is_none())
                     .filter(|item| should_reopen(item.record.open, !disabled.contains(&item.id)))
                     .map(|item| item.id)
                     .collect()
@@ -357,6 +374,7 @@ impl Shells {
         if let Some(window) = self.windows.get_mut(tool_id) {
             if !window.closed {
                 window.raise();
+                notify_opened(tool_id);
                 return Ok(());
             }
             self.windows.remove(tool_id);
@@ -381,6 +399,8 @@ impl Shells {
         ui.set_dark(self.dark);
         ui.set_solid_color(rgb(solid_rgb(self.dark)));
         ui.set_pinned(record.pinned != Some(false));
+        ui.set_show_source(true);
+        ui.set_source(source_for(&self.store, tool_id).into());
         if tool_id == DEMO_ID {
             ui.set_marker(DEMO_MARKER.into());
         }
@@ -451,12 +471,21 @@ impl Shells {
             hwnd_ready: false,
             origin: Some((visible.x, visible.y)),
             pinned: record.pinned,
+            stack: record.stack.clone(),
             closed: false,
+            parked: false,
             writable: true,
             preserve_file,
+            drag_anchor: None,
+            drag_before: None,
+            drag_collapsed: false,
+            stack_pages: 1,
+            stack_index: 0,
+            report: false,
         };
         window.persist(&self.store);
         self.windows.insert(tool_id.to_owned(), window);
+        notify_opened(tool_id);
         if tool_id != DEMO_ID
             && let Some(window) = self.windows.get(tool_id)
         {
@@ -483,6 +512,13 @@ fn wire(ui: &FloatShell, tool_id: &str) {
     ui.on_drag_requested({
         let id = id.clone();
         move || with_window(&id, |window, _| window.drag())
+    });
+    ui.on_flip_page({
+        let id = id.clone();
+        move |dir| {
+            let flip = if dir < 0 { Flip::Left } else { Flip::Right };
+            crate::float_group::flip(StackPage::Tool(id.clone()), flip);
+        }
     });
     ui.on_row_clicked({
         let id = id.clone();
@@ -628,15 +664,19 @@ impl ShellWindow {
     }
 
     fn raise(&mut self) {
+        self.parked = false;
         let _ = self.ui.show();
         if let Some(hwnd) = self.hwnd() {
             bar_win::bring_to_front(hwnd);
         }
         self.refresh_backdrop();
+        if !self.session.chrome().collapsed && self.stack_pages > 1 {
+            self.ui.invoke_focus_stack_keys();
+        }
     }
 
     fn on_resized(&mut self, width: u32, height: u32, store: &Store) {
-        if self.closed || !self.hwnd_ready {
+        if self.closed || self.parked || !self.hwnd_ready {
             return;
         }
         let origin = self.hwnd().and_then(bar_win::window_origin).or(self.origin);
@@ -649,6 +689,8 @@ impl ShellWindow {
         self.preserve_file = false;
         self.place(visible);
         self.persist(store);
+        self.report = true;
+        self.report_move();
     }
 
     fn follow(&mut self, motion: Motion, store: &Store) {
@@ -664,7 +706,22 @@ impl ShellWindow {
         }
         if motion.persist {
             self.persist(store);
+            if !self.session.chrome().collapsed && self.stack_pages > 1 {
+                self.ui.invoke_focus_stack_keys();
+            }
         }
+        self.report_move();
+    }
+
+    fn report_move(&mut self) {
+        if !self.report {
+            return;
+        }
+        self.report = false;
+        let id = self.id.clone();
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            crate::float_group::page_moved(StackPage::Tool(id));
+        });
     }
 
     fn start_anim(&mut self) {
@@ -697,7 +754,7 @@ impl ShellWindow {
     }
 
     fn drag(&mut self) {
-        if self.closed {
+        if self.closed || self.parked {
             return;
         }
         let origin = self
@@ -714,41 +771,77 @@ impl ShellWindow {
     }
 
     fn on_strip(&mut self, store: &Store) {
-        if self.closed {
+        if self.closed || self.parked {
             return;
         }
         self.preserve_file = false;
+        self.report = true;
         let motion = self.session.strip_click();
         self.follow(motion, store);
     }
 
     fn on_blur(&mut self, store: &Store) {
-        if self.closed {
+        if self.closed || self.parked {
             return;
         }
         if self.hwnd_key().is_some_and(bar_win::size_move_blocks_blur) {
             return;
         }
+        let page = StackPage::Tool(self.id.clone());
+        if crate::float_group::companion_blocks_blur(&page) {
+            return;
+        }
         if let Some(motion) = self.session.blur() {
+            self.report = true;
             self.follow(motion, store);
         }
     }
 
     fn on_size_move(&mut self, entering: bool, rect: PxBox, store: &Store) {
-        if self.closed {
+        if self.closed || self.parked {
             return;
         }
         if entering {
             self.timer.stop();
+            self.drag_collapsed = self.session.chrome().collapsed;
+            self.drag_before = Some(self.session.saved());
+            self.drag_anchor = Some(rect);
             self.session
                 .begin_drag((rect.x, rect.y), (rect.width, rect.height));
             return;
         }
+        let anchor = self.drag_anchor.take().unwrap_or(rect);
+        let before = self
+            .drag_before
+            .take()
+            .unwrap_or_else(|| self.session.saved());
+        let from_collapsed = self.drag_collapsed;
         self.preserve_file = false;
-        let motion = self.session.end_drag(rect);
-        let generation = self.session.hold_generation();
-        self.follow(motion, store);
-        self.hold_blur(generation);
+        let page = StackPage::Tool(self.id.clone());
+        let effect = crate::float_group::classify_title(page.clone(), anchor, rect, from_collapsed);
+        match effect {
+            DropEffect::MoveTogether | DropEffect::MergeCurrent { .. } => {
+                self.report = true;
+                let motion = self.session.end_drag(rect);
+                let generation = self.session.hold_generation();
+                self.follow(motion, store);
+                self.hold_blur(generation);
+            }
+            DropEffect::DetachCurrent => {
+                let motion = self.session.end_drag(rect);
+                let generation = self.session.hold_generation();
+                self.follow(motion, store);
+                let detached = self.session.saved();
+                crate::float_group::queue_detach(page, before, detached);
+                self.hold_blur(generation);
+            }
+            DropEffect::MergeUnit { target } => {
+                self.session.abandon_drag();
+                let generation = self.session.hold_generation();
+                crate::float_group::queue_merge_unit(page, target);
+                self.hold_blur(generation);
+            }
+        }
     }
 
     fn hold_blur(&mut self, generation: u8) {
@@ -781,10 +874,50 @@ impl ShellWindow {
         let _ = self.ui.hide();
         let id = self.id.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {
+            let closed = id.clone();
             with_shells(move |shells| {
                 shells.windows.remove(&id);
             });
+            crate::float_group::page_closed(StackPage::Tool(closed));
         });
+    }
+
+    fn present(&mut self, saved: SavedFloat, pages: i32, index: i32) {
+        self.parked = false;
+        self.report = false;
+        self.set_stack_chrome(pages, index);
+        self.timer.stop();
+        self.session.replace(expanded_of(saved), saved.dock);
+        let visible = self.session.visible();
+        self.place(visible);
+        self.sync_chrome();
+        let _ = self.ui.show();
+        if let Some(hwnd) = self.hwnd() {
+            bar_win::bring_to_front(hwnd);
+        }
+        self.refresh_backdrop();
+        if !self.session.chrome().collapsed && pages > 1 {
+            self.ui.invoke_focus_stack_keys();
+        }
+    }
+
+    fn park(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.parked = true;
+        self.report = false;
+        if let Some(hwnd) = self.hwnd() {
+            crate::float_frame::forget(hwnd);
+        }
+        let _ = self.ui.hide();
+    }
+
+    fn set_stack_chrome(&mut self, pages: i32, index: i32) {
+        self.stack_pages = pages;
+        self.stack_index = index;
+        self.ui.set_stack_pages(pages);
+        self.ui.set_stack_index(index);
     }
 
     fn persist(&self, store: &Store) {
@@ -800,6 +933,7 @@ impl ShellWindow {
             dock: saved.dock,
             pinned: self.pinned,
             open: !self.closed,
+            stack: self.stack.clone(),
         };
         match write_record(&store.data_dir(), &self.id, &record) {
             Ok(()) => self.ui.set_error(slint::SharedString::default()),
@@ -844,6 +978,305 @@ fn place_at(window: &slint::Window, hwnd: Option<HWND>, rect: PxBox, topmost: bo
             SWP_NOACTIVATE,
         );
     }
+}
+
+fn notify_opened(tool_id: &str) {
+    let id = tool_id.to_owned();
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        crate::float_group::page_opened(StackPage::Tool(id));
+    });
+}
+
+fn source_for(store: &Store, tool_id: &str) -> String {
+    if tool_id == DEMO_ID {
+        return tool_source("");
+    }
+    let name = installed_tools(&store.data_dir())
+        .into_iter()
+        .find(|tool| tool.id == tool_id)
+        .map(|tool| tool.name)
+        .unwrap_or_default();
+    tool_source(&name)
+}
+
+fn expanded_of(saved: SavedFloat) -> PxBox {
+    PxBox {
+        x: saved.geometry.x,
+        y: saved.geometry.y,
+        width: saved.geometry.width,
+        height: saved.geometry.height,
+    }
+}
+
+/// 窗口还在表里（含叠页里藏着的页）。已经关闭、等着释放的不算。
+pub(crate) fn contains(tool_id: &str) -> bool {
+    SHELLS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .and_then(|shells| shells.windows.get(tool_id))
+            .is_some_and(|window| !window.closed)
+    })
+}
+
+/// 当前看得见的展开位置、贴边和窗口矩形。藏着或已经关闭时没有。
+pub(crate) fn view(tool_id: &str) -> Option<(SavedFloat, PxBox)> {
+    SHELLS.with(|cell| {
+        let shells = cell.borrow();
+        let window = shells.as_ref()?.windows.get(tool_id)?;
+        if window.closed || window.parked {
+            return None;
+        }
+        Some((window.session.saved(), window.session.visible()))
+    })
+}
+
+pub(crate) fn present(tool_id: &str, saved: SavedFloat, pages: i32, index: i32) {
+    let tool_id = tool_id.to_owned();
+    with_window(&tool_id, move |window, _| {
+        if window.closed {
+            return;
+        }
+        window.present(saved, pages, index);
+    });
+}
+
+pub(crate) fn park(tool_id: &str) {
+    let tool_id = tool_id.to_owned();
+    with_window(&tool_id, |window, _| window.park());
+}
+
+pub(crate) fn set_chrome(tool_id: &str, pages: i32, index: i32) {
+    let tool_id = tool_id.to_owned();
+    with_window(&tool_id, move |window, _| {
+        window.set_stack_chrome(pages, index)
+    });
+}
+
+pub(crate) fn read_slot(tool_id: &str) -> Option<FloatStackSlot> {
+    if let Some(slot) = memory_slot(tool_id) {
+        return slot;
+    }
+    file_record(tool_id).and_then(|record| record.stack)
+}
+
+pub(crate) fn disk_saved(tool_id: &str) -> Option<SavedFloat> {
+    if let Some(saved) = memory_saved(tool_id) {
+        return Some(saved);
+    }
+    let record = file_record(tool_id)?;
+    Some(SavedFloat {
+        geometry: record.geometry?,
+        dock: record.dock,
+    })
+}
+
+pub(crate) fn write_geometry(tool_id: &str, saved: SavedFloat) {
+    let tool_id_owned = tool_id.to_owned();
+    let deferred = SHELLS.with(|cell| {
+        let Ok(mut slot) = cell.try_borrow_mut() else {
+            return true;
+        };
+        let Some(shells) = slot.as_mut() else {
+            return false;
+        };
+        if let Some(window) = shells.windows.get_mut(&tool_id_owned)
+            && !window.closed
+        {
+            let current = window.session.saved();
+            if current.geometry != saved.geometry || current.dock != saved.dock {
+                window.session.replace(expanded_of(saved), saved.dock);
+                window.preserve_file = false;
+                window.persist(&shells.store);
+            }
+            return false;
+        }
+        let _ = update_file(&shells.store, &tool_id_owned, |record| {
+            record.geometry = Some(saved.geometry);
+            record.dock = saved.dock;
+        });
+        false
+    });
+    if deferred {
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            write_geometry(&tool_id_owned, saved)
+        });
+    }
+}
+
+pub(crate) fn write_slot(tool_id: &str, slot: Option<FloatStackSlot>) {
+    let tool_id_owned = tool_id.to_owned();
+    let deferred = SHELLS.with(|cell| {
+        let Ok(mut cell_slot) = cell.try_borrow_mut() else {
+            return true;
+        };
+        let Some(shells) = cell_slot.as_mut() else {
+            return false;
+        };
+        if let Some(window) = shells.windows.get_mut(&tool_id_owned)
+            && !window.closed
+        {
+            if window.stack != slot {
+                window.stack = slot.clone();
+                window.preserve_file = false;
+                window.persist(&shells.store);
+            }
+            return false;
+        }
+        let _ = update_file(&shells.store, &tool_id_owned, |record| {
+            record.stack = slot.clone();
+        });
+        false
+    });
+    if deferred {
+        slint::Timer::single_shot(Duration::ZERO, move || write_slot(&tool_id_owned, slot));
+    }
+}
+
+/// 同一个叠页 id 下的工具页。窗口开着时用内存里的那一份。
+pub(crate) fn stack_members(stack_id: &str) -> Vec<StackMember> {
+    let Some(store) = store_of() else {
+        return Vec::new();
+    };
+    let Ok((stored, _)) = scan_records(&store.data_dir()) else {
+        return Vec::new();
+    };
+    stored
+        .into_iter()
+        .filter_map(|item| {
+            let slot = memory_slot(&item.id).unwrap_or(item.record.stack)?;
+            (slot.id == stack_id).then_some(StackMember {
+                page: StackPage::Tool(item.id),
+                slot,
+            })
+        })
+        .collect()
+}
+
+/// 启动时读到的、带叠页的工具页。打不开的（已卸载或已关闭启用）清掉叠页，不放进这一叠。
+pub(crate) fn startup_pages() -> Vec<StartupPage> {
+    let Some(store) = store_of() else {
+        return Vec::new();
+    };
+    let (stored, skipped) = match scan_records(&store.data_dir()) {
+        Ok(pair) => pair,
+        Err(err) => {
+            store.log_warn(&format!("工具叠页没有读到：{err}"));
+            return Vec::new();
+        }
+    };
+    for skip in &skipped {
+        store.log_warn(&skip_line(skip));
+    }
+    let mut pages = Vec::new();
+    for item in stored {
+        let Some(slot) = item.record.stack.clone() else {
+            continue;
+        };
+        if !tool_openable(&store, &item.id) {
+            let _ = update_file(&store, &item.id, |record| record.stack = None);
+            continue;
+        }
+        pages.push(StartupPage {
+            page: StackPage::Tool(item.id),
+            slot,
+            geometry: item.record.geometry,
+            dock: item.record.dock,
+        });
+    }
+    pages
+}
+
+/// 没有进已还原叠页、并且退出时开着的工具窗口。单独一页的叠页记录会在打开时清掉。
+pub(crate) fn reopen_orphans(in_stack: &[String]) {
+    let Some(store) = store_of() else {
+        return;
+    };
+    let Ok((stored, _)) = scan_records(&store.data_dir()) else {
+        return;
+    };
+    let disabled = disabled_ids(&store);
+    let ids: Vec<String> = stored
+        .into_iter()
+        .filter(|item| should_reopen(item.record.open, !disabled.contains(&item.id)))
+        .map(|item| item.id)
+        .filter(|id| !in_stack.iter().any(|stacked| stacked == id))
+        .filter(|id| !contains(id))
+        .collect();
+    for id in ids {
+        if let Err(message) = open(&id, None) {
+            let id = id.clone();
+            with_shells(move |shells| {
+                shells
+                    .store
+                    .log_warn(&format!("工具悬浮窗没有重新打开：{id}：{message}"));
+            });
+        }
+    }
+}
+
+pub(crate) fn tool_openable(store: &Store, tool_id: &str) -> bool {
+    if disabled_ids(store).contains(tool_id) {
+        return false;
+    }
+    tool_id == DEMO_ID
+        || installed_tools(&store.data_dir())
+            .iter()
+            .any(|tool| tool.id == tool_id)
+}
+
+fn store_of() -> Option<Store> {
+    SHELLS.with(|cell| cell.borrow().as_ref().map(|shells| shells.store.clone()))
+}
+
+fn memory_slot(tool_id: &str) -> Option<Option<FloatStackSlot>> {
+    SHELLS.with(|cell| {
+        let shells = cell.borrow();
+        let window = shells.as_ref()?.windows.get(tool_id)?;
+        if window.closed {
+            return None;
+        }
+        Some(window.stack.clone())
+    })
+}
+
+fn memory_saved(tool_id: &str) -> Option<SavedFloat> {
+    SHELLS.with(|cell| {
+        let shells = cell.borrow();
+        let window = shells.as_ref()?.windows.get(tool_id)?;
+        if window.closed {
+            return None;
+        }
+        Some(window.session.saved())
+    })
+}
+
+fn file_record(tool_id: &str) -> Option<ShellRecord> {
+    let store = store_of()?;
+    match read_record(&store.data_dir(), tool_id) {
+        Ok(bytes) => bytes.openable(),
+        Err(err) => {
+            store.log_warn(&format!("工具悬浮窗记录没有读到：{tool_id}：{err}"));
+            None
+        }
+    }
+}
+
+fn update_file(
+    store: &Store,
+    tool_id: &str,
+    change: impl FnOnce(&mut ShellRecord),
+) -> Result<(), String> {
+    let bytes = read_record(&store.data_dir(), tool_id).map_err(|err| err.to_string())?;
+    if bytes.keep_file_on_open() {
+        store.log_warn(&format!("工具悬浮窗的位置读不了，这次不改叠页：{tool_id}"));
+        return Ok(());
+    }
+    let Some(mut record) = bytes.openable() else {
+        return Err("外壳记录读不了".to_owned());
+    };
+    change(&mut record);
+    write_record(&store.data_dir(), tool_id, &record).map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 fn on_move(key: isize, entering: bool, x: i32, y: i32, width: u32, height: u32) {

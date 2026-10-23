@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use lanwork_core::config::{ConfigCommands, is_quiet_now, parse_clock};
 use lanwork_core::panel::{
-    INVALID_PACKAGE, UNAUTHORIZED, format_date, read_tool_storage, tool_dir, write_tool_storage,
+    INVALID_PACKAGE, UNAUTHORIZED, format_date, read_tool_storage, tool_dir, tool_source,
+    write_tool_storage,
 };
 use lanwork_core::storage::Store;
 use lanwork_core::todos::{TodoCommands, TodoError};
@@ -102,6 +103,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
         }
     };
     ui.set_heading(loaded.name.as_str().into());
+    ui.set_source(tool_source(&loaded.name).into());
 
     let (storage, persist) = match read_tool_storage(&services.store.data_dir(), id) {
         Ok(map) => {
@@ -275,6 +277,7 @@ fn paint(ui: &FloatShell, session: &Session) {
     if !snapshot.name.is_empty() {
         ui.set_heading(snapshot.name.as_str().into());
     }
+    ui.set_source(tool_source(&snapshot.name).into());
     if !snapshot.status.is_empty() {
         ui.set_error(snapshot.status.as_str().into());
     }
