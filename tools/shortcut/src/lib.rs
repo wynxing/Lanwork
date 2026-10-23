@@ -241,7 +241,7 @@ mod tests {
     fn installer_script_lists_every_staged_file_and_stays_per_user() {
         let iss = include_str!("../../../packaging/lanwork.iss");
         let version = env!("CARGO_PKG_VERSION");
-        assert_eq!(version, "0.5.1");
+        assert_eq!(version, "0.5.2");
         assert!(iss.contains(&format!("#define MyAppVersion \"{version}\"")));
         assert!(iss.contains("AppVersion={#MyAppVersion}"));
         assert!(iss.contains("VersionInfoProductVersion={#MyAppVersion}"));
