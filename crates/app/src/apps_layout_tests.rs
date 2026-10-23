@@ -54,7 +54,7 @@ fn draw_frame() {
 }
 
 fn settle(ui: &Panel) {
-    // 先画出列表，卡片才存在。再改 layout-tick，卡片的 changed 才会把坐标写出来。
+    // 先画出列表，行才存在。再改 layout-tick，行的 changed 才会把坐标写出来。
     slint::platform::update_timers_and_animations();
     draw_frame();
     let data = ui.global::<AppsPageData>();
@@ -99,18 +99,18 @@ fn set_tools(ui: &Panel, cards: Vec<AppToolCard>) {
 }
 
 #[test]
-fn empty_page_shows_only_the_import_card() {
+fn empty_page_shows_only_the_import_row() {
     let ui = open();
     let data = ui.global::<AppsPageData>();
     set_tools(&ui, Vec::new());
     assert!(data.get_import_shown());
-    assert!(data.get_import_h() > 0.0);
+    assert_eq!(data.get_import_h(), 44.0);
     assert!(data.get_import_y() > 0.0);
     assert_eq!(data.get_card_name().as_str(), "");
 }
 
 #[test]
-fn a_card_shows_name_detail_mark_and_the_float_button_follows_the_switch() {
+fn a_row_shows_name_detail_mark_and_the_float_button_follows_the_switch() {
     let ui = open();
     let data = ui.global::<AppsPageData>();
     set_tools(
@@ -130,7 +130,8 @@ fn a_card_shows_name_detail_mark_and_the_float_button_follows_the_switch() {
     assert_eq!(data.get_card_mark().as_str(), "A");
     assert!(data.get_mark_shown());
     assert!(!data.get_icon_shown());
-    assert_eq!(data.get_card_h(), 72.0);
+    assert_eq!(data.get_card_h(), 44.0);
+    assert_eq!(data.get_import_h(), data.get_card_h());
     assert!(data.get_open_enabled());
     assert!(data.get_switch_checked());
     assert!(data.get_open_x() > data.get_card_x());
@@ -181,11 +182,11 @@ fn a_card_shows_name_detail_mark_and_the_float_button_follows_the_switch() {
         data.get_open_x() + data.get_open_w() / 2.0,
         data.get_open_y() + data.get_open_h() / 2.0,
     );
-    assert_eq!(opened.borrow().len(), before, "关闭时悬浮窗点不了");
+    assert_eq!(opened.borrow().len(), before, "关闭时「悬浮」点不了");
 }
 
 #[test]
-fn the_more_menu_lists_the_items_it_is_given_and_import_is_a_separate_card() {
+fn the_more_menu_lists_the_items_it_is_given_and_import_is_the_last_row() {
     let ui = open();
     let data = ui.global::<AppsPageData>();
     set_tools(
@@ -235,7 +236,7 @@ fn the_more_menu_lists_the_items_it_is_given_and_import_is_a_separate_card() {
 
     data.set_menu_open(true);
     settle(&ui);
-    // 标题栏在 y 48 以上。点卡片左侧的页边，菜单在右侧，这一下落在页面里、菜单外。
+    // 标题栏在 y 48 以上。点这一行左侧，菜单在右侧，这一下落在页面里、菜单外。
     click(&ui, 8.0, data.get_card_y() + 8.0);
     assert!(closed.get() >= 1, "点菜单外关掉菜单");
     data.set_menu_open(false);

@@ -1,4 +1,4 @@
-//! 面板「应用」页里不画窗口的决定：卡片、菜单项和启用状态。
+//! 面板「应用」页里不画窗口的决定：列表行、菜单项和启用状态。
 //!
 //! 可见行为见 `docs/tools.md`「应用页」。导入确认和卸载的句子在 `tool_install`。
 //! 没有 `tools/` 时，列表是空的，界面只留「导入+」。
@@ -18,7 +18,7 @@ use crate::storage::{SCHEMA_VERSION, atomic_write, is_supported_schema, validate
 pub const ENABLED_FILE: &str = "tool-enabled.json";
 
 pub const IMPORT_LABEL: &str = "导入+";
-pub const FLOAT_LABEL: &str = "悬浮窗";
+pub const FLOAT_LABEL: &str = "悬浮";
 
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
@@ -245,7 +245,7 @@ mod tests {
         let cards = visible_cards(&[], &BTreeSet::new());
         assert!(cards.is_empty());
         assert_eq!(IMPORT_LABEL, "导入+");
-        assert_eq!(FLOAT_LABEL, "悬浮窗");
+        assert_eq!(FLOAT_LABEL, "悬浮");
     }
 
     #[test]
