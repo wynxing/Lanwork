@@ -1,4 +1,4 @@
-//! 便签和收纳悬浮窗的叠页。不读光标，也不调用窗口 API。
+//! 便签、收纳、待办和工具悬浮窗的叠页。不读光标，也不调用窗口 API。
 //!
 //! 产品规格写了：松手时重叠超过一半就合成一叠；左右键翻页；拖标题栏只移动整叠；
 //! 把某一个页点拖出去就拆出那一页；点一个页点换到那一页；整叠一起贴边；
@@ -28,14 +28,15 @@ pub const DOT_ROW_LOGICAL_HEIGHT: u32 = DOT_DIAMETER_LOGICAL;
 /// 把手上最多画这么多个点。再多的页数仍只画这些点。待定。
 pub const HANDLE_DOT_CAP: usize = 16;
 
-/// 一叠里的一页。便签、收纳和待办悬浮窗可以混在同一叠。
+/// 一叠里的一页。便签、收纳、待办和工具悬浮窗可以混在同一叠。
 ///
-/// 待办悬浮窗没有清单 id，全程序至多这一页。
+/// 待办悬浮窗没有清单 id，全程序至多这一页。工具页的 id 是工具 id。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum StackPage {
     Note(String),
     Shelf(String),
     Todo,
+    Tool(String),
 }
 
 /// 一叠。`pages` 至少两页时才算叠；只剩一页时由调用方把它拆成普通悬浮窗。
@@ -679,8 +680,9 @@ fn page_key(page: &StackPage) -> (&str, &str) {
     match page {
         StackPage::Note(id) => ("note", id.as_str()),
         StackPage::Shelf(id) => ("shelf", id.as_str()),
-        // `index` 相同时谁在前仍待定。这里按种类名排序，待办排在便签和收纳之后。
+        // `index` 相同时谁在前仍待定。这里按种类名排序，待办在便签和收纳之后，工具再在待办之后。
         StackPage::Todo => ("todo", ""),
+        StackPage::Tool(id) => ("tool", id.as_str()),
     }
 }
 
@@ -765,6 +767,27 @@ mod tests {
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].visible(), &StackPage::Todo);
         assert_eq!(planned[0].parked(), vec![note("n")]);
+    }
+
+    #[test]
+    fn a_tool_page_joins_a_note_stack_and_restores_with_it() {
+        let tool = StackPage::Tool("example.quota".to_owned());
+        let merged = merge_stacks(
+            stack("keep", vec![note("n"), StackPage::Todo], 0),
+            stack("drag", vec![tool.clone()], 0),
+        );
+        assert_eq!(merged.pages, vec![note("n"), StackPage::Todo, tool.clone()]);
+        assert_eq!(merged.current, 2);
+        let again = merge_stacks(merged, stack("again", vec![tool.clone()], 0));
+        assert_eq!(again.pages.iter().filter(|page| *page == &tool).count(), 1);
+        let planned = plan_startup(&[
+            startup_page(note("n"), 0, false, false),
+            startup_page(tool.clone(), 1, true, false),
+        ]);
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].visible(), &tool);
+        assert_eq!(planned[0].parked(), vec![note("n")]);
+        assert!(planned[0].dots_below_window());
     }
 
     #[allow(clippy::too_many_arguments)]

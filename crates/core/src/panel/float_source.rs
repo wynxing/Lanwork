@@ -30,6 +30,15 @@ pub fn todo_source() -> &'static str {
     "待办"
 }
 
+/// 工具悬浮窗的来源。`name` 是清单里的名称；没有可见字符时只有「应用」。
+#[must_use]
+pub fn tool_source(name: &str) -> String {
+    match first_visible_line(name) {
+        Some(name) => format!("应用{SOURCE_GAP}{name}"),
+        None => "应用".to_owned(),
+    }
+}
+
 /// 第一个去掉首尾空白后还有字的行。不改这一行中间的空格。
 fn first_visible_line(text: &str) -> Option<&str> {
     text.lines().map(str::trim).find(|line| !line.is_empty())
@@ -72,5 +81,14 @@ mod tests {
     fn todo_source_has_no_item_name() {
         assert_eq!(todo_source(), "待办");
         assert!(!todo_source().contains('\u{00B7}'));
+    }
+
+    #[test]
+    fn tool_source_uses_the_manifest_name() {
+        assert_eq!(tool_source("额度"), "应用 \u{00B7} 额度");
+        assert_eq!(tool_source("  第一行  \n第二行"), "应用 \u{00B7} 第一行");
+        assert_eq!(tool_source(""), "应用");
+        assert_eq!(tool_source(" \n "), "应用");
+        assert!(!tool_source("额度").contains('•'));
     }
 }

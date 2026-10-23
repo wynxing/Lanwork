@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn the_float_shell_demo_starts_with_the_app_and_stays_out_of_the_stack() {
+    fn the_float_shell_demo_starts_with_the_app_and_joins_the_stack() {
         let host = include_str!("host.rs");
         assert!(host.contains("--float-shell-demo"));
         assert!(host.contains("float_shell::schedule_restore"));
@@ -256,12 +256,31 @@ mod tests {
         assert!(source.contains("release_topmost"));
         assert!(source.contains("refresh_backdrop"));
         assert!(source.contains("preserve_file"));
+        for name in ["pub(crate) fn write_geometry", "pub(crate) fn write_slot"] {
+            let body = source.split(name).nth(1).expect(name);
+            let body = body.split("pub(crate) fn ").next().expect(name);
+            assert!(
+                body.contains("preserve_file") && !body.contains("preserve_file = false"),
+                "{name} 写叠页时要留着读不出的 floatWindow"
+            );
+        }
+        assert!(source.contains("fn above_ordinary"));
+        assert!(source.contains("fn content_hwnd"));
+        let group = include_str!("float_group.rs");
+        assert!(group.contains("fn sync_tool_dots"));
+        assert!(group.contains("fn detach_owner_hwnd"));
+        assert!(group.contains("DotLayer::Follow"));
+        let bar = include_str!("bar_win.rs");
+        assert!(bar.contains("GWLP_HWNDPARENT"));
+        assert!(bar.contains("fn set_owner"));
+        assert!(bar.contains("fn place_above"));
         assert!(source.contains("GeometryUnreadable") || source.contains("keep_file_on_open"));
         assert!(source.contains("write_failure_text"));
         assert!(source.contains("quit_in_progress"));
         assert!(source.contains("Timer::single_shot"));
-        assert!(!source.contains("float_group"));
-        assert!(!source.contains("floatStack"));
+        assert!(source.contains("float_group"));
+        assert!(source.contains("floatStack"));
+        assert!(source.contains("StackPage::Tool"));
         assert!(source.contains("fn open_tool"));
         assert!(source.contains("fn close_tool"));
         assert!(source.contains("fn reload_tool"));

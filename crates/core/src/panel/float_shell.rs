@@ -4,7 +4,7 @@
 //! [`release_float`] 和 [`settle_float`]，不另写一套距离和边。
 //! 记录在数据目录的 `tool-windows/<工具 id>.json`，进入导出和备份。
 //! 包里的这份不含 `open`，恢复后窗口不因备份自动打开。
-//! 没有 `floatStack`：不与便签、收纳、待办叠在一起。
+//! `floatStack` 与便签同一结构，工具页可以和便签、收纳、待办落在同一叠。
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::notes::{DockEdge, FloatDock, FloatGeometry};
+use crate::notes::{DockEdge, FloatDock, FloatGeometry, FloatStackSlot};
 use crate::shell::{WorkArea, to_physical};
 use crate::storage::is_supported_schema;
 
@@ -30,8 +30,8 @@ pub const DEFAULT_LOGICAL_HEIGHT: u32 = 360;
 /// 没有记下位置时，与主屏工作区右缘、下缘的空隙，逻辑像素。
 pub const MARGIN_LOGICAL: u32 = 24;
 
-/// 一份外壳记录。几何、贴边和钉住都可以缺，缺了就是还没记过，不是默认值。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// 一份外壳记录。几何、贴边、钉住和叠页都可以缺，缺了就是还没记过，不是默认值。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShellRecord {
     /// 展开后的位置和大小。贴边时仍是展开矩形，不是把手。
     pub geometry: Option<FloatGeometry>,
@@ -40,10 +40,12 @@ pub struct ShellRecord {
     pub pinned: Option<bool>,
     /// 退出时窗口开着。缺了按关。
     pub open: bool,
+    /// 叠页。没有这一项时不在任何一叠里。
+    pub stack: Option<FloatStackSlot>,
 }
 
 /// 从字节读到的结果。坏 JSON 不当成空记录，避免把一份写坏的钉住状态当成没钉住。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellBytes {
     Record(ShellRecord),
     /// `floatWindow` 这个字段在，但坐标读不出来。贴边、钉住和 `open` 仍用文件里的值。
@@ -58,22 +60,22 @@ impl ShellBytes {
     /// 能按这份记录打开窗口。坏 JSON 和更高的 schema 不行。
     /// `floatWindow` 读不出时记录仍在，几何是 `None`，贴边等其他字段还在。
     #[must_use]
-    pub fn openable(self) -> Option<ShellRecord> {
+    pub fn openable(&self) -> Option<ShellRecord> {
         match self {
-            Self::Record(record) | Self::GeometryUnreadable(record) => Some(record),
+            Self::Record(record) | Self::GeometryUnreadable(record) => Some(record.clone()),
             Self::UnsupportedSchema | Self::Corrupt => None,
         }
     }
 
     /// 这次打开不要覆盖原文件。读不出的 `floatWindow` 留在磁盘上，直到用户改窗口。
     #[must_use]
-    pub fn keep_file_on_open(self) -> bool {
+    pub fn keep_file_on_open(&self) -> bool {
         matches!(self, Self::GeometryUnreadable(_))
     }
 }
 
-/// 第 6 步导出要用的字段。位置、尺寸、贴边、钉住分开，缺的保持缺。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// 第 6 步导出要用的字段。位置、尺寸、贴边、钉住和叠页分开，缺的保持缺。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExportSlice {
     pub x: Option<i32>,
     pub y: Option<i32>,
@@ -81,6 +83,7 @@ pub struct ExportSlice {
     pub height: Option<u32>,
     pub dock: Option<FloatDock>,
     pub pinned: Option<bool>,
+    pub stack: Option<FloatStackSlot>,
 }
 
 /// 备份和导出是同一套字段。没有几何时，缺的位置和尺寸仍缺。
@@ -126,6 +129,7 @@ impl ShellSession {
             dock: self.dock,
             pinned: self.pinned,
             open: self.open,
+            stack: None,
         }
     }
 
@@ -248,10 +252,12 @@ pub fn export_slice(record: &ShellRecord) -> ExportSlice {
             height: Some(geometry.height),
             dock: record.dock,
             pinned: record.pinned,
+            stack: record.stack.clone(),
         },
         None => ExportSlice {
             dock: record.dock,
             pinned: record.pinned,
+            stack: record.stack.clone(),
             ..ExportSlice::default()
         },
     }
@@ -439,6 +445,7 @@ pub fn encode(record: &ShellRecord) -> Vec<u8> {
         dock: record.dock.as_ref(),
         pinned: record.pinned,
         open: record.open,
+        stack: record.stack.as_ref(),
     };
     let mut bytes = serde_json::to_vec(&on_disk).expect("外壳记录可以编码");
     bytes.push(b'\n');
@@ -473,11 +480,13 @@ pub fn decode(bytes: &[u8]) -> ShellBytes {
         Some(_) => return ShellBytes::Corrupt,
     };
     let dock = obj.get("floatDock").and_then(FloatDock::from_json);
+    let stack = obj.get("floatStack").and_then(FloatStackSlot::from_json);
     let record = ShellRecord {
         geometry: None,
         dock,
         pinned,
         open,
+        stack,
     };
     match obj.get("floatWindow") {
         None => ShellBytes::Record(record),
@@ -491,7 +500,7 @@ pub fn decode(bytes: &[u8]) -> ShellBytes {
     }
 }
 
-/// 导出用的 JSON。尺寸、贴边、钉住和位置都在；缺的不写。
+/// 导出用的 JSON。尺寸、贴边、钉住、叠页和位置都在；缺的不写。
 #[must_use]
 pub fn export_json(record: &ShellRecord) -> Vec<u8> {
     let slice = export_slice(record);
@@ -502,6 +511,7 @@ pub fn export_json(record: &ShellRecord) -> Vec<u8> {
         height: slice.height,
         dock: slice.dock.as_ref(),
         pinned: slice.pinned,
+        stack: slice.stack.as_ref(),
     };
     serde_json::to_vec(&on_disk).expect("导出字段可以编码")
 }
@@ -535,6 +545,8 @@ struct OnDisk<'a> {
     #[serde(rename = "floatPinned", skip_serializing_if = "Option::is_none")]
     pinned: Option<bool>,
     open: bool,
+    #[serde(rename = "floatStack", skip_serializing_if = "Option::is_none")]
+    stack: Option<&'a FloatStackSlot>,
 }
 
 #[derive(Serialize)]
@@ -551,6 +563,8 @@ struct ExportOnDisk<'a> {
     dock: Option<&'a FloatDock>,
     #[serde(rename = "floatPinned", skip_serializing_if = "Option::is_none")]
     pinned: Option<bool>,
+    #[serde(rename = "floatStack", skip_serializing_if = "Option::is_none")]
+    stack: Option<&'a FloatStackSlot>,
 }
 
 fn geometry_of(value: &Value) -> Option<FloatGeometry> {
@@ -610,6 +624,7 @@ mod tests {
             dock: Some(dock(true)),
             pinned: Some(true),
             open: true,
+            stack: None,
         }
     }
 
@@ -673,6 +688,53 @@ mod tests {
             panic!("空记录");
         };
         assert_eq!(empty, ShellRecord::default());
+    }
+
+    #[test]
+    fn stack_round_trips_and_export_keeps_it_without_open() {
+        let mut record = full_record();
+        record.stack = Some(crate::notes::FloatStackSlot {
+            id: "mix".to_owned(),
+            index: 1,
+            current: true,
+        });
+        let ShellBytes::Record(decoded) = decode(&encode(&record)) else {
+            panic!("应读回叠页");
+        };
+        assert_eq!(decoded.stack, record.stack);
+        let raw = text(&encode(&record));
+        assert!(raw.contains("\"floatStack\""));
+        assert!(raw.contains("\"id\":\"mix\""));
+        assert!(raw.contains("\"current\":true"));
+
+        let exported = text(&export_json(&record));
+        assert_eq!(exported, text(&backup_json(&record)));
+        assert!(exported.contains("\"floatStack\""));
+        assert!(exported.contains("\"id\":\"mix\""));
+        assert!(!exported.contains("open"));
+
+        let archived = archived_window(encode(&record).as_slice()).expect("归档");
+        let ShellBytes::Record(stored) = decode(&archived) else {
+            panic!("归档仍是记录");
+        };
+        assert!(!stored.open);
+        assert_eq!(stored.stack, record.stack);
+        assert!(stored.geometry.is_some());
+
+        let ShellBytes::Record(blank_id) =
+            decode(br#"{"schemaVersion":1,"floatPinned":true,"floatStack":{"id":"  ","index":0}}"#)
+        else {
+            panic!("空白叠页 id 不当成坏文件");
+        };
+        assert!(blank_id.stack.is_none());
+        assert_eq!(blank_id.pinned, Some(true));
+        let ShellBytes::Record(odd) =
+            decode(br#"{"schemaVersion":1,"open":true,"floatStack":"nope"}"#)
+        else {
+            panic!("认不出的叠页形状留着其余字段");
+        };
+        assert!(odd.stack.is_none());
+        assert!(odd.open);
     }
 
     #[test]
@@ -990,6 +1052,7 @@ mod tests {
                 dock: Some(dock(false)),
                 pinned,
                 open: true,
+                stack: None,
             });
             let next = session
                 .apply(ShellGesture::Blur, &[display], &[primary], primary)

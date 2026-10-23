@@ -546,7 +546,7 @@ fn source_line_is_a_single_quiet_row_and_each_page_keeps_its_own() {
     assert!(shell.contains("y: 28px;"), "来源行应在拖动条下面");
     assert!(
         shell.contains("visible: root.source-band > 0px;"),
-        "收起或工具窗口不显示来源行"
+        "收起或关掉来源行时不显示"
     );
     for (name, source) in [
         ("notefloat.slint", include_str!("../ui/notefloat.slint")),
@@ -563,9 +563,20 @@ fn source_line_is_a_single_quiet_row_and_each_page_keeps_its_own() {
     assert!(group.contains("note_float::present"));
     assert!(group.contains("shelf_float::present"));
     assert!(group.contains("todo_float::present"));
+    assert!(group.contains("float_shell::present"));
     assert!(
         group.contains("apply_clear_plate"),
         "叠页页点应清掉会在失焦时变不透明的系统背景"
+    );
+    assert!(
+        group.contains("set_owner"),
+        "钉住关掉时页点应跟工具窗口同一层"
+    );
+    assert!(group.contains("set_above_ordinary"));
+    let tabs = include_str!("../ui/stacktab.slint");
+    assert!(
+        tabs.contains("always-on-top: root.above-ordinary;"),
+        "页点的最上层要能随当前页关掉"
     );
 
     let widgets = include_str!("../ui/widgets.slint");
@@ -850,15 +861,20 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     assert!(shell.get_above_ordinary(), "没记下钉住时在最上层");
     assert!(shell.get_pin_drawn());
     assert!(shell.get_close_drawn());
-    assert!(!shell.get_source_drawn(), "不画来源行");
+    assert!(shell.get_source_drawn(), "展开时留出来源行");
     assert_eq!(shell.get_drag_band(), TITLE_STRIP);
+    assert_eq!(shell.get_source_y(), TITLE_STRIP);
+    assert_eq!(shell.get_source_h(), SOURCE_ROW);
     assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
     assert_eq!(shell.get_pin_y(), 0.0);
     assert_eq!(shell.get_close_x(), 320.0 - 28.0);
     assert_eq!(shell.get_close_y(), 0.0);
     assert!(shell.get_content_open());
-    assert_eq!(shell.get_content_y(), TITLE_STRIP);
-    assert_eq!(shell.get_content_height(), height - TITLE_STRIP);
+    assert_eq!(shell.get_content_y(), TITLE_STRIP + SOURCE_ROW);
+    assert_eq!(
+        shell.get_content_height(),
+        height - TITLE_STRIP - SOURCE_ROW
+    );
     assert_eq!(shell.get_marker_text(), "示例");
     assert!(!shell.get_strip_open());
     assert!(!shell.get_error_drawn(), "没有错误时不占一行");
@@ -867,12 +883,18 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     assert!(shell.get_error_drawn());
     assert_eq!(shell.get_error_text(), "保存失败：磁盘");
     assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
-    assert_eq!(shell.get_content_y(), TITLE_STRIP);
-    assert_eq!(shell.get_content_height(), height - TITLE_STRIP - 24.0);
+    assert_eq!(shell.get_content_y(), TITLE_STRIP + SOURCE_ROW);
+    assert_eq!(
+        shell.get_content_height(),
+        height - TITLE_STRIP - SOURCE_ROW - 24.0
+    );
     shell.set_error("".into());
     slint::platform::update_timers_and_animations();
     assert!(!shell.get_error_drawn());
-    assert_eq!(shell.get_content_height(), height - TITLE_STRIP);
+    assert_eq!(
+        shell.get_content_height(),
+        height - TITLE_STRIP - SOURCE_ROW
+    );
 
     shell.set_show_source(true);
     shell.set_source("便签 · 甲".into());
@@ -890,9 +912,13 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     shell.set_source("".into());
     slint::platform::update_timers_and_animations();
     assert!(shell.get_pin_drawn());
-    assert!(!shell.get_source_drawn(), "工具默认不画来源行");
+    assert!(!shell.get_source_drawn(), "关掉来源行后内容回到拖动条下面");
     assert_eq!(shell.get_content_y(), TITLE_STRIP);
     assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
+    shell.set_show_source(true);
+    shell.set_source("应用 · 额度".into());
+    slint::platform::update_timers_and_animations();
+    assert_eq!(shell.get_content_y(), TITLE_STRIP + SOURCE_ROW);
 
     let pins = Rc::new(Cell::new(0));
     let closes = Rc::new(Cell::new(0));
@@ -952,6 +978,7 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     assert!(!shell.get_content_open());
     assert!(!shell.get_pin_drawn());
     assert!(!shell.get_close_drawn());
+    assert!(!shell.get_source_drawn(), "收成把手时不显示来源行");
     assert!(shell.get_collapsed_handle_open());
     assert_eq!(shell.get_drag_band(), 0.0);
 
