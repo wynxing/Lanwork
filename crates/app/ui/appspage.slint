@@ -1,5 +1,5 @@
-// 面板的应用页。工具卡片排成一列，「导入+」在最后。
-// 版式沿用已审过的预览和面板：浅底、细描边、没有色块按钮。数据和动作在 Rust。
+// 面板的应用页。已安装工具排成扁列表，「导入+」是最后一行，高度与工具行相同。
+// 行高与待办页的行相同。没有整块底色，也没有描边。数据和动作在 Rust。
 // 开关只显示 enabled，点击时请求相反的值，不自己翻转。
 //
 // 几何写进 AppsPageData，布局测试读取。坐标是面板窗口里的逻辑像素。
@@ -159,28 +159,38 @@ component SecretInput inherits Rectangle {
     }
 }
 
-component ToolCard inherits Rectangle {
+component ToolRow inherits Rectangle {
     in property <AppToolCard> card;
     in property <int> index;
     in property <bool> report: false;
     in property <Ink> c;
-    in property <bool> dark;
 
-    // 预览是实心白卡片。暗色用和收纳菜单同一块底，避免亮色卡片贴在暗色面板上。
-    property <color> fill: dark ? #2b2b2b : #ffffff;
+    // 与待办页的行同高。名称再长也给短说明留出一段。
+    property <length> row-h: 44px;
+    property <length> text-left: 44px;
+    property <length> text-right: open-btn.x - 8px;
+    property <length> text-span: max(0px, text-right - text-left);
+    property <length> name-w: min(name.preferred-width, max(0px, text-span - 72px));
 
-    height: 72px;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: c.divider;
-    background: fill;
+    height: row-h;
+    background: transparent;
+
+    Rectangle {
+        x: 6px;
+        width: parent.width - 12px;
+        height: parent.height;
+        border-radius: 6px;
+        background: body.has-hover ? c.hover : transparent;
+    }
+
+    body := TouchArea { }
 
     icon-box := Rectangle {
         x: 12px;
-        y: (parent.height - 32px) / 2;
-        width: 32px;
-        height: 32px;
-        border-radius: 6px;
+        y: (parent.height - 24px) / 2;
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
         background: c.selection;
         clip: true;
 
@@ -196,7 +206,7 @@ component ToolCard inherits Rectangle {
             height: 100%;
             text: card.mark;
             color: c.ink;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -269,7 +279,7 @@ component ToolCard inherits Rectangle {
     open-btn := Btn {
         x: sw.x - 8px - self.width;
         y: (parent.height - self.height) / 2;
-        text: "悬浮窗";
+        text: "悬浮";
         enabled: card.enabled;
         c: root.c;
         clicked => {
@@ -277,27 +287,25 @@ component ToolCard inherits Rectangle {
         }
     }
 
-    Text {
-        x: 56px;
-        y: 16px;
-        width: max(0px, open-btn.x - 16px - 56px);
+    name := Text {
+        x: text-left;
+        width: name-w;
+        height: parent.height;
         text: card.name;
         color: c.ink;
         font-size: 14px;
         vertical-alignment: center;
-        height: 20px;
         overflow: elide;
     }
 
     Text {
-        x: 56px;
-        y: 38px;
-        width: max(0px, open-btn.x - 16px - 56px);
+        x: text-left + name-w + (name-w > 0px ? 8px : 0px);
+        width: max(0px, text-right - self.x);
+        height: parent.height;
         text: card.detail;
         color: c.secondary;
-        font-size: 12px;
+        font-size: 13px;
         vertical-alignment: center;
-        height: 18px;
         overflow: elide;
     }
 
@@ -337,29 +345,31 @@ component ToolCard inherits Rectangle {
     }
 }
 
-component ImportCard inherits Rectangle {
+component ImportRow inherits Rectangle {
     in property <Ink> c;
-    in property <bool> dark;
 
-    property <color> fill: dark ? #2b2b2b : #ffffff;
+    height: 44px;
+    background: transparent;
 
-    height: 72px;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: c.divider;
-    background: fill;
+    Rectangle {
+        x: 6px;
+        width: parent.width - 12px;
+        height: parent.height;
+        border-radius: 6px;
+        background: import-touch.has-hover ? c.hover : transparent;
+    }
 
     Rectangle {
         x: 12px;
-        y: (parent.height - 32px) / 2;
-        width: 32px;
-        height: 32px;
-        border-radius: 6px;
+        y: (parent.height - 24px) / 2;
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
         background: c.selection;
 
         Path {
-            x: 9px;
-            y: 9px;
+            x: 5px;
+            y: 5px;
             width: 14px;
             height: 14px;
             viewbox-width: 14;
@@ -372,8 +382,8 @@ component ImportCard inherits Rectangle {
     }
 
     Text {
-        x: 56px;
-        width: parent.width - 68px;
+        x: 44px;
+        width: parent.width - 56px;
         height: parent.height;
         text: "导入+";
         color: c.ink;
@@ -382,7 +392,7 @@ component ImportCard inherits Rectangle {
         overflow: elide;
     }
 
-    TouchArea {
+    import-touch := TouchArea {
         clicked => {
             AppsPageData.import-clicked();
         }
@@ -418,7 +428,7 @@ export component AppsPage inherits Rectangle {
     property <length> menu-below: menu-local-y + AppsPageData.menu-anchor-h + 4px;
     property <length> menu-draw-y: menu-below + menu-block + 8px > self.height && menu-local-y > menu-block ? max(8px, menu-local-y - 4px - menu-block) : min(menu-below, max(8px, self.height - menu-block - 8px));
 
-    // preferred-height 把列表里的卡片建出来，否则卡片的坐标不会写进 AppsPageData。
+    // preferred-height 把列表里的行建出来，否则行的坐标不会写进 AppsPageData。
     property <bool> perm-open: AppsPageData.dialog-open && AppsPageData.dialog-kind == "perm";
     property <bool> uninstall-open: AppsPageData.dialog-open && AppsPageData.dialog-kind == "uninstall";
     property <bool> secret-open: AppsPageData.dialog-open && AppsPageData.dialog-kind == "secret";
@@ -463,28 +473,24 @@ export component AppsPage inherits Rectangle {
 
     flick := Flickable {
         x: 0px;
-        y: 12px;
+        y: 8px;
         width: parent.width;
         height: parent.height - self.y;
         content-height: max(self.height, column.preferred-height);
 
         column := VerticalLayout {
             width: parent.width;
-            padding-left: 16px;
-            padding-right: 16px;
-            spacing: 8px;
+            spacing: 0px;
 
-            for card[index] in AppsPageData.tools: ToolCard {
+            for card[index] in AppsPageData.tools: ToolRow {
                 card: card;
                 index: index;
                 report: index == 0;
                 c: root.c;
-                dark: root.dark;
             }
 
-            import-card := ImportCard {
+            import-card := ImportRow {
                 c: root.c;
-                dark: root.dark;
             }
         }
     }

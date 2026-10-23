@@ -301,7 +301,8 @@ mod tests {
         let page = include_str!("../ui/appspage.slint");
         assert!(!page.contains("text: \"没有工具\""));
         assert!(page.contains("text: \"导入+\""));
-        assert!(page.contains("text: \"悬浮窗\""));
+        assert!(page.contains("text: \"悬浮\""));
+        assert!(!page.contains("text: \"悬浮窗\""));
         assert!(!page.contains("name: \"内置\""));
         assert!(!page.contains("name: \"自定义\""));
         assert!(page.contains("input-type: InputType.password"));
