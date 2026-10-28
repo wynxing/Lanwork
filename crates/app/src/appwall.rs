@@ -428,38 +428,44 @@ impl Wall {
             self.viewport
         };
         let range = visible_indices(&self.grid, self.entries.len(), self.scroll, viewport);
-        let Some(visible) = self.entries.get(range) else {
+        let mut needed = HashSet::new();
+        if let Some(visible) = self.entries.get(range) {
+            for entry in visible {
+                let Some(key) = icon_of(&entry.entry) else {
+                    continue;
+                };
+                if self.icons.contains_key(&key) || self.failed.contains(&key) {
+                    continue;
+                }
+                needed.insert(key);
+            }
+        }
+        // 工作线程只留最后一批。这一批必须是当前视口里还缺的全部键，
+        // in-flight 也换成这一批，被丢掉的旧键才不会一直占着。
+        let Some(keys) = replace_inflight(&mut self.inflight, needed) else {
             return;
         };
-        let mut keys = Vec::new();
-        for entry in visible {
-            let Some(key) = icon_of(&entry.entry) else {
-                continue;
-            };
-            if self.icons.contains_key(&key)
-                || self.failed.contains(&key)
-                || self.inflight.contains(&key)
-            {
-                continue;
-            }
-            self.inflight.insert(key.clone());
-            keys.push(key);
+        if !self.icon_pump.request(keys) {
+            self.inflight.clear();
         }
-        self.icon_pump.request(keys);
     }
 
     fn receive_icons(&mut self, requested: Vec<IconKey>, loaded: Vec<(IconKey, RgbaImage)>) {
+        // 墙已经收起时也要清掉，否则这些键一直占着，下次打开取不到图标。
+        for key in &requested {
+            self.inflight.remove(key);
+        }
         if !self.open {
             return;
         }
         let found: HashSet<&IconKey> = loaded.iter().map(|(key, _)| key).collect();
         for key in requested {
-            self.inflight.remove(&key);
             if !found.contains(&key) {
                 self.failed.insert(key);
             }
         }
         for (key, image) in loaded {
+            self.failed.remove(&key);
             self.icons.insert(key, to_image(&image));
         }
         self.push_tiles();
@@ -663,14 +669,25 @@ impl IconPump {
         }
     }
 
-    fn request(&self, keys: Vec<IconKey>) {
+    fn request(&self, keys: Vec<IconKey>) -> bool {
         if keys.is_empty() {
-            return;
+            return true;
         }
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(keys);
-        }
+        self.tx.as_ref().is_some_and(|tx| tx.send(keys).is_ok())
     }
+}
+
+/// 视口没变就不重复发。变了就把 in-flight 换成新的一整组，并返回要发给工作线程的键。
+fn replace_inflight(
+    inflight: &mut HashSet<IconKey>,
+    needed: HashSet<IconKey>,
+) -> Option<Vec<IconKey>> {
+    if needed == *inflight {
+        return None;
+    }
+    let keys = needed.iter().cloned().collect();
+    *inflight = needed;
+    Some(keys)
 }
 
 fn icon_main(
@@ -679,6 +696,7 @@ fn icon_main(
     rx: Receiver<Vec<IconKey>>,
 ) {
     while let Ok(mut requested) = rx.recv() {
+        // 通道里新的一批已经是那时的整个视口，旧的一批丢掉。
         while let Ok(newer) = rx.try_recv() {
             requested = newer;
         }
@@ -737,4 +755,39 @@ fn to_image(image: &RgbaImage) -> slint::Image {
         image.height,
     );
     slint::Image::from_rgba8(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_inflight;
+    use lanwork_core::dispatch::IconKey;
+    use std::collections::HashSet;
+
+    fn key(path: &str) -> IconKey {
+        IconKey {
+            path: path.to_owned(),
+            index: 0,
+        }
+    }
+
+    #[test]
+    fn a_new_visible_set_replaces_keys_from_the_dropped_batch() {
+        let mut inflight = HashSet::new();
+        let first = replace_inflight(&mut inflight, HashSet::from([key("a"), key("b")]))
+            .expect("first batch");
+        assert_eq!(first.len(), 2);
+        assert!(inflight.contains(&key("a")));
+
+        let second = replace_inflight(&mut inflight, HashSet::from([key("b"), key("c")]))
+            .expect("scrolled batch");
+        assert_eq!(second.len(), 2);
+        assert!(
+            !inflight.contains(&key("a")),
+            "a key from the dropped batch stayed in-flight"
+        );
+        assert!(inflight.contains(&key("b")));
+        assert!(inflight.contains(&key("c")));
+
+        assert!(replace_inflight(&mut inflight, HashSet::from([key("c"), key("b")])).is_none());
+    }
 }
