@@ -1,7 +1,8 @@
 //! 应用墙：搜索条右侧按钮打开的全屏本机应用网格。
 //!
 //! 列表来自 [`Dispatch::wall_apps`]，只含开始菜单来源里未隐藏的条目。
-//! 打开时搜索条窗口隐藏，按钮留在原来的屏幕位置。右键菜单和启动与搜索条的应用结果共用 `app_menu` 和 Shell。
+//! 打开时搜索条窗口隐藏，应用墙按钮随这扇窗口离开屏幕。墙上空白处的点击留在墙上。
+//! 右键菜单和启动与搜索条的应用结果共用 `app_menu` 和 Shell。
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -14,9 +15,8 @@ use lanwork_core::apps::LaunchError;
 use lanwork_core::dispatch::{Dispatch, IconCache, IconKey, RgbaImage, icon_of};
 use lanwork_core::shell::{AltRoute, WallGrid};
 use lanwork_core::shell::{
-    AppMenuAction, BAR_WIDTH, Backdrop, ENTRY_SLOT, MonitorArea, WorkArea, alt_route, app_menu,
-    app_menu_command, entry_button_in_wall, grid, monitor_at, pointed_row, solid_rgb, tile_xy,
-    to_logical, visible_indices,
+    AppMenuAction, Backdrop, MonitorArea, WorkArea, alt_route, app_menu, app_menu_command, grid,
+    monitor_at, pointed_row, solid_rgb, tile_xy, to_logical, visible_indices,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle, Model as _, ModelRc, VecModel};
@@ -63,7 +63,6 @@ pub(crate) fn install(ui: AppWall, dispatch: Arc<Dispatch>, store: lanwork_core:
     ui.on_view_changed(|scroll, viewport| {
         with_wall(move |wall| wall.view_changed(scroll, viewport));
     });
-    ui.on_close_entry(|| with_wall(Wall::dismiss_to_bar));
 
     ui.window().on_winit_window_event(|_, event| {
         if matches!(event, winit::event::WindowEvent::Focused(false)) {
@@ -123,7 +122,7 @@ pub(crate) fn apply_theme(dark: bool) {
     });
 }
 
-/// 盖住锚点所在的显示器。锚点是搜索条窗口的屏幕左上角，右侧按钮按它画在墙上。
+/// 盖住锚点所在的显示器。锚点是搜索条窗口的屏幕左上角。
 pub(crate) fn open(anchor: Option<(i32, i32)>) {
     with_wall(move |wall| wall.open_on(anchor));
 }
@@ -284,7 +283,6 @@ impl Wall {
                 }
             }
         }
-        self.place_entry(&screen, anchor);
         self.width = to_logical(screen.bounds.width(), screen.dpi).max(1);
         self.scroll = 0;
         self.viewport = 0;
@@ -300,23 +298,6 @@ impl Wall {
                 wall.ui.invoke_report_view();
             });
         });
-    }
-
-    fn place_entry(&mut self, screen: &Screen, bar: Option<(i32, i32)>) {
-        let Some(bar) = bar else {
-            self.ui.set_show_entry(false);
-            return;
-        };
-        let (x, y) = entry_button_in_wall(
-            bar,
-            (screen.bounds.left, screen.bounds.top),
-            screen.dpi,
-            BAR_WIDTH,
-            ENTRY_SLOT,
-        );
-        self.ui.set_entry_x(logical_px(x));
-        self.ui.set_entry_y(logical_px(y));
-        self.ui.set_show_entry(true);
     }
 
     fn place(&self, screen: &Screen) {
@@ -337,7 +318,6 @@ impl Wall {
         }
         self.open = false;
         self.close_menu();
-        self.ui.set_show_entry(false);
         let _ = self.ui.hide();
         crate::searchbar::set_wall_open(false);
     }
@@ -780,11 +760,6 @@ fn px_round(value: f32) -> u32 {
 
 #[allow(clippy::cast_precision_loss)]
 fn px(value: u32) -> f32 {
-    value as f32
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn logical_px(value: i32) -> f32 {
     value as f32
 }
 

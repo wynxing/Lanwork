@@ -75,7 +75,7 @@ export component SearchBar inherits Window {
     // Alt+1 至 Alt+9 对应的行：first-shortcut 是 Alt+1，到 end-shortcut 之前为止。
     in property <int> first-shortcut;
     in property <int> end-shortcut;
-    // 应用墙打开时结果不显示。窗口由 Rust 隐藏，文字留在输入框。
+    // 应用墙打开时结果不显示。窗口由 Rust 隐藏，右侧按钮随窗口离开屏幕，文字留在输入框。
     in property <bool> wall-open: false;
 
     callback edited(string);

@@ -221,14 +221,25 @@ mod tests {
         assert!(wall.contains("callback activate(int);"));
         assert!(wall.contains("callback open-menu(int, length, length);"));
         assert!(wall.contains("callback menu-shortcut(int);"));
-        assert!(wall.contains("callback close-entry();"));
-        assert!(wall.contains("show-entry"));
+        assert!(wall.contains("blank := TouchArea"));
+        let blank = wall.split("blank := TouchArea").nth(1).unwrap();
+        let blank = blank.split("filter-field").next().unwrap();
+        assert!(blank.contains("focus-filter"));
+        assert!(
+            !blank.contains("escape") && !blank.contains("close"),
+            "墙上空白的点击留在应用墙里"
+        );
+        assert!(!wall.contains("close-entry"));
+        assert!(!wall.contains("show-entry"));
         let apps = include_str!("../ui/appspage.slint");
         assert!(!apps.contains("应用墙"));
         let source = include_str!("appwall.rs");
         assert!(source.contains("wall_apps"));
         assert!(source.contains("app_menu"));
         assert!(source.contains("fn has_foreground"));
+        assert!(!source.contains("place_entry"));
+        assert!(!source.contains("show_entry"));
+        assert!(!source.contains("entry_button_in_wall"));
         assert!(!source.contains("RegisterHotKey"));
         let host = include_str!("host.rs");
         assert!(host.contains("appwall::install"));
