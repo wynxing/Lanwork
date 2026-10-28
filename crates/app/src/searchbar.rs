@@ -181,6 +181,8 @@ pub(crate) fn install(
         web_icons: HashMap::new(),
         visible: false,
         concealed: false,
+        window_shown: false,
+        restore_guard: 0,
         dark: false,
         hwnd_ready: false,
         launching: false,
@@ -287,8 +289,13 @@ struct Bar {
     icons: HashMap<IconKey, slint::Image>,
     web_icons: HashMap<String, slint::Image>,
     visible: bool,
-    /// 应用墙开着，搜索条窗口已隐藏，文字还在输入框里。
+    /// 失焦时不收起。为应用墙藏起窗口时为真。重新显示之后再留两轮，
+    /// 让已经入队的 `Focused(false)` 过去。窗口已经重新显示时，它不表示窗口仍藏着。
     concealed: bool,
+    /// 搜索条窗口是否在屏幕上。为应用墙藏起时 [`Self::visible`] 仍为真，这里为假。
+    window_shown: bool,
+    /// 最近一次重新显示的失焦保护。更早排上的定时器不再清 [`Self::concealed`]。
+    restore_guard: u64,
     dark: bool,
     hwnd_ready: bool,
     launching: bool,
@@ -395,10 +402,12 @@ impl Bar {
         self.visible = true;
         if let Err(err) = self.ui.show() {
             self.visible = false;
+            self.window_shown = false;
             self.marks.borrow_mut().hot_start = None;
             self.store.log_warn(&format!("搜索条没有显示：{err}"));
             return;
         }
+        self.window_shown = true;
         let hwnd = self.hwnd();
         let foreground = if let Some(hwnd) = hwnd {
             // 跨 DPI 移动时系统建议的矩形可能偏离目标位置，显示后再对一次。
@@ -440,6 +449,8 @@ impl Bar {
         self.close_menu();
         self.visible = false;
         self.concealed = false;
+        self.window_shown = false;
+        self.restore_guard = self.restore_guard.wrapping_add(1);
         self.marks.borrow_mut().hot_start = None;
         let _ = self.ui.hide();
         self.error = None;
@@ -597,8 +608,9 @@ impl Bar {
     }
 
     /// 应用墙已经在前台时藏起搜索条。文字留在输入框，不走 [`Self::hide`]。
+    /// `concealed` 在重新显示之后还会再留两轮，那时窗口已经在屏幕上，这里仍要藏起。
     fn conceal_for_wall(&mut self) {
-        if !self.visible || self.concealed {
+        if !self.visible {
             return;
         }
         if !crate::appwall::has_foreground() {
@@ -607,6 +619,7 @@ impl Bar {
         }
         self.concealed = true;
         let _ = self.ui.hide();
+        self.window_shown = false;
     }
 
     /// 应用墙收起后把搜索条显示回来，焦点回到输入框，已输入的文字还在。
@@ -616,9 +629,11 @@ impl Bar {
             if let Err(err) = self.ui.show() {
                 self.concealed = false;
                 self.visible = false;
+                self.window_shown = false;
                 self.store.log_warn(&format!("搜索条没有重新显示：{err}"));
                 return;
             }
+            self.window_shown = true;
             if let Some(hwnd) = self.hwnd() {
                 match bar_win::bring_to_front(hwnd) {
                     bar_win::ForegroundTake::Plain => {}
@@ -631,14 +646,13 @@ impl Bar {
                 }
             }
             self.ui.invoke_focus_input();
-            // 显示时的失焦排在这次调用之后。先留着 concealed，那一轮不收起。
-            slint::Timer::single_shot(Duration::ZERO, || {
-                with_bar(|bar| {
-                    if !bar.visible || crate::appwall::is_open() {
-                        return;
-                    }
-                    bar.concealed = false;
-                    bar.ui.invoke_focus_input();
+            // 失焦排在这次调用返回之后。先留一整轮给已经入队的失焦，下一轮才放下保护。
+            // 清掉之后不再聚焦，避免再排进一次 Focused(false)。
+            self.restore_guard = self.restore_guard.wrapping_add(1);
+            let guard = self.restore_guard;
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    with_bar(move |bar| bar.release_restore_guard(guard));
                 });
             });
             return;
@@ -647,6 +661,17 @@ impl Bar {
         if self.visible {
             self.ui.invoke_focus_input();
         }
+    }
+
+    /// 两轮之后放下恢复保护。窗口若又显示在屏幕上，不把 `concealed` 留成真。
+    fn release_restore_guard(&mut self, guard: u64) {
+        if guard != self.restore_guard || !self.visible {
+            return;
+        }
+        if crate::appwall::is_open() && !self.window_shown {
+            return;
+        }
+        self.concealed = false;
     }
 
     fn escape(&mut self) {

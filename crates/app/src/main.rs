@@ -236,6 +236,7 @@ mod tests {
         assert!(search.contains("fn toggle_wall"));
         assert!(search.contains("fn conceal_for_wall"));
         assert!(search.contains("fn restore_after_wall"));
+        assert!(search.contains("fn release_restore_guard"));
         assert!(search.contains("appwall::dismiss"));
     }
 
