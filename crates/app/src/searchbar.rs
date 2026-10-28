@@ -1,5 +1,5 @@
 //! 搜索条窗口：热键显示与收起、输入交给查询调度、结果列表和打开动作。
-//! 右侧按钮打开应用墙（`appwall`）。
+//! 右侧按钮打开应用墙（`appwall`）。应用墙打开时这个窗口隐藏，文字留在输入框。
 //!
 //! 待办和便签结果的落点是面板（`panel`）；便签结果的 Ctrl+Enter 悬浮（`note_float`）。快速收集的预览和提交不在这里。
 
@@ -180,6 +180,9 @@ pub(crate) fn install(
         icons: HashMap::new(),
         web_icons: HashMap::new(),
         visible: false,
+        concealed: false,
+        window_shown: false,
+        restore_guard: 0,
         dark: false,
         hwnd_ready: false,
         launching: false,
@@ -220,11 +223,7 @@ pub(crate) fn set_wall_open(open: bool) {
 }
 
 pub(crate) fn focus_input() {
-    with_bar(|bar| {
-        if bar.visible {
-            bar.ui.invoke_focus_input();
-        }
-    });
+    with_bar(Bar::restore_after_wall);
 }
 
 pub(crate) fn bar_hwnd() -> Option<windows::Win32::Foundation::HWND> {
@@ -290,6 +289,13 @@ struct Bar {
     icons: HashMap<IconKey, slint::Image>,
     web_icons: HashMap<String, slint::Image>,
     visible: bool,
+    /// 失焦时不收起。为应用墙藏起窗口时为真。重新显示之后再留两轮，
+    /// 让已经入队的 `Focused(false)` 过去。窗口已经重新显示时，它不表示窗口仍藏着。
+    concealed: bool,
+    /// 搜索条窗口是否在屏幕上。为应用墙藏起时 [`Self::visible`] 仍为真，这里为假。
+    window_shown: bool,
+    /// 最近一次重新显示的失焦保护。更早排上的定时器不再清 [`Self::concealed`]。
+    restore_guard: u64,
     dark: bool,
     hwnd_ready: bool,
     launching: bool,
@@ -396,10 +402,12 @@ impl Bar {
         self.visible = true;
         if let Err(err) = self.ui.show() {
             self.visible = false;
+            self.window_shown = false;
             self.marks.borrow_mut().hot_start = None;
             self.store.log_warn(&format!("搜索条没有显示：{err}"));
             return;
         }
+        self.window_shown = true;
         let hwnd = self.hwnd();
         let foreground = if let Some(hwnd) = hwnd {
             // 跨 DPI 移动时系统建议的矩形可能偏离目标位置，显示后再对一次。
@@ -440,6 +448,9 @@ impl Bar {
         self.hover.reset(None);
         self.close_menu();
         self.visible = false;
+        self.concealed = false;
+        self.window_shown = false;
+        self.restore_guard = self.restore_guard.wrapping_add(1);
         self.marks.borrow_mut().hot_start = None;
         let _ = self.ui.hide();
         self.error = None;
@@ -455,7 +466,7 @@ impl Bar {
     }
 
     fn blur(&mut self) {
-        if self.dragging || !self.visible {
+        if self.dragging || !self.visible || self.concealed {
             return;
         }
         if !crate::appwall::is_open() {
@@ -463,9 +474,10 @@ impl Bar {
             return;
         }
         // 点到应用墙上时，失焦先到，前台句柄随后才换成那扇窗。下一轮再看。
+        // 为应用墙隐藏搜索条时也会失焦，那时 `concealed` 已经为真，不再收起。
         slint::Timer::single_shot(Duration::ZERO, || {
             with_bar(|bar| {
-                if bar.dragging || !bar.visible {
+                if bar.dragging || !bar.visible || bar.concealed {
                     return;
                 }
                 if crate::appwall::is_open() {
@@ -581,14 +593,85 @@ impl Bar {
             self.close_menu();
         }
         if crate::appwall::is_open() {
-            self.ui.set_wall_open(false);
             crate::appwall::dismiss();
-            self.ui.invoke_focus_input();
+            self.restore_after_wall();
             return;
         }
         self.ui.set_wall_open(true);
         let origin = self.hwnd().and_then(bar_win::window_origin);
-        crate::appwall::open(origin, self.hwnd());
+        crate::appwall::open(origin);
+        if crate::appwall::is_open() {
+            self.conceal_for_wall();
+        } else {
+            self.ui.set_wall_open(false);
+        }
+    }
+
+    /// 应用墙已经在前台时藏起搜索条。文字留在输入框，不走 [`Self::hide`]。
+    /// `concealed` 在重新显示之后还会再留两轮，那时窗口已经在屏幕上，这里仍要藏起。
+    fn conceal_for_wall(&mut self) {
+        if !self.visible {
+            return;
+        }
+        if !crate::appwall::has_foreground() {
+            self.store.log_warn("应用墙未在前台，搜索条保持显示");
+            return;
+        }
+        self.concealed = true;
+        let _ = self.ui.hide();
+        self.window_shown = false;
+    }
+
+    /// 应用墙收起后把搜索条显示回来，焦点回到输入框，已输入的文字还在。
+    fn restore_after_wall(&mut self) {
+        self.ui.set_wall_open(false);
+        if self.concealed && self.visible {
+            if let Err(err) = self.ui.show() {
+                self.concealed = false;
+                self.visible = false;
+                self.window_shown = false;
+                self.store.log_warn(&format!("搜索条没有重新显示：{err}"));
+                return;
+            }
+            self.window_shown = true;
+            if let Some(hwnd) = self.hwnd() {
+                match bar_win::bring_to_front(hwnd) {
+                    bar_win::ForegroundTake::Plain => {}
+                    bar_win::ForegroundTake::AfterInput => {
+                        self.store.log_info("搜索条在注入输入后回到前台");
+                    }
+                    bar_win::ForegroundTake::Failed => {
+                        self.store.log_warn("搜索条没有回到前台");
+                    }
+                }
+            }
+            self.ui.invoke_focus_input();
+            // 失焦排在这次调用返回之后。先留一整轮给已经入队的失焦，下一轮才放下保护。
+            // 清掉之后不再聚焦，避免再排进一次 Focused(false)。
+            self.restore_guard = self.restore_guard.wrapping_add(1);
+            let guard = self.restore_guard;
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    with_bar(move |bar| bar.release_restore_guard(guard));
+                });
+            });
+            return;
+        }
+        self.concealed = false;
+        if self.visible {
+            self.ui.invoke_focus_input();
+        }
+    }
+
+    /// 两轮之后放下恢复保护。窗口若又显示在屏幕上，不把 `concealed` 留成真。
+    fn release_restore_guard(&mut self, guard: u64) {
+        if guard != self.restore_guard || !self.visible {
+            return;
+        }
+        if crate::appwall::is_open() && !self.window_shown {
+            return;
+        }
+        self.concealed = false;
     }
 
     fn escape(&mut self) {
@@ -597,9 +680,8 @@ impl Bar {
             return;
         }
         if crate::appwall::is_open() {
-            self.ui.set_wall_open(false);
             crate::appwall::dismiss();
-            self.ui.invoke_focus_input();
+            self.restore_after_wall();
             return;
         }
         let text = self.ui.get_text().to_string();

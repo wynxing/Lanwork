@@ -16,6 +16,9 @@ pub const MIN_BACKDROP_BUILD: u32 = 22621;
 /// 搜索条的逻辑宽度。产品规格没有写宽度，这是实现选择。
 pub const BAR_WIDTH: u32 = 680;
 
+/// 搜索条右侧应用墙按钮的逻辑宽度，与 `searchbar.slint` 的 `wall-slot` 相同。
+pub const ENTRY_SLOT: u32 = 48;
+
 /// Windows 的 100% 缩放。
 pub const BASE_DPI: u32 = 96;
 
@@ -126,6 +129,39 @@ pub fn to_logical(physical: i32, dpi: u32) -> u32 {
     let dpi = if dpi == 0 { BASE_DPI } else { dpi };
     let physical = u64::try_from(physical.max(0)).unwrap_or(0);
     u32::try_from(physical * u64::from(BASE_DPI) / u64::from(dpi)).unwrap_or(u32::MAX)
+}
+
+/// 搜索条右侧按钮在应用墙上的逻辑位置。
+///
+/// `bar` 与 `wall` 是两个窗口的屏幕左上角，物理像素，同一 DPI。
+/// 按钮宽 `slot` 逻辑像素，贴在宽 `bar_width` 的搜索条右缘，纵坐标与搜索条相同。
+#[must_use]
+pub fn entry_button_in_wall(
+    bar: (i32, i32),
+    wall: (i32, i32),
+    dpi: u32,
+    bar_width: u32,
+    slot: u32,
+) -> (i32, i32) {
+    let screen_x = bar
+        .0
+        .saturating_add(to_physical(bar_width.saturating_sub(slot), dpi));
+    (
+        round_logical(i64::from(screen_x) - i64::from(wall.0), dpi),
+        round_logical(i64::from(bar.1) - i64::from(wall.1), dpi),
+    )
+}
+
+/// 物理像素换成逻辑像素，四舍五入。可以为负。
+fn round_logical(physical: i64, dpi: u32) -> i32 {
+    let dpi = i64::from(if dpi == 0 { BASE_DPI } else { dpi });
+    let scaled = physical * i64::from(BASE_DPI);
+    let rounded = if scaled >= 0 {
+        (scaled + dpi / 2) / dpi
+    } else {
+        (scaled - dpi / 2) / dpi
+    };
+    i32::try_from(rounded).unwrap_or(if rounded > 0 { i32::MAX } else { i32::MIN })
 }
 
 /// 窗口左上角，物理像素。水平居中，上边缘在工作区高度 25% 处。
@@ -1638,6 +1674,23 @@ mod tests {
         assert_eq!(
             hover_row(&mut arm, PointerPos::from_physical(0, 40), 2, 4),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn entry_button_stays_at_the_right_of_the_search_bar() {
+        assert_eq!(
+            entry_button_in_wall((100, 200), (0, 0), 96, BAR_WIDTH, ENTRY_SLOT),
+            (100 + 632, 200)
+        );
+        assert_eq!(
+            entry_button_in_wall((0, 0), (0, 0), 144, BAR_WIDTH, ENTRY_SLOT),
+            (632, 0),
+            "150% 缩放下逻辑位置仍是搜索条右缘"
+        );
+        assert_eq!(
+            entry_button_in_wall((948, 300), (100, 40), 144, BAR_WIDTH, ENTRY_SLOT),
+            (632 + 565, 173)
         );
     }
 }

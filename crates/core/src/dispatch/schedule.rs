@@ -52,7 +52,8 @@ impl Monotonic for SystemClock {
 pub trait AppLookup: Send {
     fn query(&mut self, text: &str) -> Vec<AppHit>;
 
-    /// 应用墙。空过滤是未隐藏的全部。默认实现没有整表，只把非空过滤交给 [`Self::query`]。
+    /// 应用墙。[`crate::apps::AppIndex`] 只列开始菜单来源里未隐藏的条目。
+    /// 默认实现没有整表，只把非空过滤交给 [`Self::query`]。
     fn wall(&mut self, filter: &str) -> Vec<WallEntry> {
         let filter = filter.trim();
         if filter.is_empty() {
@@ -356,7 +357,7 @@ impl Dispatch {
         Ok(())
     }
 
-    /// 应用墙上的条目。空过滤列出未隐藏的应用，有过滤时与搜索里的应用同一套匹配。
+    /// 应用墙上的条目。正式索引只列开始菜单来源里未隐藏的应用，过滤与搜索里的应用同一套匹配。
     #[must_use]
     pub fn wall_apps(&self, filter: &str) -> Vec<WallEntry> {
         storage::lock_mutex(&self.apps).wall(filter)
