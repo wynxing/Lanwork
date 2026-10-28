@@ -1,4 +1,4 @@
-// 搜索条。只有一个输入框，结果在它下方展开。版式由这里决定，数据和动作在 Rust。
+// 搜索条。输入框在左侧搜索图标和右侧应用墙按钮之间，结果在它下方展开。版式由这里决定，数据和动作在 Rust。
 
 export struct BarRow {
     // 名称拆成三段，中间一段是与输入相同的部分，加粗。没有匹配时只有 head。
@@ -75,8 +75,11 @@ export component SearchBar inherits Window {
     // Alt+1 至 Alt+9 对应的行：first-shortcut 是 Alt+1，到 end-shortcut 之前为止。
     in property <int> first-shortcut;
     in property <int> end-shortcut;
+    // 应用墙打开时结果先收起，输入框里的文字留着。
+    in property <bool> wall-open: false;
 
     callback edited(string);
+    callback toggle-wall();
     callback escape();
     callback move-selection(bool);
     callback enter(bool, bool, bool, bool);
@@ -111,10 +114,12 @@ export component SearchBar inherits Window {
     property <length> input-height: 56px;
     property <length> pad: 6px;
     property <length> row-height: 48px;
+    property <length> wall-slot: 48px;
     property <bool> has-list: rows.length > 0;
     property <bool> has-status: status != "";
+    property <bool> show-results: !wall-open && (has-list || has-status);
     property <length> list-height: min(list-content-height, max-list-height);
-    property <length> results-height: (has-list || has-status) ? 1px + (has-list ? list-height : 0px) + (has-status ? 36px : 0px) : 0px;
+    property <length> results-height: show-results ? 1px + (has-list ? list-height : 0px) + (has-status ? 36px : 0px) : 0px;
     property <length> natural-height: input-height + results-height;
     property <length> menu-width: 272px;
     property <length> menu-item-h: 36px;
@@ -203,7 +208,7 @@ export component SearchBar inherits Window {
     input-clip := Rectangle {
         x: 52px;
         y: 0px;
-        width: parent.width - 52px - 20px;
+        width: parent.width - 52px - wall-slot;
         height: input-height;
         clip: true;
 
@@ -282,7 +287,40 @@ export component SearchBar inherits Window {
         }
     }
 
-    if has-list || has-status: Rectangle {
+    wall-button := TouchArea {
+        x: parent.width - wall-slot;
+        y: 0px;
+        width: wall-slot;
+        height: input-height;
+
+        Rectangle {
+            x: (parent.width - 32px) / 2;
+            y: (parent.height - 32px) / 2;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            background: root.wall-open || wall-button.has-hover ? selection-fill : transparent;
+        }
+
+        Path {
+            x: (parent.width - 16px) / 2;
+            y: (parent.height - 16px) / 2;
+            width: 16px;
+            height: 16px;
+            viewbox-width: 16;
+            viewbox-height: 16;
+            fill: transparent;
+            stroke: root.wall-open ? accent : ink-secondary;
+            stroke-width: 1.4px;
+            commands: "M1.5 1.5h5.5v5.5h-5.5z M9 1.5h5.5v5.5h-5.5z M1.5 9h5.5v5.5h-5.5z M9 9h5.5v5.5h-5.5z";
+        }
+
+        clicked => {
+            root.toggle-wall();
+        }
+    }
+
+    if show-results: Rectangle {
         x: 0px;
         y: input-height;
         width: parent.width;
@@ -297,7 +335,7 @@ export component SearchBar inherits Window {
         height: has-list ? list-height : 0px;
         content-width: self.width;
         content-height: root.list-content-height;
-        visible: has-list;
+        visible: show-results && has-list;
 
         changed content-y => {
             root.scrolled(-self.content-y);
@@ -442,7 +480,7 @@ export component SearchBar inherits Window {
         }
     }
 
-    if has-status: Text {
+    if show-results && has-status: Text {
         x: 20px;
         y: input-height + 1px + (has-list ? list-height : 0px);
         width: parent.width - 40px;

@@ -753,6 +753,7 @@ impl SettingsPage {
             apps.set_web_search_engine(self.commands.current().web_search_engine);
         }
         crate::searchbar::requery();
+        crate::appwall::reload();
         let hotkey_gap = match self.hotkeys.register(self.commands.clone()) {
             Some(unregistered) => {
                 for role in &unregistered {
@@ -812,6 +813,7 @@ impl SettingsPage {
         let result = apps.restore_hidden_app(&key);
         if result.is_ok() {
             crate::searchbar::requery();
+            crate::appwall::reload();
         }
         self.finish(ui, result);
     }

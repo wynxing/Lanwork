@@ -18,7 +18,7 @@ mod windows;
 
 pub use cache::{CACHE_FILE_NAME, CACHE_SCHEMA_VERSION, CacheStatus};
 pub use catalog::{AppAlias, HiddenApp, UserCatalog, load_user_catalog, save_user_catalog};
-pub use index::{AppHit, AppIndex, IndexError, RefreshReport};
+pub use index::{AppHit, AppIndex, IndexError, RefreshReport, WallEntry};
 pub use model::{AppEntry, AppSource, LaunchTarget, SourceError, launch_key};
 pub use rules::{
     containing_folder, file_folder, shortcut_target_folder, supports_open_containing_folder,

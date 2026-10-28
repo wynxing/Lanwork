@@ -1,4 +1,5 @@
 //! 搜索条窗口：热键显示与收起、输入交给查询调度、结果列表和打开动作。
+//! 右侧按钮打开应用墙（`appwall`）。
 //!
 //! 待办和便签结果的落点是面板（`panel`）；便签结果的 Ctrl+Enter 悬浮（`note_float`）。快速收集的预览和提交不在这里。
 
@@ -100,6 +101,7 @@ pub(crate) fn install(
         let text = text.to_string();
         with_bar(move |bar| bar.edited(&text));
     });
+    ui.on_toggle_wall(|| with_bar(Bar::toggle_wall));
     ui.on_escape(|| with_bar(Bar::escape));
     ui.on_move_selection(|down| with_bar(move |bar| bar.move_selection(down)));
     ui.on_enter(|ctrl, shift, alt, meta| {
@@ -202,6 +204,35 @@ pub(crate) fn requery() {
         let text = bar.ui.get_text().to_string();
         bar.submit(&text);
     });
+}
+
+/// 搜索条还显示着就收起。应用墙启动成功，或点到两者以外时用。
+pub(crate) fn hide_if_visible() {
+    with_bar(|bar| {
+        if bar.visible {
+            bar.hide();
+        }
+    });
+}
+
+pub(crate) fn set_wall_open(open: bool) {
+    with_bar(move |bar| bar.ui.set_wall_open(open));
+}
+
+pub(crate) fn focus_input() {
+    with_bar(|bar| {
+        if bar.visible {
+            bar.ui.invoke_focus_input();
+        }
+    });
+}
+
+pub(crate) fn bar_hwnd() -> Option<windows::Win32::Foundation::HWND> {
+    BAR.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(Bar::hwnd))
+    })
 }
 
 /// 热键。已显示时收起。
@@ -404,6 +435,8 @@ impl Bar {
     }
 
     fn hide(&mut self) {
+        self.ui.set_wall_open(false);
+        crate::appwall::dismiss();
         self.hover.reset(None);
         self.close_menu();
         self.visible = false;
@@ -422,12 +455,28 @@ impl Bar {
     }
 
     fn blur(&mut self) {
-        if self.dragging {
+        if self.dragging || !self.visible {
             return;
         }
-        if self.visible {
+        if !crate::appwall::is_open() {
             self.hide();
+            return;
         }
+        // 点到应用墙上时，失焦先到，前台句柄随后才换成那扇窗。下一轮再看。
+        slint::Timer::single_shot(Duration::ZERO, || {
+            with_bar(|bar| {
+                if bar.dragging || !bar.visible {
+                    return;
+                }
+                if crate::appwall::is_open() {
+                    let foreground = bar_win::foreground_root();
+                    if foreground == bar.hwnd() || crate::appwall::holds_foreground(foreground) {
+                        return;
+                    }
+                }
+                bar.hide();
+            });
+        });
     }
 
     /// 左侧拖动条按下。真正的移动在之后的模态循环里，这里先挡住失焦收起。
@@ -527,9 +576,30 @@ impl Bar {
         self.submit(text);
     }
 
+    fn toggle_wall(&mut self) {
+        if self.ui.get_menu_open() {
+            self.close_menu();
+        }
+        if crate::appwall::is_open() {
+            self.ui.set_wall_open(false);
+            crate::appwall::dismiss();
+            self.ui.invoke_focus_input();
+            return;
+        }
+        self.ui.set_wall_open(true);
+        let origin = self.hwnd().and_then(bar_win::window_origin);
+        crate::appwall::open(origin, self.hwnd());
+    }
+
     fn escape(&mut self) {
         if self.ui.get_menu_open() {
             self.close_menu();
+            return;
+        }
+        if crate::appwall::is_open() {
+            self.ui.set_wall_open(false);
+            crate::appwall::dismiss();
+            self.ui.invoke_focus_input();
             return;
         }
         let text = self.ui.get_text().to_string();
@@ -845,6 +915,7 @@ impl Bar {
                 let text = self.ui.get_text().to_string();
                 self.submit(&text);
                 crate::panel::refresh_hidden_apps();
+                crate::appwall::reload();
             }
             Err(message) => {
                 self.store.log_warn(&format!("隐藏应用没有写入：{message}"));
@@ -1092,7 +1163,7 @@ fn hand_off(action: RowAction) {
     }
 }
 
-fn run_shell(action: &RowAction) -> Result<(), LaunchError> {
+pub(crate) fn run_shell(action: &RowAction) -> Result<(), LaunchError> {
     match action {
         RowAction::Shell(target) => launch(target),
         RowAction::Elevated(target) => launch_elevated(target),

@@ -1,7 +1,7 @@
 //! 启动顺序：先占住单实例，再打开数据目录，完成导入恢复和待办加载，加载配置，按本地日期自动备份，然后选渲染器、注册热键、创建隐藏窗口和托盘。
 //! 便签服务、收纳服务、应用索引和文件索引在存储启动之后打开；应用索引和文件索引交给搜索条的查询调度。
 //!
-//! 面板在 `panel`，设置页在 `settings_page`，搜索条在 `searchbar`，热角轮询在 `hotcorner`。
+//! 面板在 `panel`，设置页在 `settings_page`，搜索条在 `searchbar`，应用墙在 `appwall`，热角轮询在 `hotcorner`。
 
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -30,6 +30,7 @@ use lanwork_core::update::{Edition, edition_of};
 use slint::ComponentHandle;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
+use crate::appwall;
 use crate::float_group;
 use crate::float_shell;
 use crate::instance::{self, Claim};
@@ -41,7 +42,7 @@ use crate::searchbar;
 use crate::settings_page::SettingsServices;
 use crate::shelf_float;
 use crate::todo_float;
-use crate::{Panel, SearchBar, Tray};
+use crate::{AppWall, Panel, SearchBar, Tray};
 
 pub(crate) fn run() -> i32 {
     let claim = match instance::claim(instance::MUTEX_NAME, instance::ACTIVATE_NAME) {
@@ -159,6 +160,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     }
 
     let search = SearchBar::new().map_err(|err| err.to_string())?;
+    let wall = AppWall::new().map_err(|err| err.to_string())?;
     let panel_ui = Panel::new().map_err(|err| err.to_string())?;
     let tray = Tray::new().map_err(|err| err.to_string())?;
     let notes = open_notes(store);
@@ -179,6 +181,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
             store.clone(),
             config.clone(),
         );
+        appwall::install(wall.clone_strong(), Arc::clone(dispatch), store.clone());
     }
     let icons = icons.unwrap_or_else(|| Arc::new(Mutex::new(IconCache::shell())));
     crate::web_icons::install(&store.data_dir());
@@ -241,6 +244,7 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
     crate::hotcorner::shutdown();
     searchbar::shutdown();
     drop(search);
+    drop(wall);
     drop(panel_ui);
     platform.shutdown();
     run
@@ -492,6 +496,7 @@ pub(crate) fn refresh_theme(config: &ConfigCommands, store: &Store) {
         return;
     };
     searchbar::apply_theme(dark);
+    appwall::apply_theme(dark);
     panel::apply_theme(dark);
     note_float::apply_theme(dark);
     shelf_float::apply_theme(dark);

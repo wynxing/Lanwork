@@ -16,8 +16,8 @@ use crate::search::{FieldInput, FieldRole, HitKind, MatchIndex, hit_kind_rank};
 use super::cache::{self, CacheLoad, CacheStatus};
 use super::catalog::{self, HiddenApp, UserCatalog};
 use super::model::{
-    AppEntry, AppSource, SourceAttempt, SourceError, SourceSnapshots, apply_source_results,
-    launch_key,
+    AppEntry, AppSource, LaunchTarget, SourceAttempt, SourceError, SourceSnapshots,
+    apply_source_results, launch_key,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +25,13 @@ pub struct AppHit {
     pub entry: AppEntry,
     pub kind: HitKind,
     pub score: u32,
+}
+
+/// 应用墙上的一条。没有过滤时 `kind` 为空。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WallEntry {
+    pub entry: AppEntry,
+    pub kind: Option<HitKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +197,53 @@ impl AppIndex {
             });
         }
         out
+    }
+
+    /// 应用墙上的条目。空过滤是未隐藏的全部，按名称不区分大小写排列。
+    /// 有过滤时走 [`Self::query`]，命中类型靠前的在前，同一种再按名称。
+    /// 别名命中时显示名仍是索引里的名称。
+    #[must_use]
+    pub fn wall(&self, filter: &str) -> Vec<WallEntry> {
+        let filter = filter.trim();
+        if filter.is_empty() {
+            let published = read_lock(&self.shared.published);
+            let hidden = hidden_keys(&self.shared.catalog);
+            let mut entries: Vec<AppEntry> = published
+                .entries
+                .iter()
+                .filter(|entry| {
+                    let key = launch_key(&entry.target);
+                    !key.is_empty() && !hidden.contains(&key)
+                })
+                .cloned()
+                .collect();
+            entries.sort_by(|left, right| {
+                cmp_wall_name(&left.name, &right.name, &left.target, &right.target)
+            });
+            return entries
+                .into_iter()
+                .map(|entry| WallEntry { entry, kind: None })
+                .collect();
+        }
+        let mut hits = self.query(filter);
+        hits.sort_by(|left, right| {
+            hit_kind_rank(left.kind)
+                .cmp(&hit_kind_rank(right.kind))
+                .then_with(|| {
+                    cmp_wall_name(
+                        &left.entry.name,
+                        &right.entry.name,
+                        &left.entry.target,
+                        &right.entry.target,
+                    )
+                })
+        });
+        hits.into_iter()
+            .map(|hit| WallEntry {
+                entry: hit.entry,
+                kind: Some(hit.kind),
+            })
+            .collect()
     }
 
     /// 当前内存中的用户目录。落盘由调用方 `save_user_catalog` 完成。
@@ -618,6 +672,22 @@ fn user_source_entries(catalog: &UserCatalog, source: AppSource) -> Vec<AppEntry
     }
 }
 
+fn cmp_wall_name(
+    left_name: &str,
+    right_name: &str,
+    left_target: &LaunchTarget,
+    right_target: &LaunchTarget,
+) -> std::cmp::Ordering {
+    fold_name(left_name)
+        .cmp(&fold_name(right_name))
+        .then_with(|| left_name.cmp(right_name))
+        .then_with(|| launch_key(left_target).cmp(&launch_key(right_target)))
+}
+
+fn fold_name(name: &str) -> String {
+    name.trim().chars().flat_map(char::to_lowercase).collect()
+}
+
 fn hidden_keys(catalog: &RwLock<UserCatalog>) -> std::collections::HashSet<String> {
     read_lock(catalog)
         .hidden
@@ -923,5 +993,104 @@ mod tests {
         assert_eq!(index.entries().len(), 1);
         assert_eq!(index.entries()[0].name, "新便携");
         assert_eq!(index.entries()[0].source, AppSource::Portable);
+    }
+
+    fn open_cached(entries: &[AppEntry]) -> (TempDir, AppIndex) {
+        let temp = TempDir::new();
+        let cache_path = temp.path().join("apps.json");
+        cache::save_cache(&cache_path, entries).unwrap();
+        let index = open_with(OpenOptions {
+            cache_path,
+            extra_shortcut_dir: None,
+            watch: false,
+            background_rebuild: false,
+            debounce: Duration::from_millis(50),
+            enumerator: Some(Box::new(FakeSources {
+                results: std::collections::HashMap::new(),
+                delay: None,
+                delayed: false,
+            })),
+            cache_log: None,
+            user_catalog: UserCatalog::default(),
+        })
+        .unwrap();
+        (temp, index)
+    }
+
+    fn wall_names(index: &AppIndex, filter: &str) -> Vec<String> {
+        index
+            .wall(filter)
+            .into_iter()
+            .map(|item| item.entry.name)
+            .collect()
+    }
+
+    #[test]
+    fn wall_lists_visible_apps_and_filters_like_search() {
+        let wx = entry("wx", AppSource::Path, r"C:\Apps\wx.exe");
+        let wechat = entry("微信", AppSource::Path, r"C:\Apps\wechat.exe");
+        let alpha = entry("Alpha", AppSource::Path, r"C:\Apps\alpha.exe");
+        let beta = entry("beta", AppSource::Path, r"C:\Apps\beta.exe");
+        let hidden = entry("记事本", AppSource::Path, r"C:\Apps\note.exe");
+        let (_temp, mut index) = open_cached(&[
+            wechat.clone(),
+            beta.clone(),
+            hidden.clone(),
+            alpha.clone(),
+            wx.clone(),
+        ]);
+        index.hide(&launch_key(&hidden.target)).unwrap();
+
+        let listed = index.wall("");
+        assert!(listed.iter().all(|item| item.kind.is_none()));
+        assert_eq!(
+            listed
+                .iter()
+                .map(|item| item.entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alpha", "beta", "wx", "微信"]
+        );
+        let via_trait = crate::dispatch::AppLookup::wall(&mut index, "");
+        assert_eq!(
+            via_trait
+                .iter()
+                .map(|item| item.entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alpha", "beta", "wx", "微信"]
+        );
+
+        let exact = index.wall("wx");
+        assert_eq!(exact[0].entry.name, "wx");
+        assert_eq!(exact[0].kind, Some(crate::search::HitKind::Exact));
+        assert_eq!(exact[1].entry.name, "微信");
+        assert_eq!(exact[1].kind, Some(crate::search::HitKind::Initial));
+        assert_eq!(wall_names(&index, "weixin"), vec!["微信".to_owned()]);
+        assert_eq!(
+            index.wall("weixin")[0].kind,
+            Some(crate::search::HitKind::Pinyin)
+        );
+        assert!(wall_names(&index, "记事本").is_empty());
+        assert!(wall_names(&index, "wx").iter().all(|name| name != "记事本"));
+    }
+
+    #[test]
+    fn wall_filter_keeps_the_indexed_name_when_an_alias_matches() {
+        let note = entry("记事本", AppSource::Path, r"C:\Apps\note.exe");
+        let (_temp, index) = open_cached(std::slice::from_ref(&note));
+        index
+            .set_user_catalog(UserCatalog {
+                portable: Vec::new(),
+                aliases: vec![crate::apps::AppAlias {
+                    name: "笔记".into(),
+                    target: note.target.clone(),
+                }],
+                hidden: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(wall_names(&index, ""), vec!["记事本".to_owned()]);
+        let hits = index.wall("笔记");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.name, "记事本");
+        assert_eq!(hits[0].kind, Some(crate::search::HitKind::Exact));
     }
 }
