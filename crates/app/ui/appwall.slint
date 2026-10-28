@@ -37,6 +37,12 @@ export component AppWall inherits Window {
     callback menu-activate(int);
     callback menu-shortcut(int);
     callback view-changed(length, length);
+    // 搜索条隐藏后，原来右侧的应用墙按钮。
+    callback close-entry();
+
+    in property <bool> show-entry: false;
+    in property <length> entry-x: 0px;
+    in property <length> entry-y: 0px;
 
     in-out property <string> text <=> filter.text;
 
@@ -252,6 +258,42 @@ export component AppWall inherits Window {
                         root.activate(index);
                     }
                 }
+            }
+        }
+    }
+
+    // 与搜索条右侧按钮同一格。搜索条隐藏后留在原处，再点收起应用墙。
+    if show-entry: TouchArea {
+        x: entry-x;
+        y: entry-y;
+        width: 48px;
+        height: 56px;
+
+        Rectangle {
+            x: (parent.width - 32px) / 2;
+            y: (parent.height - 32px) / 2;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            background: selection-fill;
+        }
+
+        Path {
+            x: (parent.width - 16px) / 2;
+            y: (parent.height - 16px) / 2;
+            width: 16px;
+            height: 16px;
+            viewbox-width: 16;
+            viewbox-height: 16;
+            fill: transparent;
+            stroke: accent;
+            stroke-width: 1.4px;
+            commands: "M1.5 1.5h5.5v5.5h-5.5z M9 1.5h5.5v5.5h-5.5z M1.5 9h5.5v5.5h-5.5z M9 9h5.5v5.5h-5.5z";
+        }
+
+        clicked => {
+            if !root.menu-open {
+                root.close-entry();
             }
         }
     }

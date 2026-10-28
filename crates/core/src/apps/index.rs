@@ -199,8 +199,9 @@ impl AppIndex {
         out
     }
 
-    /// 应用墙上的条目。空过滤是未隐藏的全部，按名称不区分大小写排列。
-    /// 有过滤时走 [`Self::query`]，命中类型靠前的在前，同一种再按名称。
+    /// 应用墙上的条目。只保留开始菜单来源里未隐藏的应用。
+    /// 空过滤按名称不区分大小写排列。
+    /// 有过滤时走 [`Self::query`]，再只留开始菜单来源；命中类型靠前，同一种再按名称。
     /// 别名命中时显示名仍是索引里的名称。
     #[must_use]
     pub fn wall(&self, filter: &str) -> Vec<WallEntry> {
@@ -211,10 +212,7 @@ impl AppIndex {
             let mut entries: Vec<AppEntry> = published
                 .entries
                 .iter()
-                .filter(|entry| {
-                    let key = launch_key(&entry.target);
-                    !key.is_empty() && !hidden.contains(&key)
-                })
+                .filter(|entry| listed_on_wall(entry, &hidden))
                 .cloned()
                 .collect();
             entries.sort_by(|left, right| {
@@ -226,6 +224,7 @@ impl AppIndex {
                 .collect();
         }
         let mut hits = self.query(filter);
+        hits.retain(|hit| hit.entry.source == AppSource::StartMenu);
         hits.sort_by(|left, right| {
             hit_kind_rank(left.kind)
                 .cmp(&hit_kind_rank(right.kind))
@@ -688,6 +687,15 @@ fn fold_name(name: &str) -> String {
     name.trim().chars().flat_map(char::to_lowercase).collect()
 }
 
+/// 应用墙只列开始菜单来源。隐藏键与搜索共用。
+fn listed_on_wall(entry: &AppEntry, hidden: &std::collections::HashSet<String>) -> bool {
+    if entry.source != AppSource::StartMenu {
+        return false;
+    }
+    let key = launch_key(&entry.target);
+    !key.is_empty() && !hidden.contains(&key)
+}
+
 fn hidden_keys(catalog: &RwLock<UserCatalog>) -> std::collections::HashSet<String> {
     read_lock(catalog)
         .hidden
@@ -1027,11 +1035,11 @@ mod tests {
 
     #[test]
     fn wall_lists_visible_apps_and_filters_like_search() {
-        let wx = entry("wx", AppSource::Path, r"C:\Apps\wx.exe");
-        let wechat = entry("微信", AppSource::Path, r"C:\Apps\wechat.exe");
-        let alpha = entry("Alpha", AppSource::Path, r"C:\Apps\alpha.exe");
-        let beta = entry("beta", AppSource::Path, r"C:\Apps\beta.exe");
-        let hidden = entry("记事本", AppSource::Path, r"C:\Apps\note.exe");
+        let wx = entry("wx", AppSource::StartMenu, r"C:\Apps\wx.exe");
+        let wechat = entry("微信", AppSource::StartMenu, r"C:\Apps\wechat.exe");
+        let alpha = entry("Alpha", AppSource::StartMenu, r"C:\Apps\alpha.exe");
+        let beta = entry("beta", AppSource::StartMenu, r"C:\Apps\beta.exe");
+        let hidden = entry("记事本", AppSource::StartMenu, r"C:\Apps\note.exe");
         let (_temp, mut index) = open_cached(&[
             wechat.clone(),
             beta.clone(),
@@ -1075,7 +1083,7 @@ mod tests {
 
     #[test]
     fn wall_filter_keeps_the_indexed_name_when_an_alias_matches() {
-        let note = entry("记事本", AppSource::Path, r"C:\Apps\note.exe");
+        let note = entry("记事本", AppSource::StartMenu, r"C:\Apps\note.exe");
         let (_temp, index) = open_cached(std::slice::from_ref(&note));
         index
             .set_user_catalog(UserCatalog {
@@ -1092,5 +1100,60 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].entry.name, "记事本");
         assert_eq!(hits[0].kind, Some(crate::search::HitKind::Exact));
+    }
+
+    #[test]
+    fn wall_lists_start_menu_entries_and_search_keeps_the_other_sources() {
+        let notepad = entry("记事本", AppSource::StartMenu, r"C:\Windows\notepad.exe");
+        let ipconfig = entry(
+            "ipconfig",
+            AppSource::Path,
+            r"C:\Windows\System32\ipconfig.exe",
+        );
+        let javaw = entry("javaw", AppSource::AppPaths, r"C:\Java\javaw.exe");
+        let portable = entry("便携工具", AppSource::Portable, r"D:\Tools\tool.exe");
+        let hidden = entry(
+            "命令提示符",
+            AppSource::StartMenu,
+            r"C:\Windows\System32\cmd.exe",
+        );
+        let mut calculator = entry("计算器", AppSource::Store, r"C:\unused.exe");
+        calculator.target = LaunchTarget::Aumid {
+            aumid: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".into(),
+        };
+        let (_temp, index) = open_cached(&[
+            notepad,
+            ipconfig,
+            javaw,
+            portable,
+            hidden.clone(),
+            calculator,
+        ]);
+        index.hide(&launch_key(&hidden.target)).unwrap();
+
+        assert_eq!(wall_names(&index, ""), vec!["记事本".to_owned()]);
+        assert!(wall_names(&index, "ipconfig").is_empty());
+        assert!(wall_names(&index, "javaw").is_empty());
+        assert!(wall_names(&index, "便携").is_empty());
+        assert!(wall_names(&index, "计算").is_empty());
+        assert!(wall_names(&index, "命令").is_empty());
+        assert!(
+            index
+                .query("ipconfig")
+                .iter()
+                .any(|hit| hit.entry.name == "ipconfig")
+        );
+        assert!(
+            index
+                .query("javaw")
+                .iter()
+                .any(|hit| hit.entry.name == "javaw")
+        );
+        assert!(
+            index
+                .query("计算器")
+                .iter()
+                .any(|hit| hit.entry.name == "计算器")
+        );
     }
 }

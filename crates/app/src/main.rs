@@ -221,16 +221,21 @@ mod tests {
         assert!(wall.contains("callback activate(int);"));
         assert!(wall.contains("callback open-menu(int, length, length);"));
         assert!(wall.contains("callback menu-shortcut(int);"));
+        assert!(wall.contains("callback close-entry();"));
+        assert!(wall.contains("show-entry"));
         let apps = include_str!("../ui/appspage.slint");
         assert!(!apps.contains("应用墙"));
         let source = include_str!("appwall.rs");
         assert!(source.contains("wall_apps"));
         assert!(source.contains("app_menu"));
+        assert!(source.contains("fn has_foreground"));
         assert!(!source.contains("RegisterHotKey"));
         let host = include_str!("host.rs");
         assert!(host.contains("appwall::install"));
         let search = include_str!("searchbar.rs");
         assert!(search.contains("fn toggle_wall"));
+        assert!(search.contains("fn conceal_for_wall"));
+        assert!(search.contains("fn restore_after_wall"));
         assert!(search.contains("appwall::dismiss"));
     }
 

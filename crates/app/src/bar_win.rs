@@ -285,7 +285,7 @@ pub(crate) fn place_rect(hwnd: HWND, area: WorkArea) {
     }
     let width = area.width().max(1);
     let height = area.height().max(1);
-    // SAFETY: hwnd 是本进程的应用墙。SWP_NOZORDER 不盖住已经在上面的搜索条。
+    // SAFETY: hwnd 是本进程的应用墙。不改层次，随后再把它带到前台。
     unsafe {
         let _ = SetWindowPos(
             hwnd,
@@ -295,25 +295,6 @@ pub(crate) fn place_rect(hwnd: HWND, area: WorkArea) {
             width,
             height,
             SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-    }
-}
-
-/// 提到普通窗口的最前，不激活。`None` 是 `HWND_TOP`。
-pub(crate) fn raise_no_activate(hwnd: HWND) {
-    if hwnd.0.is_null() {
-        return;
-    }
-    // SAFETY: hwnd 是本进程的搜索条。不移动、不改大小，也不抢走应用墙的焦点。
-    unsafe {
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
     }
 }
