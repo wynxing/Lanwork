@@ -20,15 +20,15 @@ mod wall;
 
 pub use bar::{
     AltRoute, AppMenuAction, AppMenuItem, BAR_WIDTH, BASE_DPI, Backdrop, BackdropInput,
-    BarPlacement, DARK_SOLID_RGB, ENTRY_SLOT, EnterChord, EscapeAction, FloatBackdrop, GROUP_GAP,
+    BarPlacement, DARK_SOLID_RGB, EnterChord, EscapeAction, FloatBackdrop, GROUP_GAP,
     HOVER_MOVE_PX, HOVER_SNAP_PX, HoverArm, LIGHT_SOLID_RGB, LIST_PAD, MIN_BACKDROP_BUILD,
     MonitorArea, NO_RESULTS, PointerPos, ROW_HEIGHT, RowAction, SHORTCUT_COUNT, WorkArea,
     alt_route, app_menu, app_menu_command, bar_origin, choose_backdrop, draws_type_glyph,
-    entry_button_in_wall, escape_action, float_backdrop, group_label, hover_row,
-    location_always_shown, match_span, max_results_height, monitor_at, move_selection, path_target,
-    persistent_acrylic_abgr, place_bar, pointed_row, reselect, row_action, row_offsets,
-    selection_after_refresh, shortcut_rows, shortcut_target, solid_rgb, status_line,
-    text_after_hide, to_logical, to_physical,
+    escape_action, float_backdrop, group_label, hover_row, location_always_shown, match_span,
+    max_results_height, monitor_at, move_selection, path_target, persistent_acrylic_abgr,
+    place_bar, pointed_row, reselect, row_action, row_offsets, selection_after_refresh,
+    shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_logical,
+    to_physical,
 };
 pub use bind::{
     BindError, HotkeyBinding, HotkeyPort, HotkeyRole, RegisteredHotkey, Restored, SaveHotkeyError,
