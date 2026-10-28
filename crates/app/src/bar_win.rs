@@ -278,6 +278,67 @@ pub(crate) fn move_window(hwnd: HWND, x: i32, y: i32) {
     }
 }
 
+/// 放到这块矩形上，不改层次，不激活。应用墙用显示器的 `rcMonitor`。
+pub(crate) fn place_rect(hwnd: HWND, area: WorkArea) {
+    if hwnd.0.is_null() {
+        return;
+    }
+    let width = area.width().max(1);
+    let height = area.height().max(1);
+    // SAFETY: hwnd 是本进程的应用墙。SWP_NOZORDER 不盖住已经在上面的搜索条。
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            area.left,
+            area.top,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// 提到普通窗口的最前，不激活。`None` 是 `HWND_TOP`。
+pub(crate) fn raise_no_activate(hwnd: HWND) {
+    if hwnd.0.is_null() {
+        return;
+    }
+    // SAFETY: hwnd 是本进程的搜索条。不移动、不改大小，也不抢走应用墙的焦点。
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// 当前前台窗口的根。没有前台窗口时为 `None`。
+pub(crate) fn foreground_root() -> Option<HWND> {
+    // SAFETY: 没有参数。没有前台窗口时句柄为空。
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.0.is_null() {
+        return None;
+    }
+    // SAFETY: 只读窗口的根，不保留句柄以外的状态。
+    let root = unsafe { GetAncestor(foreground, GA_ROOT) };
+    if root.0.is_null() { None } else { Some(root) }
+}
+
+/// 全屏应用墙不用圆角，避免四角露出桌面。
+pub(crate) fn square_corners(hwnd: HWND) {
+    if hwnd.0.is_null() {
+        return;
+    }
+    let corner = DWMWCP_DONOTROUND;
+    let _ = set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner);
+}
+
 /// 系统菜单和最小化、最大化框。winit 每次改可见性都按自己的标志重写 `GWL_STYLE`，
 /// 总带 `WS_SYSMENU`；边框扩展到整个客户区后，DWM 会在右上角画出这三个按钮。
 const CAPTION_BUTTONS: u32 = WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0;

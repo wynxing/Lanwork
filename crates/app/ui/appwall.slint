@@ -1,0 +1,334 @@
+// 应用墙。全屏网格，过滤和打开在 Rust。入口在搜索条右侧。
+
+import { BarMenuItem } from "searchbar.slint";
+
+export struct WallTile {
+    name: string,
+    icon: image,
+    has-icon: bool,
+    x: length,
+    y: length,
+}
+
+export component AppWall inherits Window {
+    title: "Lanwork";
+    icon: @image-url("../assets/lanwork-256.png");
+    no-frame: true;
+    default-font-family: "Microsoft YaHei UI";
+    default-font-size: 14px;
+
+    in property <bool> dark;
+    in property <bool> acrylic;
+    in property <color> solid-color: #f3f3f3;
+    in property <[WallTile]> tiles;
+    in property <length> content-height;
+    in property <length> cell-width: 112px;
+    in property <length> cell-height: 104px;
+    in property <string> notice;
+    in property <[BarMenuItem]> menu-items;
+    in-out property <bool> menu-open: false;
+    in-out property <length> menu-anchor-x: 0px;
+    in-out property <length> menu-anchor-y: 0px;
+
+    callback edited(string);
+    callback escape();
+    callback activate(int);
+    callback open-menu(int, length, length);
+    callback menu-activate(int);
+    callback menu-shortcut(int);
+    callback view-changed(length, length);
+
+    in-out property <string> text <=> filter.text;
+
+    property <length> filter-band: 84px;
+    property <length> filter-width: min(560px, root.width - 96px);
+    property <bool> has-notice: notice != "";
+    property <length> grid-y: filter-band + (has-notice ? 28px : 0px);
+    property <length> menu-width: 272px;
+    property <length> menu-item-h: 36px;
+    property <length> menu-pad: 4px;
+    property <length> menu-block: menu-pad * 2 + menu-items.length * menu-item-h;
+    property <bool> menu-shown: menu-open && menu-items.length > 0;
+    property <length> menu-draw-x: min(max(8px, menu-anchor-x), max(8px, self.width - menu-width - 8px));
+    property <length> menu-draw-y: menu-anchor-y + menu-block + 8px > root.height && menu-anchor-y > menu-block
+        ? max(8px, menu-anchor-y - menu-block)
+        : max(8px, menu-anchor-y);
+    out property <int> menu-hover: -1;
+
+    property <color> ink: dark ? #ffffff : #1b1b1b;
+    property <color> ink-secondary: dark ? #c5c5c5 : #5d5d5d;
+    property <color> ink-tertiary: dark ? #9a9a9a : #767676;
+    property <color> divider: dark ? #ffffff17 : #00000014;
+    property <color> selection-fill: dark ? #ffffff14 : #0000000d;
+    property <color> field: dark ? #ffffff14 : #ffffffcc;
+    property <color> accent: dark ? #60cdff : #005fb8;
+    property <color> critical: dark ? #ff99a4 : #c42b1c;
+
+    background: acrylic ? transparent : solid-color;
+
+    changed menu-open => {
+        menu-hover = -1;
+    }
+
+    public function focus-filter() {
+        filter.focus();
+    }
+
+    public function scroll-to-top() {
+        grid.content-y = 0px;
+    }
+
+    public function report-view() {
+        root.view-changed(-grid.content-y, grid.height);
+    }
+
+    filter-field := Rectangle {
+        x: (parent.width - filter-width) / 2;
+        y: 24px;
+        width: filter-width;
+        height: 40px;
+        border-radius: 8px;
+        background: field;
+        border-width: 1px;
+        border-color: divider;
+
+        Path {
+            x: 14px;
+            y: (parent.height - 16px) / 2;
+            width: 16px;
+            height: 16px;
+            viewbox-width: 16;
+            viewbox-height: 16;
+            fill: transparent;
+            stroke: ink-secondary;
+            stroke-width: 1.5px;
+            commands: "M6.5 1.5a5 5 0 1 0 0.01 0z M10.2 10.2l3.6 3.6";
+        }
+
+        filter := TextInput {
+            x: 40px;
+            y: 0px;
+            width: parent.width - 52px;
+            height: 100%;
+            single-line: true;
+            font-size: 16px;
+            color: ink;
+            vertical-alignment: center;
+            selection-background-color: dark ? #60cdff66 : #005fb855;
+            selection-foreground-color: ink;
+
+            key-pressed(event) => {
+                if self.preedit-text != "" {
+                    return reject;
+                }
+                if event.text == Key.Escape {
+                    if root.menu-open {
+                        root.menu-open = false;
+                        return accept;
+                    }
+                    root.escape();
+                    return accept;
+                }
+                if root.menu-open && event.modifiers.alt && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.meta
+                    && event.text.character-count == 1 && event.text.is-float()
+                    && event.text.to-float() >= 1 && event.text.to-float() <= 9 {
+                    root.menu-shortcut(round(event.text.to-float()));
+                    return accept;
+                }
+                if event.text == Key.Return {
+                    return accept;
+                }
+                reject
+            }
+
+            edited => {
+                root.edited(self.text);
+            }
+        }
+    }
+
+    if has-notice: Text {
+        x: filter-field.x;
+        y: 68px;
+        width: filter-width;
+        height: 24px;
+        text: notice;
+        color: critical;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    if tiles.length == 0: Text {
+        x: 48px;
+        y: grid-y;
+        width: parent.width - 96px;
+        height: max(0px, parent.height - grid-y);
+        text: "没有应用";
+        color: ink-secondary;
+        font-size: 14px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    grid := Flickable {
+        x: 0px;
+        y: grid-y;
+        width: parent.width;
+        height: max(0px, parent.height - grid-y);
+        content-width: self.width;
+        content-height: root.content-height;
+
+        changed content-y => {
+            root.report-view();
+        }
+
+        changed height => {
+            root.report-view();
+        }
+
+        for tile[index] in tiles: Rectangle {
+            x: tile.x;
+            y: tile.y;
+            width: cell-width;
+            height: cell-height;
+
+            tile-hit := TouchArea {
+                width: 100%;
+                height: 100%;
+
+                Rectangle {
+                    x: 4px;
+                    y: 2px;
+                    width: parent.width - 8px;
+                    height: parent.height - 4px;
+                    border-radius: 8px;
+                    background: tile-hit.has-hover && !root.menu-open ? selection-fill : transparent;
+                }
+
+                if tile.has-icon: Image {
+                    x: (parent.width - 40px) / 2;
+                    y: 12px;
+                    width: 40px;
+                    height: 40px;
+                    source: tile.icon;
+                    image-fit: contain;
+                }
+
+                if !tile.has-icon: Path {
+                    x: (parent.width - 28px) / 2;
+                    y: 18px;
+                    width: 28px;
+                    height: 28px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    fill: transparent;
+                    stroke: accent;
+                    stroke-width: 1.5px;
+                    commands: "M4.5 4.5h6v6h-6z M13.5 4.5h6v6h-6z M4.5 13.5h6v6h-6z M13.5 13.5h6v6h-6z";
+                }
+
+                Text {
+                    x: 6px;
+                    y: 58px;
+                    width: parent.width - 12px;
+                    height: 36px;
+                    text: tile.name;
+                    color: ink;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: top;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                        root.open-menu(index, tile.x + tile-hit.mouse-x, grid.y + tile.y + grid.content-y + tile-hit.mouse-y);
+                    }
+                }
+                clicked => {
+                    if !root.menu-open {
+                        root.activate(index);
+                    }
+                }
+            }
+        }
+    }
+
+    if menu-shown: TouchArea {
+        width: parent.width;
+        height: parent.height;
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.move {
+                root.menu-hover = -1;
+            }
+            if event.kind == PointerEventKind.down {
+                root.menu-open = false;
+            }
+        }
+    }
+
+    if menu-shown: Rectangle {
+        x: menu-draw-x;
+        y: menu-draw-y;
+        width: menu-width;
+        height: menu-block;
+        border-radius: 8px;
+        background: solid-color;
+        border-width: 1px;
+        border-color: divider;
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        for item[index] in menu-items: Rectangle {
+            x: menu-pad;
+            y: menu-pad + index * menu-item-h;
+            width: parent.width - menu-pad * 2;
+            height: menu-item-h;
+            border-radius: 6px;
+            background: item.enabled && menu-hover == index ? selection-fill : transparent;
+
+            Text {
+                x: 12px;
+                width: parent.width - 12px - 64px;
+                height: parent.height;
+                text: item.label;
+                color: item.enabled ? ink : ink-tertiary;
+                font-size: 14px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Text {
+                x: parent.width - 12px - 48px;
+                width: 48px;
+                height: parent.height;
+                text: item.hint;
+                color: ink-tertiary;
+                font-size: 12px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                enabled: item.enabled;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.move {
+                        root.menu-hover = index;
+                    }
+                }
+                clicked => {
+                    root.menu-activate(index);
+                    root.menu-open = false;
+                }
+            }
+        }
+    }
+}

@@ -16,6 +16,7 @@ mod quit;
 mod recording;
 mod startup;
 mod theme;
+mod wall;
 
 pub use bar::{
     AltRoute, AppMenuAction, AppMenuItem, BAR_WIDTH, BASE_DPI, Backdrop, BackdropInput,
@@ -52,6 +53,7 @@ pub use startup::{RunValueAction, quoted_executable, run_value_action};
 pub use theme::{
     ResolvedTheme, SystemLight, is_immersive_color_set, resolve_theme, system_light_from_dword,
 };
+pub use wall::{CELL_H, CELL_W, WallGrid, grid, tile_xy, visible_indices};
 
 /// 托盘菜单的一项。顺序与产品规格「面板」里列出的入口一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

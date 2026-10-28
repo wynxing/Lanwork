@@ -30,6 +30,8 @@ mod secret_form;
 #[cfg(windows)]
 mod apps_page;
 #[cfg(windows)]
+mod appwall;
+#[cfg(windows)]
 mod bar_win;
 #[cfg(windows)]
 mod favicon_http;
@@ -191,6 +193,7 @@ mod tests {
         let icon = "icon: @image-url(\"../assets/lanwork-256.png\");";
         for (name, source) in [
             ("searchbar.slint", include_str!("../ui/searchbar.slint")),
+            ("appwall.slint", include_str!("../ui/appwall.slint")),
             ("panel.slint", include_str!("../ui/panel.slint")),
             ("notefloat.slint", include_str!("../ui/notefloat.slint")),
             ("shelffloat.slint", include_str!("../ui/shelffloat.slint")),
@@ -205,6 +208,30 @@ mod tests {
         let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
         let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
         assert_eq!((width, height), (256, 256));
+    }
+
+    #[test]
+    fn the_app_wall_opens_from_the_search_bar() {
+        let bar = include_str!("../ui/searchbar.slint");
+        assert!(bar.contains("callback toggle-wall();"));
+        assert!(bar.contains("wall-open"));
+        assert!(bar.contains("show-results: !wall-open"));
+        let wall = include_str!("../ui/appwall.slint");
+        assert!(wall.contains("没有应用"));
+        assert!(wall.contains("callback activate(int);"));
+        assert!(wall.contains("callback open-menu(int, length, length);"));
+        assert!(wall.contains("callback menu-shortcut(int);"));
+        let apps = include_str!("../ui/appspage.slint");
+        assert!(!apps.contains("应用墙"));
+        let source = include_str!("appwall.rs");
+        assert!(source.contains("wall_apps"));
+        assert!(source.contains("app_menu"));
+        assert!(!source.contains("RegisterHotKey"));
+        let host = include_str!("host.rs");
+        assert!(host.contains("appwall::install"));
+        let search = include_str!("searchbar.rs");
+        assert!(search.contains("fn toggle_wall"));
+        assert!(search.contains("appwall::dismiss"));
     }
 
     #[test]

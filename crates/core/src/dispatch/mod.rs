@@ -19,7 +19,7 @@ pub use model::{
 };
 pub use schedule::{
     AppLookup, Dispatch, FileLookup, Monotonic, PathRequest, PollReport, Services, Sides,
-    SystemClock,
+    SystemClock, icon_of,
 };
 pub use usage::{USAGE_SAVE_DELAY, query_hash};
 

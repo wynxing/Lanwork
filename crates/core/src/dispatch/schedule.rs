@@ -6,8 +6,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use crate::apps::{
-    AppHit, AppIndex, HiddenApp, LaunchTarget, UserCatalog, launch_key, load_user_catalog,
-    save_user_catalog,
+    AppHit, AppIndex, HiddenApp, LaunchTarget, UserCatalog, WallEntry, launch_key,
+    load_user_catalog, save_user_catalog,
 };
 use crate::files::{
     FILE_INDEX_UNAVAILABLE, FileCommands, FileHit, FileKind, FileQueryResult, FileSource,
@@ -52,6 +52,22 @@ impl Monotonic for SystemClock {
 pub trait AppLookup: Send {
     fn query(&mut self, text: &str) -> Vec<AppHit>;
 
+    /// 应用墙。空过滤是未隐藏的全部。默认实现没有整表，只把非空过滤交给 [`Self::query`]。
+    fn wall(&mut self, filter: &str) -> Vec<WallEntry> {
+        let filter = filter.trim();
+        if filter.is_empty() {
+            Vec::new()
+        } else {
+            self.query(filter)
+                .into_iter()
+                .map(|hit| WallEntry {
+                    entry: hit.entry,
+                    kind: Some(hit.kind),
+                })
+                .collect()
+        }
+    }
+
     fn hide(&mut self, _key: &str) -> Result<(), String> {
         Err("应用索引不支持隐藏".to_owned())
     }
@@ -77,6 +93,10 @@ pub trait AppLookup: Send {
 impl AppLookup for AppIndex {
     fn query(&mut self, text: &str) -> Vec<AppHit> {
         AppIndex::query(self, text)
+    }
+
+    fn wall(&mut self, filter: &str) -> Vec<WallEntry> {
+        AppIndex::wall(self, filter)
     }
 
     fn hide(&mut self, key: &str) -> Result<(), String> {
@@ -334,6 +354,12 @@ impl Dispatch {
             return Err(err);
         }
         Ok(())
+    }
+
+    /// 应用墙上的条目。空过滤列出未隐藏的应用，有过滤时与搜索里的应用同一套匹配。
+    #[must_use]
+    pub fn wall_apps(&self, filter: &str) -> Vec<WallEntry> {
+        storage::lock_mutex(&self.apps).wall(filter)
     }
 
     /// 设置页要列出的隐藏项。
@@ -1081,16 +1107,22 @@ fn app_location(target: &LaunchTarget) -> String {
 }
 
 fn app_icon(hit: &AppHit) -> Option<super::model::IconKey> {
-    if let Some(path) = &hit.entry.icon_path {
+    icon_of(&hit.entry)
+}
+
+/// 一条应用在图标缓存里的键。没有可取的文件或 AUMID 时为 `None`。
+#[must_use]
+pub fn icon_of(entry: &crate::apps::AppEntry) -> Option<super::model::IconKey> {
+    if let Some(path) = &entry.icon_path {
         let path = path.to_string_lossy().to_string();
         if !path.is_empty() {
             return Some(super::model::IconKey {
                 path,
-                index: hit.entry.icon_index,
+                index: entry.icon_index,
             });
         }
     }
-    match &hit.entry.target {
+    match &entry.target {
         LaunchTarget::Path { path, .. } => {
             let path = path.to_string_lossy().to_string();
             (!path.is_empty()).then_some(super::model::IconKey { path, index: 0 })
