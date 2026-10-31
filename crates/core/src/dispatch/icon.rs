@@ -4,6 +4,7 @@
 //! 命中顺序是内存、磁盘、系统取图。取到后写回内存和磁盘。失败不写磁盘。
 //! 磁盘目录由调用方传入，正式进程用 `%LOCALAPPDATA%\Lanwork\cache\icons`。
 //! 搜索和应用墙的可见项，以及空闲时的应用墙第一屏，才会来取。本模块不决定哪一条可见。
+//! 第一屏放不进这个上限时，留下列表开头的那一段；再往后的预取只写磁盘。
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -67,6 +68,7 @@ impl IconLoader for ShellIcons {
     }
 }
 
+#[derive(Clone)]
 struct MemoryIcon {
     image: RgbaImage,
     stamp: SourceStamp,
@@ -156,12 +158,55 @@ impl IconCache {
         self.fresh_memory(key)
     }
 
-    /// 把这些键从后往前记成刚用过的，列表开头留在 128 项里面。
+    /// 留下 `keys` 从开头起、放得进 128 项和 8 MiB 的那一段，并把它排到最近使用的一端。
+    /// 已经被挤掉、磁盘上还有的，从磁盘读回。磁盘没有的跳过，不向系统取图。
+    /// 这一段之后的键可以不在内存里。
     pub fn prefer(&mut self, keys: &[IconKey]) {
-        for key in keys.iter().rev() {
-            if self.map.contains_key(key) {
+        let mut kept: Vec<(IconKey, Option<MemoryIcon>)> = Vec::new();
+        let mut bytes = 0usize;
+        for key in keys {
+            if kept.len() >= ICON_CACHE_ITEMS {
+                break;
+            }
+            let (size, revived) = if self.has_fresh(key) {
+                let size = self
+                    .map
+                    .get(key)
+                    .map(|icon| icon.image.pixels.len())
+                    .unwrap_or(0);
+                (size, None)
+            } else if let Some(icon) = self.disk_copy(key) {
+                (icon.image.pixels.len(), Some(icon))
+            } else {
+                continue;
+            };
+            if size > ICON_CACHE_BYTES {
+                continue;
+            }
+            if bytes + size > ICON_CACHE_BYTES {
+                break;
+            }
+            bytes += size;
+            kept.push((key.clone(), revived));
+        }
+        if kept.iter().all(|(_, revived)| revived.is_none()) {
+            for (key, _) in kept.iter().rev() {
                 self.touch(key);
             }
+            return;
+        }
+        let mut restored = Vec::with_capacity(kept.len());
+        for (key, revived) in kept {
+            let Some(icon) = revived.or_else(|| self.fresh_copy(&key)) else {
+                continue;
+            };
+            restored.push((key, icon));
+        }
+        for (key, _) in &restored {
+            self.remove_key(key);
+        }
+        for (key, icon) in restored.into_iter().rev() {
+            self.insert(key, icon);
         }
     }
 
@@ -186,16 +231,38 @@ impl IconCache {
     }
 
     fn fresh_memory(&mut self, key: &IconKey) -> Option<RgbaImage> {
-        let stamp = icon_disk::source_stamp(&key.path);
-        let fresh = self.map.get(key).is_some_and(|entry| entry.stamp == stamp);
-        if fresh {
+        let image = self.fresh_copy(key).map(|icon| icon.image);
+        if image.is_some() {
             self.touch(key);
-            return self.map.get(key).map(|entry| entry.image.clone());
         }
-        if self.map.contains_key(key) {
-            self.remove_key(key);
+        image
+    }
+
+    /// 内存里的图还对得上源文件。对不上就从内存去掉。不改使用次序。
+    fn has_fresh(&mut self, key: &IconKey) -> bool {
+        let stamp = icon_disk::source_stamp(&key.path);
+        match self.map.get(key) {
+            Some(entry) if entry.stamp == stamp => true,
+            Some(_) => {
+                self.remove_key(key);
+                false
+            }
+            None => false,
         }
-        None
+    }
+
+    /// 内存里的图还对得上源文件时复制出来。对不上就从内存去掉。不改使用次序。
+    fn fresh_copy(&mut self, key: &IconKey) -> Option<MemoryIcon> {
+        if self.has_fresh(key) {
+            self.map.get(key).cloned()
+        } else {
+            None
+        }
+    }
+
+    fn disk_copy(&self, key: &IconKey) -> Option<MemoryIcon> {
+        let (image, stamp) = self.disk.as_ref().and_then(|disk| disk.load(key))?;
+        Some(MemoryIcon { image, stamp })
     }
 
     fn remember(&mut self, key: &IconKey, image: RgbaImage) -> Option<RgbaImage> {
@@ -346,16 +413,31 @@ pub enum PreloadLoad {
 }
 
 /// 空闲预热的一次取图。用户批次还在时等到它结束；等到之后用户又开始了，就返回 [`PreloadLoad::Yield`]。
+/// 成功的图写入内存和磁盘。
 pub fn load_preload(cache: &Mutex<IconCache>, key: &IconKey) -> PreloadLoad {
+    wait_until_idle(cache);
+    match fetch(cache, key, true) {
+        Fetch::Image(image) => PreloadLoad::Ready(image),
+        Fetch::Yield => PreloadLoad::Yield,
+    }
+}
+
+/// 空闲预热里、内存放不下的那一段。写入磁盘，不放进内存，也不改已在内存里的次序。
+/// 用户批次还在时等到它结束；等到之后用户又开始了，就返回 [`PreloadLoad::Yield`]。
+pub fn load_preload_disk(cache: &Mutex<IconCache>, key: &IconKey) -> PreloadLoad {
+    wait_until_idle(cache);
+    match fetch_disk(cache, key) {
+        Fetch::Image(image) => PreloadLoad::Ready(image),
+        Fetch::Yield => PreloadLoad::Yield,
+    }
+}
+
+fn wait_until_idle(cache: &Mutex<IconCache>) {
     let gate = {
         let cache = guard(cache);
         Arc::clone(&cache.gate)
     };
     gate.wait_idle();
-    match fetch(cache, key, true) {
-        Fetch::Image(image) => PreloadLoad::Ready(image),
-        Fetch::Yield => PreloadLoad::Yield,
-    }
 }
 
 enum Fetch {
@@ -389,6 +471,39 @@ fn fetch(cache: &Mutex<IconCache>, key: &IconKey, preload: bool) -> Fetch {
         return Fetch::Image(Some(existing));
     }
     Fetch::Image(cache.remember(key, image))
+}
+
+/// 预热后段：命中内存或磁盘时不改内存。未命中才向系统取图，成功后只写磁盘。
+fn fetch_disk(cache: &Mutex<IconCache>, key: &IconKey) -> Fetch {
+    let (loader, gate) = {
+        let mut cache = guard(cache);
+        if let Some(icon) = cache.fresh_copy(key) {
+            return Fetch::Image(Some(icon.image));
+        }
+        if !cache.gate.is_idle() {
+            return Fetch::Yield;
+        }
+        if let Some(icon) = cache.disk_copy(key) {
+            return Fetch::Image(Some(icon.image));
+        }
+        (Arc::clone(&cache.loader), Arc::clone(&cache.gate))
+    };
+    let image = {
+        let mut loader = guard(&loader);
+        if !gate.is_idle() {
+            return Fetch::Yield;
+        }
+        loader.load(key)
+    };
+    let Some(image) = image else {
+        return Fetch::Image(None);
+    };
+    let cache = guard(cache);
+    if let Some(disk) = &cache.disk {
+        let stamp = icon_disk::source_stamp(&key.path);
+        disk.store(key, &image, stamp);
+    }
+    Fetch::Image(Some(image))
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -593,7 +708,7 @@ mod tests {
 
     use super::{
         ICON_CACHE_BYTES, ICON_CACHE_ITEMS, IconCache, IconLoader, PreloadLoad, RgbaImage,
-        UserBatch, load_preload,
+        UserBatch, load_preload, load_preload_disk,
     };
     use crate::dispatch::model::IconKey;
     use crate::storage::test_temp::TempDir;
@@ -633,6 +748,18 @@ mod tests {
             image,
             loads: Arc::clone(&loads),
         });
+        (cache, loads)
+    }
+
+    fn fixed_disk(dir: &std::path::Path, image: RgbaImage) -> (IconCache, Arc<AtomicUsize>) {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let cache = IconCache::with_disk(
+            Fixed {
+                image,
+                loads: Arc::clone(&loads),
+            },
+            dir,
+        );
         (cache, loads)
     }
 
@@ -724,6 +851,63 @@ mod tests {
         assert!(cache.contains(&key(9)));
         assert!(!cache.contains(&key(10)));
         assert!(cache.contains(&key(count)));
+    }
+
+    #[test]
+    fn prefer_puts_the_front_back_when_the_list_outruns_the_cache() {
+        let temp = TempDir::new();
+        let (mut cache, loads) = fixed_disk(temp.path(), pixel());
+        let count = ICON_CACHE_ITEMS + 40;
+        let keys: Vec<IconKey> = (0..count as i32).map(key).collect();
+        for icon in &keys {
+            assert!(cache.get(icon).is_some());
+        }
+        assert!(!cache.contains(&key(0)));
+        assert!(cache.contains(keys.last().expect("tail")));
+        let extracted = loads.load(Ordering::SeqCst);
+        cache.prefer(&keys);
+        assert_eq!(loads.load(Ordering::SeqCst), extracted);
+        assert!(cache.contains(&key(0)));
+        assert!(cache.contains(&key(ICON_CACHE_ITEMS as i32 - 1)));
+        assert!(!cache.contains(keys.last().expect("tail")));
+        assert!(cache.len() <= ICON_CACHE_ITEMS);
+        assert!(cache.byte_len() <= ICON_CACHE_BYTES);
+    }
+
+    #[test]
+    fn preload_past_capacity_keeps_the_front_and_leaves_the_tail_on_disk() {
+        let temp = TempDir::new();
+        let dir = temp.path().join("icons");
+        let loads = Arc::new(AtomicUsize::new(0));
+        let cache = Arc::new(Mutex::new(IconCache::with_disk(
+            Fixed {
+                image: pixel(),
+                loads: Arc::clone(&loads),
+            },
+            &dir,
+        )));
+        for index in 0..ICON_CACHE_ITEMS as i32 {
+            assert!(matches!(
+                load_preload(&cache, &key(index)),
+                PreloadLoad::Ready(Some(_))
+            ));
+        }
+        let tail = key(ICON_CACHE_ITEMS as i32);
+        assert!(matches!(
+            load_preload_disk(&cache, &tail),
+            PreloadLoad::Ready(Some(_))
+        ));
+        {
+            let cache = cache.lock().unwrap();
+            assert!(cache.contains(&key(0)));
+            assert!(!cache.contains(&tail));
+            assert_eq!(cache.len(), ICON_CACHE_ITEMS);
+        }
+        let extracted = loads.load(Ordering::SeqCst);
+        let (mut again, again_loads) = fixed_disk(&dir, pixel());
+        assert!(again.get(&tail).is_some());
+        assert_eq!(again_loads.load(Ordering::SeqCst), 0);
+        assert_eq!(loads.load(Ordering::SeqCst), extracted);
     }
 
     struct Marked {
@@ -882,8 +1066,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn preload_waits_until_the_user_batch_finishes() {
+    fn user_batch_runs_before(next: fn(&Mutex<IconCache>, &IconKey) -> PreloadLoad) {
         let state = Arc::new(SlowState {
             started: Mutex::new(Vec::new()),
             started_cv: Condvar::new(),
@@ -930,7 +1113,7 @@ mod tests {
 
         let next_cache = Arc::clone(&cache);
         let next = std::thread::spawn(move || {
-            load_preload(
+            next(
                 &next_cache,
                 &IconKey {
                     path: "next".to_owned(),
@@ -970,5 +1153,15 @@ mod tests {
         assert!(matches!(next.join().unwrap(), PreloadLoad::Ready(Some(_))));
         let started = state.started.lock().unwrap();
         assert_eq!(started.as_slice(), ["slow", "user", "next"]);
+    }
+
+    #[test]
+    fn preload_waits_until_the_user_batch_finishes() {
+        user_batch_runs_before(load_preload);
+    }
+
+    #[test]
+    fn preload_disk_waits_until_the_user_batch_finishes() {
+        user_batch_runs_before(load_preload_disk);
     }
 }

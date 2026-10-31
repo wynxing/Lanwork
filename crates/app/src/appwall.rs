@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use lanwork_core::apps::LaunchError;
 use lanwork_core::dispatch::{
-    Dispatch, IconCache, IconKey, PreloadLoad, RgbaImage, UserBatch, icon_of, load_preload,
+    Dispatch, ICON_CACHE_ITEMS, IconCache, IconKey, PreloadLoad, RgbaImage, UserBatch, icon_of,
+    load_preload, load_preload_disk,
 };
 use lanwork_core::shell::{AltRoute, WallGrid};
 use lanwork_core::shell::{
@@ -852,26 +853,47 @@ fn preload_main(cache: Arc<Mutex<IconCache>>, dispatch: Arc<Dispatch>, start: Re
         }
         let (width, height) = preload_screen();
         let keys = preload_keys(&dispatch, width, height);
-        let mut yielded = false;
-        for key in &keys {
-            if !preload_idle(
-                WALL_OPEN.load(Ordering::Relaxed),
-                SEARCH_SHOWN.load(Ordering::Relaxed),
-            ) {
-                yielded = true;
-                break;
-            }
-            if matches!(load_preload(&cache, key), PreloadLoad::Yield) {
-                yielded = true;
-                break;
-            }
+        let front = keys.len().min(ICON_CACHE_ITEMS);
+        // 墙头先进入内存。后段只写磁盘，避免 128 项上限把开头挤掉。
+        if !preload_slice(&cache, &keys[..front], false) {
+            std::thread::sleep(PRELOAD_BUSY);
+            continue;
         }
-        if !yielded {
+        {
             let mut cache = lock_cache(&cache);
             cache.prefer(&keys);
         }
-        std::thread::sleep(if yielded { PRELOAD_BUSY } else { PRELOAD_PAUSE });
+        if !preload_slice(&cache, &keys[front..], true) {
+            std::thread::sleep(PRELOAD_BUSY);
+            continue;
+        }
+        {
+            let mut cache = lock_cache(&cache);
+            cache.prefer(&keys);
+        }
+        std::thread::sleep(PRELOAD_PAUSE);
     }
+}
+
+/// 这一段全部取完返回真。界面忙起来，或用户取图插进来，就停并返回假。
+fn preload_slice(cache: &Mutex<IconCache>, keys: &[IconKey], disk_only: bool) -> bool {
+    for key in keys {
+        if !preload_idle(
+            WALL_OPEN.load(Ordering::Relaxed),
+            SEARCH_SHOWN.load(Ordering::Relaxed),
+        ) {
+            return false;
+        }
+        let loaded = if disk_only {
+            load_preload_disk(cache, key)
+        } else {
+            load_preload(cache, key)
+        };
+        if matches!(loaded, PreloadLoad::Yield) {
+            return false;
+        }
+    }
+    true
 }
 
 fn preload_screen() -> (u32, u32) {

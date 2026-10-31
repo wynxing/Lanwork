@@ -12,7 +12,7 @@ mod usage;
 
 pub use icon::{
     ICON_CACHE_BYTES, ICON_CACHE_ITEMS, IconCache, IconLoader, MissingIcons, PreloadLoad,
-    RgbaImage, ShellIcons, UserBatch, load_preload,
+    RgbaImage, ShellIcons, UserBatch, load_preload, load_preload_disk,
 };
 pub use icon_disk::ICON_DISK_DIR;
 pub use model::{
