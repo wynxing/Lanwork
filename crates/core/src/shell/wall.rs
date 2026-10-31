@@ -13,6 +13,8 @@ pub const GAP: u32 = 12;
 pub const PAD_X: u32 = 36;
 /// 网格内容上下留白。
 pub const PAD_Y: u32 = 8;
+/// 过滤条的逻辑高度，与应用墙界面的 `filter-band` 相同。
+pub const FILTER_BAND: u32 = 84;
 
 /// 一次排出来的网格。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +86,21 @@ pub fn visible_indices(
     start..end.max(start)
 }
 
+/// 窗口盖住整块屏幕时，第一屏要取图标的下标。含视口，再多留一行。
+/// `window_height` 是窗口逻辑高度，过滤条不放格子。
+#[must_use]
+pub fn first_screen(width: u32, window_height: u32, count: usize) -> std::ops::Range<usize> {
+    let laid = grid(width.max(1), count);
+    let viewport = window_height.saturating_sub(FILTER_BAND);
+    visible_indices(&laid, count, 0, viewport)
+}
+
+/// 应用墙和搜索条都没在屏幕上时，才预取第一屏图标。
+#[must_use]
+pub fn preload_idle(wall_open: bool, search_shown: bool) -> bool {
+    !wall_open && !search_shown
+}
+
 fn columns_for(width: u32) -> u32 {
     let usable = width.saturating_sub(PAD_X.saturating_mul(2));
     let stride = CELL_W + GAP;
@@ -96,7 +113,10 @@ fn columns_for(width: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CELL_H, CELL_W, GAP, PAD_X, PAD_Y, grid, tile_xy, visible_indices};
+    use super::{
+        CELL_H, CELL_W, FILTER_BAND, GAP, PAD_X, PAD_Y, first_screen, grid, preload_idle, tile_xy,
+        visible_indices,
+    };
 
     #[test]
     fn three_columns_center_in_the_window_and_stack_downward() {
@@ -124,5 +144,26 @@ mod tests {
         assert_eq!(visible, 0..9);
         assert!(visible_indices(&laid, 10, 0, 0).is_empty());
         assert!(visible_indices(&laid, 0, 0, 200).is_empty());
+    }
+
+    #[test]
+    fn first_screen_matches_the_open_viewport_plus_one_row() {
+        let width = PAD_X * 2 + CELL_W * 4 + GAP * 3;
+        let window_height = FILTER_BAND + 200;
+        let count = 40;
+        let range = first_screen(width, window_height, count);
+        let laid = grid(width, count);
+        assert_eq!(range, visible_indices(&laid, count, 0, 200));
+        assert!(range.end < count);
+        assert!(!range.is_empty());
+        assert!(first_screen(width, FILTER_BAND, count).is_empty());
+    }
+
+    #[test]
+    fn preload_runs_only_while_the_wall_and_search_bar_are_hidden() {
+        assert!(preload_idle(false, false));
+        assert!(!preload_idle(true, false));
+        assert!(!preload_idle(false, true));
+        assert!(!preload_idle(true, true));
     }
 }

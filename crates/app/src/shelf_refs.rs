@@ -9,11 +9,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lanwork_core::apps::{LaunchTarget, launch};
-use lanwork_core::dispatch::{IconCache, IconKey, RgbaImage};
+use lanwork_core::dispatch::{IconCache, IconKey, RgbaImage, UserBatch};
 use lanwork_core::panel::{ItemSelect, LinkedTodo, ShelfLine, passed_drag_threshold};
 use lanwork_core::shell::path_target;
 use lanwork_core::shelves::{IncomingRef, ShelfCommands};
@@ -394,6 +394,7 @@ pub(crate) fn spawn_probe(
                 .filter(|(_, present)| !present)
                 .map(|(path, _)| path)
                 .collect();
+            let batch = UserBatch::enter(&cache);
             let mut icons = Vec::new();
             for path in plan.to_icon {
                 if missing.contains(&path) {
@@ -403,11 +404,7 @@ pub(crate) fn spawn_probe(
                     path: path.clone(),
                     index: 0,
                 };
-                let image = cache
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .get(&key);
-                if let Some(image) = image {
+                if let Some(image) = batch.load(&key) {
                     icons.push((path, image));
                 }
             }

@@ -4,14 +4,17 @@
 //! 60ms 之后才发出。搜索条已接入，面板还没有。
 
 mod icon;
+mod icon_disk;
 mod index;
 mod model;
 mod schedule;
 mod usage;
 
 pub use icon::{
-    ICON_CACHE_BYTES, ICON_CACHE_ITEMS, IconCache, IconLoader, MissingIcons, RgbaImage, ShellIcons,
+    ICON_CACHE_BYTES, ICON_CACHE_ITEMS, IconCache, IconLoader, MissingIcons, PreloadLoad,
+    RgbaImage, ShellIcons, UserBatch, load_preload, load_preload_disk,
 };
+pub use icon_disk::ICON_DISK_DIR;
 pub use model::{
     FILE_QUERY_DELAY_MS, FileProgress, IconKey, LATENCY_METRIC_RESULT, LATENCY_SOURCE_EVERYTHING,
     LATENCY_SOURCE_LOCAL, LATENCY_SOURCE_WINDOWS_SEARCH, LatencyRecord, QueryView, RowDetail,

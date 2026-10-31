@@ -7,16 +7,21 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lanwork_core::apps::LaunchError;
-use lanwork_core::dispatch::{Dispatch, IconCache, IconKey, RgbaImage, icon_of};
+use lanwork_core::dispatch::{
+    Dispatch, ICON_CACHE_ITEMS, IconCache, IconKey, PreloadLoad, RgbaImage, UserBatch, icon_of,
+    load_preload, load_preload_disk,
+};
 use lanwork_core::shell::{AltRoute, WallGrid};
 use lanwork_core::shell::{
-    AppMenuAction, Backdrop, MonitorArea, WorkArea, alt_route, app_menu, app_menu_command, grid,
-    monitor_at, pointed_row, solid_rgb, tile_xy, to_logical, visible_indices,
+    AppMenuAction, Backdrop, FILTER_BAND, MonitorArea, WorkArea, alt_route, app_menu,
+    app_menu_command, first_screen, grid, monitor_at, pointed_row, preload_idle, solid_rgb,
+    tile_xy, to_logical, visible_indices,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle, Model as _, ModelRc, VecModel};
@@ -27,6 +32,25 @@ use crate::{AppWall, BarMenuItem, WallTile};
 
 thread_local! {
     static WALL: RefCell<Option<Wall>> = const { RefCell::new(None) };
+}
+
+static WALL_OPEN: AtomicBool = AtomicBool::new(false);
+static SEARCH_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// 界面循环起来之后再等一会儿，让启动画完，然后才预取第一屏。
+const PRELOAD_START: Duration = Duration::from_millis(400);
+/// 一整轮预取之后再看列表有没有变。
+const PRELOAD_PAUSE: Duration = Duration::from_secs(2);
+/// 搜索条或应用墙在屏幕上时，隔一小会儿再看是不是空闲了。
+const PRELOAD_BUSY: Duration = Duration::from_millis(150);
+
+/// 搜索条窗口是否正在屏幕上。应用墙预取用它判断界面是不是空闲。
+pub(crate) fn set_search_shown(shown: bool) {
+    SEARCH_SHOWN.store(shown, Ordering::Relaxed);
+}
+
+fn set_wall_open(open: bool) {
+    WALL_OPEN.store(open, Ordering::Relaxed);
 }
 
 fn with_wall(action: impl FnOnce(&mut Wall) + 'static) {
@@ -49,7 +73,18 @@ pub(crate) fn install(ui: AppWall, dispatch: Arc<Dispatch>, store: lanwork_core:
     let tiles = Rc::new(VecModel::<WallTile>::default());
     ui.set_tiles(ModelRc::from(Rc::clone(&tiles)));
     ui.set_menu_items(ModelRc::new(VecModel::<BarMenuItem>::default()));
-    let icons = IconPump::start(dispatch.icon_cache(), store.clone());
+    let icon_cache = dispatch.icon_cache();
+    let icons = IconPump::start(Arc::clone(&icon_cache), store.clone());
+    let (preload_tx, preload_rx) = mpsc::channel();
+    start_preload(
+        Arc::clone(&icon_cache),
+        Arc::clone(&dispatch),
+        store.clone(),
+        preload_rx,
+    );
+    slint::Timer::single_shot(PRELOAD_START, move || {
+        let _ = preload_tx.send(());
+    });
 
     ui.on_edited(|text| {
         let text = text.to_string();
@@ -110,6 +145,7 @@ pub(crate) fn install(ui: AppWall, dispatch: Arc<Dispatch>, store: lanwork_core:
             launching: false,
             menu_index: None,
             notice: None,
+            window_height: 0,
         });
     });
 }
@@ -212,6 +248,7 @@ struct Wall {
     launching: bool,
     menu_index: Option<usize>,
     notice: Option<String>,
+    window_height: u32,
 }
 
 struct Screen {
@@ -257,6 +294,7 @@ impl Wall {
 
     fn open_on(&mut self, anchor: Option<(i32, i32)>) {
         self.open = true;
+        set_wall_open(true);
         self.notice = None;
         self.push_notice();
         self.close_menu();
@@ -266,6 +304,7 @@ impl Wall {
         self.refresh_backdrop();
         if let Err(err) = self.ui.show() {
             self.open = false;
+            set_wall_open(false);
             self.store.log_warn(&format!("应用墙没有显示：{err}"));
             crate::searchbar::set_wall_open(false);
             return;
@@ -284,8 +323,12 @@ impl Wall {
             }
         }
         self.width = to_logical(screen.bounds.width(), screen.dpi).max(1);
+        self.window_height = to_logical(screen.bounds.height(), screen.dpi);
         self.scroll = 0;
         self.viewport = 0;
+        self.icons.clear();
+        self.failed.clear();
+        self.inflight.clear();
         self.ui.invoke_scroll_to_top();
         self.publish(self.dispatch.wall_apps(""));
         self.ui.invoke_focus_filter();
@@ -317,6 +360,7 @@ impl Wall {
             return;
         }
         self.open = false;
+        set_wall_open(false);
         self.close_menu();
         let _ = self.ui.hide();
         crate::searchbar::set_wall_open(false);
@@ -396,6 +440,7 @@ impl Wall {
     fn push_tiles(&mut self) {
         let laid = grid(self.width.max(1), self.entries.len());
         self.grid = laid;
+        self.warm_from_memory();
         self.ui.set_cell_width(px(laid.cell_w));
         self.ui.set_cell_height(px(laid.cell_h));
         self.ui.set_content_height(px(laid.content_height));
@@ -441,12 +486,48 @@ impl Wall {
         self.load_icons();
     }
 
-    fn load_icons(&mut self) {
-        let viewport = if self.viewport == 0 {
-            900
-        } else {
+    fn icon_viewport(&self) -> u32 {
+        if self.viewport > 0 {
             self.viewport
+        } else {
+            self.window_height.saturating_sub(FILTER_BAND)
+        }
+    }
+
+    /// 内存里已经有的可见图标直接画上。磁盘和系统取图仍走图标线程。
+    fn warm_from_memory(&mut self) {
+        let range = visible_indices(
+            &self.grid,
+            self.entries.len(),
+            self.scroll,
+            self.icon_viewport(),
+        );
+        let Some(visible) = self.entries.get(range) else {
+            return;
         };
+        let mut found = Vec::new();
+        {
+            let mut cache = lock_cache(&self.icon_pump.cache);
+            for entry in visible {
+                let Some(key) = icon_of(&entry.entry) else {
+                    continue;
+                };
+                if self.icons.contains_key(&key) {
+                    continue;
+                }
+                if let Some(image) = cache.peek(&key) {
+                    found.push((key, image));
+                }
+            }
+        }
+        for (key, image) in found {
+            self.failed.remove(&key);
+            self.icons.insert(key, to_image(&image));
+        }
+    }
+
+    fn load_icons(&mut self) {
+        let viewport = self.icon_viewport();
         let range = visible_indices(&self.grid, self.entries.len(), self.scroll, viewport);
         let mut needed = HashSet::new();
         if let Some(visible) = self.entries.get(range) {
@@ -671,20 +752,25 @@ fn receive_icons(requested: Vec<IconKey>, loaded: Vec<(IconKey, RgbaImage)>) {
 
 struct IconPump {
     tx: Option<Sender<Vec<IconKey>>>,
+    cache: Arc<Mutex<IconCache>>,
 }
 
 impl IconPump {
     fn start(cache: Arc<Mutex<IconCache>>, store: lanwork_core::storage::Store) -> Self {
         let (tx, rx) = mpsc::channel();
         let log = store.clone();
+        let worker_cache = Arc::clone(&cache);
         let spawned = std::thread::Builder::new()
             .name("lanwork-wall".into())
-            .spawn(move || icon_main(cache, store, rx));
+            .spawn(move || icon_main(worker_cache, store, rx));
         match spawned {
-            Ok(_) => Self { tx: Some(tx) },
+            Ok(_) => Self {
+                tx: Some(tx),
+                cache,
+            },
             Err(err) => {
                 log.log_warn(&format!("应用墙图标线程没有启动：{err}"));
-                Self { tx: None }
+                Self { tx: None, cache }
             }
         }
     }
@@ -721,10 +807,10 @@ fn icon_main(
             requested = newer;
         }
         let loaded = {
-            let mut cache = lock_cache(&cache);
+            let batch = UserBatch::enter(&cache);
             let mut loaded = Vec::new();
             for key in &requested {
-                if let Some(image) = cache.get(key) {
+                if let Some(image) = batch.load(key) {
                     loaded.push((key.clone(), image));
                 }
             }
@@ -737,6 +823,104 @@ fn icon_main(
             store.log_warn(&format!("应用墙图标没有交回界面：{err}"));
         }
     }
+}
+
+fn start_preload(
+    cache: Arc<Mutex<IconCache>>,
+    dispatch: Arc<Dispatch>,
+    store: lanwork_core::storage::Store,
+    start: Receiver<()>,
+) {
+    let spawned = std::thread::Builder::new()
+        .name("lanwork-icon-preload".into())
+        .spawn(move || preload_main(cache, dispatch, start));
+    if let Err(err) = spawned {
+        store.log_warn(&format!("应用墙图标预取没有启动：{err}"));
+    }
+}
+
+fn preload_main(cache: Arc<Mutex<IconCache>>, dispatch: Arc<Dispatch>, start: Receiver<()>) {
+    if start.recv().is_err() {
+        return;
+    }
+    loop {
+        if !preload_idle(
+            WALL_OPEN.load(Ordering::Relaxed),
+            SEARCH_SHOWN.load(Ordering::Relaxed),
+        ) {
+            std::thread::sleep(PRELOAD_BUSY);
+            continue;
+        }
+        let (width, height) = preload_screen();
+        let keys = preload_keys(&dispatch, width, height);
+        let front = keys.len().min(ICON_CACHE_ITEMS);
+        // 墙头先进入内存。后段只写磁盘，避免 128 项上限把开头挤掉。
+        if !preload_slice(&cache, &keys[..front], false) {
+            std::thread::sleep(PRELOAD_BUSY);
+            continue;
+        }
+        {
+            let mut cache = lock_cache(&cache);
+            cache.prefer(&keys);
+        }
+        if !preload_slice(&cache, &keys[front..], true) {
+            std::thread::sleep(PRELOAD_BUSY);
+            continue;
+        }
+        {
+            let mut cache = lock_cache(&cache);
+            cache.prefer(&keys);
+        }
+        std::thread::sleep(PRELOAD_PAUSE);
+    }
+}
+
+/// 这一段全部取完返回真。界面忙起来，或用户取图插进来，就停并返回假。
+fn preload_slice(cache: &Mutex<IconCache>, keys: &[IconKey], disk_only: bool) -> bool {
+    for key in keys {
+        if !preload_idle(
+            WALL_OPEN.load(Ordering::Relaxed),
+            SEARCH_SHOWN.load(Ordering::Relaxed),
+        ) {
+            return false;
+        }
+        let loaded = if disk_only {
+            load_preload_disk(cache, key)
+        } else {
+            load_preload(cache, key)
+        };
+        if matches!(loaded, PreloadLoad::Yield) {
+            return false;
+        }
+    }
+    true
+}
+
+fn preload_screen() -> (u32, u32) {
+    let screen = screen_at(bar_win::cursor_screen());
+    (
+        to_logical(screen.bounds.width(), screen.dpi).max(1),
+        to_logical(screen.bounds.height(), screen.dpi),
+    )
+}
+
+fn preload_keys(dispatch: &Dispatch, width: u32, height: u32) -> Vec<IconKey> {
+    let entries = dispatch.wall_apps("");
+    let range = first_screen(width, height, entries.len());
+    let Some(visible) = entries.get(range) else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    let mut keys = Vec::new();
+    for entry in visible {
+        let Some(key) = icon_of(&entry.entry) else {
+            continue;
+        };
+        if seen.insert(key.clone()) {
+            keys.push(key);
+        }
+    }
+    keys
 }
 
 fn lock_cache(cache: &Mutex<IconCache>) -> std::sync::MutexGuard<'_, IconCache> {

@@ -22,7 +22,8 @@ use crate::shelves::{ShelfCommands, normalize_path, normalize_web_url};
 use crate::storage::{self, EntityKind, Error as StorageError, StartupError, Store};
 use crate::todos::TodoCommands;
 
-use super::icon::{IconCache, IconLoader};
+use super::icon::{IconCache, IconLoader, UserBatch};
+use super::icon_disk::ICON_DISK_DIR;
 use super::index::MemoryIndex;
 use super::model::{
     DispatchError, FILE_DELAY_NS, FileProgress, LATENCY_METRIC_RESULT, LATENCY_SOURCE_EVERYTHING,
@@ -288,6 +289,7 @@ impl Dispatch {
     {
         let changes = store.subscribe();
         let usage = UsageHandle::open(store.clone());
+        let icon_dir = store.cache_dir().join(ICON_DISK_DIR);
         Self {
             store,
             usage,
@@ -307,7 +309,7 @@ impl Dispatch {
             apps: Mutex::new(Box::new(sides.apps)),
             files: Mutex::new(Box::new(sides.files)),
             clock: Mutex::new(Box::new(sides.clock)),
-            icons: Arc::new(Mutex::new(IconCache::new(sides.icons))),
+            icons: Arc::new(Mutex::new(IconCache::with_disk(sides.icons, icon_dir))),
             paths: Mutex::new(None),
         }
     }
@@ -555,12 +557,13 @@ impl Dispatch {
     }
 
     /// 只取当前可见行的图标。被 20 条名额丢掉的命中不会来取。
+    /// 这一批算作用户请求，空闲预热会等到它结束再继续。
     pub fn load_visible_icons(&self) -> Vec<(super::model::IconKey, super::icon::RgbaImage)> {
         let keys = storage::lock_mutex(&self.inner).visible_icon_keys();
-        let mut cache = storage::lock_mutex(&self.icons);
+        let batch = UserBatch::enter(&self.icons);
         let mut loaded = Vec::new();
         for key in keys {
-            if let Some(image) = cache.get(&key) {
+            if let Some(image) = batch.load(&key) {
                 loaded.push((key, image));
             }
         }
