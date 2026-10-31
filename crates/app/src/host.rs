@@ -12,7 +12,7 @@ use lanwork_core::CivilDate;
 use lanwork_core::apps::{AppIndex, load_user_catalog};
 use lanwork_core::backup::BackupCommands;
 use lanwork_core::config::{ConfigCommands, Fallback, Theme};
-use lanwork_core::dispatch::{Dispatch, IconCache, Services};
+use lanwork_core::dispatch::{Dispatch, ICON_DISK_DIR, IconCache, Services, ShellIcons};
 use lanwork_core::files::FileCommands;
 use lanwork_core::notes::NoteCommands;
 use lanwork_core::panel::PanelTab;
@@ -183,7 +183,12 @@ fn run_primary(store: &Store, primary: instance::Primary) -> Result<(), String> 
         );
         appwall::install(wall.clone_strong(), Arc::clone(dispatch), store.clone());
     }
-    let icons = icons.unwrap_or_else(|| Arc::new(Mutex::new(IconCache::shell())));
+    let icons = icons.unwrap_or_else(|| {
+        Arc::new(Mutex::new(IconCache::with_disk(
+            ShellIcons,
+            store.cache_dir().join(ICON_DISK_DIR),
+        )))
+    });
     crate::web_icons::install(&store.data_dir());
     if let Some(shelves) = &shelves {
         shelf_float::install(
