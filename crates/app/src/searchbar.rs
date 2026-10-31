@@ -22,13 +22,14 @@ use lanwork_core::dispatch::{
 use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::{classify_prefix, folder_tab_target, looks_like_local_path};
 use lanwork_core::shell::{
-    AltRoute, AppMenuAction, BAR_WIDTH, Backdrop, EnterChord, EscapeAction, HoverArm, MonitorArea,
-    PointerPos, ROW_HEIGHT, RowAction, WorkArea, alt_route, app_menu, app_menu_command,
+    AppMenuAction, BAR_WIDTH, Backdrop, EnterChord, EscapeAction, HoverArm, MonitorArea,
+    PointerPos, ROW_HEIGHT, ResultMenuAction, RowAction, WorkArea, app_menu_command, caret_at_end,
     draws_type_glyph, escape_action, group_label, hover_row, location_always_shown, match_span,
-    max_results_height, monitor_at, move_selection, path_target, place_bar, pointed_row,
-    row_action, row_offsets, selection_after_refresh, shortcut_rows, shortcut_target, solid_rgb,
-    status_line, text_after_hide, to_physical,
+    max_results_height, menu_index, monitor_at, move_selection, path_target, place_bar,
+    pointed_row, result_menu, row_action, row_offsets, selection_after_refresh, shelf_pick_menu,
+    shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
 };
+use lanwork_core::shelves::IncomingRef;
 use lanwork_core::storage::Store;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle, Model as _, ModelRc, VecModel};
@@ -114,7 +115,9 @@ pub(crate) fn install(
     ui.on_activate(|index| with_bar(move |bar| bar.activate(index)));
     ui.on_shortcut(|digit| with_bar(move |bar| bar.shortcut(digit)));
     ui.on_open_menu(|index, x, y| with_bar(move |bar| bar.open_menu(index, x, y)));
-    ui.on_menu_activate(|index| with_bar(move |bar| bar.menu_activate(index)));
+    ui.on_open_selected_menu(|| with_bar(Bar::open_selected_menu));
+    ui.on_caret_at_end(|offset| with_bar_sync(move |bar| bar.caret_at_end(offset)));
+    ui.on_menu_activate(|index| with_bar_sync(move |bar| bar.menu_activate(index)));
     ui.on_menu_shortcut(|digit| with_bar(move |bar| bar.menu_shortcut(digit)));
     ui.on_scrolled(|top| with_bar(move |bar| bar.scrolled(top)));
     ui.on_drag_window(|| with_bar(Bar::drag));
@@ -187,6 +190,7 @@ pub(crate) fn install(
         hwnd_ready: false,
         launching: false,
         menu_row: None,
+        menu_commands: Vec::new(),
         dragging: false,
         drag_origin: None,
         first_sequence: None,
@@ -301,6 +305,8 @@ struct Bar {
     launching: bool,
     /// 右键菜单对应的结果行。菜单关着时为 `None`。
     menu_row: Option<usize>,
+    /// 当前菜单的每一项。分组列表换上来时换成那些分组。
+    menu_commands: Vec<MenuCommand>,
     /// 拖动过程中，包括循环结束后留给迟到失焦的那两轮。
     dragging: bool,
     /// 这次按下时的左上角。松开后没变就不写配置。
@@ -892,15 +898,13 @@ impl Bar {
         self.push_shortcuts();
     }
 
-    /// Alt+数字。菜单开着时改选菜单。和 Enter 一样，组合输入期间、快速收集前缀下不打开结果。
+    /// Alt+数字。菜单开着时按当前菜单的项序选择。和 Enter 一样，组合输入期间、快速收集前缀下不打开结果。
     fn shortcut(&mut self, digit: i32) {
         let Ok(digit) = u32::try_from(digit) else {
             return;
         };
-        if let AltRoute::Menu(action) = alt_route(self.ui.get_menu_open(), digit) {
-            if let Some(action) = action {
-                self.run_menu(action);
-            }
+        if self.ui.get_menu_open() {
+            self.menu_shortcut(i32::try_from(digit).unwrap_or(0));
             return;
         }
         if let Some(index) = shortcut_target(self.shortcut_range(), digit) {
@@ -915,9 +919,34 @@ impl Bar {
         let Ok(digit) = u32::try_from(digit) else {
             return;
         };
-        if let AltRoute::Menu(Some(action)) = alt_route(true, digit) {
-            self.run_menu(action);
+        if let Some(index) = menu_index(digit, self.menu_commands.len()) {
+            let _ = self.run_menu_index(index);
         }
+    }
+
+    fn caret_at_end(&self, offset: i32) -> bool {
+        caret_at_end(&self.ui.get_text(), offset)
+    }
+
+    /// 光标在输入末尾时，右方向键打开当前选中行的菜单。
+    fn open_selected_menu(&mut self) {
+        if !self.ui.get_preedit().is_empty() {
+            return;
+        }
+        let Some(index) = i32::try_from(self.selected).ok() else {
+            return;
+        };
+        let (x, y) = self.keyboard_anchor(self.selected);
+        self.open_menu(index, x, y);
+    }
+
+    fn keyboard_anchor(&self, index: usize) -> (f32, f32) {
+        let row_y = px(self.offsets.get(index).copied().unwrap_or(0));
+        let viewport = px(self.content_height.min(self.max_list));
+        let max_top = (viewport - px(ROW_HEIGHT)).max(0.0);
+        let top = (row_y - self.scroll_top).clamp(0.0, max_top);
+        let y = px(INPUT_HEIGHT) + 1.0 + top + px(ROW_HEIGHT) / 2.0;
+        (px(BAR_WIDTH) - 24.0, y)
     }
 
     fn open_menu(&mut self, index: i32, x: f32, y: f32) {
@@ -927,10 +956,21 @@ impl Bar {
         let Some(row) = self.results.get(index) else {
             return;
         };
-        let lanwork_core::dispatch::RowDetail::App(hit) = &row.detail else {
+        let Some(items) = result_menu(&row.detail) else {
             return;
         };
-        let items: Vec<BarMenuItem> = app_menu(&hit.entry)
+        self.selected = index;
+        self.ui
+            .set_selected(i32::try_from(self.selected).unwrap_or(0));
+        self.menu_row = Some(index);
+        self.menu_commands = items
+            .iter()
+            .map(|item| MenuCommand {
+                action: MenuAction::Result(item.action),
+                enabled: item.enabled,
+            })
+            .collect();
+        let shown: Vec<BarMenuItem> = items
             .into_iter()
             .map(|item| BarMenuItem {
                 label: item.label.into(),
@@ -938,60 +978,217 @@ impl Bar {
                 enabled: item.enabled,
             })
             .collect();
-        self.selected = index;
-        self.ui
-            .set_selected(i32::try_from(self.selected).unwrap_or(0));
-        self.menu_row = Some(index);
+        self.show_menu(shown, x, y);
+    }
+
+    fn show_menu(&mut self, items: Vec<BarMenuItem>, x: f32, y: f32) {
         self.ui.set_menu_items(ModelRc::new(VecModel::from(items)));
         self.ui.set_menu_anchor_x(x);
         self.ui.set_menu_anchor_y(y);
         self.ui.set_menu_open(true);
+        self.ui.invoke_refresh_menu();
     }
 
-    fn menu_activate(&mut self, index: i32) {
+    /// 返回真表示菜单留着。
+    fn menu_activate(&mut self, index: i32) -> bool {
         let Ok(index) = usize::try_from(index) else {
-            return;
+            return false;
         };
-        let Some(action) = [
-            AppMenuAction::RunAsUser,
-            AppMenuAction::RunAsAdmin,
-            AppMenuAction::OpenFileFolder,
-            AppMenuAction::OpenTargetFolder,
-            AppMenuAction::Hide,
-        ]
-        .get(index)
-        .copied() else {
-            return;
-        };
-        self.run_menu(action);
+        self.run_menu_index(index)
     }
 
-    fn run_menu(&mut self, action: AppMenuAction) {
-        if self.launching {
-            return;
+    fn run_menu_index(&mut self, index: usize) -> bool {
+        let Some(command) = self.menu_commands.get(index).cloned() else {
+            return false;
+        };
+        if !command.enabled || self.launching {
+            return true;
         }
+        match command.action {
+            MenuAction::Result(action) => self.run_result(action),
+            MenuAction::Shelf(group_id) => {
+                self.add_to_shelf(group_id);
+                false
+            }
+        }
+    }
+
+    fn run_result(&mut self, action: ResultMenuAction) -> bool {
+        match action {
+            ResultMenuAction::CopyPath => {
+                self.copy_path();
+                false
+            }
+            ResultMenuAction::CopyFile => {
+                self.copy_file();
+                false
+            }
+            ResultMenuAction::CopyUrl => {
+                self.copy_url();
+                false
+            }
+            ResultMenuAction::AddToShelf => self.show_shelf_groups(),
+            other => self.run_row_action(other),
+        }
+    }
+
+    fn run_row_action(&mut self, action: ResultMenuAction) -> bool {
         let Some(index) = self.menu_row else {
-            return;
+            self.close_menu();
+            return false;
         };
         let Some(row) = self.results.get(index) else {
             self.close_menu();
-            return;
+            return false;
         };
-        let lanwork_core::dispatch::RowDetail::App(hit) = &row.detail else {
-            self.close_menu();
-            return;
+        let command = match (&row.detail, action) {
+            (RowDetail::App(hit), action) => {
+                app_action(action).and_then(|action| app_menu_command(&hit.entry, action))
+            }
+            (
+                RowDetail::File { .. } | RowDetail::Folder { .. },
+                ResultMenuAction::OpenContainingFolder,
+            ) => row_action(&row.detail, EnterChord::Ctrl),
+            (RowDetail::Note { id }, ResultMenuAction::FloatNote) => {
+                Some(RowAction::FloatNote { id: id.clone() })
+            }
+            _ => None,
         };
-        let Some(command) = app_menu_command(&hit.entry, action) else {
-            return;
+        let Some(command) = command else {
+            return true;
         };
         let usage = row.usage.clone();
         let query = self.view_text.clone();
         self.close_menu();
         self.perform(command, usage, query);
+        false
+    }
+
+    fn show_shelf_groups(&mut self) -> bool {
+        let Some(shelves) = self.dispatch.shelf_commands() else {
+            self.fail_menu("收纳服务没有打开");
+            return false;
+        };
+        let groups = match shelves.list() {
+            Ok(groups) => groups,
+            Err(err) => {
+                self.fail_menu(&err.to_string());
+                return false;
+            }
+        };
+        let pairs: Vec<(&str, &str)> = groups
+            .iter()
+            .map(|group| (group.id.as_str(), group.name.as_str()))
+            .collect();
+        let picks = shelf_pick_menu(&pairs);
+        self.menu_commands = picks
+            .iter()
+            .map(|pick| MenuCommand {
+                action: MenuAction::Shelf(pick.group_id.clone()),
+                enabled: true,
+            })
+            .collect();
+        let items: Vec<BarMenuItem> = picks
+            .into_iter()
+            .map(|pick| BarMenuItem {
+                label: pick.label.into(),
+                hint: pick.hint.into(),
+                enabled: true,
+            })
+            .collect();
+        self.ui.set_menu_items(ModelRc::new(VecModel::from(items)));
+        self.ui.invoke_refresh_menu();
+        true
+    }
+
+    fn add_to_shelf(&mut self, group_id: Option<String>) {
+        let Some((path, folder)) = self.menu_path() else {
+            self.close_menu();
+            return;
+        };
+        let Some(shelves) = self.dispatch.shelf_commands() else {
+            self.fail_menu("收纳服务没有打开");
+            return;
+        };
+        match shelves.add_refs(group_id.as_deref(), &[IncomingRef { path, folder }]) {
+            Ok(_) => self.note_shelf_added(),
+            Err(err) => self.fail_menu(&err.to_string()),
+        }
+    }
+
+    fn note_shelf_added(&mut self) {
+        self.error = None;
+        let text = self.ui.get_text().to_string();
+        self.close_menu();
+        self.submit(&text);
+        self.push_status();
+    }
+
+    fn copy_path(&mut self) {
+        let Some((path, _)) = self.menu_path() else {
+            self.close_menu();
+            return;
+        };
+        self.copy_text(&path);
+    }
+
+    fn copy_file(&mut self) {
+        let Some((path, _)) = self.menu_path() else {
+            self.close_menu();
+            return;
+        };
+        match crate::clipboard::copy_explorer_file(&path) {
+            Ok(()) => self.copied(),
+            Err(message) => self.fail_menu(&message),
+        }
+    }
+
+    fn copy_url(&mut self) {
+        let url = self.menu_row.and_then(|index| {
+            self.results.get(index).and_then(|row| match &row.detail {
+                RowDetail::Web { url } => Some(url.clone()),
+                _ => None,
+            })
+        });
+        let Some(url) = url else {
+            self.close_menu();
+            return;
+        };
+        self.copy_text(&url);
+    }
+
+    fn copy_text(&mut self, text: &str) {
+        match crate::clipboard::copy_text(text) {
+            Ok(()) => self.copied(),
+            Err(message) => self.fail_menu(&message),
+        }
+    }
+
+    fn copied(&mut self) {
+        self.error = None;
+        self.close_menu();
+        self.push_status();
+    }
+
+    fn menu_path(&self) -> Option<(String, bool)> {
+        let row = self.results.get(self.menu_row?)?;
+        match &row.detail {
+            RowDetail::File { path } => Some((path.clone(), false)),
+            RowDetail::Folder { path } => Some((path.clone(), true)),
+            _ => None,
+        }
+    }
+
+    fn fail_menu(&mut self, message: &str) {
+        self.store.log_warn(&format!("搜索条菜单：{message}"));
+        self.error = Some(message.to_owned());
+        self.close_menu();
+        self.push_status();
     }
 
     fn close_menu(&mut self) {
         self.menu_row = None;
+        self.menu_commands.clear();
         self.ui.set_menu_open(false);
     }
 
@@ -1262,6 +1459,30 @@ pub(crate) fn run_shell(action: &RowAction) -> Result<(), LaunchError> {
         | RowAction::PanelNote { .. }
         | RowAction::FloatNote { .. } => Ok(()),
     }
+}
+
+#[derive(Debug, Clone)]
+struct MenuCommand {
+    action: MenuAction,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+enum MenuAction {
+    Result(ResultMenuAction),
+    /// `None` 表示还没有分组，由服务创建「收纳」。
+    Shelf(Option<String>),
+}
+
+fn app_action(action: ResultMenuAction) -> Option<AppMenuAction> {
+    Some(match action {
+        ResultMenuAction::RunAsUser => AppMenuAction::RunAsUser,
+        ResultMenuAction::RunAsAdmin => AppMenuAction::RunAsAdmin,
+        ResultMenuAction::OpenFileFolder => AppMenuAction::OpenFileFolder,
+        ResultMenuAction::OpenTargetFolder => AppMenuAction::OpenTargetFolder,
+        ResultMenuAction::Hide => AppMenuAction::Hide,
+        _ => return None,
+    })
 }
 
 fn glyph(detail: &RowDetail) -> i32 {

@@ -9,6 +9,7 @@
 mod bar;
 mod bind;
 mod capture;
+mod clipboard;
 mod foreground;
 pub mod hotcorner;
 mod icon;
@@ -22,11 +23,12 @@ pub use bar::{
     AltRoute, AppMenuAction, AppMenuItem, BAR_WIDTH, BASE_DPI, Backdrop, BackdropInput,
     BarPlacement, DARK_SOLID_RGB, EnterChord, EscapeAction, FloatBackdrop, GROUP_GAP,
     HOVER_MOVE_PX, HOVER_SNAP_PX, HoverArm, LIGHT_SOLID_RGB, LIST_PAD, MIN_BACKDROP_BUILD,
-    MonitorArea, NO_RESULTS, PointerPos, ROW_HEIGHT, RowAction, SHORTCUT_COUNT, WorkArea,
-    alt_route, app_menu, app_menu_command, bar_origin, choose_backdrop, draws_type_glyph,
-    escape_action, float_backdrop, group_label, hover_row, location_always_shown, match_span,
-    max_results_height, monitor_at, move_selection, path_target, persistent_acrylic_abgr,
-    place_bar, pointed_row, reselect, row_action, row_offsets, selection_after_refresh,
+    MonitorArea, NO_RESULTS, PointerPos, ROW_HEIGHT, ResultMenuAction, ResultMenuItem, RowAction,
+    SHORTCUT_COUNT, ShelfPickItem, WorkArea, alt_hint, alt_route, app_menu, app_menu_command,
+    bar_origin, caret_at_end, choose_backdrop, draws_type_glyph, escape_action, float_backdrop,
+    group_label, hover_row, location_always_shown, match_span, max_results_height, menu_index,
+    monitor_at, move_selection, path_target, persistent_acrylic_abgr, place_bar, pointed_row,
+    reselect, result_menu, row_action, row_offsets, selection_after_refresh, shelf_pick_menu,
     shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_logical,
     to_physical,
 };
@@ -37,6 +39,10 @@ pub use bind::{
 };
 pub use capture::{
     CaptureStep, HotkeyRecorder, KeyEvent, KeyGate, KeyMods, Recorded, Route, capture_step,
+};
+pub use clipboard::{
+    DROPEFFECT_COPY, ExplorerFileCopy, PREFERRED_DROP_EFFECT_FORMAT, explorer_file_copy,
+    unicode_clipboard_text,
 };
 pub use foreground::{
     NUDGE_MAX_WAIT_MS, NUDGE_MIN_WAIT_MS, NudgeWait, VirtualScreen, ZeroMove, absolute_to_pixel,

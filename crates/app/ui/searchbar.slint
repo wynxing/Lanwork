@@ -93,10 +93,14 @@ export component SearchBar inherits Window {
     callback activate(int);
     // Alt+数字，参数 1 至 9。菜单开着时不调用，改走 menu-shortcut。
     callback shortcut(int);
-    // 在应用结果上松开右键。坐标是窗口里的逻辑像素。
+    // 在有菜单的结果上松开右键。坐标是窗口里的逻辑像素。
     callback open-menu(int, length, length);
-    // 菜单项下标，0 起。
-    callback menu-activate(int);
+    // 光标在输入末尾时，右方向键打开当前选中结果的菜单。
+    callback open-selected-menu();
+    // 光标的 UTF-8 字节偏移是否落在已提交文本的末尾。
+    callback caret-at-end(int) -> bool;
+    // 菜单项下标，0 起。返回真表示菜单留着（例如换成收纳分组）。
+    callback menu-activate(int) -> bool;
     // 菜单开着时的 Alt+数字，参数 1 至 9。
     callback menu-shortcut(int);
     in property <[BarMenuItem]> menu-items;
@@ -170,6 +174,11 @@ export component SearchBar inherits Window {
 
     public function scroll-to-top() {
         list.content-y = 0px;
+    }
+
+    // 换一批菜单项时清掉上一项的悬停。
+    public function refresh-menu() {
+        menu-hover = -1;
     }
 
     // 补全或回到上一层时换掉整段输入，光标停在末尾。`end` 是字节偏移。
@@ -263,6 +272,14 @@ export component SearchBar inherits Window {
                 if event.text == Key.DownArrow {
                     root.move-selection(true);
                     return accept;
+                }
+                if event.text == Key.RightArrow && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.alt && !event.modifiers.meta {
+                    if root.caret-at-end(self.cursor-position-byte-offset) {
+                        if !root.menu-open {
+                            root.open-selected-menu();
+                        }
+                        return accept;
+                    }
                 }
                 if event.modifiers.alt && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.meta
                     && event.text.character-count == 1 && event.text.is-float()
@@ -562,8 +579,9 @@ export component SearchBar inherits Window {
                     }
                 }
                 clicked => {
-                    root.menu-activate(index);
-                    root.menu-open = false;
+                    if !root.menu-activate(index) {
+                        root.menu-open = false;
+                    }
                 }
             }
         }
