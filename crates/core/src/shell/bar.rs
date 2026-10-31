@@ -9,6 +9,7 @@ use crate::apps::{
 };
 use crate::dispatch::{FileProgress, RowDetail, SearchGroup, SearchRow, UsageKey, ViewPhase};
 use crate::search::classify_prefix;
+use crate::shelves::DEFAULT_GROUP_NAME;
 
 /// `DWMWA_SYSTEMBACKDROP_TYPE` 从这个 build 起可用。不是产品最低版本。
 pub const MIN_BACKDROP_BUILD: u32 = 22621;
@@ -487,6 +488,166 @@ pub fn alt_route(menu_open: bool, digit: u32) -> AltRoute {
         _ => None,
     };
     AltRoute::Menu(action)
+}
+
+/// 搜索结果右键菜单的一项。应用五项仍由 [`app_menu`] 决定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultMenuAction {
+    RunAsUser,
+    RunAsAdmin,
+    OpenFileFolder,
+    OpenTargetFolder,
+    Hide,
+    /// 文件或文件夹的上一级。与 Ctrl+Enter 相同。
+    OpenContainingFolder,
+    CopyPath,
+    CopyFile,
+    /// 换成收纳分组列表，由用户选一个分组。
+    AddToShelf,
+    FloatNote,
+    CopyUrl,
+}
+
+/// 菜单上看得见的一行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultMenuItem {
+    pub action: ResultMenuAction,
+    pub label: &'static str,
+    pub hint: &'static str,
+    pub enabled: bool,
+}
+
+/// 加入收纳时列出的一个分组。`group_id` 为空表示还没有分组，选中后由服务创建「收纳」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShelfPickItem {
+    pub group_id: Option<String>,
+    pub label: String,
+    pub hint: &'static str,
+}
+
+const PATH_MENU: [(ResultMenuAction, &str, &str); 4] = [
+    (
+        ResultMenuAction::OpenContainingFolder,
+        "打开所在文件夹",
+        "Alt+1",
+    ),
+    (ResultMenuAction::CopyPath, "复制路径", "Alt+2"),
+    (ResultMenuAction::CopyFile, "复制文件", "Alt+3"),
+    (ResultMenuAction::AddToShelf, "加入收纳…", "Alt+4"),
+];
+
+/// 第 `index` 项的 Alt 提示。超过 9 项时为空字符串，数字没有对应项。
+#[must_use]
+pub fn alt_hint(index: usize) -> &'static str {
+    match index {
+        0 => "Alt+1",
+        1 => "Alt+2",
+        2 => "Alt+3",
+        3 => "Alt+4",
+        4 => "Alt+5",
+        5 => "Alt+6",
+        6 => "Alt+7",
+        7 => "Alt+8",
+        8 => "Alt+9",
+        _ => "",
+    }
+}
+
+/// 菜单开着时，Alt+数字对应的项下标。超出项数或超过 9 时为 `None`。
+#[must_use]
+pub fn menu_index(digit: u32, len: usize) -> Option<usize> {
+    let index = usize::try_from(digit.checked_sub(1)?).ok()?;
+    (index < SHORTCUT_COUNT && index < len).then_some(index)
+}
+
+/// 光标的 UTF-8 字节偏移落在已提交文本末尾。
+#[must_use]
+pub fn caret_at_end(text: &str, byte_offset: i32) -> bool {
+    usize::try_from(byte_offset).is_ok_and(|offset| offset == text.len())
+}
+
+/// 这一条结果的右键菜单。没有菜单的结果为 `None`。
+#[must_use]
+pub fn result_menu(detail: &RowDetail) -> Option<Vec<ResultMenuItem>> {
+    match detail {
+        RowDetail::App(hit) => Some(
+            app_menu(&hit.entry)
+                .into_iter()
+                .map(app_menu_item)
+                .collect(),
+        ),
+        RowDetail::File { path } | RowDetail::Folder { path } => Some(path_menu(path).to_vec()),
+        RowDetail::Note { id } => Some(vec![ResultMenuItem {
+            action: ResultMenuAction::FloatNote,
+            label: "悬浮",
+            hint: "Alt+1",
+            enabled: !id.is_empty(),
+        }]),
+        RowDetail::Web { url } => Some(vec![ResultMenuItem {
+            action: ResultMenuAction::CopyUrl,
+            label: "复制网址",
+            hint: "Alt+1",
+            enabled: text_usable(url),
+        }]),
+        RowDetail::Browser { .. }
+        | RowDetail::Todo { .. }
+        | RowDetail::WebSearch { .. }
+        | RowDetail::PathTimeout => None,
+    }
+}
+
+fn app_menu_item(item: AppMenuItem) -> ResultMenuItem {
+    let action = match item.action {
+        AppMenuAction::RunAsUser => ResultMenuAction::RunAsUser,
+        AppMenuAction::RunAsAdmin => ResultMenuAction::RunAsAdmin,
+        AppMenuAction::OpenFileFolder => ResultMenuAction::OpenFileFolder,
+        AppMenuAction::OpenTargetFolder => ResultMenuAction::OpenTargetFolder,
+        AppMenuAction::Hide => ResultMenuAction::Hide,
+    };
+    ResultMenuItem {
+        action,
+        label: item.label,
+        hint: item.hint,
+        enabled: item.enabled,
+    }
+}
+
+fn path_menu(path: &str) -> [ResultMenuItem; 4] {
+    let usable = text_usable(path);
+    PATH_MENU.map(|(action, label, hint)| ResultMenuItem {
+        action,
+        label,
+        hint,
+        enabled: match action {
+            ResultMenuAction::OpenContainingFolder => usable && parent_folder(path).is_some(),
+            _ => usable,
+        },
+    })
+}
+
+fn text_usable(text: &str) -> bool {
+    !text.is_empty() && !text.contains('\0')
+}
+
+/// 加入收纳时的分组列表。还没有分组时只有一行「收纳」，`group_id` 为空。
+#[must_use]
+pub fn shelf_pick_menu(groups: &[(&str, &str)]) -> Vec<ShelfPickItem> {
+    if groups.is_empty() {
+        return vec![ShelfPickItem {
+            group_id: None,
+            label: DEFAULT_GROUP_NAME.to_owned(),
+            hint: alt_hint(0),
+        }];
+    }
+    groups
+        .iter()
+        .enumerate()
+        .map(|(index, (id, name))| ShelfPickItem {
+            group_id: Some((*id).to_owned()),
+            label: (*name).to_owned(),
+            hint: alt_hint(index),
+        })
+        .collect()
 }
 
 /// 产品规格「搜索」的 Enter、Ctrl+Enter 和 Ctrl+Shift+Enter。没有动作时为 `None`。
@@ -1639,5 +1800,106 @@ mod tests {
             hover_row(&mut arm, PointerPos::from_physical(0, 40), 2, 4),
             Some(2)
         );
+    }
+
+    #[test]
+    fn result_menus_follow_the_row_kind() {
+        let app_detail = app(exe());
+        let RowDetail::App(hit) = &app_detail else {
+            panic!("app");
+        };
+        let menu = result_menu(&app_detail).expect("app menu");
+        assert_eq!(
+            menu.iter()
+                .map(|item| (item.label, item.hint, item.enabled))
+                .collect::<Vec<_>>(),
+            app_menu(&hit.entry)
+                .iter()
+                .map(|item| (item.label, item.hint, item.enabled))
+                .collect::<Vec<_>>()
+        );
+
+        let file = result_menu(&RowDetail::File {
+            path: "C:/Docs/a.txt".into(),
+        })
+        .expect("file menu");
+        assert_eq!(
+            file.iter()
+                .map(|item| (item.action, item.label, item.hint, item.enabled))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    ResultMenuAction::OpenContainingFolder,
+                    "打开所在文件夹",
+                    "Alt+1",
+                    true
+                ),
+                (ResultMenuAction::CopyPath, "复制路径", "Alt+2", true),
+                (ResultMenuAction::CopyFile, "复制文件", "Alt+3", true),
+                (ResultMenuAction::AddToShelf, "加入收纳…", "Alt+4", true),
+            ]
+        );
+        let root = result_menu(&RowDetail::Folder {
+            path: "notes.txt".into(),
+        })
+        .expect("folder menu");
+        assert!(!root[0].enabled, "没有上一级时打开所在文件夹不可用");
+        assert!(root[1].enabled && root[2].enabled && root[3].enabled);
+
+        let note = result_menu(&RowDetail::Note { id: "n1".into() }).expect("note");
+        assert_eq!(note.len(), 1);
+        assert_eq!(
+            (note[0].action, note[0].label, note[0].hint, note[0].enabled),
+            (ResultMenuAction::FloatNote, "悬浮", "Alt+1", true)
+        );
+        let web = result_menu(&RowDetail::Web {
+            url: "https://example.com".into(),
+        })
+        .expect("web");
+        assert_eq!(
+            (web[0].action, web[0].label, web[0].hint),
+            (ResultMenuAction::CopyUrl, "复制网址", "Alt+1")
+        );
+        assert!(
+            result_menu(&RowDetail::Todo {
+                list_id: "l".into(),
+                item_id: "i".into(),
+            })
+            .is_none()
+        );
+        assert!(result_menu(&RowDetail::PathTimeout).is_none());
+    }
+
+    #[test]
+    fn shelf_pick_lists_groups_and_offers_a_default_when_empty() {
+        assert_eq!(
+            shelf_pick_menu(&[]),
+            vec![ShelfPickItem {
+                group_id: None,
+                label: "收纳".into(),
+                hint: "Alt+1",
+            }]
+        );
+        let groups = [("a", "工作"), ("b", "个人")];
+        let picks = shelf_pick_menu(&groups);
+        assert_eq!(picks[0].group_id.as_deref(), Some("a"));
+        assert_eq!(picks[0].label, "工作");
+        assert_eq!(picks[0].hint, "Alt+1");
+        assert_eq!(picks[1].hint, "Alt+2");
+        assert_eq!(menu_index(1, picks.len()), Some(0));
+        assert_eq!(menu_index(2, picks.len()), Some(1));
+        assert_eq!(menu_index(3, picks.len()), None);
+        assert_eq!(menu_index(4, 4), Some(3));
+        assert_eq!(menu_index(5, 4), None);
+    }
+
+    #[test]
+    fn caret_at_end_uses_utf8_bytes() {
+        assert!(caret_at_end("ab", 2));
+        assert!(!caret_at_end("ab", 1));
+        assert!(caret_at_end("中", 3));
+        assert!(!caret_at_end("中", 1));
+        assert!(caret_at_end("", 0));
+        assert!(!caret_at_end("ab", -1));
     }
 }

@@ -176,7 +176,10 @@ fn right_click_opens_the_menu_and_clicks_follow_the_pointer() {
             *opened.borrow_mut() = Some((index, x, y));
         });
         let activated = Rc::clone(&activated);
-        ui.on_menu_activate(move |index| activated.borrow_mut().push(index));
+        ui.on_menu_activate(move |index| {
+            activated.borrow_mut().push(index);
+            false
+        });
         let escapes = Rc::clone(&escapes);
         ui.on_escape(move || escapes.set(escapes.get() + 1));
         let row_hits = Rc::clone(&row_hits);
@@ -222,4 +225,58 @@ fn right_click_opens_the_menu_and_clicks_follow_the_pointer() {
     });
     assert!(!ui.get_menu_open(), "Esc 关闭菜单");
     assert_eq!(escapes.get(), 0, "关菜单时不收起搜索条");
+}
+
+fn press(ui: &SearchBar, text: &str) {
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+}
+
+fn key(ui: &SearchBar, text: &str, down: bool) {
+    let event = if down {
+        WindowEvent::KeyPressed { text: text.into() }
+    } else {
+        WindowEvent::KeyReleased { text: text.into() }
+    };
+    ui.window().dispatch_event(event);
+}
+
+#[test]
+fn right_arrow_opens_the_menu_only_when_the_caret_is_at_the_end() {
+    let (ui, _window) = open();
+    ui.invoke_focus_input();
+    let opened = Rc::new(Cell::new(0));
+    {
+        let opened = Rc::clone(&opened);
+        ui.on_open_selected_menu(move || opened.set(opened.get() + 1));
+        let caret = ui.clone_strong();
+        ui.on_caret_at_end(move |offset| {
+            usize::try_from(offset).ok() == Some(caret.get_text().len())
+        });
+    }
+
+    press(&ui, "a");
+    press(&ui, "b");
+    assert_eq!(ui.get_text().as_str(), "ab");
+    press(&ui, "\u{F702}");
+    press(&ui, "\u{F703}");
+    assert_eq!(opened.get(), 0, "光标从中间回到末尾时只移动光标");
+    press(&ui, "\u{F703}");
+    assert_eq!(opened.get(), 1, "光标已经在末尾时右方向键打开菜单");
+
+    key(&ui, "\u{0010}", true);
+    key(&ui, "\u{F703}", true);
+    key(&ui, "\u{F703}", false);
+    key(&ui, "\u{0010}", false);
+    assert_eq!(opened.get(), 1, "按着 Shift 时右方向键留给输入框");
+    press(&ui, "中");
+    let before = opened.get();
+    press(&ui, "\u{F703}");
+    assert!(
+        opened.get() > before,
+        "中文在末尾时按字节偏移打开菜单，文本 {:?}",
+        ui.get_text()
+    );
 }
