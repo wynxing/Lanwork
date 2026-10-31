@@ -334,6 +334,11 @@ impl Dispatch {
         }
     }
 
+    /// 搜索和收纳页共用的那一份收纳命令。收纳服务没有打开时为 `None`。
+    pub fn shelf_commands(&self) -> Option<ShelfCommands> {
+        storage::lock_mutex(&self.inner).shelves.clone()
+    }
+
     /// 按启动目标隐藏，并写入 `user-apps.json`。写盘失败时把内存改回去。
     pub fn hide_app(&self, key: &str) -> Result<(), String> {
         let mut apps = storage::lock_mutex(&self.apps);

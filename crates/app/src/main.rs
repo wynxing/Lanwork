@@ -34,6 +34,8 @@ mod appwall;
 #[cfg(windows)]
 mod bar_win;
 #[cfg(windows)]
+mod clipboard;
+#[cfg(windows)]
 mod favicon_http;
 #[cfg(windows)]
 mod favicon_wic;
