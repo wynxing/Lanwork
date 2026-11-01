@@ -1,0 +1,174 @@
+// 卸载确认和残留清单。搜索条和应用墙各放一份，数据和动作在 Rust。
+
+import { Btn, Check, Ink } from "widgets.slint";
+
+export struct RemovalLine {
+    location: string,
+    detail: string,
+    checked: bool,
+    failed: bool,
+}
+
+export component RemovalOverlay inherits Rectangle {
+    in property <bool> shown;
+    in property <bool> checklist;
+    in property <bool> busy;
+    in property <string> heading;
+    in property <string> body;
+    in property <[RemovalLine]> lines;
+    in property <bool> confirm-enabled;
+    in property <string> confirm-text;
+    in property <bool> dark;
+    callback cancelled();
+    callback confirmed();
+    callback toggled(int);
+
+    visible: shown;
+
+    property <Ink> c: {
+        ink: dark ? #ffffff : #1b1b1b,
+        secondary: dark ? #c5c5c5 : #5d5d5d,
+        tertiary: dark ? #9a9a9a : #767676,
+        divider: dark ? #ffffff17 : #00000014,
+        hover: dark ? #ffffff14 : #0000000d,
+        selection: dark ? #ffffff14 : #0000000d,
+        field: dark ? #ffffff14 : #ffffffcc,
+        accent: dark ? #60cdff : #005fb8,
+        critical: dark ? #ff99a4 : #c42b1c,
+    };
+    property <length> row-h: 44px;
+    property <length> list-h: checklist ? min(max(lines.length, 1) * row-h, 6 * row-h) : 0px;
+    property <length> body-h: checklist ? 0px : 36px;
+    property <length> box-w: checklist ? 520px : 360px;
+    property <length> box-h: 52px + body-h + list-h + 62px;
+
+    scrim := TouchArea {
+        width: 100%;
+        height: 100%;
+
+        clicked => {
+            if !root.busy {
+                root.cancelled();
+            }
+        }
+    }
+
+    card := Rectangle {
+        x: (parent.width - box-w) / 2;
+        y: max(8px, (parent.height - box-h) / 2);
+        width: box-w;
+        height: box-h;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: c.divider;
+        background: dark ? #2b2b2b : #fafafa;
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        Text {
+            x: 20px;
+            y: 16px;
+            width: parent.width - 40px;
+            height: 24px;
+            text: heading;
+            color: c.ink;
+            font-size: 16px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if !checklist: Text {
+            x: 20px;
+            y: 48px;
+            width: parent.width - 40px;
+            height: 28px;
+            text: body;
+            color: c.secondary;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if checklist: Flickable {
+            x: 12px;
+            y: 48px;
+            width: parent.width - 24px;
+            height: list-h;
+            content-width: self.width;
+            content-height: lines.length * row-h;
+
+            for line[index] in lines: Rectangle {
+                y: index * row-h;
+                width: parent.width;
+                height: row-h;
+
+                Check {
+                    x: 0px;
+                    y: 8px;
+                    checked: line.checked;
+                    enabled: !root.busy;
+                    c: root.c;
+                    toggled => {
+                        root.toggled(index);
+                    }
+                }
+
+                Text {
+                    x: 32px;
+                    y: line.failed ? 4px : 0px;
+                    width: parent.width - 40px;
+                    height: line.failed ? 20px : row-h;
+                    text: line.location;
+                    color: line.failed ? c.critical : c.ink;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                if line.failed: Text {
+                    x: 32px;
+                    y: 22px;
+                    width: parent.width - 40px;
+                    height: 18px;
+                    text: line.detail;
+                    color: c.critical;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            x: 20px;
+            y: parent.height - 46px;
+            width: parent.width - 40px;
+            height: 30px;
+            spacing: 8px;
+            alignment: end;
+
+            Btn {
+                text: "取消";
+                enabled: !root.busy;
+                c: root.c;
+                clicked => {
+                    root.cancelled();
+                }
+            }
+
+            Btn {
+                text: confirm-text;
+                danger: true;
+                enabled: confirm-enabled;
+                c: root.c;
+                clicked => {
+                    root.confirmed();
+                }
+            }
+        }
+    }
+}

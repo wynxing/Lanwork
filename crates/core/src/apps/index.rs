@@ -318,6 +318,38 @@ impl AppIndex {
             .collect()
     }
 
+    /// 当前已发布的索引里有没有这个启动键。
+    #[must_use]
+    pub fn contains_launch_key(&self, key: &str) -> bool {
+        let key = key.trim();
+        if key.is_empty() {
+            return false;
+        }
+        read_lock(&self.shared.published)
+            .entries
+            .iter()
+            .any(|entry| launch_key(&entry.target) == key)
+    }
+
+    /// 开始菜单来源里有没有这个启动键。
+    #[must_use]
+    pub fn start_menu_has(&self, key: &str) -> bool {
+        let key = key.trim();
+        if key.is_empty() {
+            return false;
+        }
+        read_lock(&self.shared.published)
+            .entries
+            .iter()
+            .any(|entry| entry.source == AppSource::StartMenu && launch_key(&entry.target) == key)
+    }
+
+    /// 只重建开始菜单来源，并等到这次重建结束。
+    pub fn refresh_start_menu(&self) -> Result<RefreshReport, IndexError> {
+        let ticket = self.submit(RebuildKind::StartMenu)?;
+        self.wait(ticket, Duration::from_secs(30))
+    }
+
     /// 重新枚举全部来源并替换缓存。这是内部接口，不是设置里的按钮。
     pub fn refresh(&self) -> Result<RefreshReport, IndexError> {
         self.refresh_timeout(Duration::from_secs(180))

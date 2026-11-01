@@ -75,6 +75,8 @@ mod registry;
 #[cfg(windows)]
 mod remind;
 #[cfg(windows)]
+mod removal;
+#[cfg(windows)]
 mod searchbar;
 #[cfg(windows)]
 mod session_close;
