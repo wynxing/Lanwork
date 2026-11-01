@@ -537,7 +537,10 @@ fn parse_uninstall_string(raw: &str) -> Option<OwnedCommand> {
     if file.trim().is_empty() {
         return None;
     }
-    Some(OwnedCommand { file, args })
+    Some(OwnedCommand {
+        file,
+        args: strip_quiet_switches(&args),
+    })
 }
 
 fn split_command(raw: &str) -> Option<(String, String)> {
@@ -803,12 +806,13 @@ fn classify_dir(path: &Path, footprint: &AppFootprint, roots: &MachineRoots) -> 
     if !directory_delete_allowed(path, roots) {
         return None;
     }
-    let app_names = app_tokens(footprint);
+    let leaf = file_leaf(path);
+    let display = name_token(&footprint.name);
     let publisher = name_token(&footprint.publisher);
-    let leaf_is_app =
-        file_leaf(path).is_some_and(|leaf| app_names.iter().any(|token| token == &leaf));
-    let leaf_is_publisher =
-        file_leaf(path).is_some_and(|leaf| publisher.as_deref() == Some(leaf.as_str()));
+    let stem = exe_stem(footprint).filter(|token| display.as_ref() != Some(token));
+    let leaf_is_display = tokens_equal(leaf.as_deref(), display.as_deref());
+    let leaf_is_publisher = tokens_equal(leaf.as_deref(), publisher.as_deref());
+    let leaf_is_stem = tokens_equal(leaf.as_deref(), stem.as_deref());
     let is_install = footprint
         .install_dir
         .as_ref()
@@ -816,15 +820,18 @@ fn classify_dir(path: &Path, footprint: &AppFootprint, roots: &MachineRoots) -> 
     let is_exe_home = footprint.target_exe.as_ref().is_some_and(|exe| {
         parent_key(exe).is_some_and(|parent| parent == normalize_path_key(path))
     });
-    if !leaf_is_app && !leaf_is_publisher && !is_install && !is_exe_home {
+    if !leaf_is_display && !leaf_is_publisher && !leaf_is_stem && !is_install && !is_exe_home {
         return None;
     }
-    let low_parent = low_confidence_parent(path, roots);
-    let publisher_only = leaf_is_publisher && !leaf_is_app;
-    let confidence = if (leaf_is_app || is_install)
-        && !publisher_only
-        && !low_parent
-        && !footprint.target_exe_present
+    // 主文件名和厂商目录只作参考。高置信度限于登记里的安装目录，
+    // 以及与显示名相同、父目录不是公共根的文件夹。
+    let publisher_folder = leaf_is_publisher && !is_install;
+    let stem_only = leaf_is_stem && !leaf_is_display && !is_install;
+    let confidence = if !footprint.target_exe_present
+        && !low_confidence_parent(path, roots)
+        && !publisher_folder
+        && !stem_only
+        && (is_install || (leaf_is_display && !public_root_parent(path, roots)))
     {
         Confidence::High
     } else {
@@ -861,8 +868,7 @@ fn classify_shortcut(
             .as_ref()
             .is_some_and(|expected| folded(url) == folded(expected))
     });
-    let name_hit = file_stem(&shortcut.path)
-        .is_some_and(|stem| app_tokens(footprint).iter().any(|token| token == &stem));
+    let name_hit = shortcut_name_hit(&shortcut.path, footprint);
     let confidence = if target_hit || url_hit {
         Confidence::High
     } else if name_hit {
@@ -883,20 +889,28 @@ fn classify_key(key: &str, footprint: &AppFootprint) -> Option<Leftover> {
     }
     let parts = key_parts(key);
     let leaf = parts.last()?.as_str();
-    let app_names = app_tokens(footprint);
+    let display = name_token(&footprint.name);
+    let publisher = name_token(&footprint.publisher);
+    let stem = exe_stem(footprint).filter(|token| display.as_ref() != Some(token));
     let exact_uninstall = footprint
         .uninstall_key
         .as_ref()
         .is_some_and(|saved| keys_equal(saved, key));
-    let leaf_is_app = app_names.iter().any(|token| keys_equal(token, leaf));
-    let publisher = name_token(&footprint.publisher);
+    let leaf_is_display = display
+        .as_deref()
+        .is_some_and(|token| keys_equal(token, leaf));
     let leaf_is_publisher = publisher
         .as_deref()
         .is_some_and(|token| keys_equal(token, leaf));
-    if !exact_uninstall && !leaf_is_app && !leaf_is_publisher {
+    let leaf_is_stem = stem.as_deref().is_some_and(|token| keys_equal(token, leaf));
+    if !exact_uninstall && !leaf_is_display && !leaf_is_publisher && !leaf_is_stem {
         return None;
     }
-    let confidence = if exact_uninstall || leaf_is_app {
+    // 厂商键是 `Software\<厂商>` 这一层。显示名和厂商相同时也不默认勾选。
+    let publisher_root = publisher
+        .as_deref()
+        .is_some_and(|token| publisher_root_key(&parts, token));
+    let confidence = if exact_uninstall || (leaf_is_display && !publisher_root && !leaf_is_stem) {
         Confidence::High
     } else {
         Confidence::Low
@@ -927,17 +941,51 @@ fn push_unique(items: &mut Vec<Leftover>, item: Leftover) {
     items.push(item);
 }
 
-fn app_tokens(footprint: &AppFootprint) -> Vec<String> {
-    let mut tokens = Vec::new();
-    if let Some(token) = name_token(&footprint.name) {
-        tokens.push(token);
+fn exe_stem(footprint: &AppFootprint) -> Option<String> {
+    footprint.target_exe.as_deref().and_then(file_stem)
+}
+
+fn tokens_equal(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
     }
-    if let Some(stem) = footprint.target_exe.as_deref().and_then(file_stem)
-        && !tokens.iter().any(|token| token == &stem)
-    {
-        tokens.push(stem);
-    }
-    tokens
+}
+
+fn shortcut_name_hit(path: &Path, footprint: &AppFootprint) -> bool {
+    let Some(stem) = file_stem(path) else {
+        return false;
+    };
+    name_token(&footprint.name).as_deref() == Some(stem.as_str())
+        || exe_stem(footprint).as_deref() == Some(stem.as_str())
+}
+
+/// `HKCU\Software\<厂商>`、`HKLM\SOFTWARE\<厂商>` 和 WOW6432Node 下的同一层。
+fn publisher_root_key(parts: &[String], publisher: &str) -> bool {
+    let view: Vec<&str> = parts.iter().map(String::as_str).collect();
+    let leaf_ok = view.last().is_some_and(|leaf| keys_equal(leaf, publisher));
+    leaf_ok
+        && matches!(
+            view.as_slice(),
+            ["HKLM", "SOFTWARE", _]
+                | ["HKCU", "SOFTWARE", _]
+                | ["HKLM", "SOFTWARE", "WOW6432NODE", _]
+        )
+}
+
+fn public_root_parent(path: &Path, roots: &MachineRoots) -> bool {
+    let Some(parent) = parent_key(path) else {
+        return true;
+    };
+    [
+        &roots.program_files,
+        &roots.program_files_x86,
+        &roots.program_data,
+        &roots.app_data,
+        &roots.local_app_data,
+    ]
+    .iter()
+    .any(|root| parent == normalize_path_key(root))
 }
 
 fn name_token(text: &str) -> Option<String> {
@@ -1021,14 +1069,35 @@ fn icon_file(raw: &str) -> Option<PathBuf> {
     }
 }
 
+/// 卸载字符串里出现目标路径，并且前后都是命令行边界。
+/// 保留 `\`，所以 `My\App.exe` 不会配上 `MyApp.exe`。
 fn string_contains_path(hay: &str, path: &Path) -> bool {
-    let key = normalize_path_key(path);
-    if key.is_empty() {
+    let needle: Vec<char> = normalize_path_key(path).chars().collect();
+    if needle.len() < 4 {
         return false;
     }
-    let hay = hay.replace(['/', '"'], "").replace('\\', "");
-    let flat = key.replace('\\', "");
-    hay.to_lowercase().contains(&flat)
+    let hay: Vec<char> = hay.replace('/', "\\").to_lowercase().chars().collect();
+    if hay.len() < needle.len() {
+        return false;
+    }
+    for start in 0..=hay.len() - needle.len() {
+        if hay[start..start + needle.len()] != needle[..] {
+            continue;
+        }
+        let before = start.checked_sub(1).map(|index| hay[index]);
+        let after = hay.get(start + needle.len()).copied();
+        if path_token_edge(before) && path_token_edge(after) {
+            return true;
+        }
+    }
+    false
+}
+
+fn path_token_edge(ch: Option<char>) -> bool {
+    match ch {
+        None => true,
+        Some(ch) => ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '='),
+    }
 }
 
 fn location_contains_target(location: &str, target: &Path) -> bool {
@@ -1570,5 +1639,124 @@ mod tests {
         assert!(registry_delete_allowed(
             r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Demo"
         ));
+    }
+
+    #[test]
+    fn uninstall_string_path_match_keeps_separators() {
+        let item = entry(
+            "My App",
+            AppSource::StartMenu,
+            exe(r"C:\Program Files\My\App.exe"),
+            Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\My App.lnk"),
+        );
+        let sibling = record("MyApp", r#""C:\Program Files\MyApp.exe" /uninstall"#, "");
+        assert!(
+            removal_plan(&item, &[sibling], &roots())
+                .uninstall
+                .is_none()
+        );
+
+        let exact = record("Other", r#""C:\Program Files\My\App.exe" /uninstall"#, "");
+        let command = removal_plan(&item, &[exact], &roots())
+            .uninstall
+            .expect("exact path")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: r"C:\Program Files\My\App.exe".to_owned(),
+                args: "/uninstall".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn non_msi_uninstallers_drop_silent_switches() {
+        let very = parse_uninstall_string(r#""C:\Program Files\App\unins000.exe" /VERYSILENT"#)
+            .expect("verysilent");
+        assert_eq!(very.file, r"C:\Program Files\App\unins000.exe");
+        assert_eq!(very.args, "");
+
+        let silent =
+            parse_uninstall_string(r#""C:\Program Files\App\unins000.exe" /SILENT /allusers"#)
+                .expect("silent");
+        assert_eq!(silent.args, "/allusers");
+
+        let nsis = parse_uninstall_string(r"C:\Program Files\App\uninstall.exe /S").expect("nsis");
+        assert_eq!(nsis.file, r"C:\Program Files\App\uninstall.exe");
+        assert_eq!(nsis.args, "");
+    }
+
+    #[test]
+    fn exe_stem_folders_and_publisher_keys_stay_unchecked() {
+        let footprint = AppFootprint {
+            name: "Widget".to_owned(),
+            publisher: "Widget".to_owned(),
+            install_dir: Some(PathBuf::from(r"C:\Program Files\Widget")),
+            target_exe: Some(PathBuf::from(r"C:\Program Files\Widget\player.exe")),
+            target_exe_present: false,
+            target_url: None,
+            source_file: None,
+            uninstall_key: Some(
+                r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Widget".to_owned(),
+            ),
+        };
+        let observed = ObservedLeftovers {
+            directories: vec![
+                PathBuf::from(r"C:\Program Files\Widget"),
+                PathBuf::from(r"C:\Program Files\Player"),
+                PathBuf::from(r"C:\ProgramData\Player"),
+                PathBuf::from(r"C:\Users\User\AppData\Roaming\Player"),
+                PathBuf::from(r"C:\ProgramData\Widget"),
+            ],
+            shortcuts: Vec::new(),
+            registry_keys: vec![
+                r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Widget".to_owned(),
+                r"HKLM\SOFTWARE\Widget".to_owned(),
+                r"HKCU\Software\Widget".to_owned(),
+                r"HKLM\SOFTWARE\WOW6432Node\Widget".to_owned(),
+            ],
+        };
+        let items = plan_leftovers(&footprint, &observed, &roots());
+        let checked: Vec<_> = items
+            .iter()
+            .filter(|item| item.checked)
+            .map(|item| item.location.as_str())
+            .collect();
+        assert!(
+            checked
+                .iter()
+                .any(|path| path.ends_with(r"Program Files\Widget"))
+        );
+        assert!(
+            checked
+                .iter()
+                .any(|path| path.ends_with(r"Uninstall\Widget"))
+        );
+        for path in [
+            r"Program Files\Player",
+            r"ProgramData\Player",
+            r"Roaming\Player",
+            r"ProgramData\Widget",
+        ] {
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.location.ends_with(path) && !item.checked),
+                "{path}"
+            );
+        }
+        for key in [
+            r"HKLM\SOFTWARE\Widget",
+            r"HKCU\Software\Widget",
+            r"HKLM\SOFTWARE\WOW6432Node\Widget",
+        ] {
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.location == key && !item.checked),
+                "{key}"
+            );
+        }
     }
 }
