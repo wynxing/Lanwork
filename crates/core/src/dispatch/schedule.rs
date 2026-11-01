@@ -90,6 +90,26 @@ pub trait AppLookup: Send {
     fn replace_user_catalog(&mut self, _catalog: UserCatalog) -> Result<(), String> {
         Err("应用索引不支持更换用户目录".to_owned())
     }
+
+    /// 只重建开始菜单来源。默认不支持。
+    fn refresh_start_menu(&mut self) -> Result<(), String> {
+        Err("应用索引不支持刷新".to_owned())
+    }
+
+    /// 重新枚举全部来源。默认不支持。
+    fn refresh_all(&mut self) -> Result<(), String> {
+        Err("应用索引不支持刷新".to_owned())
+    }
+
+    /// 当前索引里有没有这个启动键。默认没有。
+    fn contains_launch_key(&mut self, _key: &str) -> bool {
+        false
+    }
+
+    /// 开始菜单来源里有没有这个启动键。默认没有。
+    fn start_menu_has(&mut self, _key: &str) -> bool {
+        false
+    }
 }
 
 impl AppLookup for AppIndex {
@@ -121,6 +141,26 @@ impl AppLookup for AppIndex {
         AppIndex::set_user_catalog(self, catalog)
             .map(|_| ())
             .map_err(|err| err.to_string())
+    }
+
+    fn refresh_start_menu(&mut self) -> Result<(), String> {
+        AppIndex::refresh_start_menu(self)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    fn refresh_all(&mut self) -> Result<(), String> {
+        AppIndex::refresh(self)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    fn contains_launch_key(&mut self, key: &str) -> bool {
+        AppIndex::contains_launch_key(self, key)
+    }
+
+    fn start_menu_has(&mut self, key: &str) -> bool {
+        AppIndex::start_menu_has(self, key)
     }
 }
 
@@ -362,6 +402,28 @@ impl Dispatch {
             return Err(err);
         }
         Ok(())
+    }
+
+    /// 只重建开始菜单来源，并等到结束。
+    pub fn refresh_start_menu(&self) -> Result<(), String> {
+        storage::lock_mutex(&self.apps).refresh_start_menu()
+    }
+
+    /// 重新枚举全部应用来源，并等到结束。
+    pub fn refresh_apps(&self) -> Result<(), String> {
+        storage::lock_mutex(&self.apps).refresh_all()
+    }
+
+    /// 当前索引里有没有这个启动键。
+    #[must_use]
+    pub fn contains_launch_key(&self, key: &str) -> bool {
+        storage::lock_mutex(&self.apps).contains_launch_key(key)
+    }
+
+    /// 开始菜单来源里有没有这个启动键。
+    #[must_use]
+    pub fn start_menu_has(&self, key: &str) -> bool {
+        storage::lock_mutex(&self.apps).start_menu_has(key)
     }
 
     /// 应用墙上的条目。正式索引只列开始菜单来源里未隐藏的应用，过滤与搜索里的应用同一套匹配。
