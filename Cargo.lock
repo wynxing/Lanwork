@@ -1906,7 +1906,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hotcorner"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "clap",
  "serde_json",
@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "lanwork-core",
  "lanwork-toolhost",
@@ -2702,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-apps-preview"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "png 0.17.16",
  "slint",
@@ -2711,7 +2711,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-core"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "criterion",
  "getrandom 0.2.17",
@@ -2725,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-fixture"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "clap",
  "serde",
@@ -2735,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-foreground"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "lanwork-core",
  "windows",
@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-render-spike"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "png 0.17.16",
  "raw-window-handle",
@@ -2756,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-sample"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "clap",
  "serde",
@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-shortcut"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "lanwork-core",
  "windows",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-toolhost"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "flate2",
  "mlua",
@@ -2789,7 +2789,7 @@ dependencies = [
 
 [[package]]
 name = "lanwork-toolhost-spike"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "lanwork-toolhost",
  "serde",
