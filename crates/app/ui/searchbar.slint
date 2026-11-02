@@ -1,5 +1,7 @@
 // 搜索条。输入框在左侧搜索图标和右侧应用墙按钮之间，结果在它下方展开。版式由这里决定，数据和动作在 Rust。
 
+import { RemovalLine, RemovalOverlay } from "removal.slint";
+
 export struct BarRow {
     // 名称拆成三段，中间一段是与输入相同的部分，加粗。没有匹配时只有 head。
     label-head: string,
@@ -103,6 +105,17 @@ export component SearchBar inherits Window {
     callback menu-activate(int) -> bool;
     // 菜单开着时的 Alt+数字，参数 1 至 9。
     callback menu-shortcut(int);
+    in property <bool> removal-open: false;
+    in property <bool> removal-checklist: false;
+    in property <bool> removal-busy: false;
+    in property <string> removal-heading;
+    in property <string> removal-body;
+    in property <[RemovalLine]> removal-lines;
+    in property <bool> removal-confirm-enabled: false;
+    in property <string> removal-confirm-text: "卸载";
+    callback removal-cancel();
+    callback removal-confirm();
+    callback removal-toggle(int);
     in property <[BarMenuItem]> menu-items;
     in-out property <bool> menu-open: false;
     in-out property <length> menu-anchor-x: 0px;
@@ -129,6 +142,7 @@ export component SearchBar inherits Window {
     property <length> menu-item-h: 36px;
     property <length> menu-pad: 4px;
     property <length> menu-block: menu-pad * 2 + menu-items.length * menu-item-h;
+    property <length> removal-card: !removal-open ? 0px : removal-checklist ? 52px + min(max(removal-lines.length, 1) * 44px, 264px) + 62px + 24px : 200px;
     property <bool> menu-shown: menu-open && menu-items.length > 0;
     property <length> menu-draw-x: min(max(8px, menu-anchor-x), max(8px, self.width - menu-width - 8px));
     property <length> menu-draw-y: menu-anchor-y + menu-block + 8px > natural-height && menu-anchor-y > menu-block
@@ -145,7 +159,7 @@ export component SearchBar inherits Window {
     property <color> critical: dark ? #ff99a4 : #c42b1c;
 
     width: 680px;
-    height: menu-shown ? max(natural-height, menu-draw-y + menu-block + 8px) : natural-height;
+    height: max(menu-shown ? max(natural-height, menu-draw-y + menu-block + 8px) : natural-height, removal-open ? removal-card + 32px : 0px);
     background: acrylic ? transparent : solid-color;
 
     changed menu-open => {
@@ -246,6 +260,23 @@ export component SearchBar inherits Window {
             key-pressed(event) => {
                 if self.preedit-text != "" {
                     return reject;
+                }
+                if root.removal-open {
+                    if root.removal-busy {
+                        return accept;
+                    }
+                    if event.text == Key.Escape {
+                        root.removal-cancel();
+                        return accept;
+                    }
+                    if event.text == Key.Return && root.removal-confirm-enabled {
+                        root.removal-confirm();
+                        return accept;
+                    }
+                    if event.text == Key.Return {
+                        return accept;
+                    }
+                    return accept;
                 }
                 if event.text == Key.Tab && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.alt && !event.modifiers.meta {
                     if root.complete-folder() {
@@ -584,6 +615,31 @@ export component SearchBar inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    RemovalOverlay {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        shown: root.removal-open;
+        checklist: root.removal-checklist;
+        busy: root.removal-busy;
+        heading: root.removal-heading;
+        body: root.removal-body;
+        lines: root.removal-lines;
+        confirm-enabled: root.removal-confirm-enabled;
+        confirm-text: root.removal-confirm-text;
+        dark: root.dark;
+        cancelled => {
+            root.removal-cancel();
+        }
+        confirmed => {
+            root.removal-confirm();
+        }
+        toggled(index) => {
+            root.removal-toggle(index);
         }
     }
 }

@@ -4,9 +4,7 @@
 
 use std::path::Path;
 
-#[cfg(test)]
 use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-#[cfg(test)]
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 use windows::Win32::UI::Shell::{
     SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
@@ -20,6 +18,7 @@ use crate::apps::LaunchTarget;
 const SW_SHOWNORMAL: i32 = 1;
 #[cfg(test)]
 const SW_HIDE: i32 = 0;
+const WAIT_INFINITE: u32 = 0xFFFF_FFFF;
 
 #[derive(Debug)]
 pub struct LaunchError {
@@ -55,6 +54,26 @@ impl std::error::Error for LaunchError {}
 pub fn launch(target: &LaunchTarget) -> Result<(), LaunchError> {
     launch_inner(target, SW_SHOWNORMAL, false, Verb::Open)?;
     Ok(())
+}
+
+/// 启动一个程序并等到它退出。窗口按普通方式显示。用户取消提权时 `cancelled` 为真。
+pub fn run_and_wait(file: &str, args: &str) -> Result<u32, LaunchError> {
+    let handle = execute(file, args, None, SW_SHOWNORMAL, true, Verb::Open)?;
+    let handle = handle.ok_or_else(|| LaunchError::failed("启动没有返回进程"))?;
+    let wait = unsafe { WaitForSingleObject(handle, WAIT_INFINITE) };
+    if wait != WAIT_OBJECT_0 {
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        return Err(LaunchError::failed(format!("等待进程失败: {wait:?}")));
+    }
+    let mut code = 0u32;
+    let exit = unsafe { GetExitCodeProcess(handle, &mut code) };
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    exit.map_err(|err| LaunchError::failed(format!("读不到退出码: {err}")))?;
+    Ok(code)
 }
 
 /// 有本地 exe 时用动词 `runas`。商店应用和协议链接返回错误，不调用 Shell。
@@ -109,10 +128,21 @@ fn launch_inner(
     wait: bool,
     verb: Verb,
 ) -> Result<Option<windows::Win32::Foundation::HANDLE>, LaunchError> {
-    comutil::ensure_com().map_err(LaunchError::failed)?;
     let (file, args, directory) = command_line(target);
-    let file_wide = comutil::wide_null(&file);
-    let args_wide = comutil::wide_null(&args);
+    execute(&file, &args, directory, show, wait, verb)
+}
+
+fn execute(
+    file: &str,
+    args: &str,
+    directory: Option<&Path>,
+    show: i32,
+    wait: bool,
+    verb: Verb,
+) -> Result<Option<windows::Win32::Foundation::HANDLE>, LaunchError> {
+    comutil::ensure_com().map_err(LaunchError::failed)?;
+    let file_wide = comutil::wide_null(file);
+    let args_wide = comutil::wide_null(args);
     let dir_wide = directory.as_ref().map(|dir| comutil::wide_path(dir));
     let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     info.cbSize = u32::try_from(std::mem::size_of::<SHELLEXECUTEINFOW>()).unwrap_or(0);

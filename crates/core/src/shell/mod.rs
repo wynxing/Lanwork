@@ -25,12 +25,12 @@ pub use bar::{
     HOVER_MOVE_PX, HOVER_SNAP_PX, HoverArm, LIGHT_SOLID_RGB, LIST_PAD, MIN_BACKDROP_BUILD,
     MonitorArea, NO_RESULTS, PointerPos, ROW_HEIGHT, ResultMenuAction, ResultMenuItem, RowAction,
     SHORTCUT_COUNT, ShelfPickItem, WorkArea, alt_hint, alt_route, app_menu, app_menu_command,
-    bar_origin, caret_at_end, choose_backdrop, draws_type_glyph, escape_action, float_backdrop,
-    group_label, hover_row, location_always_shown, match_span, max_results_height, menu_index,
-    monitor_at, move_selection, path_target, persistent_acrylic_abgr, place_bar, pointed_row,
-    reselect, result_menu, row_action, row_offsets, selection_after_refresh, shelf_pick_menu,
-    shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_logical,
-    to_physical,
+    app_menu_command_with, app_menu_with, app_result_menu, bar_origin, caret_at_end,
+    choose_backdrop, draws_type_glyph, escape_action, float_backdrop, group_label, hover_row,
+    location_always_shown, match_span, max_results_height, menu_index, monitor_at, move_selection,
+    path_target, persistent_acrylic_abgr, place_bar, pointed_row, reselect, result_menu,
+    row_action, row_offsets, selection_after_refresh, shelf_pick_menu, shortcut_rows,
+    shortcut_target, solid_rgb, status_line, text_after_hide, to_logical, to_physical,
 };
 pub use bind::{
     BindError, HotkeyBinding, HotkeyPort, HotkeyRole, RegisteredHotkey, Restored, SaveHotkeyError,

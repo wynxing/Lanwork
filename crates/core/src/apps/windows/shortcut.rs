@@ -19,6 +19,47 @@ use crate::apps::model::push_alternate;
 use crate::apps::rules::{indexed_game_url, internet_shortcut_url, is_uninstaller};
 use crate::apps::{AppEntry, AppSource, LaunchTarget};
 
+/// 快捷方式目标。目标文件已经不在时仍返回快捷方式里写下的路径。`.url` 返回网址。
+pub(crate) fn peek_target(path: &Path) -> (Option<PathBuf>, Option<String>) {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return (None, None);
+    };
+    if ext.eq_ignore_ascii_case("url") {
+        let bytes = std::fs::read(path).unwrap_or_default();
+        let url = internet_shortcut_url(&bytes);
+        return (None, url);
+    }
+    if !ext.eq_ignore_ascii_case("lnk") {
+        return (None, None);
+    }
+    let Some(link) = open_link(path) else {
+        return (None, None);
+    };
+    // SLGP_RAWPATH：目标已经删除时仍取快捷方式里的原始路径。
+    let raw = read_path(&link, 0x4);
+    let text = unquote(raw.trim());
+    if text.is_empty() {
+        return (None, None);
+    }
+    let expanded = expand_env(text);
+    let target = PathBuf::from(expanded.trim());
+    if target.as_os_str().is_empty() {
+        (None, None)
+    } else {
+        (Some(target), None)
+    }
+}
+
+fn open_link(path: &Path) -> Option<IShellLinkW> {
+    comutil::ensure_com().ok()?;
+    let wide = comutil::wide_path(path);
+    let link: IShellLinkW =
+        unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
+    let persist: IPersistFile = link.cast().ok()?;
+    unsafe { persist.Load(comutil::pcwstr(&wide), STGM_READ) }.ok()?;
+    Some(link)
+}
+
 pub(crate) fn read_indexed_file(path: &Path) -> Option<AppEntry> {
     let ext = path.extension()?.to_str()?;
     if ext.eq_ignore_ascii_case("lnk") {
@@ -184,6 +225,15 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().trim().to_owned())
         .unwrap_or_default()
+}
+
+fn read_path(link: &IShellLinkW, flags: u32) -> String {
+    let mut buf = vec![0u16; 32768];
+    // SAFETY: 缓冲区由本函数持有。pfd 为空，不取 WIN32_FIND_DATA。
+    if unsafe { link.GetPath(&mut buf, std::ptr::null_mut(), flags) }.is_err() {
+        return String::new();
+    }
+    comutil::wide_from_buf(&buf)
 }
 
 fn read_text(link: &IShellLinkW, field: LinkField) -> String {

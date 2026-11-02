@@ -12,23 +12,24 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lanwork_core::apps::LaunchError;
+use lanwork_core::apps::{AppEntry, LaunchError, PreparedUninstall, RemovalPlan};
 use lanwork_core::dispatch::{
     Dispatch, ICON_CACHE_ITEMS, IconCache, IconKey, PreloadLoad, RgbaImage, UserBatch, icon_of,
     load_preload, load_preload_disk,
 };
 use lanwork_core::shell::{AltRoute, WallGrid};
 use lanwork_core::shell::{
-    AppMenuAction, Backdrop, FILTER_BAND, MonitorArea, WorkArea, alt_route, app_menu,
-    app_menu_command, first_screen, grid, monitor_at, pointed_row, preload_idle, solid_rgb,
-    tile_xy, to_logical, visible_indices,
+    AppMenuAction, Backdrop, FILTER_BAND, MonitorArea, WorkArea, alt_route, app_menu_command_with,
+    app_menu_with, first_screen, grid, monitor_at, pointed_row, preload_idle, solid_rgb, tile_xy,
+    to_logical, visible_indices,
 };
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle, Model as _, ModelRc, VecModel};
 use windows::Win32::Foundation::HWND;
 
 use crate::bar_win;
-use crate::{AppWall, BarMenuItem, WallTile};
+use crate::removal::{self, RemovalDialog, RemovalPhase};
+use crate::{AppWall, BarMenuItem, RemovalLine, WallTile};
 
 thread_local! {
     static WALL: RefCell<Option<Wall>> = const { RefCell::new(None) };
@@ -73,6 +74,8 @@ pub(crate) fn install(ui: AppWall, dispatch: Arc<Dispatch>, store: lanwork_core:
     let tiles = Rc::new(VecModel::<WallTile>::default());
     ui.set_tiles(ModelRc::from(Rc::clone(&tiles)));
     ui.set_menu_items(ModelRc::new(VecModel::<BarMenuItem>::default()));
+    let removal_lines = Rc::new(VecModel::<RemovalLine>::default());
+    ui.set_removal_lines(ModelRc::from(Rc::clone(&removal_lines)));
     let icon_cache = dispatch.icon_cache();
     let icons = IconPump::start(Arc::clone(&icon_cache), store.clone());
     let (preload_tx, preload_rx) = mpsc::channel();
@@ -95,6 +98,9 @@ pub(crate) fn install(ui: AppWall, dispatch: Arc<Dispatch>, store: lanwork_core:
     ui.on_open_menu(|index, x, y| with_wall(move |wall| wall.open_menu(index, x, y)));
     ui.on_menu_activate(|index| with_wall(move |wall| wall.menu_activate(index)));
     ui.on_menu_shortcut(|digit| with_wall(move |wall| wall.menu_shortcut(digit)));
+    ui.on_removal_cancel(|| with_wall(Wall::cancel_removal));
+    ui.on_removal_confirm(|| with_wall(Wall::confirm_removal));
+    ui.on_removal_toggle(|index| with_wall(move |wall| wall.toggle_removal(index)));
     ui.on_view_changed(|scroll, viewport| {
         with_wall(move |wall| wall.view_changed(scroll, viewport));
     });
@@ -144,6 +150,9 @@ pub(crate) fn install(ui: AppWall, dispatch: Arc<Dispatch>, store: lanwork_core:
             hwnd_ready: false,
             launching: false,
             menu_index: None,
+            app_plan: None,
+            removal: None,
+            removal_lines,
             notice: None,
             window_height: 0,
         });
@@ -218,6 +227,18 @@ pub(crate) fn holds_foreground(foreground: Option<HWND>) -> bool {
 }
 
 /// 隐藏名单变了之后，开着的应用墙按当前过滤再列一次。
+pub(crate) fn finish_uninstall(done: removal::UninstallDone) {
+    with_wall(move |wall| wall.apply_uninstall(done));
+}
+
+pub(crate) fn finish_delete(rows: Vec<removal::RemovalRow>) {
+    with_wall(move |wall| wall.apply_delete(rows));
+}
+
+pub(crate) fn finish_clean(result: Result<(), String>) {
+    with_wall(move |wall| wall.apply_clean(result));
+}
+
 pub(crate) fn reload() {
     with_wall(|wall| {
         if !wall.open {
@@ -247,6 +268,9 @@ struct Wall {
     hwnd_ready: bool,
     launching: bool,
     menu_index: Option<usize>,
+    app_plan: Option<RemovalPlan>,
+    removal: Option<RemovalDialog>,
+    removal_lines: Rc<VecModel<RemovalLine>>,
     notice: Option<String>,
     window_height: u32,
 }
@@ -356,6 +380,9 @@ impl Wall {
     }
 
     fn dismiss(&mut self) {
+        if self.removal.is_some() || removal::held() {
+            return;
+        }
         if !self.open {
             return;
         }
@@ -376,6 +403,13 @@ impl Wall {
     }
 
     fn escape(&mut self) {
+        if self.removal.as_ref().is_some_and(|dialog| dialog.busy) {
+            return;
+        }
+        if self.removal.is_some() {
+            self.cancel_removal();
+            return;
+        }
         if self.ui.get_menu_open() {
             self.close_menu();
             return;
@@ -384,11 +418,11 @@ impl Wall {
     }
 
     fn blur(&mut self) {
-        if !self.open {
+        if !self.open || removal::held() {
             return;
         }
         slint::Timer::single_shot(Duration::ZERO, || {
-            if !is_open() || focus_stays() {
+            if removal::held() || !is_open() || focus_stays() {
                 return;
             }
             crate::searchbar::hide_if_visible();
@@ -573,7 +607,7 @@ impl Wall {
     }
 
     fn activate(&mut self, index: i32) {
-        if self.launching || self.ui.get_menu_open() {
+        if self.launching || self.ui.get_menu_open() || self.removal.is_some() {
             return;
         }
         let Some(index) = pointed_row(index, self.entries.len()) else {
@@ -584,13 +618,19 @@ impl Wall {
     }
 
     fn open_menu(&mut self, index: i32, x: f32, y: f32) {
-        if self.launching {
+        if self.launching || self.removal.is_some() {
             return;
         }
         let Some(index) = pointed_row(index, self.entries.len()) else {
             return;
         };
-        let items: Vec<BarMenuItem> = app_menu(&self.entries[index].entry)
+        let (plan, warning) = removal::plan_for(&self.entries[index].entry);
+        if let Some(message) = warning {
+            self.store.log_warn(&format!("读取卸载登记失败：{message}"));
+        }
+        let menu = app_menu_with(&self.entries[index].entry, &plan);
+        self.app_plan = Some(plan);
+        let items: Vec<BarMenuItem> = menu
             .into_iter()
             .map(|item| BarMenuItem {
                 label: item.label.into(),
@@ -615,6 +655,8 @@ impl Wall {
             AppMenuAction::OpenFileFolder,
             AppMenuAction::OpenTargetFolder,
             AppMenuAction::Hide,
+            AppMenuAction::CleanStartMenu,
+            AppMenuAction::Uninstall,
         ]
         .get(index)
         .copied() else {
@@ -643,19 +685,209 @@ impl Wall {
             self.close_menu();
             return;
         };
-        let Some(command) = app_menu_command(&entry.entry, action) else {
+        let plan = self
+            .app_plan
+            .clone()
+            .unwrap_or_else(|| removal::plan_for(&entry.entry).0);
+        let Some(command) = app_menu_command_with(&entry.entry, &plan, action) else {
             return;
         };
+        let entry = entry.entry.clone();
         self.close_menu();
         match command {
             lanwork_core::shell::RowAction::HideApp { key } => self.hide_entry(&key),
+            lanwork_core::shell::RowAction::CleanStartMenu { path } => self.begin_clean(path),
+            lanwork_core::shell::RowAction::UninstallApp => {
+                if let Some(prepared) = plan.uninstall.clone() {
+                    self.begin_uninstall(entry, prepared);
+                }
+            }
             other => self.launch(other),
         }
     }
 
     fn close_menu(&mut self) {
         self.menu_index = None;
+        self.app_plan = None;
         self.ui.set_menu_open(false);
+    }
+
+    fn begin_clean(&mut self, path: std::path::PathBuf) {
+        if self.launching {
+            return;
+        }
+        self.launching = true;
+        let dispatch = Arc::clone(&self.dispatch);
+        if !removal::spawn_clean(dispatch, path, false) {
+            self.launching = false;
+            self.notice = Some("清理没有启动".to_owned());
+            self.push_notice();
+        }
+    }
+
+    fn begin_uninstall(&mut self, entry: AppEntry, prepared: PreparedUninstall) {
+        if self.removal.is_some() {
+            return;
+        }
+        self.removal = Some(RemovalDialog::confirm(entry, prepared));
+        removal::set_hold(true);
+        self.push_removal();
+        self.ui.invoke_focus_filter();
+    }
+
+    fn confirm_removal(&mut self) {
+        let Some(dialog) = self.removal.as_mut() else {
+            return;
+        };
+        if !dialog.confirm_enabled() {
+            return;
+        }
+        match dialog.phase {
+            RemovalPhase::Confirm => {
+                dialog.busy = true;
+                let entry = dialog.entry.clone();
+                let prepared = dialog.prepared.clone();
+                self.push_removal();
+                self.launching = true;
+                let dispatch = Arc::clone(&self.dispatch);
+                if !removal::spawn_uninstall(dispatch, entry, prepared, false) {
+                    self.launching = false;
+                    if let Some(dialog) = self.removal.as_mut() {
+                        dialog.busy = false;
+                    }
+                    self.notice = Some("卸载没有启动".to_owned());
+                    self.push_notice();
+                    self.push_removal();
+                }
+            }
+            RemovalPhase::Checklist => {
+                dialog.busy = true;
+                let rows = dialog.rows.clone();
+                self.push_removal();
+                if !removal::spawn_delete(rows, false) {
+                    if let Some(dialog) = self.removal.as_mut() {
+                        dialog.busy = false;
+                    }
+                    self.notice = Some("删除没有启动".to_owned());
+                    self.push_notice();
+                    self.push_removal();
+                }
+            }
+        }
+    }
+
+    fn cancel_removal(&mut self) {
+        if self.removal.as_ref().is_some_and(|dialog| dialog.busy) {
+            return;
+        }
+        self.removal = None;
+        removal::set_hold(false);
+        self.push_removal();
+    }
+
+    fn toggle_removal(&mut self, index: i32) {
+        let Some(dialog) = self.removal.as_mut() else {
+            return;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        removal::toggle(dialog, index);
+        self.push_removal();
+    }
+
+    fn push_removal(&mut self) {
+        let Some(dialog) = self.removal.clone() else {
+            self.ui.set_removal_open(false);
+            self.ui.set_removal_busy(false);
+            self.removal_lines.set_vec(Vec::new());
+            return;
+        };
+        self.ui.set_removal_open(true);
+        self.ui.set_removal_busy(dialog.busy);
+        self.ui
+            .set_removal_checklist(dialog.phase == RemovalPhase::Checklist);
+        self.ui.set_removal_heading(dialog.heading.as_str().into());
+        self.ui.set_removal_body(dialog.body().into());
+        self.ui
+            .set_removal_confirm_text(dialog.confirm_label().into());
+        self.ui
+            .set_removal_confirm_enabled(dialog.confirm_enabled());
+        self.removal_lines.set_vec(
+            dialog
+                .rows
+                .iter()
+                .map(|row| RemovalLine {
+                    location: row.location.as_str().into(),
+                    detail: row.error.clone().unwrap_or_default().into(),
+                    checked: row.checked,
+                    failed: row.error.is_some(),
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    fn apply_uninstall(&mut self, done: removal::UninstallDone) {
+        self.launching = false;
+        if self.removal.is_none() {
+            return;
+        }
+        if done.refreshed {
+            let text = self.ui.get_text().to_string();
+            self.publish(self.dispatch.wall_apps(&text));
+            crate::searchbar::requery();
+        }
+        if done.rows.is_empty() {
+            let error = done.error;
+            self.removal = None;
+            removal::set_hold(false);
+            self.push_removal();
+            if let Some(message) = error {
+                self.notice = Some(message);
+                self.push_notice();
+            }
+            return;
+        }
+        if let Some(dialog) = self.removal.as_mut() {
+            dialog.busy = false;
+            dialog.phase = RemovalPhase::Checklist;
+            dialog.rows = done.rows;
+        }
+        self.push_removal();
+        self.ui.invoke_focus_filter();
+    }
+
+    fn apply_delete(&mut self, rows: Vec<removal::RemovalRow>) {
+        let Some(dialog) = self.removal.as_mut() else {
+            return;
+        };
+        dialog.busy = false;
+        if rows.is_empty() {
+            self.removal = None;
+            removal::set_hold(false);
+            self.push_removal();
+            return;
+        }
+        dialog.rows = rows;
+        self.push_removal();
+        self.ui.invoke_focus_filter();
+    }
+
+    fn apply_clean(&mut self, result: Result<(), String>) {
+        self.launching = false;
+        match result {
+            Ok(()) => {
+                self.notice = None;
+                self.push_notice();
+                let text = self.ui.get_text().to_string();
+                self.publish(self.dispatch.wall_apps(&text));
+                crate::searchbar::requery();
+            }
+            Err(message) => {
+                self.notice = Some(message);
+                self.push_notice();
+            }
+        }
     }
 
     fn hide_entry(&mut self, key: &str) {

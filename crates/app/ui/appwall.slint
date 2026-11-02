@@ -1,6 +1,7 @@
 // 应用墙。全屏网格，过滤和打开在 Rust。入口在搜索条右侧。
 
 import { BarMenuItem } from "searchbar.slint";
+import { RemovalLine, RemovalOverlay } from "removal.slint";
 
 export struct WallTile {
     name: string,
@@ -26,6 +27,17 @@ export component AppWall inherits Window {
     in property <length> cell-height: 104px;
     in property <string> notice;
     in property <[BarMenuItem]> menu-items;
+    in property <bool> removal-open: false;
+    in property <bool> removal-checklist: false;
+    in property <bool> removal-busy: false;
+    in property <string> removal-heading;
+    in property <string> removal-body;
+    in property <[RemovalLine]> removal-lines;
+    in property <bool> removal-confirm-enabled: false;
+    in property <string> removal-confirm-text: "卸载";
+    callback removal-cancel();
+    callback removal-confirm();
+    callback removal-toggle(int);
     in-out property <bool> menu-open: false;
     in-out property <length> menu-anchor-x: 0px;
     in-out property <length> menu-anchor-y: 0px;
@@ -130,6 +142,20 @@ export component AppWall inherits Window {
             key-pressed(event) => {
                 if self.preedit-text != "" {
                     return reject;
+                }
+                if root.removal-open {
+                    if root.removal-busy {
+                        return accept;
+                    }
+                    if event.text == Key.Escape {
+                        root.removal-cancel();
+                        return accept;
+                    }
+                    if event.text == Key.Return && root.removal-confirm-enabled {
+                        root.removal-confirm();
+                        return accept;
+                    }
+                    return accept;
                 }
                 if event.text == Key.Escape {
                     if root.menu-open {
@@ -339,6 +365,31 @@ export component AppWall inherits Window {
                     root.menu-open = false;
                 }
             }
+        }
+    }
+
+    RemovalOverlay {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        shown: root.removal-open;
+        checklist: root.removal-checklist;
+        busy: root.removal-busy;
+        heading: root.removal-heading;
+        body: root.removal-body;
+        lines: root.removal-lines;
+        confirm-enabled: root.removal-confirm-enabled;
+        confirm-text: root.removal-confirm-text;
+        dark: root.dark;
+        cancelled => {
+            root.removal-cancel();
+        }
+        confirmed => {
+            root.removal-confirm();
+        }
+        toggled(index) => {
+            root.removal-toggle(index);
         }
     }
 }

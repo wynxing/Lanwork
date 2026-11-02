@@ -5,7 +5,8 @@
 use std::path::PathBuf;
 
 use crate::apps::{
-    AppEntry, LaunchTarget, file_folder, launch_key, shortcut_target_folder, supports_run_as_admin,
+    AppEntry, LaunchTarget, MachineRoots, RemovalPlan, file_folder, launch_key, removal_plan,
+    shortcut_target_folder, supports_run_as_admin,
 };
 use crate::dispatch::{FileProgress, RowDetail, SearchGroup, SearchRow, UsageKey, ViewPhase};
 use crate::search::classify_prefix;
@@ -386,6 +387,10 @@ pub enum RowAction {
     FloatNote { id: String },
     /// 用默认浏览器打开搜索页。不计使用次数。
     WebSearch { url: String },
+    /// 删除这条开始菜单快捷方式或游戏链接。
+    CleanStartMenu { path: PathBuf },
+    /// 启动官方卸载。命令在打开菜单时算好的 [`RemovalPlan`] 里。
+    UninstallApp,
 }
 
 impl RowAction {
@@ -394,7 +399,11 @@ impl RowAction {
     pub fn counts_as_open(&self) -> bool {
         !matches!(
             self,
-            Self::OpenFolder(_) | Self::HideApp { .. } | Self::WebSearch { .. }
+            Self::OpenFolder(_)
+                | Self::HideApp { .. }
+                | Self::WebSearch { .. }
+                | Self::CleanStartMenu { .. }
+                | Self::UninstallApp
         )
     }
 }
@@ -407,6 +416,8 @@ pub enum AppMenuAction {
     OpenFileFolder,
     OpenTargetFolder,
     Hide,
+    CleanStartMenu,
+    Uninstall,
 }
 
 /// 菜单上看得见的一行。不可用的项仍占着原来的 Alt 数字。
@@ -418,26 +429,45 @@ pub struct AppMenuItem {
     pub enabled: bool,
 }
 
-const APP_MENU: [(AppMenuAction, &str, &str); 5] = [
+const APP_MENU: [(AppMenuAction, &str, &str); 7] = [
     (AppMenuAction::RunAsUser, "以其他用户身份运行", "Alt+1"),
     (AppMenuAction::RunAsAdmin, "以管理员身份运行", "Alt+2"),
     (AppMenuAction::OpenFileFolder, "打开文件所在文件夹", "Alt+3"),
     (AppMenuAction::OpenTargetFolder, "打开目标文件夹", "Alt+4"),
     (AppMenuAction::Hide, "隐藏", "Alt+5"),
+    (AppMenuAction::CleanStartMenu, "清理开始菜单入口", "Alt+6"),
+    (AppMenuAction::Uninstall, "卸载…", "Alt+7"),
 ];
 
-/// 应用结果的右键菜单。五项都在，做不到的那一项 `enabled` 为假。
+/// 应用结果的右键菜单。七项都在，做不到的那一项 `enabled` 为假。
+///
+/// 清理和卸载按空的卸载登记和内置目录判断。界面打开菜单时改用 [`app_menu_with`]。
 #[must_use]
-pub fn app_menu(entry: &AppEntry) -> [AppMenuItem; 5] {
+pub fn app_menu(entry: &AppEntry) -> [AppMenuItem; 7] {
+    app_menu_with(entry, &removal_plan(entry, &[], &MachineRoots::builtin()))
+}
+
+/// 用已经算好的清理和卸载计划填充菜单。
+#[must_use]
+pub fn app_menu_with(entry: &AppEntry, plan: &RemovalPlan) -> [AppMenuItem; 7] {
     APP_MENU.map(|(action, label, hint)| AppMenuItem {
         action,
         label,
         hint,
-        enabled: menu_enabled(entry, action),
+        enabled: menu_enabled(entry, plan, action),
     })
 }
 
-fn menu_enabled(entry: &AppEntry, action: AppMenuAction) -> bool {
+/// 搜索结果里的应用菜单。顺序与 [`app_menu_with`] 相同。
+#[must_use]
+pub fn app_result_menu(entry: &AppEntry, plan: &RemovalPlan) -> Vec<ResultMenuItem> {
+    app_menu_with(entry, plan)
+        .into_iter()
+        .map(app_menu_item)
+        .collect()
+}
+
+fn menu_enabled(entry: &AppEntry, plan: &RemovalPlan, action: AppMenuAction) -> bool {
     match action {
         AppMenuAction::RunAsUser | AppMenuAction::RunAsAdmin => {
             supports_run_as_admin(&entry.target)
@@ -445,13 +475,26 @@ fn menu_enabled(entry: &AppEntry, action: AppMenuAction) -> bool {
         AppMenuAction::OpenFileFolder => file_folder(entry).is_some(),
         AppMenuAction::OpenTargetFolder => shortcut_target_folder(entry).is_some(),
         AppMenuAction::Hide => !launch_key(&entry.target).is_empty(),
+        AppMenuAction::CleanStartMenu => plan.clean_path.is_some(),
+        AppMenuAction::Uninstall => plan.uninstall.is_some(),
     }
+}
+
+/// 菜单项对应的动作。不可用时为 `None`。清理和卸载按空的卸载登记判断。
+#[must_use]
+pub fn app_menu_command(entry: &AppEntry, action: AppMenuAction) -> Option<RowAction> {
+    let plan = removal_plan(entry, &[], &MachineRoots::builtin());
+    app_menu_command_with(entry, &plan, action)
 }
 
 /// 菜单项对应的动作。不可用时为 `None`。
 #[must_use]
-pub fn app_menu_command(entry: &AppEntry, action: AppMenuAction) -> Option<RowAction> {
-    if !menu_enabled(entry, action) {
+pub fn app_menu_command_with(
+    entry: &AppEntry,
+    plan: &RemovalPlan,
+    action: AppMenuAction,
+) -> Option<RowAction> {
+    if !menu_enabled(entry, plan, action) {
         return None;
     }
     match action {
@@ -462,6 +505,11 @@ pub fn app_menu_command(entry: &AppEntry, action: AppMenuAction) -> Option<RowAc
         AppMenuAction::Hide => Some(RowAction::HideApp {
             key: launch_key(&entry.target),
         }),
+        AppMenuAction::CleanStartMenu => plan
+            .clean_path
+            .clone()
+            .map(|path| RowAction::CleanStartMenu { path }),
+        AppMenuAction::Uninstall => Some(RowAction::UninstallApp),
     }
 }
 
@@ -485,12 +533,14 @@ pub fn alt_route(menu_open: bool, digit: u32) -> AltRoute {
         3 => Some(AppMenuAction::OpenFileFolder),
         4 => Some(AppMenuAction::OpenTargetFolder),
         5 => Some(AppMenuAction::Hide),
+        6 => Some(AppMenuAction::CleanStartMenu),
+        7 => Some(AppMenuAction::Uninstall),
         _ => None,
     };
     AltRoute::Menu(action)
 }
 
-/// 搜索结果右键菜单的一项。应用五项仍由 [`app_menu`] 决定。
+/// 搜索结果右键菜单的一项。应用七项仍由 [`app_menu`] 决定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultMenuAction {
     RunAsUser,
@@ -498,6 +548,8 @@ pub enum ResultMenuAction {
     OpenFileFolder,
     OpenTargetFolder,
     Hide,
+    CleanStartMenu,
+    Uninstall,
     /// 文件或文件夹的上一级。与 Ctrl+Enter 相同。
     OpenContainingFolder,
     CopyPath,
@@ -603,6 +655,8 @@ fn app_menu_item(item: AppMenuItem) -> ResultMenuItem {
         AppMenuAction::OpenFileFolder => ResultMenuAction::OpenFileFolder,
         AppMenuAction::OpenTargetFolder => ResultMenuAction::OpenTargetFolder,
         AppMenuAction::Hide => ResultMenuAction::Hide,
+        AppMenuAction::CleanStartMenu => ResultMenuAction::CleanStartMenu,
+        AppMenuAction::Uninstall => ResultMenuAction::Uninstall,
     };
     ResultMenuItem {
         action,
@@ -1440,8 +1494,15 @@ mod tests {
                 ("打开文件所在文件夹", "Alt+3", true),
                 ("打开目标文件夹", "Alt+4", true),
                 ("隐藏", "Alt+5", true),
+                ("清理开始菜单入口", "Alt+6", true),
+                ("卸载…", "Alt+7", false),
             ]
         );
+        assert!(matches!(
+            app_menu_command(&hit.entry, AppMenuAction::CleanStartMenu),
+            Some(RowAction::CleanStartMenu { .. })
+        ));
+        assert_eq!(app_menu_command(&hit.entry, AppMenuAction::Uninstall), None);
         assert_eq!(
             app_menu_command(&hit.entry, AppMenuAction::OpenFileFolder),
             Some(RowAction::OpenFolder(PathBuf::from(
@@ -1466,6 +1527,8 @@ mod tests {
             panic!("app");
         };
         assert!(!app_menu(&direct.entry)[3].enabled);
+        assert!(!app_menu(&direct.entry)[5].enabled);
+        assert!(!app_menu(&direct.entry)[6].enabled);
         assert_eq!(
             app_menu_command(&direct.entry, AppMenuAction::OpenTargetFolder),
             None
@@ -1492,6 +1555,7 @@ mod tests {
             assert!(!menu[1].enabled);
             assert!(!menu[3].enabled);
             assert!(menu[4].enabled);
+            assert!(!menu[5].enabled);
             assert_eq!(
                 app_menu_command(&hit.entry, AppMenuAction::RunAsAdmin),
                 None
@@ -1501,6 +1565,17 @@ mod tests {
                 Some(RowAction::HideApp { .. })
             ));
         }
+        let store = app(LaunchTarget::Aumid {
+            aumid: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".to_owned(),
+        });
+        let RowDetail::App(store) = &store else {
+            panic!("store");
+        };
+        assert!(app_menu(&store.entry)[6].enabled);
+        assert_eq!(
+            app_menu_command(&store.entry, AppMenuAction::Uninstall),
+            Some(RowAction::UninstallApp)
+        );
     }
 
     #[test]
@@ -1519,7 +1594,15 @@ mod tests {
             alt_route(true, 5),
             AltRoute::Menu(Some(AppMenuAction::Hide))
         );
-        assert_eq!(alt_route(true, 6), AltRoute::Menu(None));
+        assert_eq!(
+            alt_route(true, 6),
+            AltRoute::Menu(Some(AppMenuAction::CleanStartMenu))
+        );
+        assert_eq!(
+            alt_route(true, 7),
+            AltRoute::Menu(Some(AppMenuAction::Uninstall))
+        );
+        assert_eq!(alt_route(true, 8), AltRoute::Menu(None));
         assert_eq!(alt_route(true, 9), AltRoute::Menu(None));
     }
 
@@ -1628,6 +1711,15 @@ mod tests {
     fn open_folder_is_not_an_open() {
         assert!(!RowAction::OpenFolder(PathBuf::from("C:\\")).counts_as_open());
         assert!(!RowAction::HideApp { key: "path".into() }.counts_as_open());
+        assert!(
+            !RowAction::CleanStartMenu {
+                path: PathBuf::from(
+                    "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Demo.lnk"
+                ),
+            }
+            .counts_as_open()
+        );
+        assert!(!RowAction::UninstallApp.counts_as_open());
         assert!(RowAction::Shell(exe()).counts_as_open());
         assert!(RowAction::Elevated(exe()).counts_as_open());
         assert!(RowAction::RunAsUser(exe()).counts_as_open());

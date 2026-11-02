@@ -11,6 +11,7 @@ mod cache;
 mod catalog;
 mod index;
 mod model;
+mod removal;
 mod rules;
 
 #[cfg(windows)]
@@ -20,6 +21,12 @@ pub use cache::{CACHE_FILE_NAME, CACHE_SCHEMA_VERSION, CacheStatus};
 pub use catalog::{AppAlias, HiddenApp, UserCatalog, load_user_catalog, save_user_catalog};
 pub use index::{AppHit, AppIndex, IndexError, RefreshReport, WallEntry};
 pub use model::{AppEntry, AppSource, LaunchTarget, SourceError, launch_key};
+pub use removal::{
+    AfterUninstall, AppFootprint, Confidence, Leftover, LeftoverKind, MachineRoots,
+    ObservedLeftovers, ObservedShortcut, PreparedUninstall, RemovalPlan, UninstallCommand,
+    UninstallEnd, UninstallRecord, after_uninstall, deletion_allowed, plan_leftovers,
+    registry_candidates, registry_delete_allowed, removal_plan,
+};
 pub use rules::{
     containing_folder, file_folder, shortcut_target_folder, supports_open_containing_folder,
     supports_run_as_admin,
@@ -48,6 +55,11 @@ pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(400);
 
 #[cfg(windows)]
 pub use windows::launch::launch;
+
+#[cfg(windows)]
+pub use windows::removal_io::{
+    delete_leftover, launch_uninstall, machine_roots, observe_leftovers, read_uninstall_records,
+};
 
 #[cfg(all(windows, test))]
 pub(crate) use windows::launch::launch_and_wait;

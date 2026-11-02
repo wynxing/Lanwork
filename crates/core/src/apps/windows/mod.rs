@@ -6,6 +6,7 @@ mod app_paths;
 mod comutil;
 pub(crate) mod launch;
 mod path_env;
+pub(crate) mod removal_io;
 mod shortcut;
 mod start_menu;
 mod store;

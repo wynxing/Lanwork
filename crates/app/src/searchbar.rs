@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+use lanwork_core::apps::RemovalPlan;
 use lanwork_core::apps::{LaunchError, LaunchTarget, launch, launch_as_user, launch_elevated};
 use lanwork_core::config::{ConfigCommands, SearchBarOrigin};
 use lanwork_core::dispatch::{
@@ -23,11 +24,12 @@ use lanwork_core::panel::PanelTarget;
 use lanwork_core::search::{classify_prefix, folder_tab_target, looks_like_local_path};
 use lanwork_core::shell::{
     AppMenuAction, BAR_WIDTH, Backdrop, EnterChord, EscapeAction, HoverArm, MonitorArea,
-    PointerPos, ROW_HEIGHT, ResultMenuAction, RowAction, WorkArea, app_menu_command, caret_at_end,
-    draws_type_glyph, escape_action, group_label, hover_row, location_always_shown, match_span,
-    max_results_height, menu_index, monitor_at, move_selection, path_target, place_bar,
-    pointed_row, result_menu, row_action, row_offsets, selection_after_refresh, shelf_pick_menu,
-    shortcut_rows, shortcut_target, solid_rgb, status_line, text_after_hide, to_physical,
+    PointerPos, ROW_HEIGHT, ResultMenuAction, RowAction, WorkArea, app_menu_command,
+    app_result_menu, caret_at_end, draws_type_glyph, escape_action, group_label, hover_row,
+    location_always_shown, match_span, max_results_height, menu_index, monitor_at, move_selection,
+    path_target, place_bar, pointed_row, result_menu, row_action, row_offsets,
+    selection_after_refresh, shelf_pick_menu, shortcut_rows, shortcut_target, solid_rgb,
+    status_line, text_after_hide, to_physical,
 };
 use lanwork_core::shelves::IncomingRef;
 use lanwork_core::storage::Store;
@@ -35,7 +37,8 @@ use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 use slint::{CloseRequestResponse, ComponentHandle, Model as _, ModelRc, VecModel};
 
 use crate::bar_win;
-use crate::{BarMenuItem, BarRow, SearchBar};
+use crate::removal::{self, RemovalDialog, RemovalPhase};
+use crate::{BarMenuItem, BarRow, RemovalLine, SearchBar};
 
 /// 测量用。设了这个变量时，热召回和结果延迟的原始记录追加到该文件。界面不暴露它。
 pub(crate) const LATENCY_OUT_ENV: &str = "LANWORK_LATENCY_OUT";
@@ -88,6 +91,8 @@ pub(crate) fn install(
 ) {
     let rows = Rc::new(VecModel::<BarRow>::default());
     ui.set_rows(ModelRc::from(Rc::clone(&rows)));
+    let removal_lines = Rc::new(VecModel::<RemovalLine>::default());
+    ui.set_removal_lines(ModelRc::from(Rc::clone(&removal_lines)));
     let marks = Rc::new(RefCell::new(Marks {
         dispatch: Arc::clone(&dispatch),
         log: LatencyLog::from_env(store.clone()),
@@ -119,6 +124,9 @@ pub(crate) fn install(
     ui.on_caret_at_end(|offset| with_bar_sync(move |bar| bar.caret_at_end(offset)));
     ui.on_menu_activate(|index| with_bar_sync(move |bar| bar.menu_activate(index)));
     ui.on_menu_shortcut(|digit| with_bar(move |bar| bar.menu_shortcut(digit)));
+    ui.on_removal_cancel(|| with_bar(Bar::cancel_removal));
+    ui.on_removal_confirm(|| with_bar(Bar::confirm_removal));
+    ui.on_removal_toggle(|index| with_bar(move |bar| bar.toggle_removal(index)));
     ui.on_scrolled(|top| with_bar(move |bar| bar.scrolled(top)));
     ui.on_drag_window(|| with_bar(Bar::drag));
     bar_win::add_move_hook(move_loop);
@@ -198,11 +206,26 @@ pub(crate) fn install(
         path_up: None,
         path_count: 0,
         usage_save: slint::Timer::default(),
+        app_plan: None,
+        removal: None,
+        removal_lines,
     };
     BAR.with(|cell| *cell.borrow_mut() = Some(bar));
 }
 
 /// 隐藏名单变了之后，开着的搜索条按当前输入再查一次。
+pub(crate) fn finish_uninstall(done: removal::UninstallDone) {
+    with_bar(move |bar| bar.apply_uninstall(done));
+}
+
+pub(crate) fn finish_delete(rows: Vec<removal::RemovalRow>) {
+    with_bar(move |bar| bar.apply_delete(rows));
+}
+
+pub(crate) fn finish_clean(result: Result<(), String>) {
+    with_bar(move |bar| bar.apply_clean(result));
+}
+
 pub(crate) fn requery() {
     with_bar(|bar| {
         if !bar.visible {
@@ -307,6 +330,9 @@ struct Bar {
     menu_row: Option<usize>,
     /// 当前菜单的每一项。分组列表换上来时换成那些分组。
     menu_commands: Vec<MenuCommand>,
+    app_plan: Option<RemovalPlan>,
+    removal: Option<RemovalDialog>,
+    removal_lines: Rc<VecModel<RemovalLine>>,
     /// 拖动过程中，包括循环结束后留给迟到失焦的那两轮。
     dragging: bool,
     /// 这次按下时的左上角。松开后没变就不写配置。
@@ -454,6 +480,9 @@ impl Bar {
     }
 
     fn hide(&mut self) {
+        if self.removal.is_some() || removal::held() {
+            return;
+        }
         self.ui.set_wall_open(false);
         crate::appwall::dismiss();
         self.hover.reset(None);
@@ -477,7 +506,7 @@ impl Bar {
     }
 
     fn blur(&mut self) {
-        if self.dragging || !self.visible || self.concealed {
+        if removal::held() || self.dragging || !self.visible || self.concealed {
             return;
         }
         if !crate::appwall::is_open() {
@@ -488,7 +517,7 @@ impl Bar {
         // 为应用墙隐藏搜索条时也会失焦，那时 `concealed` 已经为真，不再收起。
         slint::Timer::single_shot(Duration::ZERO, || {
             with_bar(|bar| {
-                if bar.dragging || !bar.visible || bar.concealed {
+                if removal::held() || bar.dragging || !bar.visible || bar.concealed {
                     return;
                 }
                 if crate::appwall::is_open() {
@@ -600,6 +629,9 @@ impl Bar {
     }
 
     fn toggle_wall(&mut self) {
+        if self.removal.is_some() {
+            return;
+        }
         if self.ui.get_menu_open() {
             self.close_menu();
         }
@@ -686,6 +718,13 @@ impl Bar {
     }
 
     fn escape(&mut self) {
+        if self.removal.as_ref().is_some_and(|dialog| dialog.busy) {
+            return;
+        }
+        if self.removal.is_some() {
+            self.cancel_removal();
+            return;
+        }
         if self.ui.get_menu_open() {
             self.close_menu();
             return;
@@ -950,13 +989,47 @@ impl Bar {
     }
 
     fn open_menu(&mut self, index: i32, x: f32, y: f32) {
+        if self.removal.is_some() {
+            return;
+        }
         let Some(index) = pointed_row(index, self.results.len()) else {
             return;
         };
-        let Some(row) = self.results.get(index) else {
+        let Some(detail) = self.results.get(index).map(|row| row.detail.clone()) else {
             return;
         };
-        let Some(items) = result_menu(&row.detail) else {
+        if let RowDetail::App(hit) = &detail {
+            let entry = hit.entry.clone();
+            let (plan, warning) = removal::plan_for(&entry);
+            if let Some(message) = warning {
+                self.store.log_warn(&format!("读取卸载登记失败：{message}"));
+            }
+            let items = app_result_menu(&entry, &plan);
+            self.app_plan = Some(plan);
+            self.selected = index;
+            self.ui
+                .set_selected(i32::try_from(self.selected).unwrap_or(0));
+            self.menu_row = Some(index);
+            self.menu_commands = items
+                .iter()
+                .map(|item| MenuCommand {
+                    action: MenuAction::Result(item.action),
+                    enabled: item.enabled,
+                })
+                .collect();
+            let shown: Vec<BarMenuItem> = items
+                .into_iter()
+                .map(|item| BarMenuItem {
+                    label: item.label.into(),
+                    hint: item.hint.into(),
+                    enabled: item.enabled,
+                })
+                .collect();
+            self.show_menu(shown, x, y);
+            return;
+        }
+        self.app_plan = None;
+        let Some(items) = result_menu(&detail) else {
             return;
         };
         self.selected = index;
@@ -1041,14 +1114,41 @@ impl Bar {
             self.close_menu();
             return false;
         };
-        let command = match (&row.detail, action) {
+        let detail = row.detail.clone();
+        let usage = row.usage.clone();
+        if let RowDetail::App(hit) = &detail {
+            if action == ResultMenuAction::CleanStartMenu {
+                let path = self
+                    .app_plan
+                    .as_ref()
+                    .and_then(|plan| plan.clean_path.clone());
+                self.close_menu();
+                if let Some(path) = path {
+                    self.begin_clean(path);
+                }
+                return false;
+            }
+            if action == ResultMenuAction::Uninstall {
+                let prepared = self
+                    .app_plan
+                    .as_ref()
+                    .and_then(|plan| plan.uninstall.clone());
+                let entry = hit.entry.clone();
+                self.close_menu();
+                if let Some(prepared) = prepared {
+                    self.begin_uninstall(entry, prepared);
+                }
+                return false;
+            }
+        }
+        let command = match (&detail, action) {
             (RowDetail::App(hit), action) => {
                 app_action(action).and_then(|action| app_menu_command(&hit.entry, action))
             }
             (
                 RowDetail::File { .. } | RowDetail::Folder { .. },
                 ResultMenuAction::OpenContainingFolder,
-            ) => row_action(&row.detail, EnterChord::Ctrl),
+            ) => row_action(&detail, EnterChord::Ctrl),
             (RowDetail::Note { id }, ResultMenuAction::FloatNote) => {
                 Some(RowAction::FloatNote { id: id.clone() })
             }
@@ -1057,7 +1157,6 @@ impl Bar {
         let Some(command) = command else {
             return true;
         };
-        let usage = row.usage.clone();
         let query = self.view_text.clone();
         self.close_menu();
         self.perform(command, usage, query);
@@ -1189,7 +1288,176 @@ impl Bar {
     fn close_menu(&mut self) {
         self.menu_row = None;
         self.menu_commands.clear();
+        self.app_plan = None;
         self.ui.set_menu_open(false);
+    }
+
+    fn begin_clean(&mut self, path: PathBuf) {
+        if self.launching {
+            return;
+        }
+        self.launching = true;
+        let dispatch = Arc::clone(&self.dispatch);
+        if !removal::spawn_clean(dispatch, path, true) {
+            self.launching = false;
+            self.fail_menu("清理没有启动");
+        }
+    }
+
+    fn begin_uninstall(
+        &mut self,
+        entry: lanwork_core::apps::AppEntry,
+        prepared: lanwork_core::apps::PreparedUninstall,
+    ) {
+        if self.removal.is_some() {
+            return;
+        }
+        self.removal = Some(RemovalDialog::confirm(entry, prepared));
+        removal::set_hold(true);
+        self.push_removal();
+        self.ui.invoke_focus_input();
+    }
+
+    fn confirm_removal(&mut self) {
+        let Some(dialog) = self.removal.as_mut() else {
+            return;
+        };
+        if !dialog.confirm_enabled() {
+            return;
+        }
+        match dialog.phase {
+            RemovalPhase::Confirm => {
+                dialog.busy = true;
+                let entry = dialog.entry.clone();
+                let prepared = dialog.prepared.clone();
+                self.push_removal();
+                self.launching = true;
+                let dispatch = Arc::clone(&self.dispatch);
+                if !removal::spawn_uninstall(dispatch, entry, prepared, true) {
+                    self.launching = false;
+                    if let Some(dialog) = self.removal.as_mut() {
+                        dialog.busy = false;
+                    }
+                    self.fail_removal("卸载没有启动");
+                }
+            }
+            RemovalPhase::Checklist => {
+                dialog.busy = true;
+                let rows = dialog.rows.clone();
+                self.push_removal();
+                if !removal::spawn_delete(rows, true) {
+                    if let Some(dialog) = self.removal.as_mut() {
+                        dialog.busy = false;
+                    }
+                    self.fail_removal("删除没有启动");
+                }
+            }
+        }
+    }
+
+    fn cancel_removal(&mut self) {
+        if self.removal.as_ref().is_some_and(|dialog| dialog.busy) {
+            return;
+        }
+        self.removal = None;
+        removal::set_hold(false);
+        self.push_removal();
+    }
+
+    fn toggle_removal(&mut self, index: i32) {
+        let Some(dialog) = self.removal.as_mut() else {
+            return;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        removal::toggle(dialog, index);
+        self.push_removal();
+    }
+
+    fn push_removal(&mut self) {
+        let Some(dialog) = self.removal.clone() else {
+            self.ui.set_removal_open(false);
+            self.ui.set_removal_busy(false);
+            self.removal_lines.set_vec(Vec::new());
+            return;
+        };
+        self.ui.set_removal_open(true);
+        self.ui.set_removal_busy(dialog.busy);
+        self.ui
+            .set_removal_checklist(dialog.phase == RemovalPhase::Checklist);
+        self.ui.set_removal_heading(dialog.heading.as_str().into());
+        self.ui.set_removal_body(dialog.body().into());
+        self.ui
+            .set_removal_confirm_text(dialog.confirm_label().into());
+        self.ui
+            .set_removal_confirm_enabled(dialog.confirm_enabled());
+        self.removal_lines.set_vec(removal_lines(&dialog));
+    }
+
+    fn apply_uninstall(&mut self, done: removal::UninstallDone) {
+        self.launching = false;
+        if self.removal.is_none() {
+            return;
+        }
+        if done.refreshed {
+            reload_apps();
+        }
+        if done.rows.is_empty() {
+            self.removal = None;
+            removal::set_hold(false);
+            self.push_removal();
+            if let Some(message) = done.error {
+                self.error = Some(message);
+                self.push_status();
+            }
+            return;
+        }
+        if let Some(dialog) = self.removal.as_mut() {
+            dialog.busy = false;
+            dialog.phase = RemovalPhase::Checklist;
+            dialog.rows = done.rows;
+        }
+        self.push_removal();
+        self.ui.invoke_focus_input();
+    }
+
+    fn apply_delete(&mut self, rows: Vec<removal::RemovalRow>) {
+        let Some(dialog) = self.removal.as_mut() else {
+            return;
+        };
+        dialog.busy = false;
+        if rows.is_empty() {
+            self.removal = None;
+            removal::set_hold(false);
+            self.push_removal();
+            return;
+        }
+        dialog.rows = rows;
+        self.push_removal();
+        self.ui.invoke_focus_input();
+    }
+
+    fn apply_clean(&mut self, result: Result<(), String>) {
+        self.launching = false;
+        match result {
+            Ok(()) => {
+                self.error = None;
+                self.push_status();
+                reload_apps();
+            }
+            Err(message) => {
+                self.error = Some(message);
+                self.push_status();
+            }
+        }
+    }
+
+    fn fail_removal(&mut self, message: &str) {
+        self.store.log_warn(&format!("搜索条卸载：{message}"));
+        self.error = Some(message.to_owned());
+        self.push_status();
+        self.push_removal();
     }
 
     fn hide_app(&mut self, key: &str) {
@@ -1343,6 +1611,7 @@ impl Bar {
             | RowAction::WebSearch { .. } => {
                 self.launch(action, usage, query);
             }
+            RowAction::CleanStartMenu { .. } | RowAction::UninstallApp => {}
             RowAction::PanelTodo { .. }
             | RowAction::PanelNote { .. }
             | RowAction::FloatNote { .. } => {
@@ -1457,8 +1726,28 @@ pub(crate) fn run_shell(action: &RowAction) -> Result<(), LaunchError> {
         RowAction::HideApp { .. }
         | RowAction::PanelTodo { .. }
         | RowAction::PanelNote { .. }
-        | RowAction::FloatNote { .. } => Ok(()),
+        | RowAction::FloatNote { .. }
+        | RowAction::CleanStartMenu { .. }
+        | RowAction::UninstallApp => Ok(()),
     }
+}
+
+fn reload_apps() {
+    crate::appwall::reload();
+    requery();
+}
+
+fn removal_lines(dialog: &RemovalDialog) -> Vec<RemovalLine> {
+    dialog
+        .rows
+        .iter()
+        .map(|row| RemovalLine {
+            location: row.location.as_str().into(),
+            detail: row.error.clone().unwrap_or_default().into(),
+            checked: row.checked,
+            failed: row.error.is_some(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
