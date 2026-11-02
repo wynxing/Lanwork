@@ -76,6 +76,7 @@ pub(crate) fn expand_env(input: &str) -> String {
     }
 }
 
+/// 只留下第一对引号里面的文本。卸载命令用 `registry_command_text`，引号后面的参数留在命令里。
 pub(crate) fn unquote(text: &str) -> &str {
     let text = text.trim();
     if let Some(rest) = text.strip_prefix('"')

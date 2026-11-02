@@ -522,8 +522,25 @@ fn parse_record_command(record: &UninstallRecord) -> Option<OwnedCommand> {
     None
 }
 
+/// 注册表里的卸载命令。
+/// 整段被一对引号包住、引号内没有别的引号时，去掉这对引号。
+/// 引号只包住可执行文件、后面还有参数时，参数留在字符串里。
+#[must_use]
+pub(crate) fn registry_command_text(raw: &str) -> &str {
+    let text = raw.trim();
+    if let Some(inner) = text
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        && !inner.contains('"')
+    {
+        inner
+    } else {
+        text
+    }
+}
+
 fn parse_uninstall_string(raw: &str) -> Option<OwnedCommand> {
-    let raw = raw.trim();
+    let raw = registry_command_text(raw);
     if raw.is_empty() {
         return None;
     }
@@ -1763,6 +1780,33 @@ mod tests {
         assert_eq!(
             msi.args,
             "/x {AABBCCDD-1111-2222-3333-444444444444} --uninstall"
+        );
+    }
+
+    #[test]
+    fn registry_command_text_keeps_args_after_a_quoted_update_exe() {
+        let raw = r#""C:\Users\User\AppData\Local\MiniMaxDesign\Update.exe" --uninstall"#;
+        let stored = registry_command_text(raw);
+        assert_eq!(stored, raw);
+
+        let path = r"C:\Users\User\AppData\Local\MiniMaxDesign\Update.exe";
+        let item = entry("MiniMax Design", AppSource::Path, exe(path), None);
+        let records = [record("MiniMax Design", stored, "")];
+        let command = removal_plan(&item, &records, &roots())
+            .uninstall
+            .expect("uninstall")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: path.to_owned(),
+                args: "uninstall".to_owned(),
+            }
+        );
+
+        assert_eq!(
+            registry_command_text(r#""C:\Program Files\Demo\uninstall.exe""#),
+            r"C:\Program Files\Demo\uninstall.exe"
         );
     }
 
