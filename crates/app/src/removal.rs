@@ -108,6 +108,8 @@ pub(crate) struct UninstallDone {
     pub error: Option<String>,
     pub rows: Vec<RemovalRow>,
     pub refreshed: bool,
+    /// 残留扫描已经跑过。清单为空时界面用这一位显示「没有发现可清理的残留」。
+    pub scanned: bool,
 }
 
 pub(crate) fn run_uninstall(
@@ -121,6 +123,7 @@ pub(crate) fn run_uninstall(
             error: Some(message),
             rows: Vec::new(),
             refreshed: false,
+            scanned: false,
         };
     }
     if let Err(err) = dispatch.refresh_apps() {
@@ -128,6 +131,7 @@ pub(crate) fn run_uninstall(
             error: Some(format!("刷新应用索引失败：{err}")),
             rows: Vec::new(),
             refreshed: false,
+            scanned: false,
         };
     }
     let gone = indexed_gone(dispatch, entry);
@@ -137,6 +141,7 @@ pub(crate) fn run_uninstall(
             error: decision.error,
             rows: Vec::new(),
             refreshed: decision.refresh,
+            scanned: false,
         };
     }
     let roots = machine_roots();
@@ -154,6 +159,7 @@ pub(crate) fn run_uninstall(
         error: decision.error,
         rows,
         refreshed: true,
+        scanned: true,
     }
 }
 
@@ -211,6 +217,7 @@ pub(crate) fn spawn_uninstall(
                     error: Some("卸载过程中断".to_owned()),
                     rows: Vec::new(),
                     refreshed: false,
+                    scanned: false,
                 },
             };
             let _ = slint::invoke_from_event_loop(move || {

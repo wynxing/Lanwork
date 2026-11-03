@@ -188,6 +188,7 @@ pub(crate) fn install(
         file: FileProgress::Idle,
         file_unavailable: None,
         error: None,
+        status_note: None,
         icons: HashMap::new(),
         web_icons: HashMap::new(),
         visible: false,
@@ -313,6 +314,8 @@ struct Bar {
     file: FileProgress,
     file_unavailable: Option<&'static str>,
     error: Option<String>,
+    /// 卸载扫描没有可清项时的状态行。不是错误，输入或收起后清掉。
+    status_note: Option<String>,
     icons: HashMap<IconKey, slint::Image>,
     web_icons: HashMap<String, slint::Image>,
     visible: bool,
@@ -429,6 +432,7 @@ impl Bar {
             .set_position(slint::PhysicalPosition::new(origin.0, origin.1));
         self.refresh_backdrop();
         self.error = None;
+        self.status_note = None;
         self.push_status();
         self.marks.borrow_mut().hot_start = Some(received_ns);
         self.visible = true;
@@ -494,6 +498,7 @@ impl Bar {
         self.marks.borrow_mut().hot_start = None;
         let _ = self.ui.hide();
         self.error = None;
+        self.status_note = None;
         let text = self.ui.get_text().to_string();
         let keep = text_after_hide(&text).to_owned();
         if keep != text {
@@ -625,6 +630,7 @@ impl Bar {
 
     fn edited(&mut self, text: &str) {
         self.error = None;
+        self.status_note = None;
         self.submit(text);
     }
 
@@ -740,6 +746,7 @@ impl Bar {
             EscapeAction::Clear => {
                 self.ui.set_text("".into());
                 self.error = None;
+                self.status_note = None;
                 self.submit("");
             }
         }
@@ -1314,6 +1321,8 @@ impl Bar {
         }
         self.removal = Some(RemovalDialog::confirm(entry, prepared));
         removal::set_hold(true);
+        self.status_note = None;
+        self.push_status();
         self.push_removal();
         self.ui.invoke_focus_input();
     }
@@ -1408,11 +1417,20 @@ impl Bar {
             removal::set_hold(false);
             self.push_removal();
             if let Some(message) = done.error {
+                self.status_note = None;
                 self.error = Some(message);
+                self.push_status();
+            } else if let Some(message) =
+                lanwork_core::apps::empty_leftover_note(done.scanned, done.rows.len())
+            {
+                self.error = None;
+                self.status_note = Some(message.to_owned());
                 self.push_status();
             }
             return;
         }
+        self.status_note = None;
+        self.push_status();
         if let Some(dialog) = self.removal.as_mut() {
             dialog.busy = false;
             dialog.phase = RemovalPhase::Checklist;
@@ -1478,13 +1496,26 @@ impl Bar {
     }
 
     fn push_status(&mut self) {
-        let status = status_line(
-            self.error.as_deref(),
-            self.phase,
-            self.results.len(),
-            self.file,
-            self.file_unavailable,
-        );
+        let status = if self.error.is_some() {
+            self.status_note = None;
+            status_line(
+                self.error.as_deref(),
+                self.phase,
+                self.results.len(),
+                self.file,
+                self.file_unavailable,
+            )
+        } else if let Some(note) = self.status_note.as_deref() {
+            note.to_owned()
+        } else {
+            status_line(
+                None,
+                self.phase,
+                self.results.len(),
+                self.file,
+                self.file_unavailable,
+            )
+        };
         self.ui.set_status_is_error(self.error.is_some());
         self.ui.set_status(status.into());
     }

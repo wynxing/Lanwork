@@ -333,6 +333,8 @@ pub fn registry_delete_allowed(key: &str) -> bool {
 }
 
 /// 按名称和发布者拼出要查看的注册表键。不包含关键路径。
+///
+/// 除完整显示名外，显示名的最后一段和可执行文件主名也各有一组键。
 #[must_use]
 pub fn registry_candidates(footprint: &AppFootprint) -> Vec<String> {
     let mut keys = Vec::new();
@@ -343,32 +345,44 @@ pub fn registry_candidates(footprint: &AppFootprint) -> Vec<String> {
     {
         keys.push(key.clone());
     }
-    let name = name_token(&footprint.name);
+    let names = registry_name_tokens(footprint);
     let publisher = name_token(&footprint.publisher);
-    let Some(name) = name else {
-        return keys;
-    };
     for prefix in [
         r"HKCU\Software",
         r"HKLM\SOFTWARE",
         r"HKLM\SOFTWARE\WOW6432Node",
     ] {
-        let leaf = format!(r"{prefix}\{name}");
-        if registry_delete_allowed(&leaf) {
-            keys.push(leaf);
+        for name in &names {
+            push_registry_key(&mut keys, &format!(r"{prefix}\{name}"));
+            if let Some(publisher) = publisher.as_deref() {
+                push_registry_key(&mut keys, &format!(r"{prefix}\{publisher}\{name}"));
+            }
         }
         if let Some(publisher) = publisher.as_deref() {
-            let nested = format!(r"{prefix}\{publisher}\{name}");
-            if registry_delete_allowed(&nested) {
-                keys.push(nested);
-            }
-            let wide = format!(r"{prefix}\{publisher}");
-            if registry_delete_allowed(&wide) {
-                keys.push(wide);
-            }
+            push_registry_key(&mut keys, &format!(r"{prefix}\{publisher}"));
         }
     }
     keys
+}
+
+/// 安装目录的父目录。扫描这一层才能看见同级的 `Data` 目录。
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn leftover_scan_parents(footprint: &AppFootprint) -> Vec<PathBuf> {
+    footprint
+        .install_dir
+        .as_ref()
+        .and_then(|dir| parent_display(dir))
+        .into_iter()
+        .collect()
+}
+
+/// 扫过且没有任何可清项时，状态行上的那一句。没扫描或还有项时不显示。
+pub const EMPTY_LEFTOVER_STATUS: &str = "没有发现可清理的残留";
+
+#[must_use]
+pub fn empty_leftover_note(scanned: bool, leftovers: usize) -> Option<&'static str> {
+    (scanned && leftovers == 0).then_some(EMPTY_LEFTOVER_STATUS)
 }
 
 fn usable_command(
@@ -849,13 +863,15 @@ fn classify_dir(path: &Path, footprint: &AppFootprint, roots: &MachineRoots) -> 
     if !directory_delete_allowed(path, roots) {
         return None;
     }
-    let leaf = file_leaf(path);
+    let leaf = file_leaf(path)?;
     let display = name_token(&footprint.name);
     let publisher = name_token(&footprint.publisher);
-    let stem = exe_stem(footprint).filter(|token| display.as_ref() != Some(token));
-    let leaf_is_display = tokens_equal(leaf.as_deref(), display.as_deref());
-    let leaf_is_publisher = tokens_equal(leaf.as_deref(), publisher.as_deref());
-    let leaf_is_stem = tokens_equal(leaf.as_deref(), stem.as_deref());
+    let stem = exe_stem(footprint).filter(|token| display.as_deref() != Some(token.as_str()));
+    let last =
+        last_name_token(&footprint.name).filter(|token| display.as_deref() != Some(token.as_str()));
+    let leaf_is_display = tokens_equal(Some(leaf.as_str()), display.as_deref());
+    let leaf_is_publisher = tokens_equal(Some(leaf.as_str()), publisher.as_deref());
+    let leaf_is_stem = tokens_equal(Some(leaf.as_str()), stem.as_deref());
     let is_install = footprint
         .install_dir
         .as_ref()
@@ -863,17 +879,39 @@ fn classify_dir(path: &Path, footprint: &AppFootprint, roots: &MachineRoots) -> 
     let is_exe_home = footprint.target_exe.as_ref().is_some_and(|exe| {
         parent_key(exe).is_some_and(|parent| parent == normalize_path_key(path))
     });
-    if !leaf_is_display && !leaf_is_publisher && !leaf_is_stem && !is_install && !is_exe_home {
+    let in_appdata = appdata_child(path, roots);
+    let leaf_is_last = in_appdata && tokens_equal(Some(leaf.as_str()), last.as_deref());
+    let leaf_is_updater = in_appdata && updater_leaf(&leaf, footprint);
+    let leaf_is_sibling = sibling_data_dir(path, &leaf, footprint);
+    let leaf_is_dot = profile_child(path, roots) && dot_profile_leaf(&leaf, footprint);
+    if !leaf_is_display
+        && !leaf_is_publisher
+        && !leaf_is_stem
+        && !is_install
+        && !is_exe_home
+        && !leaf_is_last
+        && !leaf_is_updater
+        && !leaf_is_sibling
+        && !leaf_is_dot
+    {
         return None;
     }
-    // 主文件名和厂商目录只作参考。高置信度限于登记里的安装目录，
-    // 以及与显示名相同、父目录不是公共根的文件夹。
+    // 高置信度限于登记里的安装目录，以及与完整显示名相同、父目录不是公共根的文件夹。
+    // 最后一段、主名、更新器目录、同级 Data/Cache、点号目录和厂商目录默认不勾选。
+    // 安装目录本身即使叶子像最后一段或更新器目录，也不因此降成低置信度。
     let publisher_folder = leaf_is_publisher && !is_install;
     let stem_only = leaf_is_stem && !leaf_is_display && !is_install;
+    let last_only = leaf_is_last && !is_install;
+    let updater_only = leaf_is_updater && !is_install;
+    let weak = publisher_folder
+        || stem_only
+        || last_only
+        || updater_only
+        || leaf_is_sibling
+        || leaf_is_dot;
     let confidence = if !footprint.target_exe_present
         && !low_confidence_parent(path, roots)
-        && !publisher_folder
-        && !stem_only
+        && !weak
         && (is_install || (leaf_is_display && !public_root_parent(path, roots)))
     {
         Confidence::High
@@ -934,7 +972,9 @@ fn classify_key(key: &str, footprint: &AppFootprint) -> Option<Leftover> {
     let leaf = parts.last()?.as_str();
     let display = name_token(&footprint.name);
     let publisher = name_token(&footprint.publisher);
-    let stem = exe_stem(footprint).filter(|token| display.as_ref() != Some(token));
+    let stem = exe_stem(footprint).filter(|token| display.as_deref() != Some(token.as_str()));
+    let last =
+        last_name_token(&footprint.name).filter(|token| display.as_deref() != Some(token.as_str()));
     let exact_uninstall = footprint
         .uninstall_key
         .as_ref()
@@ -946,14 +986,19 @@ fn classify_key(key: &str, footprint: &AppFootprint) -> Option<Leftover> {
         .as_deref()
         .is_some_and(|token| keys_equal(token, leaf));
     let leaf_is_stem = stem.as_deref().is_some_and(|token| keys_equal(token, leaf));
-    if !exact_uninstall && !leaf_is_display && !leaf_is_publisher && !leaf_is_stem {
+    let leaf_is_last = last.as_deref().is_some_and(|token| keys_equal(token, leaf));
+    if !exact_uninstall && !leaf_is_display && !leaf_is_publisher && !leaf_is_stem && !leaf_is_last
+    {
         return None;
     }
     // 厂商键是 `Software\<厂商>` 这一层。显示名和厂商相同时也不默认勾选。
+    // 只靠最后一段或主名对上的键同样不默认勾选。
     let publisher_root = publisher
         .as_deref()
         .is_some_and(|token| publisher_root_key(&parts, token));
-    let confidence = if exact_uninstall || (leaf_is_display && !publisher_root && !leaf_is_stem) {
+    let confidence = if exact_uninstall
+        || (leaf_is_display && !publisher_root && !leaf_is_stem && !leaf_is_last)
+    {
         Confidence::High
     } else {
         Confidence::Low
@@ -1038,6 +1083,117 @@ fn name_token(text: &str) -> Option<String> {
     } else {
         Some(token)
     }
+}
+
+fn last_name_token(text: &str) -> Option<String> {
+    name_token(text.split_whitespace().next_back()?)
+}
+
+fn leading_name_token(text: &str) -> Option<String> {
+    name_token(text.split_whitespace().next()?)
+}
+
+fn push_unique_name(names: &mut Vec<String>, token: Option<String>) {
+    let Some(token) = token else {
+        return;
+    };
+    if !names.iter().any(|existing| existing == &token) {
+        names.push(token);
+    }
+}
+
+fn registry_name_tokens(footprint: &AppFootprint) -> Vec<String> {
+    let mut names = Vec::new();
+    push_unique_name(&mut names, name_token(&footprint.name));
+    push_unique_name(&mut names, last_name_token(&footprint.name));
+    push_unique_name(
+        &mut names,
+        exe_stem(footprint).as_deref().and_then(name_token),
+    );
+    names
+}
+
+fn push_registry_key(keys: &mut Vec<String>, key: &str) {
+    if registry_delete_allowed(key) && !keys.iter().any(|existing| keys_equal(existing, key)) {
+        keys.push(key.to_owned());
+    }
+}
+
+fn appdata_child(path: &Path, roots: &MachineRoots) -> bool {
+    let Some(parent) = parent_key(path) else {
+        return false;
+    };
+    parent == normalize_path_key(&roots.app_data)
+        || parent == normalize_path_key(&roots.local_app_data)
+}
+
+fn profile_child(path: &Path, roots: &MachineRoots) -> bool {
+    parent_key(path).is_some_and(|parent| parent == normalize_path_key(&roots.user_profile))
+}
+
+/// 安装目录同一层，叶子名是显示名再加常见的数据或缓存后缀。
+const DIR_SUFFIXES: &[&str] = &[" data", "data", " cache", "cache"];
+
+fn sibling_data_dir(path: &Path, leaf: &str, footprint: &AppFootprint) -> bool {
+    let Some(install) = footprint.install_dir.as_ref() else {
+        return false;
+    };
+    if equals_path(path, install) {
+        return false;
+    }
+    let Some(parent) = parent_key(path) else {
+        return false;
+    };
+    let Some(install_parent) = parent_key(install) else {
+        return false;
+    };
+    if parent != install_parent {
+        return false;
+    }
+    let Some(display) = name_token(&footprint.name) else {
+        return false;
+    };
+    let Some(rest) = leaf.strip_prefix(display.as_str()) else {
+        return false;
+    };
+    DIR_SUFFIXES.contains(&rest)
+}
+
+fn updater_bases(footprint: &AppFootprint) -> Vec<String> {
+    let mut names = Vec::new();
+    push_unique_name(
+        &mut names,
+        exe_stem(footprint).as_deref().and_then(name_token),
+    );
+    names
+}
+
+fn updater_leaf(leaf: &str, footprint: &AppFootprint) -> bool {
+    updater_bases(footprint)
+        .iter()
+        .any(|token| leaf == format!("{token}-updater") || leaf == format!("{token} updater"))
+}
+
+fn dot_bases(footprint: &AppFootprint) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(display) = name_token(&footprint.name) {
+        let compact = display.replace(' ', "");
+        push_unique_name(&mut names, Some(display));
+        push_unique_name(&mut names, name_token(&compact));
+    }
+    push_unique_name(&mut names, leading_name_token(&footprint.name));
+    push_unique_name(
+        &mut names,
+        exe_stem(footprint).as_deref().and_then(name_token),
+    );
+    names
+}
+
+fn dot_profile_leaf(leaf: &str, footprint: &AppFootprint) -> bool {
+    let Some(rest) = leaf.strip_prefix('.') else {
+        return false;
+    };
+    !rest.is_empty() && dot_bases(footprint).iter().any(|token| token == rest)
 }
 
 fn low_confidence_parent(path: &Path, roots: &MachineRoots) -> bool {
@@ -1881,5 +2037,240 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    fn sample_footprint(name: &str, publisher: &str, install: &str, exe: &str) -> AppFootprint {
+        AppFootprint {
+            name: name.to_owned(),
+            publisher: publisher.to_owned(),
+            install_dir: Some(PathBuf::from(install)),
+            target_exe: Some(PathBuf::from(exe)),
+            target_exe_present: false,
+            target_url: None,
+            source_file: None,
+            uninstall_key: None,
+        }
+    }
+
+    fn by_location<'a>(items: &'a [Leftover], location: &str) -> Option<&'a Leftover> {
+        items.iter().find(|item| item.location == location)
+    }
+
+    #[test]
+    fn last_token_appdata_and_registry_stay_unchecked() {
+        let mut footprint = sample_footprint(
+            "Mozilla Thunderbird",
+            "Mozilla",
+            r"C:\Program Files\Mozilla Thunderbird",
+            r"C:\Program Files\Mozilla Thunderbird\maintenanceservice.exe",
+        );
+        footprint.uninstall_key = Some(
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Mozilla Thunderbird"
+                .to_owned(),
+        );
+        let observed = ObservedLeftovers {
+            directories: vec![
+                PathBuf::from(r"C:\Users\User\AppData\Roaming\Thunderbird"),
+                PathBuf::from(r"C:\Users\User\AppData\Local\Thunderbird"),
+                PathBuf::from(r"C:\Program Files\Thunderbird"),
+                PathBuf::from(r"C:\Windows\Thunderbird"),
+                PathBuf::from(r"C:\Users\User\AppData\Roaming\Mozilla\Thunderbird"),
+            ],
+            shortcuts: Vec::new(),
+            registry_keys: vec![
+                footprint.uninstall_key.clone().unwrap(),
+                r"HKCU\Software\Thunderbird".to_owned(),
+                r"HKCU\Software\Mozilla\Thunderbird".to_owned(),
+                r"HKLM\SOFTWARE\Mozilla\Thunderbird".to_owned(),
+                r"HKCU\Software\Mozilla".to_owned(),
+                r"HKLM\SYSTEM\CurrentControlSet\Services\Thunderbird".to_owned(),
+            ],
+        };
+        let items = plan_leftovers(&footprint, &observed, &roots());
+        for path in [
+            r"C:\Users\User\AppData\Roaming\Thunderbird",
+            r"C:\Users\User\AppData\Local\Thunderbird",
+            r"HKCU\Software\Thunderbird",
+            r"HKCU\Software\Mozilla\Thunderbird",
+            r"HKLM\SOFTWARE\Mozilla\Thunderbird",
+            r"HKCU\Software\Mozilla",
+        ] {
+            let item = by_location(&items, path).unwrap_or_else(|| panic!("missing {path}"));
+            assert!(!item.checked, "{path}");
+        }
+        let uninstall = by_location(
+            &items,
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Mozilla Thunderbird",
+        )
+        .expect("uninstall key");
+        assert!(uninstall.checked);
+        assert!(by_location(&items, r"C:\Program Files\Thunderbird").is_none());
+        assert!(items.iter().all(|item| {
+            !item.location.contains(r"\Windows\Thunderbird")
+                && !item.location.contains(r"HKLM\SYSTEM")
+        }));
+        assert!(
+            by_location(&items, r"C:\Users\User\AppData\Roaming\Mozilla\Thunderbird").is_none()
+        );
+
+        let keys = registry_candidates(&footprint);
+        for key in [
+            r"HKCU\Software\Thunderbird",
+            r"HKCU\Software\Mozilla\Thunderbird",
+            r"HKLM\SOFTWARE\Thunderbird",
+            r"HKLM\SOFTWARE\WOW6432Node\Mozilla\Thunderbird",
+        ] {
+            assert!(
+                keys.iter().any(|found| found.eq_ignore_ascii_case(key)),
+                "{key} in {keys:?}"
+            );
+        }
+        assert!(
+            keys.iter()
+                .all(|key| !key.to_uppercase().contains(r"\SYSTEM"))
+        );
+    }
+
+    #[test]
+    fn sibling_data_dirs_dot_profiles_and_updaters_stay_unchecked() {
+        let minimax = sample_footprint(
+            "MiniMax Design",
+            "",
+            r"E:\Apps\MiniMax Design",
+            r"E:\Apps\MiniMax Design\MiniMax.exe",
+        );
+        let observed = ObservedLeftovers {
+            directories: vec![
+                PathBuf::from(r"E:\Apps\MiniMax Design"),
+                PathBuf::from(r"E:\Apps\MiniMax Design Data"),
+                PathBuf::from(r"E:\Apps\MiniMax Design Cache"),
+                PathBuf::from(r"E:\Apps\MiniMax DesignData"),
+                PathBuf::from(r"E:\Apps\Other Data"),
+                PathBuf::from(r"C:\Users\User\AppData\Roaming\MiniMax Design Data"),
+                PathBuf::from(r"C:\Users\User\.minimax"),
+                PathBuf::from(r"C:\Users\User\.minimaxdesign"),
+                PathBuf::from(r"C:\Users\User\.design"),
+                PathBuf::from(r"C:\Users\User\AppData\Roaming\.minimax"),
+                PathBuf::from(r"C:\Users\User\AppData\Local\minimax-updater"),
+                PathBuf::from(r"C:\Users\User\AppData\Local\minimax updater"),
+                PathBuf::from(r"C:\Program Files\minimax-updater"),
+                PathBuf::from(r"C:\Windows\System32"),
+            ],
+            ..ObservedLeftovers::default()
+        };
+        let items = plan_leftovers(&minimax, &observed, &roots());
+        let install = by_location(&items, r"E:\Apps\MiniMax Design").expect("install");
+        assert!(install.checked);
+        for path in [
+            r"E:\Apps\MiniMax Design Data",
+            r"E:\Apps\MiniMax Design Cache",
+            r"E:\Apps\MiniMax DesignData",
+            r"C:\Users\User\.minimax",
+            r"C:\Users\User\.minimaxdesign",
+            r"C:\Users\User\AppData\Local\minimax-updater",
+            r"C:\Users\User\AppData\Local\minimax updater",
+        ] {
+            let item = by_location(&items, path).unwrap_or_else(|| panic!("missing {path}"));
+            assert!(!item.checked, "{path}");
+        }
+        for path in [
+            r"E:\Apps\Other Data",
+            r"C:\Users\User\AppData\Roaming\MiniMax Design Data",
+            r"C:\Users\User\.design",
+            r"C:\Users\User\AppData\Roaming\.minimax",
+            r"C:\Program Files\minimax-updater",
+            r"C:\Windows\System32",
+        ] {
+            assert!(by_location(&items, path).is_none(), "unexpected {path}");
+        }
+        assert_eq!(
+            leftover_scan_parents(&minimax),
+            vec![PathBuf::from(r"E:\Apps")]
+        );
+
+        let orca = sample_footprint(
+            "Orca",
+            "",
+            r"C:\Program Files\Orca",
+            r"C:\Program Files\Orca\orca.exe",
+        );
+        let orca_items = plan_leftovers(
+            &orca,
+            &ObservedLeftovers {
+                directories: vec![
+                    PathBuf::from(r"C:\Users\User\AppData\Local\orca-updater"),
+                    PathBuf::from(r"C:\Users\User\.orca"),
+                    PathBuf::from(r"C:\Users\User\orca"),
+                ],
+                ..ObservedLeftovers::default()
+            },
+            &roots(),
+        );
+        for path in [
+            r"C:\Users\User\AppData\Local\orca-updater",
+            r"C:\Users\User\.orca",
+            r"C:\Users\User\orca",
+        ] {
+            let item = by_location(&orca_items, path).unwrap_or_else(|| panic!("missing {path}"));
+            assert!(!item.checked, "{path}");
+        }
+    }
+
+    #[test]
+    fn install_dir_with_a_last_token_or_updater_leaf_stays_checked() {
+        let thunderbird = sample_footprint(
+            "Mozilla Thunderbird",
+            "Mozilla",
+            r"C:\Users\User\AppData\Roaming\Thunderbird",
+            r"C:\Users\User\AppData\Roaming\Thunderbird\maintenanceservice.exe",
+        );
+        let items = plan_leftovers(
+            &thunderbird,
+            &ObservedLeftovers {
+                directories: vec![
+                    PathBuf::from(r"C:\Users\User\AppData\Roaming\Thunderbird"),
+                    PathBuf::from(r"C:\Users\User\AppData\Local\Thunderbird"),
+                ],
+                ..ObservedLeftovers::default()
+            },
+            &roots(),
+        );
+        let install = by_location(&items, r"C:\Users\User\AppData\Roaming\Thunderbird")
+            .expect("thunderbird install");
+        assert!(install.checked);
+        let other = by_location(&items, r"C:\Users\User\AppData\Local\Thunderbird")
+            .expect("other thunderbird dir");
+        assert!(!other.checked);
+
+        let orca = sample_footprint(
+            "Orca",
+            "",
+            r"C:\Users\User\AppData\Local\orca-updater",
+            r"C:\Users\User\AppData\Local\orca-updater\orca.exe",
+        );
+        let orca_items = plan_leftovers(
+            &orca,
+            &ObservedLeftovers {
+                directories: vec![
+                    PathBuf::from(r"C:\Users\User\AppData\Local\orca-updater"),
+                    PathBuf::from(r"C:\Users\User\AppData\Roaming\orca-updater"),
+                ],
+                ..ObservedLeftovers::default()
+            },
+            &roots(),
+        );
+        let updater = by_location(&orca_items, r"C:\Users\User\AppData\Local\orca-updater")
+            .expect("orca install");
+        assert!(updater.checked);
+        let roaming = by_location(&orca_items, r"C:\Users\User\AppData\Roaming\orca-updater")
+            .expect("other orca updater");
+        assert!(!roaming.checked);
+    }
+
+    #[test]
+    fn empty_leftover_note_only_follows_a_scan_with_no_rows() {
+        assert_eq!(empty_leftover_note(true, 0), Some("没有发现可清理的残留"));
+        assert_eq!(empty_leftover_note(false, 0), None);
+        assert_eq!(empty_leftover_note(true, 1), None);
     }
 }

@@ -25,8 +25,8 @@ use super::shortcut::peek_target;
 use super::store::take_pwstr;
 use crate::apps::removal::{
     AppFootprint, LeftoverKind, MachineRoots, ObservedLeftovers, ObservedShortcut,
-    UninstallCommand, UninstallEnd, UninstallRecord, deletion_allowed, registry_candidates,
-    registry_command_text,
+    UninstallCommand, UninstallEnd, UninstallRecord, deletion_allowed, leftover_scan_parents,
+    registry_candidates, registry_command_text,
 };
 
 const UNINSTALL_ROOTS: &[(HKEY, &str, &str)] = &[
@@ -283,6 +283,9 @@ pub fn observe_leftovers(footprint: &AppFootprint, roots: &MachineRoots) -> Obse
     let mut observed = ObservedLeftovers::default();
     if let Some(dir) = &footprint.install_dir {
         push_dir(&mut observed.directories, dir);
+    }
+    for parent in leftover_scan_parents(footprint) {
+        scan_children(&parent, &mut observed.directories);
     }
     if let Some(exe) = &footprint.target_exe
         && let Some(parent) = exe.parent()
