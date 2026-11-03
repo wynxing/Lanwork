@@ -25,8 +25,8 @@ pub use removal::{
     AfterUninstall, AppFootprint, Confidence, EMPTY_LEFTOVER_STATUS, Leftover, LeftoverKind,
     MachineRoots, ObservedLeftovers, ObservedShortcut, PreparedUninstall, RemovalPlan,
     UninstallCommand, UninstallEnd, UninstallRecord, after_uninstall, deletion_allowed,
-    empty_leftover_note, plan_leftovers, registry_candidates, registry_delete_allowed,
-    removal_plan,
+    empty_leftover_note, leftover_scan_log_line, plan_leftovers, registry_candidates,
+    registry_delete_allowed, removal_plan,
 };
 pub use rules::{
     containing_folder, file_folder, shortcut_target_folder, supports_open_containing_folder,

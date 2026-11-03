@@ -1342,7 +1342,8 @@ impl Bar {
                 self.push_removal();
                 self.launching = true;
                 let dispatch = Arc::clone(&self.dispatch);
-                if !removal::spawn_uninstall(dispatch, entry, prepared, true) {
+                let store = self.store.clone();
+                if !removal::spawn_uninstall(dispatch, store, entry, prepared, true) {
                     self.launching = false;
                     if let Some(dialog) = self.removal.as_mut() {
                         dialog.busy = false;

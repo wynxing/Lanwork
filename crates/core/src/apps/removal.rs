@@ -144,7 +144,7 @@ pub struct ObservedLeftovers {
     pub registry_keys: Vec<String>,
 }
 
-/// 卸载进程的结局。取消不显示错误，也不进入残留扫描。
+/// 卸载进程的结局。取消不显示错误。是否扫描看刷新后条目还在不在索引里。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UninstallEnd {
     Cancelled,
@@ -246,6 +246,10 @@ pub fn removal_plan(
 }
 
 /// 卸载进程结束之后要不要刷新索引、扫残留、显示错误。
+///
+/// 启动失败不刷新、不扫描。进程结束（含取消）时要刷新索引。`indexed_entry_gone`
+/// 由调用方在刷新之后传入。条目已经离开就扫描，退出码是取消语义（2、1223、1602）
+/// 或进程被当成取消也不例外。条目还在时不扫描。
 #[must_use]
 pub fn after_uninstall(end: &UninstallEnd, indexed_entry_gone: bool) -> AfterUninstall {
     match end {
@@ -256,24 +260,32 @@ pub fn after_uninstall(end: &UninstallEnd, indexed_entry_gone: bool) -> AfterUni
         },
         UninstallEnd::Cancelled => AfterUninstall {
             refresh: true,
-            scan: false,
+            scan: indexed_entry_gone,
             error: None,
         },
-        UninstallEnd::Finished { code } if is_cancel_code(*code) => AfterUninstall {
+        UninstallEnd::Finished { code } => AfterUninstall {
             refresh: true,
-            scan: false,
-            error: None,
+            scan: indexed_entry_gone,
+            error: unfinished_note(*code, indexed_entry_gone),
         },
-        UninstallEnd::Finished { code } if !indexed_entry_gone => AfterUninstall {
-            refresh: true,
-            scan: false,
-            error: (*code != 0 && *code != 3010).then(|| "卸载没有完成".to_owned()),
-        },
-        UninstallEnd::Finished { .. } => AfterUninstall {
-            refresh: true,
-            scan: true,
-            error: None,
-        },
+    }
+}
+
+/// `logs/app.log` 里决定是否扫描残留的那一行。
+#[must_use]
+pub fn leftover_scan_log_line(name: &str, scan: bool, entry_still_present: bool) -> String {
+    format!(
+        "卸载残留：{name} 扫描={} 条目仍在={}",
+        if scan { "是" } else { "否" },
+        if entry_still_present { "是" } else { "否" },
+    )
+}
+
+fn unfinished_note(code: u32, indexed_entry_gone: bool) -> Option<String> {
+    if indexed_entry_gone || code == 0 || code == 3010 || is_cancel_code(code) {
+        None
+    } else {
+        Some("卸载没有完成".to_owned())
     }
 }
 
@@ -1797,20 +1809,61 @@ mod tests {
     }
 
     #[test]
-    fn cancel_does_not_scan_and_a_removed_entry_does() {
-        let cancel = after_uninstall(&UninstallEnd::Cancelled, true);
-        assert!(cancel.refresh);
-        assert!(!cancel.scan);
-        assert!(cancel.error.is_none());
-        let gone = after_uninstall(&UninstallEnd::Finished { code: 0 }, true);
-        assert!(gone.scan);
-        assert!(gone.error.is_none());
-        let stayed = after_uninstall(&UninstallEnd::Finished { code: 1 }, false);
-        assert!(!stayed.scan);
-        assert_eq!(stayed.error.as_deref(), Some("卸载没有完成"));
-        let user_exit = after_uninstall(&UninstallEnd::Finished { code: 1602 }, true);
-        assert!(!user_exit.scan);
-        assert!(user_exit.error.is_none());
+    fn a_removed_entry_scans_even_when_the_exit_is_not_success() {
+        for end in [
+            UninstallEnd::Cancelled,
+            UninstallEnd::Finished { code: 0 },
+            UninstallEnd::Finished { code: 1 },
+            UninstallEnd::Finished { code: 2 },
+            UninstallEnd::Finished { code: 1223 },
+            UninstallEnd::Finished { code: 1602 },
+            UninstallEnd::Finished { code: 3010 },
+        ] {
+            let gone = after_uninstall(&end, true);
+            assert!(gone.refresh, "{end:?}");
+            assert!(gone.scan, "{end:?}");
+            assert!(gone.error.is_none(), "{end:?}");
+            assert_eq!(
+                empty_leftover_note(gone.scan, 0),
+                Some("没有发现可清理的残留"),
+                "{end:?}"
+            );
+        }
+
+        let cancel_stayed = after_uninstall(&UninstallEnd::Cancelled, false);
+        assert!(cancel_stayed.refresh);
+        assert!(!cancel_stayed.scan);
+        assert!(cancel_stayed.error.is_none());
+        assert_eq!(empty_leftover_note(cancel_stayed.scan, 0), None);
+
+        for code in [0, 2, 1223, 1602, 3010] {
+            let stayed = after_uninstall(&UninstallEnd::Finished { code }, false);
+            assert!(stayed.refresh, "{code}");
+            assert!(!stayed.scan, "{code}");
+            assert!(stayed.error.is_none(), "{code}");
+            assert_eq!(empty_leftover_note(stayed.scan, 0), None, "{code}");
+        }
+
+        let failed_exit = after_uninstall(&UninstallEnd::Finished { code: 1 }, false);
+        assert!(!failed_exit.scan);
+        assert_eq!(failed_exit.error.as_deref(), Some("卸载没有完成"));
+        assert_eq!(empty_leftover_note(failed_exit.scan, 0), None);
+
+        for gone in [false, true] {
+            let launch_failed = after_uninstall(&UninstallEnd::Failed("起不来".into()), gone);
+            assert!(!launch_failed.refresh);
+            assert!(!launch_failed.scan);
+            assert_eq!(launch_failed.error.as_deref(), Some("起不来"));
+        }
+
+        assert_eq!(
+            leftover_scan_log_line("MinerU", true, false),
+            "卸载残留：MinerU 扫描=是 条目仍在=否"
+        );
+        assert_eq!(
+            leftover_scan_log_line("MinerU", false, true),
+            "卸载残留：MinerU 扫描=否 条目仍在=是"
+        );
     }
 
     #[test]
