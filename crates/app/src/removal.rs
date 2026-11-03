@@ -8,10 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use lanwork_core::apps::{
     AppEntry, AppSource, Leftover, LeftoverKind, PreparedUninstall, RemovalPlan, UninstallEnd,
-    after_uninstall, launch_key, launch_uninstall, machine_roots, observe_leftovers,
-    plan_leftovers, read_uninstall_records, removal_plan,
+    after_uninstall, launch_key, launch_uninstall, leftover_scan_log_line, machine_roots,
+    observe_leftovers, plan_leftovers, read_uninstall_records, removal_plan,
 };
 use lanwork_core::dispatch::Dispatch;
+use lanwork_core::storage::Store;
 
 static HOLD: AtomicBool = AtomicBool::new(false);
 
@@ -114,11 +115,13 @@ pub(crate) struct UninstallDone {
 
 pub(crate) fn run_uninstall(
     dispatch: &Dispatch,
+    store: &Store,
     entry: &AppEntry,
     prepared: &PreparedUninstall,
 ) -> UninstallDone {
     let end = launch_uninstall(&prepared.command);
     if let UninstallEnd::Failed(message) = end {
+        log_leftover_decision(store, entry, false, !indexed_gone(dispatch, entry));
         return UninstallDone {
             error: Some(message),
             rows: Vec::new(),
@@ -127,6 +130,7 @@ pub(crate) fn run_uninstall(
         };
     }
     if let Err(err) = dispatch.refresh_apps() {
+        log_leftover_decision(store, entry, false, !indexed_gone(dispatch, entry));
         return UninstallDone {
             error: Some(format!("刷新应用索引失败：{err}")),
             rows: Vec::new(),
@@ -136,6 +140,7 @@ pub(crate) fn run_uninstall(
     }
     let gone = indexed_gone(dispatch, entry);
     let decision = after_uninstall(&end, gone);
+    log_leftover_decision(store, entry, decision.scan, !gone);
     if !decision.scan {
         return UninstallDone {
             error: decision.error,
@@ -201,6 +206,7 @@ pub(crate) fn run_clean(dispatch: &Dispatch, path: &Path) -> Result<(), String> 
 
 pub(crate) fn spawn_uninstall(
     dispatch: Arc<Dispatch>,
+    store: Store,
     entry: AppEntry,
     prepared: PreparedUninstall,
     on_bar: bool,
@@ -209,7 +215,7 @@ pub(crate) fn spawn_uninstall(
         .name("lanwork-uninstall".into())
         .spawn(move || {
             let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_uninstall(&dispatch, &entry, &prepared)
+                run_uninstall(&dispatch, &store, &entry, &prepared)
             }));
             let done = match done {
                 Ok(done) => done,
@@ -275,6 +281,14 @@ pub(crate) fn spawn_clean(dispatch: Arc<Dispatch>, path: PathBuf, on_bar: bool) 
             });
         });
     spawned.is_ok()
+}
+
+fn log_leftover_decision(store: &Store, entry: &AppEntry, scan: bool, entry_still_present: bool) {
+    store.log_info(&leftover_scan_log_line(
+        &entry.name,
+        scan,
+        entry_still_present,
+    ));
 }
 
 fn indexed_gone(dispatch: &Dispatch, entry: &AppEntry) -> bool {
