@@ -227,6 +227,11 @@ pub(crate) fn finish_clean(result: Result<(), String>) {
     with_bar(move |bar| bar.apply_clean(result));
 }
 
+/// 卸载结果没有回到搜索条时放开启动中、忙碌和确认框。残留清单留着。
+pub(crate) fn release_removal_lock() {
+    with_bar(Bar::release_removal_lock);
+}
+
 pub(crate) fn requery() {
     with_bar(|bar| {
         if !bar.visible {
@@ -1305,7 +1310,8 @@ impl Bar {
         }
         self.launching = true;
         let dispatch = Arc::clone(&self.dispatch);
-        if !removal::spawn_clean(dispatch, path, true) {
+        let store = self.store.clone();
+        if !removal::spawn_clean(dispatch, store, path, true) {
             self.launching = false;
             self.fail_menu("清理没有启动");
         }
@@ -1344,18 +1350,15 @@ impl Bar {
                 let dispatch = Arc::clone(&self.dispatch);
                 let store = self.store.clone();
                 if !removal::spawn_uninstall(dispatch, store, entry, prepared, true) {
-                    self.launching = false;
-                    if let Some(dialog) = self.removal.as_mut() {
-                        dialog.busy = false;
-                    }
-                    self.fail_removal("卸载没有启动");
+                    self.abort_uninstall("卸载没有启动");
                 }
             }
             RemovalPhase::Checklist => {
                 dialog.busy = true;
                 let rows = dialog.rows.clone();
                 self.push_removal();
-                if !removal::spawn_delete(rows, true) {
+                let store = self.store.clone();
+                if !removal::spawn_delete(store, rows, true) {
                     if let Some(dialog) = self.removal.as_mut() {
                         dialog.busy = false;
                     }
@@ -1407,27 +1410,35 @@ impl Bar {
 
     fn apply_uninstall(&mut self, done: removal::UninstallDone) {
         self.launching = false;
-        if self.removal.is_none() {
-            return;
-        }
-        if done.refreshed {
-            reload_apps();
-        }
         if done.rows.is_empty() {
+            let error = done.error;
+            let scanned = done.scanned;
             self.removal = None;
             removal::set_hold(false);
             self.push_removal();
-            if let Some(message) = done.error {
+            if done.refreshed {
+                reload_apps();
+            }
+            if let Some(message) = error {
                 self.status_note = None;
                 self.error = Some(message);
                 self.push_status();
-            } else if let Some(message) =
-                lanwork_core::apps::empty_leftover_note(done.scanned, done.rows.len())
-            {
+            } else if let Some(message) = lanwork_core::apps::empty_leftover_note(scanned, 0) {
                 self.error = None;
                 self.status_note = Some(message.to_owned());
                 self.push_status();
             }
+            return;
+        }
+        if let Some(dialog) = self.removal.as_mut() {
+            dialog.busy = false;
+        }
+        if done.refreshed {
+            reload_apps();
+        }
+        if self.removal.is_none() {
+            removal::set_hold(false);
+            self.store.log_warn("卸载残留清单没有写回界面");
             return;
         }
         self.status_note = None;
@@ -1437,8 +1448,37 @@ impl Bar {
             dialog.phase = RemovalPhase::Checklist;
             dialog.rows = done.rows;
         }
+        removal::set_hold(true);
         self.push_removal();
         self.ui.invoke_focus_input();
+    }
+
+    fn abort_uninstall(&mut self, message: &str) {
+        self.launching = false;
+        self.removal = None;
+        removal::set_hold(false);
+        self.push_removal();
+        self.fail_removal(message);
+    }
+
+    fn release_removal_lock(&mut self) {
+        self.launching = false;
+        match self.removal.as_ref().map(|dialog| dialog.phase) {
+            Some(RemovalPhase::Confirm) => {
+                self.removal = None;
+                removal::set_hold(false);
+                self.push_removal();
+            }
+            Some(RemovalPhase::Checklist) => {
+                if let Some(dialog) = self.removal.as_mut() {
+                    dialog.busy = false;
+                }
+                removal::set_hold(true);
+                self.push_removal();
+            }
+            // 没有这扇窗口的对话框时不动占用。另一扇可能还开着残留清单。
+            None => {}
+        }
     }
 
     fn apply_delete(&mut self, rows: Vec<removal::RemovalRow>) {

@@ -18,6 +18,8 @@ pub struct UninstallRecord {
     pub display_icon: String,
     pub publisher: String,
     pub system_component: bool,
+    /// `NoRemove` 不是 0。和 `system_component` 同一层，不提供卸载。
+    pub no_remove: bool,
     pub windows_installer: bool,
 }
 
@@ -272,13 +274,30 @@ pub fn after_uninstall(end: &UninstallEnd, indexed_entry_gone: bool) -> AfterUni
 }
 
 /// `logs/app.log` 里决定是否扫描残留的那一行。
+///
+/// 结束方式是进程退出、用户取消，或卸载程序没有启动。进程退出带退出码；
+/// 取消和启动失败没有退出码。
 #[must_use]
-pub fn leftover_scan_log_line(name: &str, scan: bool, entry_still_present: bool) -> String {
+pub fn leftover_scan_log_line(
+    name: &str,
+    scan: bool,
+    entry_still_present: bool,
+    end: &UninstallEnd,
+) -> String {
     format!(
-        "卸载残留：{name} 扫描={} 条目仍在={}",
+        "卸载残留：{name} 扫描={} 条目仍在={} {}",
         if scan { "是" } else { "否" },
         if entry_still_present { "是" } else { "否" },
+        uninstall_end_log(end),
     )
+}
+
+fn uninstall_end_log(end: &UninstallEnd) -> String {
+    match end {
+        UninstallEnd::Cancelled => "结束=取消 退出码=".to_owned(),
+        UninstallEnd::Finished { code } => format!("结束=退出 退出码={code}"),
+        UninstallEnd::Failed(_) => "结束=启动失败 退出码=".to_owned(),
+    }
 }
 
 fn unfinished_note(code: u32, indexed_entry_gone: bool) -> Option<String> {
@@ -466,7 +485,8 @@ enum RecordMatch<'a> {
         args: String,
         record: &'a UninstallRecord,
     },
-    SystemComponent(&'a UninstallRecord),
+    /// `SystemComponent` 或 `NoRemove` 不是 0。不解析卸载命令。
+    Protected(&'a UninstallRecord),
 }
 
 fn match_uninstall<'a>(
@@ -493,8 +513,8 @@ fn match_uninstall<'a>(
         return None;
     }
     let record = tied[0];
-    if record.system_component {
-        return Some(RecordMatch::SystemComponent(record));
+    if record_protected(record) {
+        return Some(RecordMatch::Protected(record));
     }
     let parsed = parse_record_command(record)?;
     Some(RecordMatch::Command {
@@ -691,13 +711,18 @@ fn brace_guid(text: &str) -> Option<String> {
     Some(format!("{{{}}}", inner.to_ascii_uppercase()))
 }
 
+fn record_protected(record: &UninstallRecord) -> bool {
+    record.system_component || record.no_remove
+}
+
 fn is_protected(entry: &AppEntry, matched: &Option<RecordMatch<'_>>, roots: &MachineRoots) -> bool {
     if protected_package(&entry.target) {
         return true;
     }
-    if let Some(RecordMatch::SystemComponent(record)) = matched
-        && record.system_component
-    {
+    if matches!(matched, Some(RecordMatch::Protected(_))) {
+        return true;
+    }
+    if edge_protected(entry, matched) {
         return true;
     }
     if let Some(path) = target_path(&entry.target)
@@ -712,6 +737,60 @@ fn is_protected(entry: &AppEntry, matched: &Option<RecordMatch<'_>>, roots: &Mac
     }
     let paths = local_paths(entry);
     !paths.is_empty() && paths.iter().all(|path| is_system_dir(path, roots))
+}
+
+/// 常见 Edge 安装。`NoRemove` 没写时也不提供卸载。
+fn edge_protected(entry: &AppEntry, matched: &Option<RecordMatch<'_>>) -> bool {
+    if local_paths(entry)
+        .iter()
+        .any(|path| path_under_microsoft_edge(path))
+    {
+        return true;
+    }
+    match matched {
+        Some(RecordMatch::Command { file, args, record }) => {
+            text_under_microsoft_edge(file)
+                || text_under_microsoft_edge(&record.install_location)
+                || text_under_microsoft_edge(&record.display_icon)
+                || text_under_microsoft_edge(&record.uninstall_string)
+                || has_msedge_switch(args)
+                || has_msedge_switch(&record.uninstall_string)
+        }
+        Some(RecordMatch::Protected(record)) => {
+            text_under_microsoft_edge(&record.install_location)
+                || text_under_microsoft_edge(&record.display_icon)
+                || text_under_microsoft_edge(&record.uninstall_string)
+                || has_msedge_switch(&record.uninstall_string)
+        }
+        None => false,
+    }
+}
+
+fn path_under_microsoft_edge(path: &Path) -> bool {
+    text_under_microsoft_edge(&normalize_path_key(path))
+}
+
+/// `Microsoft\Edge` 这一层目录。`EdgeUpdate`、`Edge Beta` 不算这一层。
+fn text_under_microsoft_edge(text: &str) -> bool {
+    let folded = text.replace('/', "\\").to_ascii_lowercase();
+    let needle = r"\microsoft\edge";
+    let mut rest = folded.as_str();
+    while let Some(index) = rest.find(needle) {
+        let after = &rest[index + needle.len()..];
+        if after.is_empty() || after.starts_with('\\') || after.starts_with('"') {
+            return true;
+        }
+        rest = &rest[index + needle.len()..];
+    }
+    false
+}
+
+fn has_msedge_switch(text: &str) -> bool {
+    text.split_whitespace().any(|token| {
+        token
+            .trim_matches(|ch: char| matches!(ch, '"' | '\''))
+            .eq_ignore_ascii_case("--msedge")
+    })
 }
 
 fn protected_package(target: &LaunchTarget) -> bool {
@@ -1522,6 +1601,7 @@ mod tests {
             display_icon: String::new(),
             publisher: "Demo Co".to_owned(),
             system_component: false,
+            no_remove: false,
             windows_installer: false,
         }
     }
@@ -1681,6 +1761,78 @@ mod tests {
         let plan = removal_plan(&item, &[saved], &roots());
         assert!(plan.clean_path.is_none());
         assert!(plan.uninstall.is_none());
+    }
+
+    #[test]
+    fn no_remove_flag_disables_both_actions() {
+        let mut saved = record(
+            "Demo",
+            r"C:\Program Files\Demo\uninstall.exe",
+            r"C:\Program Files\Demo",
+        );
+        saved.no_remove = true;
+        let item = entry(
+            "Demo",
+            AppSource::StartMenu,
+            exe(r"C:\Program Files\Demo\demo.exe"),
+            Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Demo.lnk"),
+        );
+        let plan = removal_plan(&item, &[saved], &roots());
+        assert!(plan.clean_path.is_none());
+        assert!(plan.uninstall.is_none());
+    }
+
+    #[test]
+    fn edge_install_disables_both_actions_without_no_remove() {
+        let stable = entry(
+            "Microsoft Edge",
+            AppSource::StartMenu,
+            exe(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Microsoft Edge.lnk"),
+        );
+        let by_path = removal_plan(&stable, &[], &roots());
+        assert!(by_path.clean_path.is_none());
+        assert!(by_path.uninstall.is_none());
+
+        let switched = entry(
+            "Microsoft Edge",
+            AppSource::StartMenu,
+            exe(r"D:\Apps\Launcher\edge.exe"),
+            Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Microsoft Edge.lnk"),
+        );
+        let command = record(
+            "Microsoft Edge",
+            r#""D:\Apps\Launcher\setup.exe" --uninstall --msedge --channel=stable"#,
+            r"D:\Apps\Launcher",
+        );
+        let by_switch = removal_plan(&switched, &[command], &roots());
+        assert!(by_switch.clean_path.is_none());
+        assert!(by_switch.uninstall.is_none());
+
+        let located = record(
+            "Microsoft Edge",
+            r#""D:\Apps\Launcher\setup.exe" --uninstall"#,
+            r"C:\Program Files (x86)\Microsoft\Edge\Application",
+        );
+        let by_location = removal_plan(&switched, &[located], &roots());
+        assert!(by_location.uninstall.is_none());
+
+        let updater = entry(
+            "Microsoft Edge Update",
+            AppSource::StartMenu,
+            exe(r"C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe"),
+            Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Microsoft Edge Update.lnk"),
+        );
+        let update = record(
+            "Microsoft Edge Update",
+            r#""C:\Program Files (x86)\Microsoft\EdgeUpdate\setup.exe" --uninstall --msedgechannel"#,
+            r"C:\Program Files (x86)\Microsoft\EdgeUpdate",
+        );
+        assert!(
+            removal_plan(&updater, &[update], &roots())
+                .uninstall
+                .is_some()
+        );
     }
 
     #[test]
@@ -1857,12 +2009,30 @@ mod tests {
         }
 
         assert_eq!(
-            leftover_scan_log_line("MinerU", true, false),
-            "卸载残留：MinerU 扫描=是 条目仍在=否"
+            leftover_scan_log_line("MinerU", true, false, &UninstallEnd::Finished { code: 0 }),
+            "卸载残留：MinerU 扫描=是 条目仍在=否 结束=退出 退出码=0"
         );
         assert_eq!(
-            leftover_scan_log_line("MinerU", false, true),
-            "卸载残留：MinerU 扫描=否 条目仍在=是"
+            leftover_scan_log_line(
+                "MinerU",
+                false,
+                true,
+                &UninstallEnd::Finished { code: 1602 }
+            ),
+            "卸载残留：MinerU 扫描=否 条目仍在=是 结束=退出 退出码=1602"
+        );
+        assert_eq!(
+            leftover_scan_log_line("MinerU", false, true, &UninstallEnd::Cancelled),
+            "卸载残留：MinerU 扫描=否 条目仍在=是 结束=取消 退出码="
+        );
+        assert_eq!(
+            leftover_scan_log_line(
+                "MinerU",
+                false,
+                true,
+                &UninstallEnd::Failed("起不来".into())
+            ),
+            "卸载残留：MinerU 扫描=否 条目仍在=是 结束=启动失败 退出码="
         );
     }
 
