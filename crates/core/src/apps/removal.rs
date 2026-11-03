@@ -537,15 +537,101 @@ fn match_score(entry: &AppEntry, record: &UninstallRecord) -> u32 {
     if location_contains_target(&record.install_location, target) {
         return 80;
     }
+    // 70：没写安装目录时，用卸载程序所在目录顶上。低于写明的安装目录，门槛仍是 50。
+    if uninstall_dir_matches_exe_dir(entry, record, target) {
+        return 70;
+    }
     name_score(&entry.name, &record.display_name)
 }
 
-fn name_score(left: &str, right: &str) -> u32 {
-    if folded(left) == folded(right) && !folded(left).is_empty() {
+fn name_score(entry_name: &str, display_name: &str) -> u32 {
+    let entry_name = folded(entry_name);
+    if entry_name.is_empty() {
+        return 0;
+    }
+    if entry_name == folded(display_name) {
+        return 50;
+    }
+    if let Some(stripped) = strip_trailing_version(display_name)
+        && entry_name == folded(stripped)
+    {
         50
     } else {
         0
     }
+}
+
+/// 去掉显示名末尾的版本号。`ZCode 3.16.3` 变成 `ZCode`。
+/// 版本号必须是最后一个空白分段，并且至少带一个点，所以 `Office 365` 不会变成 `Office`。
+fn strip_trailing_version(name: &str) -> Option<&str> {
+    let trimmed = name.trim();
+    let (head, token) = trimmed.rsplit_once(char::is_whitespace)?;
+    let head = head.trim_end();
+    if head.is_empty() || !is_version_token(token) {
+        None
+    } else {
+        Some(head)
+    }
+}
+
+fn is_version_token(token: &str) -> bool {
+    let token = token
+        .strip_prefix('v')
+        .or_else(|| token.strip_prefix('V'))
+        .unwrap_or(token);
+    let mut parts = token.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if !is_ascii_digits(first) {
+        return false;
+    }
+    let mut dotted = false;
+    for part in parts {
+        if !is_ascii_digits(part) {
+            return false;
+        }
+        dotted = true;
+    }
+    dotted
+}
+
+fn is_ascii_digits(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// 没有 `InstallLocation` 时，卸载程序的父目录当作安装目录，再和入口 exe 的目录比。
+/// 公共根目录不算。目录名与入口名相同，或显示名已经对上，才记分，
+/// 避免同目录里名字无关的程序绑到这条卸载命令。
+fn uninstall_dir_matches_exe_dir(
+    entry: &AppEntry,
+    record: &UninstallRecord,
+    target: &Path,
+) -> bool {
+    if !record.install_location.trim().is_empty() {
+        return false;
+    }
+    let Some(dir) = uninstall_exe_directory(&record.uninstall_string) else {
+        return false;
+    };
+    let Some(exe_dir) = parent_key(target) else {
+        return false;
+    };
+    if dir != exe_dir || dir.len() < 4 || generic_location(&dir) {
+        return false;
+    }
+    directory_leaf_matches_entry(&dir, &entry.name)
+        || name_score(&entry.name, &record.display_name) > 0
+}
+
+fn uninstall_exe_directory(uninstall_string: &str) -> Option<String> {
+    let parsed = parse_uninstall_string(uninstall_string)?;
+    parent_key(Path::new(&parsed.file))
+}
+
+fn directory_leaf_matches_entry(dir: &str, entry_name: &str) -> bool {
+    let entry_name = folded(entry_name);
+    !entry_name.is_empty() && file_leaf(Path::new(dir)).is_some_and(|leaf| leaf == entry_name)
 }
 
 struct OwnedCommand {
@@ -2186,6 +2272,188 @@ mod tests {
         assert_eq!(
             registry_command_text(r#""C:\Program Files\Demo\uninstall.exe""#),
             r"C:\Program Files\Demo\uninstall.exe"
+        );
+    }
+
+    fn zcode_entry() -> AppEntry {
+        entry(
+            "ZCode",
+            AppSource::StartMenu,
+            exe(r"E:\Apps\ZCode\ZCode.exe"),
+            Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\ZCode.lnk"),
+        )
+    }
+
+    fn zcode_record(display_name: &str, uninstall: &str, location: &str) -> UninstallRecord {
+        let mut saved = record(display_name, uninstall, location);
+        saved.display_icon = r"E:\Apps\ZCode\Uninstall ZCode.exe,0".to_owned();
+        saved
+    }
+
+    #[test]
+    fn version_stripped_display_name_matches_the_entry() {
+        let item = zcode_entry();
+        let saved = zcode_record(
+            "zcode 3.16.3",
+            r#""D:\Installers\ZCode\Uninstall ZCode.exe""#,
+            "",
+        );
+        assert_eq!(match_score(&item, &saved), 50);
+        assert_eq!(name_score("ZCode", "ZCode v1.2"), 50);
+        assert_eq!(name_score("ZCode", "ZCode 3.16.3.1"), 50);
+        assert_eq!(name_score("Office", "Office 365"), 0);
+        assert_eq!(name_score("Code", "ZCode 3.16.3"), 0);
+        assert_eq!(name_score("ZCode", "ZCode 3"), 0);
+        let command = removal_plan(&item, &[saved], &roots())
+            .uninstall
+            .expect("version stripped name")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: r"D:\Installers\ZCode\Uninstall ZCode.exe".to_owned(),
+                args: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn missing_install_location_uses_the_uninstaller_directory() {
+        let item = zcode_entry();
+        let saved = zcode_record("Z-Code", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
+        assert_eq!(match_score(&item, &saved), 70);
+        let command = removal_plan(&item, &[saved], &roots())
+            .uninstall
+            .expect("uninstall directory")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: r"E:\Apps\ZCode\Uninstall ZCode.exe".to_owned(),
+                args: String::new(),
+            }
+        );
+
+        let nested = entry(
+            "ZCode",
+            AppSource::StartMenu,
+            exe(r"E:\Apps\ZCode\bin\ZCode.exe"),
+            Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\ZCode.lnk"),
+        );
+        let nested_record = zcode_record("Z-Code", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
+        assert_eq!(match_score(&nested, &nested_record), 0);
+
+        let stated = zcode_record(
+            "Z-Code",
+            r#""E:\Apps\ZCode\Uninstall ZCode.exe""#,
+            r"D:\Wrong",
+        );
+        assert_eq!(match_score(&item, &stated), 0);
+    }
+
+    #[test]
+    fn zcode_without_install_location_binds_its_uninstaller() {
+        let item = zcode_entry();
+        let saved = zcode_record(
+            "ZCode 3.16.3",
+            r#""E:\Apps\ZCode\Uninstall ZCode.exe" /allusers"#,
+            "   ",
+        );
+        assert_eq!(match_score(&item, &saved), 70);
+        let plan = removal_plan(&item, &[saved], &roots());
+        assert!(plan.clean_path.is_some());
+        assert_eq!(
+            plan.uninstall.expect("zcode").command,
+            UninstallCommand::Process {
+                file: r"E:\Apps\ZCode\Uninstall ZCode.exe".to_owned(),
+                args: "/allusers".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn unrelated_names_do_not_take_the_uninstaller() {
+        let saved = zcode_record("ZCode 3.16.3", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
+        let other = entry(
+            "Other",
+            AppSource::StartMenu,
+            exe(r"D:\Other\Other.exe"),
+            Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Other.lnk"),
+        );
+        assert_eq!(match_score(&other, &saved), 0);
+        assert!(
+            removal_plan(&other, std::slice::from_ref(&saved), &roots())
+                .uninstall
+                .is_none()
+        );
+
+        let helper = entry(
+            "Helper",
+            AppSource::Path,
+            exe(r"E:\Apps\ZCode\Helper.exe"),
+            None,
+        );
+        assert_eq!(match_score(&helper, &saved), 0);
+        assert!(
+            removal_plan(&helper, std::slice::from_ref(&saved), &roots())
+                .uninstall
+                .is_none()
+        );
+
+        let broad = entry(
+            "ZCode",
+            AppSource::Path,
+            exe(r"E:\Apps\ZCode\ZCode.exe"),
+            None,
+        );
+        let parent = zcode_record("Other", r#""E:\Apps\uninstall.exe""#, "");
+        assert_eq!(match_score(&broad, &parent), 0);
+        let program_files = zcode_record("Other", r#""C:\Program Files\uninstall.exe""#, "");
+        assert_eq!(match_score(&broad, &program_files), 0);
+    }
+
+    #[test]
+    fn versioned_name_ties_stay_unmatched_unless_one_directory_wins() {
+        let item = entry("Foo", AppSource::Path, exe(r"D:\Foo\Foo.exe"), None);
+        let tied = [
+            record("Foo 1.0", r"D:\One\uninstall.exe", ""),
+            record("Foo 2.0.1", r"D:\Two\uninstall.exe", ""),
+        ];
+        assert_eq!(match_score(&item, &tied[0]), 50);
+        assert_eq!(match_score(&item, &tied[1]), 50);
+        assert!(removal_plan(&item, &tied, &roots()).uninstall.is_none());
+
+        let located = [
+            record("Foo 1.0", r"D:\One\uninstall.exe", ""),
+            record("Foo 2.0.1", r#""D:\Foo\uninstall.exe""#, ""),
+        ];
+        assert_eq!(match_score(&item, &located[1]), 70);
+        let command = removal_plan(&item, &located, &roots())
+            .uninstall
+            .expect("directory breaks the tie")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: r"D:\Foo\uninstall.exe".to_owned(),
+                args: String::new(),
+            }
+        );
+
+        let explicit = record("Foo", r"D:\Other\uninstall.exe", r"D:\Foo");
+        let inferred = record("Foo 9.9", r#""D:\Foo\uninstall.exe""#, "");
+        assert_eq!(match_score(&item, &explicit), 80);
+        assert_eq!(match_score(&item, &inferred), 70);
+        let command = removal_plan(&item, &[explicit, inferred], &roots())
+            .uninstall
+            .expect("stated install location")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: r"D:\Other\uninstall.exe".to_owned(),
+                args: String::new(),
+            }
         );
     }
 
