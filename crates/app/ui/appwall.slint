@@ -26,6 +26,7 @@ export component AppWall inherits Window {
     in property <length> cell-width: 112px;
     in property <length> cell-height: 104px;
     in property <string> notice;
+    in property <bool> notice-critical: true;
     in property <[BarMenuItem]> menu-items;
     in property <bool> removal-open: false;
     in property <bool> removal-checklist: false;
@@ -189,7 +190,7 @@ export component AppWall inherits Window {
         width: filter-width;
         height: 24px;
         text: notice;
-        color: critical;
+        color: notice-critical ? critical : ink-secondary;
         font-size: 13px;
         vertical-alignment: center;
         overflow: elide;

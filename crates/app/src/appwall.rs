@@ -154,6 +154,7 @@ pub(crate) fn install(ui: AppWall, dispatch: Arc<Dispatch>, store: lanwork_core:
             removal: None,
             removal_lines,
             notice: None,
+            notice_critical: true,
             window_height: 0,
         });
     });
@@ -272,6 +273,7 @@ struct Wall {
     removal: Option<RemovalDialog>,
     removal_lines: Rc<VecModel<RemovalLine>>,
     notice: Option<String>,
+    notice_critical: bool,
     window_height: u32,
 }
 
@@ -509,6 +511,13 @@ impl Wall {
     fn push_notice(&mut self) {
         self.ui
             .set_notice(self.notice.clone().unwrap_or_default().into());
+        self.ui.set_notice_critical(self.notice_critical);
+    }
+
+    fn show_notice(&mut self, message: impl Into<String>, critical: bool) {
+        self.notice = Some(message.into());
+        self.notice_critical = critical;
+        self.push_notice();
     }
 
     fn view_changed(&mut self, scroll: f32, viewport: f32) {
@@ -720,8 +729,7 @@ impl Wall {
         let dispatch = Arc::clone(&self.dispatch);
         if !removal::spawn_clean(dispatch, path, false) {
             self.launching = false;
-            self.notice = Some("清理没有启动".to_owned());
-            self.push_notice();
+            self.show_notice("清理没有启动", true);
         }
     }
 
@@ -755,8 +763,7 @@ impl Wall {
                     if let Some(dialog) = self.removal.as_mut() {
                         dialog.busy = false;
                     }
-                    self.notice = Some("卸载没有启动".to_owned());
-                    self.push_notice();
+                    self.show_notice("卸载没有启动", true);
                     self.push_removal();
                 }
             }
@@ -768,8 +775,7 @@ impl Wall {
                     if let Some(dialog) = self.removal.as_mut() {
                         dialog.busy = false;
                     }
-                    self.notice = Some("删除没有启动".to_owned());
-                    self.push_notice();
+                    self.show_notice("删除没有启动", true);
                     self.push_removal();
                 }
             }
@@ -839,15 +845,21 @@ impl Wall {
         }
         if done.rows.is_empty() {
             let error = done.error;
+            let scanned = done.scanned;
+            let count = done.rows.len();
             self.removal = None;
             removal::set_hold(false);
             self.push_removal();
             if let Some(message) = error {
-                self.notice = Some(message);
-                self.push_notice();
+                self.show_notice(message, true);
+            } else if let Some(message) = lanwork_core::apps::empty_leftover_note(scanned, count) {
+                self.show_notice(message, false);
             }
             return;
         }
+        self.notice = None;
+        self.notice_critical = true;
+        self.push_notice();
         if let Some(dialog) = self.removal.as_mut() {
             dialog.busy = false;
             dialog.phase = RemovalPhase::Checklist;
@@ -884,8 +896,7 @@ impl Wall {
                 crate::searchbar::requery();
             }
             Err(message) => {
-                self.notice = Some(message);
-                self.push_notice();
+                self.show_notice(message, true);
             }
         }
     }
@@ -903,8 +914,7 @@ impl Wall {
             Err(message) => {
                 self.store
                     .log_warn(&format!("应用墙隐藏没有写入：{message}"));
-                self.notice = Some(message);
-                self.push_notice();
+                self.show_notice(message, true);
             }
         }
     }
@@ -924,8 +934,7 @@ impl Wall {
             });
         if let Err(err) = spawned {
             self.launching = false;
-            self.notice = Some(format!("打开失败：{err}"));
-            self.push_notice();
+            self.show_notice(format!("打开失败：{err}"), true);
         }
     }
 
@@ -942,8 +951,7 @@ impl Wall {
             Err(err) => {
                 let message = err.message;
                 self.store.log_warn(&format!("应用墙打开失败：{message}"));
-                self.notice = Some(message);
-                self.push_notice();
+                self.show_notice(message, true);
             }
         }
     }
