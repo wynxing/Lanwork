@@ -189,6 +189,7 @@ fn read_record(key: &OpenKey, label: &str, child: &str) -> UninstallRecord {
         display_icon: read_text(key, child, "DisplayIcon"),
         publisher: read_text(key, child, "Publisher"),
         system_component: read_dword(key, child, "SystemComponent") != 0,
+        no_remove: read_dword(key, child, "NoRemove") != 0,
         windows_installer: read_dword(key, child, "WindowsInstaller") != 0,
     }
 }

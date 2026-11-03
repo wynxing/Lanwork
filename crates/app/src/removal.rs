@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use lanwork_core::apps::{
     AppEntry, AppSource, Leftover, LeftoverKind, PreparedUninstall, RemovalPlan, UninstallEnd,
@@ -120,17 +121,17 @@ pub(crate) fn run_uninstall(
     prepared: &PreparedUninstall,
 ) -> UninstallDone {
     let end = launch_uninstall(&prepared.command);
-    if let UninstallEnd::Failed(message) = end {
-        log_leftover_decision(store, entry, false, !indexed_gone(dispatch, entry));
+    if let UninstallEnd::Failed(message) = &end {
+        log_leftover_decision(store, entry, false, !indexed_gone(dispatch, entry), &end);
         return UninstallDone {
-            error: Some(message),
+            error: Some(message.clone()),
             rows: Vec::new(),
             refreshed: false,
             scanned: false,
         };
     }
     if let Err(err) = dispatch.refresh_apps() {
-        log_leftover_decision(store, entry, false, !indexed_gone(dispatch, entry));
+        log_leftover_decision(store, entry, false, !indexed_gone(dispatch, entry), &end);
         return UninstallDone {
             error: Some(format!("刷新应用索引失败：{err}")),
             rows: Vec::new(),
@@ -140,7 +141,7 @@ pub(crate) fn run_uninstall(
     }
     let gone = indexed_gone(dispatch, entry);
     let decision = after_uninstall(&end, gone);
-    log_leftover_decision(store, entry, decision.scan, !gone);
+    log_leftover_decision(store, entry, decision.scan, !gone, &end);
     if !decision.scan {
         return UninstallDone {
             error: decision.error,
@@ -226,7 +227,7 @@ pub(crate) fn spawn_uninstall(
                     scanned: false,
                 },
             };
-            let _ = slint::invoke_from_event_loop(move || {
+            post_removal(&store, "卸载结果", move || {
                 if on_bar {
                     crate::searchbar::finish_uninstall(done);
                 } else {
@@ -237,7 +238,7 @@ pub(crate) fn spawn_uninstall(
     spawned.is_ok()
 }
 
-pub(crate) fn spawn_delete(rows: Vec<RemovalRow>, on_bar: bool) -> bool {
+pub(crate) fn spawn_delete(store: Store, rows: Vec<RemovalRow>, on_bar: bool) -> bool {
     let spawned = std::thread::Builder::new()
         .name("lanwork-leftover".into())
         .spawn(move || {
@@ -250,7 +251,7 @@ pub(crate) fn spawn_delete(rows: Vec<RemovalRow>, on_bar: bool) -> bool {
                     error: Some("删除过程中断".to_owned()),
                 }]
             });
-            let _ = slint::invoke_from_event_loop(move || {
+            post_removal(&store, "残留删除", move || {
                 if on_bar {
                     crate::searchbar::finish_delete(left);
                 } else {
@@ -261,7 +262,12 @@ pub(crate) fn spawn_delete(rows: Vec<RemovalRow>, on_bar: bool) -> bool {
     spawned.is_ok()
 }
 
-pub(crate) fn spawn_clean(dispatch: Arc<Dispatch>, path: PathBuf, on_bar: bool) -> bool {
+pub(crate) fn spawn_clean(
+    dispatch: Arc<Dispatch>,
+    store: Store,
+    path: PathBuf,
+    on_bar: bool,
+) -> bool {
     let spawned = std::thread::Builder::new()
         .name("lanwork-clean".into())
         .spawn(move || {
@@ -272,7 +278,7 @@ pub(crate) fn spawn_clean(dispatch: Arc<Dispatch>, path: PathBuf, on_bar: bool) 
                 Ok(result) => result,
                 Err(_) => Err("清理过程中断".to_owned()),
             };
-            let _ = slint::invoke_from_event_loop(move || {
+            post_removal(&store, "清理开始菜单", move || {
                 if on_bar {
                     crate::searchbar::finish_clean(result);
                 } else {
@@ -283,11 +289,60 @@ pub(crate) fn spawn_clean(dispatch: Arc<Dispatch>, path: PathBuf, on_bar: bool) 
     spawned.is_ok()
 }
 
-fn log_leftover_decision(store: &Store, entry: &AppEntry, scan: bool, entry_still_present: bool) {
+/// 结果回到界面循环的宽限。到点仍没落地就放开占用。
+const UI_DELIVERY_FAILSAFE: Duration = Duration::from_secs(5);
+
+fn post_removal(store: &Store, label: &str, apply: impl FnOnce() + Send + 'static) {
+    let applied = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&applied);
+    let posted = slint::invoke_from_event_loop(move || {
+        flag.store(true, Ordering::Release);
+        apply();
+    });
+    if let Err(err) = posted {
+        store.log_warn(&format!("{label}没有交回界面：{err}"));
+        force_release(store);
+        return;
+    }
+    let store = store.clone();
+    let label = label.to_owned();
+    if let Err(err) = std::thread::Builder::new()
+        .name("lanwork-removal-release".into())
+        .spawn(move || {
+            std::thread::sleep(UI_DELIVERY_FAILSAFE);
+            if applied.load(Ordering::Acquire) {
+                return;
+            }
+            store.log_warn(&format!("{label}没有回到界面，已释放占用"));
+            force_release(&store);
+        })
+    {
+        store.log_warn(&format!("卸载占用兜底没有启动：{err}"));
+    }
+}
+
+fn force_release(store: &Store) {
+    set_hold(false);
+    if let Err(err) = slint::invoke_from_event_loop(|| {
+        crate::searchbar::release_removal_lock();
+        crate::appwall::release_removal_lock();
+    }) {
+        store.log_warn(&format!("释放卸载占用没有交回界面：{err}"));
+    }
+}
+
+fn log_leftover_decision(
+    store: &Store,
+    entry: &AppEntry,
+    scan: bool,
+    entry_still_present: bool,
+    end: &UninstallEnd,
+) {
     store.log_info(&leftover_scan_log_line(
         &entry.name,
         scan,
         entry_still_present,
+        end,
     ));
 }
 
