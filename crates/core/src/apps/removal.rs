@@ -522,8 +522,25 @@ fn parse_record_command(record: &UninstallRecord) -> Option<OwnedCommand> {
     None
 }
 
+/// 注册表里的卸载命令。
+/// 整段被一对引号包住、引号内没有别的引号时，去掉这对引号。
+/// 引号只包住可执行文件、后面还有参数时，参数留在字符串里。
+#[must_use]
+pub(crate) fn registry_command_text(raw: &str) -> &str {
+    let text = raw.trim();
+    if let Some(inner) = text
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        && !inner.contains('"')
+    {
+        inner
+    } else {
+        text
+    }
+}
+
 fn parse_uninstall_string(raw: &str) -> Option<OwnedCommand> {
-    let raw = raw.trim();
+    let raw = registry_command_text(raw);
     if raw.is_empty() {
         return None;
     }
@@ -537,10 +554,36 @@ fn parse_uninstall_string(raw: &str) -> Option<OwnedCommand> {
     if file.trim().is_empty() {
         return None;
     }
-    Some(OwnedCommand {
-        file,
-        args: strip_quiet_switches(&args),
-    })
+    let args = rewrite_update_exe_uninstall(&file, &strip_quiet_switches(&args));
+    Some(OwnedCommand { file, args })
+}
+
+/// `Update.exe` 的卸载子命令是 `uninstall`。
+/// 登记里的独立参数 `--uninstall` 在启动前写成这个子命令。
+fn rewrite_update_exe_uninstall(file: &str, args: &str) -> String {
+    if !is_update_exe(file) {
+        return args.to_owned();
+    }
+    args.split_whitespace()
+        .map(|token| {
+            if token.trim_matches('"').eq_ignore_ascii_case("--uninstall") {
+                "uninstall"
+            } else {
+                token
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_update_exe(file: &str) -> bool {
+    // 测试在 Linux 上跑，`Path::file_name` 不把 `\` 当成分隔符。
+    file.rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(file)
+        .trim()
+        .trim_matches('"')
+        .eq_ignore_ascii_case("update.exe")
 }
 
 fn split_command(raw: &str) -> Option<(String, String)> {
@@ -1685,6 +1728,86 @@ mod tests {
         let nsis = parse_uninstall_string(r"C:\Program Files\App\uninstall.exe /S").expect("nsis");
         assert_eq!(nsis.file, r"C:\Program Files\App\uninstall.exe");
         assert_eq!(nsis.args, "");
+    }
+
+    #[test]
+    fn update_exe_dash_dash_uninstall_becomes_the_subcommand() {
+        let quoted = parse_uninstall_string(
+            r#""C:\Users\User\AppData\Local\MiniMaxDesign\Update.exe" --uninstall"#,
+        )
+        .expect("quoted update.exe");
+        assert_eq!(
+            quoted.file,
+            r"C:\Users\User\AppData\Local\MiniMaxDesign\Update.exe"
+        );
+        assert_eq!(quoted.args, "uninstall");
+
+        let already = parse_uninstall_string(
+            r#""C:\Users\User\AppData\Local\MiniMaxDesign\Update.exe" uninstall"#,
+        )
+        .expect("already a subcommand");
+        assert_eq!(already.args, "uninstall");
+
+        let other = parse_uninstall_string(r#""C:\Program Files\App\uninstall.exe" --uninstall"#)
+            .expect("other executable");
+        assert_eq!(other.file, r"C:\Program Files\App\uninstall.exe");
+        assert_eq!(other.args, "--uninstall");
+
+        let kept = parse_uninstall_string(
+            r#""C:\Users\User\AppData\Local\App\update.exe" --uninstall --log C:\temp\log.txt"#,
+        )
+        .expect("other args");
+        assert_eq!(kept.file, r"C:\Users\User\AppData\Local\App\update.exe");
+        assert_eq!(kept.args, r"uninstall --log C:\temp\log.txt");
+
+        let quiet = parse_uninstall_string(
+            r#""C:\Users\User\AppData\Local\App\UPDATE.EXE" /S --uninstall /VERYSILENT --stay"#,
+        )
+        .expect("quiet switches");
+        assert_eq!(quiet.file, r"C:\Users\User\AppData\Local\App\UPDATE.EXE");
+        assert_eq!(quiet.args, "uninstall --stay");
+
+        let slash =
+            parse_uninstall_string(r#""C:\Users\User\AppData\Local\App\Update.exe" /uninstall"#)
+                .expect("slash form");
+        assert_eq!(slash.args, "/uninstall");
+
+        let msi = parse_uninstall_string(
+            r"MsiExec.exe /x {AABBCCDD-1111-2222-3333-444444444444} --uninstall /qn",
+        )
+        .expect("msiexec");
+        assert_eq!(msi.file, "msiexec.exe");
+        assert_eq!(
+            msi.args,
+            "/x {AABBCCDD-1111-2222-3333-444444444444} --uninstall"
+        );
+    }
+
+    #[test]
+    fn registry_command_text_keeps_args_after_a_quoted_update_exe() {
+        let raw = r#""C:\Users\User\AppData\Local\MiniMaxDesign\Update.exe" --uninstall"#;
+        let stored = registry_command_text(raw);
+        assert_eq!(stored, raw);
+
+        let path = r"C:\Users\User\AppData\Local\MiniMaxDesign\Update.exe";
+        let item = entry("MiniMax Design", AppSource::Path, exe(path), None);
+        let records = [record("MiniMax Design", stored, "")];
+        let command = removal_plan(&item, &records, &roots())
+            .uninstall
+            .expect("uninstall")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: path.to_owned(),
+                args: "uninstall".to_owned(),
+            }
+        );
+
+        assert_eq!(
+            registry_command_text(r#""C:\Program Files\Demo\uninstall.exe""#),
+            r"C:\Program Files\Demo\uninstall.exe"
+        );
     }
 
     #[test]

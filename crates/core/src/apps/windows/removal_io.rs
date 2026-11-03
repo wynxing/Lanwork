@@ -26,6 +26,7 @@ use super::store::take_pwstr;
 use crate::apps::removal::{
     AppFootprint, LeftoverKind, MachineRoots, ObservedLeftovers, ObservedShortcut,
     UninstallCommand, UninstallEnd, UninstallRecord, deletion_allowed, registry_candidates,
+    registry_command_text,
 };
 
 const UNINSTALL_ROOTS: &[(HKEY, &str, &str)] = &[
@@ -183,7 +184,7 @@ fn read_record(key: &OpenKey, label: &str, child: &str) -> UninstallRecord {
     UninstallRecord {
         key: format!(r"{label}\{child}"),
         display_name: read_text(key, child, "DisplayName"),
-        uninstall_string: read_text(key, child, "UninstallString"),
+        uninstall_string: read_command(key, child, "UninstallString"),
         install_location: read_text(key, child, "InstallLocation"),
         display_icon: read_text(key, child, "DisplayIcon"),
         publisher: read_text(key, child, "Publisher"),
@@ -193,6 +194,23 @@ fn read_record(key: &OpenKey, label: &str, child: &str) -> UninstallRecord {
 }
 
 fn read_text(key: &OpenKey, child: &str, value: &str) -> String {
+    let Some(raw) = read_reg_string(key, child, value) else {
+        return String::new();
+    };
+    expand_env(unquote(raw.trim()).trim()).trim().to_owned()
+}
+
+/// 带参数的卸载命令。引号后面的参数留着。
+fn read_command(key: &OpenKey, child: &str, value: &str) -> String {
+    let Some(raw) = read_reg_string(key, child, value) else {
+        return String::new();
+    };
+    expand_env(registry_command_text(&raw).trim())
+        .trim()
+        .to_owned()
+}
+
+fn read_reg_string(key: &OpenKey, child: &str, value: &str) -> Option<String> {
     let child_wide = comutil::wide_null(child);
     let value_wide = comutil::wide_null(value);
     let mut bytes = vec![0u8; 4096];
@@ -210,7 +228,7 @@ fn read_text(key: &OpenKey, child: &str, value: &str) -> String {
         )
     };
     if status != ERROR_SUCCESS {
-        return String::new();
+        return None;
     }
     let chars = (size as usize / 2).saturating_sub(1);
     let units = bytes[..chars.saturating_mul(2)]
@@ -219,8 +237,7 @@ fn read_text(key: &OpenKey, child: &str, value: &str) -> String {
         .iter()
         .map(|pair| u16::from_le_bytes(*pair))
         .collect::<Vec<_>>();
-    let raw = String::from_utf16_lossy(&units);
-    expand_env(unquote(raw.trim()).trim()).trim().to_owned()
+    Some(String::from_utf16_lossy(&units))
 }
 
 fn read_dword(key: &OpenKey, child: &str, value: &str) -> u32 {
