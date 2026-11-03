@@ -304,7 +304,7 @@ fn post_removal(store: &Store, label: &str, apply: impl FnOnce() + Send + 'stati
         force_release(store);
         return;
     }
-    let store = store.clone();
+    let watcher = store.clone();
     let label = label.to_owned();
     if let Err(err) = std::thread::Builder::new()
         .name("lanwork-removal-release".into())
@@ -313,8 +313,8 @@ fn post_removal(store: &Store, label: &str, apply: impl FnOnce() + Send + 'stati
             if applied.load(Ordering::Acquire) {
                 return;
             }
-            store.log_warn(&format!("{label}没有回到界面，已释放占用"));
-            force_release(&store);
+            watcher.log_warn(&format!("{label}没有回到界面，已释放占用"));
+            force_release(&watcher);
         })
     {
         store.log_warn(&format!("卸载占用兜底没有启动：{err}"));
