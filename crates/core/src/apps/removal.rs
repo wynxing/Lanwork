@@ -898,12 +898,15 @@ fn classify_dir(path: &Path, footprint: &AppFootprint, roots: &MachineRoots) -> 
     }
     // 高置信度限于登记里的安装目录，以及与完整显示名相同、父目录不是公共根的文件夹。
     // 最后一段、主名、更新器目录、同级 Data/Cache、点号目录和厂商目录默认不勾选。
+    // 安装目录本身即使叶子像最后一段或更新器目录，也不因此降成低置信度。
     let publisher_folder = leaf_is_publisher && !is_install;
     let stem_only = leaf_is_stem && !leaf_is_display && !is_install;
+    let last_only = leaf_is_last && !is_install;
+    let updater_only = leaf_is_updater && !is_install;
     let weak = publisher_folder
         || stem_only
-        || leaf_is_last
-        || leaf_is_updater
+        || last_only
+        || updater_only
         || leaf_is_sibling
         || leaf_is_dot;
     let confidence = if !footprint.target_exe_present
@@ -2211,6 +2214,57 @@ mod tests {
             let item = by_location(&orca_items, path).unwrap_or_else(|| panic!("missing {path}"));
             assert!(!item.checked, "{path}");
         }
+    }
+
+    #[test]
+    fn install_dir_with_a_last_token_or_updater_leaf_stays_checked() {
+        let thunderbird = sample_footprint(
+            "Mozilla Thunderbird",
+            "Mozilla",
+            r"C:\Users\User\AppData\Roaming\Thunderbird",
+            r"C:\Users\User\AppData\Roaming\Thunderbird\maintenanceservice.exe",
+        );
+        let items = plan_leftovers(
+            &thunderbird,
+            &ObservedLeftovers {
+                directories: vec![
+                    PathBuf::from(r"C:\Users\User\AppData\Roaming\Thunderbird"),
+                    PathBuf::from(r"C:\Users\User\AppData\Local\Thunderbird"),
+                ],
+                ..ObservedLeftovers::default()
+            },
+            &roots(),
+        );
+        let install = by_location(&items, r"C:\Users\User\AppData\Roaming\Thunderbird")
+            .expect("thunderbird install");
+        assert!(install.checked);
+        let other = by_location(&items, r"C:\Users\User\AppData\Local\Thunderbird")
+            .expect("other thunderbird dir");
+        assert!(!other.checked);
+
+        let orca = sample_footprint(
+            "Orca",
+            "",
+            r"C:\Users\User\AppData\Local\orca-updater",
+            r"C:\Users\User\AppData\Local\orca-updater\orca.exe",
+        );
+        let orca_items = plan_leftovers(
+            &orca,
+            &ObservedLeftovers {
+                directories: vec![
+                    PathBuf::from(r"C:\Users\User\AppData\Local\orca-updater"),
+                    PathBuf::from(r"C:\Users\User\AppData\Roaming\orca-updater"),
+                ],
+                ..ObservedLeftovers::default()
+            },
+            &roots(),
+        );
+        let updater = by_location(&orca_items, r"C:\Users\User\AppData\Local\orca-updater")
+            .expect("orca install");
+        assert!(updater.checked);
+        let roaming = by_location(&orca_items, r"C:\Users\User\AppData\Roaming\orca-updater")
+            .expect("other orca updater");
+        assert!(!roaming.checked);
     }
 
     #[test]

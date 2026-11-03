@@ -737,6 +737,11 @@ impl Wall {
         if self.removal.is_some() {
             return;
         }
+        if self.notice.as_deref() == Some(lanwork_core::apps::EMPTY_LEFTOVER_STATUS) {
+            self.notice = None;
+            self.notice_critical = true;
+            self.push_notice();
+        }
         self.removal = Some(RemovalDialog::confirm(entry, prepared));
         removal::set_hold(true);
         self.push_removal();
