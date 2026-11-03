@@ -601,14 +601,16 @@ fn is_ascii_digits(text: &str) -> bool {
 }
 
 /// 没有 `InstallLocation` 时，卸载程序的父目录当作安装目录，再和入口 exe 的目录比。
-/// 公共根目录不算。目录名与入口名相同，或显示名已经对上，才记分，
-/// 避免同目录里名字无关的程序绑到这条卸载命令。
+/// 只在显示名已经对上（含去掉末尾版本号）时记分。目录名与入口名相同本身不加分，
+/// 避免同目录里显示名无关的登记压过真正的名称匹配。
 fn uninstall_dir_matches_exe_dir(
     entry: &AppEntry,
     record: &UninstallRecord,
     target: &Path,
 ) -> bool {
-    if !record.install_location.trim().is_empty() {
+    if !record.install_location.trim().is_empty()
+        || name_score(&entry.name, &record.display_name) == 0
+    {
         return false;
     }
     let Some(dir) = uninstall_exe_directory(&record.uninstall_string) else {
@@ -617,21 +619,12 @@ fn uninstall_dir_matches_exe_dir(
     let Some(exe_dir) = parent_key(target) else {
         return false;
     };
-    if dir != exe_dir || dir.len() < 4 || generic_location(&dir) {
-        return false;
-    }
-    directory_leaf_matches_entry(&dir, &entry.name)
-        || name_score(&entry.name, &record.display_name) > 0
+    dir == exe_dir && dir.len() >= 4 && !generic_location(&dir)
 }
 
 fn uninstall_exe_directory(uninstall_string: &str) -> Option<String> {
     let parsed = parse_uninstall_string(uninstall_string)?;
     parent_key(Path::new(&parsed.file))
-}
-
-fn directory_leaf_matches_entry(dir: &str, entry_name: &str) -> bool {
-    let entry_name = folded(entry_name);
-    !entry_name.is_empty() && file_leaf(Path::new(dir)).is_some_and(|leaf| leaf == entry_name)
 }
 
 struct OwnedCommand {
@@ -2320,9 +2313,9 @@ mod tests {
     #[test]
     fn missing_install_location_uses_the_uninstaller_directory() {
         let item = zcode_entry();
-        let saved = zcode_record("Z-Code", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
+        let saved = zcode_record("ZCode 1.2.3", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
         assert_eq!(match_score(&item, &saved), 70);
-        let command = removal_plan(&item, &[saved], &roots())
+        let command = removal_plan(&item, std::slice::from_ref(&saved), &roots())
             .uninstall
             .expect("uninstall directory")
             .command;
@@ -2334,21 +2327,70 @@ mod tests {
             }
         );
 
+        let leaf_only = zcode_record("Z-Code", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
+        assert_eq!(match_score(&item, &leaf_only), 0);
+        assert!(
+            removal_plan(&item, std::slice::from_ref(&leaf_only), &roots())
+                .uninstall
+                .is_none()
+        );
+
         let nested = entry(
             "ZCode",
             AppSource::StartMenu,
             exe(r"E:\Apps\ZCode\bin\ZCode.exe"),
             Some(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\ZCode.lnk"),
         );
-        let nested_record = zcode_record("Z-Code", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
-        assert_eq!(match_score(&nested, &nested_record), 0);
+        let nested_record =
+            zcode_record("ZCode 1.2.3", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
+        assert_eq!(match_score(&nested, &nested_record), 50);
 
         let stated = zcode_record(
-            "Z-Code",
+            "ZCode 1.2.3",
             r#""E:\Apps\ZCode\Uninstall ZCode.exe""#,
             r"D:\Wrong",
         );
-        assert_eq!(match_score(&item, &stated), 0);
+        assert_eq!(match_score(&item, &stated), 50);
+    }
+
+    #[test]
+    fn same_folder_unrelated_display_name_does_not_outrank_the_versioned_name() {
+        let item = zcode_entry();
+        let zcode = zcode_record("ZCode 3.16.3", r#""E:\Apps\ZCode\Uninstall ZCode.exe""#, "");
+        let helper = zcode_record("Helper", r#""E:\Apps\ZCode\Uninstall Helper.exe""#, "");
+        assert_eq!(match_score(&item, &zcode), 70);
+        assert_eq!(match_score(&item, &helper), 0);
+        let command = removal_plan(&item, &[zcode, helper], &roots())
+            .uninstall
+            .expect("versioned name in the install dir")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: r"E:\Apps\ZCode\Uninstall ZCode.exe".to_owned(),
+                args: String::new(),
+            }
+        );
+
+        let elsewhere = zcode_record(
+            "ZCode 3.16.3",
+            r#""D:\Installers\ZCode\Uninstall ZCode.exe""#,
+            "",
+        );
+        let same_folder = zcode_record("Helper", r#""E:\Apps\ZCode\Uninstall Helper.exe""#, "");
+        assert_eq!(match_score(&item, &elsewhere), 50);
+        assert_eq!(match_score(&item, &same_folder), 0);
+        let command = removal_plan(&item, &[same_folder, elsewhere], &roots())
+            .uninstall
+            .expect("name match elsewhere")
+            .command;
+        assert_eq!(
+            command,
+            UninstallCommand::Process {
+                file: r"D:\Installers\ZCode\Uninstall ZCode.exe".to_owned(),
+                args: String::new(),
+            }
+        );
     }
 
     #[test]
