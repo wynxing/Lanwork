@@ -146,7 +146,7 @@ pub struct ObservedLeftovers {
     pub registry_keys: Vec<String>,
 }
 
-/// 卸载进程的结局。取消不显示错误。是否扫描看刷新后条目还在不在索引里。
+/// 卸载进程的结局。取消不显示错误。条目离开索引就扫描；条目还在时，成功退出才扫描。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UninstallEnd {
     Cancelled,
@@ -251,7 +251,8 @@ pub fn removal_plan(
 ///
 /// 启动失败不刷新、不扫描。进程结束（含取消）时要刷新索引。`indexed_entry_gone`
 /// 由调用方在刷新之后传入。条目已经离开就扫描，退出码是取消语义（2、1223、1602）
-/// 或进程被当成取消也不例外。条目还在时不扫描。
+/// 或进程被当成取消也不例外。条目还在时，退出码是 0 或 3010 才扫描。
+/// 用户取消且条目还在时不扫描。失败退出码且条目还在时不扫描，错误是「卸载没有完成」。
 #[must_use]
 pub fn after_uninstall(end: &UninstallEnd, indexed_entry_gone: bool) -> AfterUninstall {
     match end {
@@ -267,7 +268,7 @@ pub fn after_uninstall(end: &UninstallEnd, indexed_entry_gone: bool) -> AfterUni
         },
         UninstallEnd::Finished { code } => AfterUninstall {
             refresh: true,
-            scan: indexed_entry_gone,
+            scan: indexed_entry_gone || is_success_code(*code),
             error: unfinished_note(*code, indexed_entry_gone),
         },
     }
@@ -1623,6 +1624,11 @@ fn is_cancel_code(code: u32) -> bool {
     matches!(code, 2 | 1223 | 1602)
 }
 
+/// 0 是成功。3010 是成功且需要重启，和「卸载没有完成」用的是同一组成功码。
+fn is_success_code(code: u32) -> bool {
+    matches!(code, 0 | 3010)
+}
+
 fn kind_rank(kind: LeftoverKind) -> u8 {
     match kind {
         LeftoverKind::Directory => 0,
@@ -2067,7 +2073,7 @@ mod tests {
         assert!(cancel_stayed.error.is_none());
         assert_eq!(empty_leftover_note(cancel_stayed.scan, 0), None);
 
-        for code in [0, 2, 1223, 1602, 3010] {
+        for code in [2, 1223, 1602] {
             let stayed = after_uninstall(&UninstallEnd::Finished { code }, false);
             assert!(stayed.refresh, "{code}");
             assert!(!stayed.scan, "{code}");
@@ -2113,6 +2119,27 @@ mod tests {
             ),
             "卸载残留：MinerU 扫描=否 条目仍在=是 结束=启动失败 退出码="
         );
+    }
+
+    #[test]
+    fn an_entry_that_stays_scans_after_a_successful_exit() {
+        for code in [0, 3010] {
+            let end = UninstallEnd::Finished { code };
+            let stayed = after_uninstall(&end, false);
+            assert!(stayed.refresh, "{code}");
+            assert!(stayed.scan, "{code}");
+            assert!(stayed.error.is_none(), "{code}");
+            assert_eq!(
+                empty_leftover_note(stayed.scan, 0),
+                Some("没有发现可清理的残留"),
+                "{code}"
+            );
+            assert_eq!(
+                leftover_scan_log_line("ZCode", stayed.scan, true, &end),
+                format!("卸载残留：ZCode 扫描=是 条目仍在=是 结束=退出 退出码={code}"),
+                "{code}"
+            );
+        }
     }
 
     #[test]
