@@ -138,11 +138,24 @@ export component Panel inherits Window {
     out property <length> tab-hit-w: spine-width - 16px;
     out property <length> tab-hit-h: tab-hit;
     out property <length> tab-stride: tab-hit + tab-gap;
-    out property <string> shown-tab-name: hover-tab >= 0 ? tab-titles[hover-tab] : rail-focused ? tab-titles[key-tab] : "";
-    // 名称画在侧栏里、图标左侧。右缘停在图标左边，也不进入内容区。
-    out property <length> tip-x: tab-name.visible ? tab-name.x : 0px;
-    out property <length> tip-w: tab-name.visible ? tab-name.preferred-width : 0px;
-    out property <length> tip-icon-x: shown-tab-name != "" ? 8px + tab-hit-w - 16px : 0px;
+    // 悬停先等这一小段，到点才显示。键盘焦点不等。离开或失焦就关掉，定时器也停。
+    out property <duration> tip-delay: 400ms;
+    property <bool> tip-wait: false;
+    property <int> tip-index: -1;
+    out property <string> shown-tab-name: tip-index >= 0 && tip-index < tab-titles.length ? tab-titles[tip-index] : "";
+    // 图标在热区里居中。五种状态都用这一对，不跟着名称挪。
+    out property <length> tab-icon-size: 20px;
+    out property <length> tab-icon-x: tab-origin-x + (tab-hit-w - tab-icon-size) / 2;
+    // 短提示在按钮右侧，留出间距，再夹进窗口。窄窗或首尾放不下时只挪提示，不挪图标。
+    out property <length> tip-gap: 8px;
+    property <length> tip-natural-w: tip-label.preferred-width + 16px;
+    property <length> tip-natural-h: tip-label.preferred-height + 10px;
+    out property <length> tip-w: min(tip-natural-w, max(0px, panel-width));
+    out property <length> tip-h: min(tip-natural-h, max(0px, panel-height));
+    property <length> tip-anchor-x: tab-origin-x + tab-hit-w + tip-gap;
+    property <length> tip-anchor-y: tab-top + tab-stride * tip-index + (tab-hit - tip-h) / 2;
+    out property <length> tip-x: tip-index >= 0 ? min(max(0px, tip-anchor-x), max(0px, panel-width - tip-w)) : 0px;
+    out property <length> tip-y: tip-index >= 0 ? min(max(0px, tip-anchor-y), max(0px, panel-height - tip-h)) : 0px;
     out property <length> shelf-zone-x: spine-width;
     out property <length> shelf-zone-y: 0px;
     out property <length> shelf-zone-w: panel-width - spine-width;
@@ -163,6 +176,28 @@ export component Panel inherits Window {
     }
     changed dark => {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    // 已经显示时，换一个标签立刻跟着走。还没显示时，等 tip-delay，不重开计时。
+    changed hover-tab => {
+        if root.hover-tab >= 0 {
+            if root.tip-index >= 0 {
+                root.tip-index = root.hover-tab;
+                root.tip-wait = false;
+            } else if !root.tip-wait {
+                root.tip-wait = true;
+            }
+        } else {
+            root.tip-wait = false;
+            root.tip-index = root.rail-focused ? root.key-tab : -1;
+        }
+    }
+
+    changed key-tab => {
+        if root.rail-focused && root.hover-tab < 0 {
+            root.tip-wait = false;
+            root.tip-index = root.key-tab;
+        }
     }
 
     public function focus-root() {
@@ -286,6 +321,18 @@ export component Panel inherits Window {
         list.content-y = 0px;
     }
 
+        // 只在等待悬停提示时跑一次。触发后 tip-wait 变假，定时器停下。
+        Timer {
+            interval: root.tip-delay;
+            running: root.tip-wait;
+            triggered => {
+                if root.hover-tab >= 0 {
+                    root.tip-index = root.hover-tab;
+                }
+                root.tip-wait = false;
+            }
+        }
+
         scope := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
@@ -324,6 +371,10 @@ export component Panel inherits Window {
                     root.key-tab = root.tab;
                 }
                 root.rail-focused = self.has-focus;
+                if root.hover-tab < 0 {
+                    root.tip-wait = false;
+                    root.tip-index = self.has-focus ? root.key-tab : -1;
+                }
             }
 
             key-pressed(event) => {
@@ -376,8 +427,6 @@ export component Panel inherits Window {
             }
 
             for name[index] in tab-titles: Rectangle {
-                property <bool> show-name: root.hover-tab == index || (root.hover-tab < 0 && root.rail-focused && root.key-tab == index);
-
                 x: 8px;
                 y: root.tab-top + (root.tab-hit + root.tab-gap) * index;
                 width: root.tab-hit-w;
@@ -387,7 +436,7 @@ export component Panel inherits Window {
                 border-color: c.accent;
                 background: index == root.tab ? c.selection : tab-touch.has-hover ? c.hover : transparent;
 
-                if index == root.tab && !show-name: Rectangle {
+                if index == root.tab: Rectangle {
                     x: 4px;
                     y: (parent.height - 14px) / 2;
                     width: 3px;
@@ -397,10 +446,10 @@ export component Panel inherits Window {
                 }
 
                 Path {
-                    x: show-name ? parent.width - 16px : (parent.width - 20px) / 2;
-                    y: show-name ? (parent.height - 16px) / 2 : (parent.height - 20px) / 2;
-                    width: show-name ? 16px : 20px;
-                    height: show-name ? 16px : 20px;
+                    x: (parent.width - root.tab-icon-size) / 2;
+                    y: (parent.height - root.tab-icon-size) / 2;
+                    width: root.tab-icon-size;
+                    height: root.tab-icon-size;
                     viewbox-width: 16;
                     viewbox-height: 16;
                     fill: transparent;
@@ -428,15 +477,6 @@ export component Panel inherits Window {
                         root.tab-selected(index);
                     }
                 }
-            }
-
-            tab-name := Text {
-                visible: root.shown-tab-name != "";
-                x: 2px;
-                y: root.tab-top + root.tab-stride * (root.hover-tab >= 0 ? root.hover-tab : root.key-tab) + (root.tab-hit - self.preferred-height) / 2;
-                text: root.shown-tab-name;
-                color: c.ink;
-                font-size: 12px;
             }
 
             Rectangle {
@@ -1292,6 +1332,28 @@ export component Panel inherits Window {
                     font-size: 13px;
                     vertical-alignment: center;
                     overflow: elide;
+                }
+            }
+
+            // 画在内容上面。不接指针，热区仍是原来的按钮。
+            tab-tip := Rectangle {
+                visible: root.tip-index >= 0;
+                x: root.tip-x;
+                y: root.tip-y;
+                width: root.tip-w;
+                height: root.tip-h;
+                border-radius: 6px;
+                background: c.field;
+                border-width: 1px;
+                border-color: c.divider;
+                clip: true;
+
+                tip-label := Text {
+                    x: 8px;
+                    y: (parent.height - self.preferred-height) / 2;
+                    text: root.shown-tab-name;
+                    color: c.ink;
+                    font-size: 12px;
                 }
             }
 

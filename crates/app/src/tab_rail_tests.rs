@@ -1,15 +1,21 @@
-//! 面板左侧标签。图标可点，名称只在悬停或键盘焦点上出现。
+//! 面板左侧标签。五个图标居中不动，名称是按钮旁的短提示。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+use slint::platform::software_renderer::{
+    MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
+};
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use lanwork_core::panel::KEY_ESCAPE;
 
-use crate::{NotesPageData, Panel, ShelvesPageData};
+use crate::{NotesPageData, Panel, ShelfGroupRow, ShelfRefRow, ShelvesPageData};
+
+thread_local! {
+    static FRAME: RefCell<Option<Rc<MinimalSoftwareWindow>>> = const { RefCell::new(None) };
+}
 
 struct Headless(Rc<MinimalSoftwareWindow>);
 
@@ -23,8 +29,10 @@ const TITLES: [&str; 5] = ["待办", "便签", "收纳", "应用", "设置"];
 
 fn open() -> Panel {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    let _ = slint::platform::set_platform(Box::new(Headless(Rc::clone(&window))));
     window.set_size(slint::PhysicalSize::new(760, 560));
+    if slint::platform::set_platform(Box::new(Headless(Rc::clone(&window)))).is_ok() {
+        FRAME.with(|slot| *slot.borrow_mut() = Some(Rc::clone(&window)));
+    }
     let ui = Panel::new().expect("panel");
     ui.set_tab(2);
     ui.set_tab_titles(ModelRc::new(VecModel::from(
@@ -33,6 +41,8 @@ fn open() -> Panel {
             .map(SharedString::from)
             .collect::<Vec<_>>(),
     )));
+    ui.set_panel_width(760.0);
+    ui.set_panel_height(560.0);
     ui.show().expect("show");
     slint::platform::update_timers_and_animations();
     ui
@@ -58,12 +68,64 @@ fn center(ui: &Panel, index: i32) -> (f32, f32) {
     (x, y)
 }
 
+fn icon_place(ui: &Panel) -> (f32, f32) {
+    (ui.get_tab_icon_x(), ui.get_tab_icon_size())
+}
+
+fn assert_icons_stay(ui: &Panel, at: (f32, f32)) {
+    let (x, size) = icon_place(ui);
+    let expected = ui.get_tab_origin_x() + (ui.get_tab_hit_w() - size) / 2.0;
+    assert!((size - 20.0).abs() < 0.5, "图标保持 20px，实际 {size}");
+    assert!(
+        (x - expected).abs() < 0.5,
+        "图标在热区里水平居中 {x} vs {expected}"
+    );
+    assert!(
+        (x - at.0).abs() < 0.5 && (size - at.1).abs() < 0.5,
+        "图标相对静止时没有位移 {x},{size} vs {},{}",
+        at.0,
+        at.1
+    );
+    assert!(
+        (ui.get_shelf_zone_x() - 64.0).abs() < 0.5,
+        "提示不改变内容区起点"
+    );
+}
+
+fn assert_tip_inside(ui: &Panel) {
+    let x = ui.get_tip_x();
+    let y = ui.get_tip_y();
+    let w = ui.get_tip_w();
+    let h = ui.get_tip_h();
+    assert!(w > 8.0 && h > 8.0, "提示有尺寸 {w}x{h}");
+    assert!(x >= -0.5, "提示左缘在窗口内 {x}");
+    assert!(y >= -0.5, "提示上缘在窗口内 {y}");
+    assert!(
+        x + w <= ui.get_panel_width() + 0.5,
+        "提示右缘在窗口内 {x}+{w} vs {}",
+        ui.get_panel_width()
+    );
+    assert!(
+        y + h <= ui.get_panel_height() + 0.5,
+        "提示下缘在窗口内 {y}+{h} vs {}",
+        ui.get_panel_height()
+    );
+}
+
+fn wait_tip(ui: &Panel) {
+    let delay = u64::try_from(ui.get_tip_delay().max(0)).unwrap_or(400);
+    std::thread::sleep(std::time::Duration::from_millis(delay + 80));
+    slint::platform::update_timers_and_animations();
+}
+
 #[test]
 fn tabs_are_icon_hit_targets_and_names_appear_on_hover_or_focus() {
     let ui = open();
     assert!(ui.get_tab_hit_w() >= 40.0, "标签热区够宽");
     assert!(ui.get_tab_hit_h() >= 40.0, "标签热区够高");
     assert_eq!(ui.get_shown_tab_name().as_str(), "", "静止时不显示名称");
+    let icons = icon_place(&ui);
+    assert_icons_stay(&ui, icons);
 
     ui.invoke_focus_root();
     ui.window().dispatch_event(WindowEvent::KeyPressed {
@@ -74,6 +136,15 @@ fn tabs_are_icon_hit_targets_and_names_appear_on_hover_or_focus() {
         ui.get_shown_tab_name().as_str(),
         "收纳",
         "Tab 从面板焦点进入当前标签"
+    );
+    assert_icons_stay(&ui, icons);
+    assert_tip_inside(&ui);
+    let button_right = ui.get_tab_origin_x() + ui.get_tab_hit_w();
+    assert!(
+        ui.get_tip_x() + 0.5 >= button_right + ui.get_tip_gap(),
+        "焦点提示在按钮右侧并留出间距 {} vs {button_right}+{}",
+        ui.get_tip_x(),
+        ui.get_tip_gap()
     );
     ui.invoke_focus_root();
     slint::platform::update_timers_and_animations();
@@ -94,23 +165,38 @@ fn tabs_are_icon_hit_targets_and_names_appear_on_hover_or_focus() {
         position: slint::LogicalPosition::new(x, y),
     });
     slint::platform::update_timers_and_animations();
+    assert_eq!(ui.get_shown_tab_name().as_str(), "", "刚悬停时名称还不出现");
+    assert_icons_stay(&ui, icons);
+    wait_tip(&ui);
     assert_eq!(ui.get_shown_tab_name().as_str(), "便签");
-    let tip_x = ui.get_tip_x();
-    let tip_w = ui.get_tip_w();
-    let icon_x = ui.get_tip_icon_x();
-    assert!(tip_w >= 20.0, "名称按文字宽度画出，实际 {tip_w}");
-    assert!(tip_x >= 0.0, "名称留在窗口内，实际 {tip_x}");
+    assert_icons_stay(&ui, icons);
+    assert_tip_inside(&ui);
     assert!(
-        tip_x + tip_w <= icon_x + 0.5,
-        "名称在图标左侧 {tip_x}+{tip_w} vs {icon_x}"
+        ui.get_tip_x() + 0.5 >= button_right + ui.get_tip_gap(),
+        "悬停提示在按钮右侧并留出间距"
     );
-    assert!(tip_x + tip_w <= ui.get_shelf_zone_x(), "名称不进入内容区");
+    assert!(
+        ui.get_tip_w() >= 20.0,
+        "名称按文字宽度画出，实际 {}",
+        ui.get_tip_w()
+    );
+
+    let (next_x, next_y) = center(&ui, 2);
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(next_x, next_y),
+    });
+    slint::platform::update_timers_and_animations();
+    assert_eq!(
+        ui.get_shown_tab_name().as_str(),
+        "收纳",
+        "提示已经出现时换标签立刻跟着走"
+    );
+    assert_icons_stay(&ui, icons);
+
     ui.set_panel_width(320.0);
     slint::platform::update_timers_and_animations();
-    assert!(
-        ui.get_tip_x() >= 0.0 && ui.get_tip_x() + ui.get_tip_w() <= ui.get_shelf_zone_x(),
-        "窄面板上名称仍完整留在侧栏里"
-    );
+    assert_tip_inside(&ui);
+    assert_icons_stay(&ui, icons);
     ui.set_panel_width(760.0);
 
     ui.window().dispatch_event(WindowEvent::PointerMoved {
@@ -118,6 +204,7 @@ fn tabs_are_icon_hit_targets_and_names_appear_on_hover_or_focus() {
     });
     slint::platform::update_timers_and_animations();
     assert_eq!(ui.get_shown_tab_name().as_str(), "", "指针离开后名称消失");
+    assert_icons_stay(&ui, icons);
 
     click(&ui, x, y);
     assert_eq!(selected.borrow().as_slice(), &[1]);
@@ -134,12 +221,16 @@ fn tabs_are_icon_hit_targets_and_names_appear_on_hover_or_focus() {
         "收纳",
         "焦点先落在当前标签"
     );
+    assert_icons_stay(&ui, icons);
+    assert_tip_inside(&ui);
 
     ui.window().dispatch_event(WindowEvent::KeyPressed {
         text: slint::platform::Key::DownArrow.into(),
     });
     slint::platform::update_timers_and_animations();
     assert_eq!(ui.get_shown_tab_name().as_str(), "应用");
+    assert_icons_stay(&ui, icons);
+    assert_tip_inside(&ui);
     assert!(selected.borrow().as_slice() == [1], "方向键不切换标签");
 
     ui.window().dispatch_event(WindowEvent::KeyPressed {
@@ -156,6 +247,160 @@ fn tabs_are_icon_hit_targets_and_names_appear_on_hover_or_focus() {
         text: slint::platform::Key::Escape.into(),
     });
     assert_eq!(*escapes.borrow(), 1, "没有待撤销状态时 Esc 收起");
+}
+
+#[test]
+fn tab_tips_wait_out_hover_and_stay_inside_the_window() {
+    let ui = open();
+    let icons = icon_place(&ui);
+    let (x, y) = center(&ui, 0);
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(x, y),
+    });
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.get_shown_tab_name().as_str(), "", "延迟结束前没有名称");
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(400.0, 300.0),
+    });
+    slint::platform::update_timers_and_animations();
+    wait_tip(&ui);
+    assert_eq!(
+        ui.get_shown_tab_name().as_str(),
+        "",
+        "离开之后到点也不再出现"
+    );
+    assert_icons_stay(&ui, icons);
+
+    ui.invoke_focus_tabs();
+    slint::platform::update_timers_and_animations();
+    for _ in 0..2 {
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: slint::platform::Key::UpArrow.into(),
+        });
+    }
+    ui.set_panel_height(48.0);
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.get_shown_tab_name().as_str(), "待办");
+    assert_tip_inside(&ui);
+    assert_icons_stay(&ui, icons);
+
+    for _ in 0..4 {
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: slint::platform::Key::DownArrow.into(),
+        });
+    }
+    ui.set_panel_height(160.0);
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.get_shown_tab_name().as_str(), "设置");
+    assert_tip_inside(&ui);
+    assert_icons_stay(&ui, icons);
+
+    ui.set_panel_height(560.0);
+    ui.set_panel_width(96.0);
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.get_shown_tab_name().as_str(), "设置");
+    assert_tip_inside(&ui);
+    assert_icons_stay(&ui, icons);
+    assert!(
+        (ui.get_tab_icon_x() - icons.0).abs() < 0.5,
+        "窄窗只挪提示，图标仍在 {}",
+        ui.get_tab_icon_x()
+    );
+}
+
+fn paint(path: &str) {
+    const WIDTH: usize = 760;
+    const HEIGHT: usize = 560;
+    FRAME.with(|slot| {
+        let window = slot.borrow().clone().expect("software window");
+        window.request_redraw();
+        let rendered = window.draw_if_needed(|renderer| {
+            let mut buffer = vec![PremultipliedRgbaColor::default(); WIDTH * HEIGHT];
+            renderer.render(&mut buffer, WIDTH);
+            let mut file = std::fs::File::create(path).expect("ppm");
+            use std::io::Write;
+            write!(file, "P6\n{WIDTH} {HEIGHT}\n255\n").expect("header");
+            for pixel in buffer {
+                file.write_all(&[pixel.red, pixel.green, pixel.blue])
+                    .expect("pixel");
+            }
+        });
+        assert!(rendered, "这一帧要画出来");
+    });
+}
+
+fn shelf_group(name: &str) -> ShelfGroupRow {
+    ShelfGroupRow {
+        name: name.into(),
+        count: 3,
+        todo: slint::SharedString::default(),
+        checked: false,
+    }
+}
+
+fn shelf_ref(name: &str) -> ShelfRefRow {
+    ShelfRefRow {
+        name: name.into(),
+        icon: slint::Image::default(),
+        has_icon: false,
+        missing: false,
+        web: false,
+        folder: false,
+        selected: false,
+    }
+}
+
+/// 三张局部图的源画面。默认不跑，避免测试写文件。
+/// `LANWORK_RAIL_SHOTS=/tmp/rail cargo test --bin lanwork rail_tooltip_shots -- --ignored --exact`
+#[test]
+#[ignore]
+fn rail_tooltip_shots() {
+    let dir = std::env::var("LANWORK_RAIL_SHOTS").unwrap_or_else(|_| "/tmp/rail-shots".into());
+    std::fs::create_dir_all(&dir).expect("shot dir");
+    let ui = open();
+    ui.set_dark(false);
+    ui.set_tab(2);
+    let shelves = ui.global::<ShelvesPageData>();
+    shelves.set_groups(slint::ModelRc::new(slint::VecModel::from(vec![
+        shelf_group("资料"),
+        shelf_group("网页"),
+        shelf_group("进行中"),
+    ])));
+    shelves.set_selected_group(0);
+    shelves.set_group_name("资料".into());
+    shelves.set_refs(slint::ModelRc::new(slint::VecModel::from(vec![
+        shelf_ref("说明.txt"),
+        shelf_ref("记录.pdf"),
+        shelf_ref("封面.png"),
+    ])));
+    slint::platform::update_timers_and_animations();
+
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(420.0, 280.0),
+    });
+    ui.invoke_focus_root();
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.get_shown_tab_name().as_str(), "");
+    paint(&format!("{dir}/idle.ppm"));
+
+    let (x, y) = center(&ui, 2);
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(x, y),
+    });
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.get_shown_tab_name().as_str(), "");
+    wait_tip(&ui);
+    assert_eq!(ui.get_shown_tab_name().as_str(), "收纳");
+    paint(&format!("{dir}/hover.ppm"));
+
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(420.0, 280.0),
+    });
+    slint::platform::update_timers_and_animations();
+    ui.invoke_focus_tabs();
+    slint::platform::update_timers_and_animations();
+    assert_eq!(ui.get_shown_tab_name().as_str(), "收纳");
+    paint(&format!("{dir}/focus.ppm"));
 }
 
 fn press_escape(ui: &Panel) {
