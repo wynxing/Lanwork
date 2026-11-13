@@ -112,6 +112,12 @@ fn press_escape(ui: &Panel) {
     });
 }
 
+fn press_escape_where_focused(ui: &Panel) {
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: "\u{001b}".into(),
+    });
+}
+
 /// 分组行高与 `shelvespage.slint` 里没有待办标题的行一致。
 const GROUP_ROW: f32 = 40.0;
 
@@ -359,4 +365,63 @@ fn group_actions_sit_in_the_more_menu_and_the_path_bar_stays() {
     let up_y = data.get_more_y() + data.get_more_h() + 4.0 + 4.0 + 32.0 + 16.0;
     click(&ui, menu_x, up_y);
     assert_eq!(moves.borrow().as_slice(), &[true], "⋯ 里的上移");
+}
+
+#[test]
+fn page_escape_closes_the_menu_before_rename_and_keeps_composition() {
+    let ui = open();
+    let data = ui.global::<ShelvesPageData>();
+    let closed = Rc::new(Cell::new(0));
+    let deleted = Rc::new(Cell::new(0));
+    let escapes = Rc::new(Cell::new(0));
+    {
+        let closed = Rc::clone(&closed);
+        data.on_close_menu(move || closed.set(closed.get() + 1));
+        let deleted = Rc::clone(&deleted);
+        data.on_delete_group(move || deleted.set(deleted.get() + 1));
+        let escapes = Rc::clone(&escapes);
+        ui.on_escape(move || escapes.set(escapes.get() + 1));
+    }
+
+    click(
+        &ui,
+        data.get_more_x() + data.get_more_w() / 2.0,
+        data.get_more_y() + data.get_more_h() / 2.0,
+    );
+    assert!(data.get_group_menu_open(), "点⋯后菜单开着，焦点在页面");
+    data.set_composing(true);
+    press_escape_where_focused(&ui);
+    assert!(data.get_group_menu_open(), "页面组字时 Esc 不关⋯");
+    assert_eq!(escapes.get(), 0, "页面组字时不收起");
+
+    data.set_composing(false);
+    data.set_menu_open(true);
+    data.set_renaming(true);
+    press_escape_where_focused(&ui);
+    assert!(!data.get_group_menu_open(), "页面上先关⋯");
+    assert!(data.get_menu_open(), "右键菜单还在");
+    assert!(data.get_renaming(), "重命名还在");
+    assert_eq!(closed.get(), 0);
+    assert_eq!(escapes.get(), 0);
+
+    press_escape_where_focused(&ui);
+    data.set_menu_open(false);
+    assert_eq!(closed.get(), 1, "再关右键菜单");
+    assert!(data.get_renaming());
+    assert_eq!(escapes.get(), 0);
+
+    data.set_confirm_delete(true);
+    press_escape_where_focused(&ui);
+    assert!(!data.get_renaming(), "然后取消重命名");
+    assert!(data.get_confirm_delete());
+    // 重命名框消失后焦点不在页面上。点一条取用格把焦点交回页面，再按 Esc。
+    click(
+        &ui,
+        data.get_refs_x() + data.get_tile_w() / 2.0,
+        data.get_refs_y() + 24.0,
+    );
+    press_escape_where_focused(&ui);
+    assert!(!data.get_confirm_delete(), "单组确认只撤回");
+    assert_eq!(deleted.get(), 0, "不触发删除");
+    assert_eq!(escapes.get(), 0, "面板还在");
 }

@@ -153,9 +153,40 @@ export global ShelvesPageData {
     in-out property <length> ref-bar-h;
     in-out property <string> count-label;
     in-out property <int> geometry-refresh;
-    // 分组「⋯」和重命名。面板的 Esc 和这一页用同一份，焦点在侧栏时也能先关这一层。
+    // 分组「⋯」和重命名。面板、侧栏和这一页共用下面的 dismiss-layer。
     in-out property <bool> group-menu-open: false;
     in-out property <bool> renaming: false;
+    // 这一页的输入框正在组字。由 Field 的 preedit 变化写入。为真时 Esc 不撤层、不收起。
+    in-out property <bool> composing: false;
+
+    // 撤掉最上面一层。2：正在组字，调用方必须把按键交还。1：撤掉了一层。0：没有层。
+    // 次序与产品规格相同。单组「确认删除」和分组多选的确认都在「撤回分组删除的确认」里，一次只撤一个，不调用删除。
+    public function dismiss-layer() -> int {
+        if self.composing {
+            return 2;
+        }
+        if self.group-menu-open {
+            self.group-menu-open = false;
+        } else if self.menu-open {
+            self.close-menu();
+        } else if self.renaming {
+            self.renaming = false;
+            self.composing = false;
+        } else if self.confirm-refs {
+            self.cancel-remove-refs();
+        } else if self.confirm-delete {
+            self.confirm-delete = false;
+        } else if self.confirm-groups {
+            self.cancel-delete-groups();
+        } else if self.ref-count > 0 {
+            self.clear-refs();
+        } else if self.selecting {
+            self.set-group-selecting(false);
+        } else {
+            return 0;
+        }
+        return 1;
+    }
 
     callback set-group-selecting(bool);
     callback group-clicked(int, bool, bool);
@@ -202,6 +233,9 @@ component TodoPicker inherits Rectangle {
                 c: root.c;
                 edited(text) => {
                     ShelvesPageData.filter-todos(text);
+                }
+                composing(active) => {
+                    ShelvesPageData.composing = active;
                 }
                 escape => {
                     ShelvesPageData.close-picker();
@@ -537,31 +571,24 @@ export component ShelvesPage inherits Rectangle {
         }
     }
 
-    function dismiss-or-escape() {
-        if ShelvesPageData.group-menu-open {
-            ShelvesPageData.group-menu-open = false;
-        } else if ShelvesPageData.menu-open {
-            ShelvesPageData.close-menu();
-        } else if ShelvesPageData.renaming {
-            ShelvesPageData.renaming = false;
-        } else if ShelvesPageData.confirm-refs {
-            ShelvesPageData.cancel-remove-refs();
-        } else if ShelvesPageData.confirm-groups {
-            ShelvesPageData.cancel-delete-groups();
-        } else if ShelvesPageData.ref-count > 0 {
-            ShelvesPageData.clear-refs();
-        } else if ShelvesPageData.selecting {
-            ShelvesPageData.set-group-selecting(false);
-        } else {
+    property <int> escape-layer;
+
+    // 输入框和页面焦点都走 ShelvesPageData.dismiss-layer，避免再写一份次序。
+    function apply-shelf-escape() -> bool {
+        root.escape-layer = ShelvesPageData.dismiss-layer();
+        if root.escape-layer == 2 {
+            return false;
+        }
+        if root.escape-layer == 0 {
             root.escape();
         }
+        return true;
     }
 
     page-scope := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
-                root.dismiss-or-escape();
-                return accept;
+                return root.apply-shelf-escape() ? accept : reject;
             }
             if ShelvesPageData.menu-open {
                 return reject;
@@ -824,8 +851,11 @@ export component ShelvesPage inherits Rectangle {
                         ShelvesPageData.new-group(text);
                         self.clear();
                     }
+                    composing(active) => {
+                        ShelvesPageData.composing = active;
+                    }
                     escape => {
-                        root.dismiss-or-escape();
+                        root.apply-shelf-escape();
                     }
                 }
             }
@@ -862,10 +892,14 @@ export component ShelvesPage inherits Rectangle {
                         }
                         committed(text) => {
                             ShelvesPageData.renaming = false;
+                            ShelvesPageData.composing = false;
                             ShelvesPageData.rename-group(text);
                         }
+                        composing(active) => {
+                            ShelvesPageData.composing = active;
+                        }
                         escape => {
-                            ShelvesPageData.renaming = false;
+                            root.apply-shelf-escape();
                         }
                     }
 
@@ -1213,7 +1247,7 @@ export component ShelvesPage inherits Rectangle {
             width: 168px;
             height: 8px + 6 * 32px;
             border-radius: 8px;
-            background: root.dark ? #2b2b2b : #fafafa;
+            background: c.field;
             border-width: 1px;
             border-color: c.divider;
 

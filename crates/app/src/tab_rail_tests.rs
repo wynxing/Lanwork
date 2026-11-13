@@ -217,6 +217,12 @@ fn rail_escape_follows_the_panel_dismiss_order() {
     }
     {
         let steps = Rc::clone(&steps);
+        shelves.on_delete_group(move || {
+            steps.borrow_mut().push("deleted");
+        });
+    }
+    {
+        let steps = Rc::clone(&steps);
         shelves.on_clear_refs(move || {
             steps.borrow_mut().push("refs");
         });
@@ -233,28 +239,39 @@ fn rail_escape_follows_the_panel_dismiss_order() {
     shelves.set_renaming(true);
     shelves.set_menu_open(true);
     shelves.set_confirm_refs(true);
+    shelves.set_confirm_delete(true);
     shelves.set_confirm_groups(true);
     shelves.set_ref_count(1);
     shelves.set_selecting(true);
+    ui.invoke_focus_tabs();
 
     press_escape(&ui);
     assert!(!shelves.get_group_menu_open(), "先关分组⋯");
+    assert!(shelves.get_menu_open());
     assert!(shelves.get_renaming());
     assert!(steps.borrow().is_empty());
     assert_eq!(escapes.get(), 0);
 
     press_escape(&ui);
-    assert!(!shelves.get_renaming(), "再取消重命名");
-    assert!(shelves.get_menu_open());
+    shelves.set_menu_open(false);
+    assert!(shelves.get_renaming(), "右键菜单先于重命名");
+    assert_eq!(steps.borrow().as_slice(), ["menu"]);
     assert_eq!(escapes.get(), 0);
 
     press_escape(&ui);
-    shelves.set_menu_open(false);
+    assert!(!shelves.get_renaming(), "再取消重命名");
     assert_eq!(steps.borrow().as_slice(), ["menu"]);
     assert_eq!(escapes.get(), 0);
 
     press_escape(&ui);
     shelves.set_confirm_refs(false);
+    assert_eq!(steps.borrow().as_slice(), ["menu", "refs-confirm"]);
+    assert!(shelves.get_confirm_delete(), "条目确认先于分组删除确认");
+    assert_eq!(escapes.get(), 0);
+
+    press_escape(&ui);
+    assert!(!shelves.get_confirm_delete(), "单组确认删除先撤回，不删除");
+    assert!(shelves.get_confirm_groups());
     assert_eq!(steps.borrow().as_slice(), ["menu", "refs-confirm"]);
     assert_eq!(escapes.get(), 0);
 
@@ -280,6 +297,7 @@ fn rail_escape_follows_the_panel_dismiss_order() {
         steps.borrow().as_slice(),
         ["menu", "refs-confirm", "groups-confirm", "refs", "groups"]
     );
+    assert!(!steps.borrow().contains(&"deleted"), "Esc 不触发删除分组");
     assert_eq!(escapes.get(), 0, "分组多选退出后仍不收起");
 
     press_escape(&ui);
@@ -332,4 +350,64 @@ fn rail_escape_follows_the_panel_dismiss_order() {
     let rail_keys = rail.split("key-pressed").nth(1).expect("rail keys");
     let rail_keys = rail_keys.split("TouchArea").next().unwrap_or(rail_keys);
     assert!(!rail_keys.contains("root.escape()"), "侧栏不再直接收起");
+}
+
+#[test]
+fn single_group_delete_confirm_cancels_without_deleting_or_hiding() {
+    let ui = open();
+    let escapes = Rc::new(Cell::new(0));
+    {
+        let escapes = Rc::clone(&escapes);
+        ui.on_escape(move || escapes.set(escapes.get() + 1));
+    }
+    let shelves = ui.global::<ShelvesPageData>();
+    let deleted = Rc::new(Cell::new(0));
+    {
+        let deleted = Rc::clone(&deleted);
+        shelves.on_delete_group(move || deleted.set(deleted.get() + 1));
+    }
+    shelves.set_confirm_delete(true);
+    ui.invoke_focus_tabs();
+
+    press_escape(&ui);
+    assert!(!shelves.get_confirm_delete(), "第一次只关掉确认");
+    assert_eq!(deleted.get(), 0, "不触发删除");
+    assert_eq!(escapes.get(), 0, "面板还在");
+
+    press_escape(&ui);
+    assert_eq!(escapes.get(), 1, "确认关掉之后才收起");
+    assert_eq!(deleted.get(), 0);
+}
+
+#[test]
+fn composing_escape_on_the_rail_does_not_cancel_rename_or_hide() {
+    let ui = open();
+    let escapes = Rc::new(Cell::new(0));
+    {
+        let escapes = Rc::clone(&escapes);
+        ui.on_escape(move || escapes.set(escapes.get() + 1));
+    }
+    let shelves = ui.global::<ShelvesPageData>();
+    let closed = Rc::new(Cell::new(0));
+    {
+        let closed = Rc::clone(&closed);
+        shelves.on_close_menu(move || closed.set(closed.get() + 1));
+    }
+    shelves.set_menu_open(true);
+    shelves.set_renaming(true);
+    shelves.set_composing(true);
+    ui.invoke_focus_tabs();
+
+    press_escape(&ui);
+    assert!(shelves.get_menu_open(), "组字时不关右键菜单");
+    assert!(shelves.get_renaming(), "组字时不取消重命名");
+    assert_eq!(closed.get(), 0);
+    assert_eq!(escapes.get(), 0, "组字时不收起");
+
+    shelves.set_composing(false);
+    ui.invoke_focus_tabs();
+    press_escape(&ui);
+    assert_eq!(closed.get(), 1, "组字结束后先关菜单");
+    assert!(shelves.get_renaming());
+    assert_eq!(escapes.get(), 0);
 }

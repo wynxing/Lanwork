@@ -198,7 +198,10 @@ export component Panel inherits Window {
         }
     }
 
-    // 侧栏和面板焦点共用这一层。返回假时把按键交还输入法。
+    // dismiss-layer 的返回值。避免同一次按键调用两次。
+    property <int> shelf-layer;
+
+    // 侧栏和面板焦点共用这一层。收纳的层在 ShelvesPageData.dismiss-layer。返回假时把按键交还输入法。
     function panel-escape(repeat: bool) -> bool {
         if root.swallow-held-escape(Key.Escape, repeat) {
             return true;
@@ -211,21 +214,13 @@ export component Panel inherits Window {
         }
         if root.tab == 1 && NotesPageData.selecting {
             NotesPageData.set-selecting(false);
-        } else if root.tab == 2 && (ShelvesPageData.group-menu-open || ShelvesPageData.renaming || ShelvesPageData.menu-open || ShelvesPageData.confirm-refs || ShelvesPageData.confirm-groups || ShelvesPageData.ref-count > 0 || ShelvesPageData.selecting) {
-            if ShelvesPageData.group-menu-open {
-                ShelvesPageData.group-menu-open = false;
-            } else if ShelvesPageData.renaming {
-                ShelvesPageData.renaming = false;
-            } else if ShelvesPageData.menu-open {
-                ShelvesPageData.close-menu();
-            } else if ShelvesPageData.confirm-refs {
-                ShelvesPageData.cancel-remove-refs();
-            } else if ShelvesPageData.confirm-groups {
-                ShelvesPageData.cancel-delete-groups();
-            } else if ShelvesPageData.ref-count > 0 {
-                ShelvesPageData.clear-refs();
-            } else {
-                ShelvesPageData.set-group-selecting(false);
+        } else if root.tab == 2 {
+            root.shelf-layer = ShelvesPageData.dismiss-layer();
+            if root.shelf-layer == 2 {
+                return false;
+            }
+            if root.shelf-layer == 0 {
+                root.escape();
             }
         } else {
             root.escape();
