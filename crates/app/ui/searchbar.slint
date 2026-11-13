@@ -1,4 +1,4 @@
-// 搜索条。输入框在左侧搜索图标和右侧应用墙按钮之间，结果在它下方展开。版式由这里决定，数据和动作在 Rust。
+// 搜索条。输入框在左侧搜索图标和右侧应用墙图标按钮之间，结果在它下方展开。版式由这里决定，数据和动作在 Rust。
 
 import { RemovalLine, RemovalOverlay } from "removal.slint";
 import { Ink, LanworkTheme } from "widgets.slint";
@@ -132,7 +132,32 @@ export component SearchBar inherits Window {
     property <length> input-height: 56px;
     property <length> pad: 6px;
     property <length> row-height: 48px;
-    property <length> wall-slot: 96px;
+    // 应用墙是图标按钮。热区固定，名称不写在按钮里。
+    property <length> wall-margin: 8px;
+    property <length> wall-hit: 44px;
+    out property <length> wall-hit-x: root.width - wall-margin - wall-hit;
+    out property <length> wall-hit-y: (input-height - wall-hit) / 2;
+    out property <length> wall-hit-w: wall-hit;
+    out property <length> wall-hit-h: wall-hit;
+    out property <length> wall-icon-size: 18px;
+    out property <length> wall-icon-x: wall-hit-x + (wall-hit - wall-icon-size) / 2;
+    out property <length> wall-icon-y: wall-hit-y + (wall-hit - wall-icon-size) / 2;
+    // 悬停先等这一小段。键盘焦点不等。离开或失焦就关掉，定时器也停。
+    out property <duration> wall-tip-delay: 400ms;
+    property <bool> wall-tip-wait: false;
+    property <bool> wall-tip-on: false;
+    property <bool> wall-hovered: false;
+    property <bool> wall-focused: false;
+    out property <string> shown-wall-name: wall-tip-on ? "应用墙" : "";
+    out property <length> wall-tip-gap: 8px;
+    property <length> wall-tip-natural-w: wall-tip-label.preferred-width + 16px;
+    property <length> wall-tip-natural-h: wall-tip-label.preferred-height + 10px;
+    out property <length> wall-tip-w: min(wall-tip-natural-w, max(0px, root.width));
+    out property <length> wall-tip-h: min(wall-tip-natural-h, max(0px, root.height));
+    property <length> wall-tip-anchor-x: wall-hit-x - wall-tip-gap - wall-tip-w;
+    property <length> wall-tip-anchor-y: wall-hit-y + (wall-hit - wall-tip-h) / 2;
+    out property <length> wall-tip-x: wall-tip-on ? min(max(0px, wall-tip-anchor-x), max(0px, root.width - wall-tip-w)) : 0px;
+    out property <length> wall-tip-y: wall-tip-on ? min(max(0px, wall-tip-anchor-y), max(0px, root.height - wall-tip-h)) : 0px;
     property <bool> has-list: rows.length > 0;
     property <bool> has-status: status != "";
     property <bool> show-results: !wall-open && (has-list || has-status);
@@ -166,6 +191,27 @@ export component SearchBar inherits Window {
 
     changed menu-open => {
         menu-hover = -1;
+    }
+
+    // 已经显示时悬停不再重开计时。还没显示时等 wall-tip-delay。离开就停。
+    changed wall-hovered => {
+        if root.wall-hovered {
+            if root.wall-tip-on {
+                root.wall-tip-wait = false;
+            } else if !root.wall-tip-wait {
+                root.wall-tip-wait = true;
+            }
+        } else {
+            root.wall-tip-wait = false;
+            root.wall-tip-on = root.wall-focused;
+        }
+    }
+
+    changed wall-focused => {
+        if !root.wall-hovered {
+            root.wall-tip-wait = false;
+            root.wall-tip-on = root.wall-focused;
+        }
     }
 
     public function focus-input() {
@@ -203,6 +249,18 @@ export component SearchBar inherits Window {
         input.set-selection-offsets(end, end);
     }
 
+    // 只在等待悬停提示时跑一次。触发后 wall-tip-wait 变假，定时器停下。
+    Timer {
+        interval: root.wall-tip-delay;
+        running: root.wall-tip-wait;
+        triggered => {
+            if root.wall-hovered {
+                root.wall-tip-on = true;
+            }
+            root.wall-tip-wait = false;
+        }
+    }
+
     Path {
         x: 20px;
         y: (input-height - 18px) / 2;
@@ -233,7 +291,7 @@ export component SearchBar inherits Window {
     input-clip := Rectangle {
         x: 52px;
         y: 0px;
-        width: parent.width - 52px - wall-slot;
+        width: parent.width - 52px - wall-margin - wall-hit - wall-margin;
         height: input-height;
         clip: true;
 
@@ -337,50 +395,62 @@ export component SearchBar inherits Window {
         }
     }
 
-    wall-button := TouchArea {
-        x: parent.width - wall-slot;
-        y: 0px;
-        width: wall-slot;
-        height: input-height;
+    // 图标固定在热区中央。名称不写在按钮里，短提示画在后面。
+    wall-key := FocusScope {
+        x: root.wall-hit-x;
+        y: root.wall-hit-y;
+        width: root.wall-hit-w;
+        height: root.wall-hit-h;
+
+        changed has-focus => {
+            root.wall-focused = self.has-focus;
+        }
+
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.toggle-wall();
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.escape();
+                return accept;
+            }
+            reject
+        }
 
         Rectangle {
-            x: (parent.width - 32px) / 2;
-            y: (parent.height - 32px) / 2;
-            width: 32px;
-            height: 32px;
-            border-radius: 6px;
-            background: root.wall-open || wall-button.has-hover ? selection-fill : transparent;
+            width: 100%;
+            height: 100%;
+            border-radius: 12px;
+            border-width: root.wall-focused && !wall-touch.has-hover ? 1px : 0px;
+            border-color: accent;
+            background: root.wall-open ? selection-fill : wall-touch.has-hover ? selection-fill : transparent;
         }
 
         Path {
-            x: 12px;
-            y: (parent.height - 16px) / 2;
-            width: 16px;
-            height: 16px;
+            x: (parent.width - root.wall-icon-size) / 2;
+            y: (parent.height - root.wall-icon-size) / 2;
+            width: root.wall-icon-size;
+            height: root.wall-icon-size;
             viewbox-width: 16;
             viewbox-height: 16;
             fill: transparent;
             stroke: root.wall-open ? accent : ink-secondary;
-            stroke-width: 1.4px;
+            stroke-width: 1.6px;
             commands: "M1.5 1.5h5.5v5.5h-5.5z M9 1.5h5.5v5.5h-5.5z M1.5 9h5.5v5.5h-5.5z M9 9h5.5v5.5h-5.5z";
         }
 
-        Text {
-            x: 32px;
-            width: parent.width - 40px;
-            height: parent.height;
-            text: "应用墙";
-            color: root.wall-open ? accent : ink-secondary;
-            font-size: 13px;
-            vertical-alignment: center;
-            overflow: elide;
-        }
+        wall-touch := TouchArea {
+            accessible-role: button;
+            accessible-label: "应用墙";
 
-        accessible-role: button;
-        accessible-label: "应用墙";
+            changed has-hover => {
+                root.wall-hovered = self.has-hover;
+            }
 
-        clicked => {
-            root.toggle-wall();
+            clicked => {
+                root.toggle-wall();
+            }
         }
     }
 
@@ -658,6 +728,28 @@ export component SearchBar inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    // 画在内容上面，靠按钮左侧。不接指针，点击仍落到下面的输入框。
+    wall-tip := Rectangle {
+        visible: root.wall-tip-on;
+        x: root.wall-tip-x;
+        y: root.wall-tip-y;
+        width: root.wall-tip-w;
+        height: root.wall-tip-h;
+        border-radius: 6px;
+        background: tone.field;
+        border-width: 1px;
+        border-color: divider;
+        clip: true;
+
+        wall-tip-label := Text {
+            x: 8px;
+            y: (parent.height - self.preferred-height) / 2;
+            text: "应用墙";
+            color: ink;
+            font-size: 12px;
         }
     }
 
