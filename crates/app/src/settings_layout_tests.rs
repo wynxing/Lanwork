@@ -25,9 +25,9 @@ impl Platform for Headless {
 
 const WIDTH: u32 = 760;
 const HEIGHT: u32 = 560;
-const PAGE_Y: f32 = 49.0;
-const NAV_X: f32 = 40.0;
-const CONTROL_X: f32 = 132.0 + 16.0 + 120.0;
+const PAGE_Y: f32 = 0.0;
+const NAV_X: f32 = 64.0 + 40.0;
+const CONTROL_X: f32 = 64.0 + 132.0 + 16.0 + 120.0;
 
 fn open(dark: bool) -> (Panel, Rc<MinimalSoftwareWindow>) {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
@@ -507,7 +507,8 @@ fn assert_external_section(
     let revoke = data.get_external_revoke();
     let unavail = data.get_external_unavail();
 
-    let content = panel_width - 132.0 - 32.0;
+    // 侧栏 64，导航 132，这一列左右内边距各 16。
+    let content = panel_width - 64.0 - 132.0 - 32.0;
     assert!(row.shown, "外部 AI 行没有摆出来");
     assert!(
         (row.w - content).abs() < 1.0,

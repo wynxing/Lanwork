@@ -12,6 +12,36 @@ export struct Ink {
     critical: color,
 }
 
+// 面板、搜索条和悬浮窗共用。逾期和错误的 critical 不跟强调色走。
+export global LanworkTheme {
+    public pure function palette(dark: bool) -> Ink {
+        if dark {
+            return {
+                ink: #f4efe6,
+                secondary: #b7aea3,
+                tertiary: #8a8176,
+                divider: #f4e8d61a,
+                hover: #f4efe612,
+                selection: #f4efe618,
+                field: #12100e,
+                accent: #e08a4a,
+                critical: #ff99a4,
+            };
+        }
+        return {
+            ink: #211c17,
+            secondary: #5c5348,
+            tertiary: #6f675c,
+            divider: #3020101a,
+            hover: #3020100c,
+            selection: #30201014,
+            field: #efe6d8,
+            accent: #9d3f1f,
+            critical: #c42b1c,
+        };
+    }
+}
+
 export component Chip inherits Rectangle {
     in property <string> text;
     in property <color> tone;

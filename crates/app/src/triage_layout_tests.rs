@@ -83,8 +83,8 @@ fn process_button_sits_at_the_top_of_the_inbox_list() {
 
     ui.set_show_process(true);
     ui.set_process_label("处理 3 条".into());
-    // 标题 48 + 分隔线 1 + 右侧头部 50 + 按钮半高 15。按钮在清单栏右侧，左边距 12。
-    click(&ui, 220.0, 114.0);
+    // 内容从 x=64、y=0 起。清单栏 168，右侧头部高 50，按钮在其下一行。
+    click(&ui, 260.0, 68.0);
     assert_eq!(*started.borrow(), 1);
 }
 
@@ -127,9 +127,9 @@ fn card_keys_and_buttons_follow_the_theme_and_ignore_composition() {
     assert_eq!(keys.borrow()[1], (KEY_ESCAPE, false));
     assert_eq!(*escapes.borrow(), 0, "处理模式里 Esc 不收起面板");
 
-    // 五个按钮宽 108、间隔 8，整行 572，在 760 里居中。第三个是「3 移动」。
-    // 卡片块高 222，在内容区（高 511）里垂直居中后再加上进度和卡片。
-    click(&ui, 380.0, 400.0);
+    // 五个按钮宽 108、间隔 8，整行 572，在宽 696 的内容区里居中。第三个是「3 移动」。
+    // 内容区高 560，块高 222，垂直居中后再加上进度和卡片。
+    click(&ui, 412.0, 376.0);
     assert_eq!(*clicks.borrow(), [2]);
 }
 
@@ -166,7 +166,7 @@ fn move_picker_uses_arrows_enter_and_escape_without_the_digit_keys() {
     assert_eq!(keys.borrow().as_slice(), [(KEY_DOWN, false)]);
 
     // 卡片左上角附近的第一行。选择盖在卡片上，卡片在内容区水平居中。
-    click(&ui, 200.0, 250.0);
+    click(&ui, 232.0, 226.0);
     assert!(
         picks.borrow().first().is_some_and(|index| *index == 0),
         "点第一行确认，实际 {:?}",

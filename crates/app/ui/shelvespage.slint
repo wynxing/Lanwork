@@ -19,6 +19,10 @@ export struct ShelfRefRow {
     icon: image,
     has-icon: bool,
     missing: bool,
+    // 网页引用。没有网站图标时格子上写「网页」，不画地球。
+    web: bool,
+    // 路径引用里的文件夹。
+    folder: bool,
     // 当前分组里这一条是否在选择中。悬浮窗不用。
     selected: bool,
 }
@@ -135,8 +139,54 @@ export global ShelvesPageData {
     in-out property <length> refs-h;
     in-out property <length> page-x;
     in-out property <length> page-y;
+    in-out property <length> more-x;
+    in-out property <length> more-y;
+    in-out property <length> more-w;
+    in-out property <length> more-h;
+    in-out property <length> tile-w;
+    in-out property <length> tile-h;
+    in-out property <int> tile-cols;
+    in-out property <length> open-x;
+    in-out property <length> open-y;
+    in-out property <length> open-w;
+    in-out property <length> open-h;
+    in-out property <length> ref-bar-h;
     in-out property <string> count-label;
     in-out property <int> geometry-refresh;
+    // 分组「⋯」和重命名。面板、侧栏和这一页共用下面的 dismiss-layer。
+    in-out property <bool> group-menu-open: false;
+    in-out property <bool> renaming: false;
+    // 这一页的输入框正在组字。由 Field 的 preedit 变化写入。为真时 Esc 不撤层、不收起。
+    in-out property <bool> composing: false;
+
+    // 撤掉最上面一层。2：正在组字，调用方必须把按键交还。1：撤掉了一层。0：没有层。
+    // 次序与产品规格相同。单组「确认删除」和分组多选的确认都在「撤回分组删除的确认」里，一次只撤一个，不调用删除。
+    public function dismiss-layer() -> int {
+        if self.composing {
+            return 2;
+        }
+        if self.group-menu-open {
+            self.group-menu-open = false;
+        } else if self.menu-open {
+            self.close-menu();
+        } else if self.renaming {
+            self.renaming = false;
+            self.composing = false;
+        } else if self.confirm-refs {
+            self.cancel-remove-refs();
+        } else if self.confirm-delete {
+            self.confirm-delete = false;
+        } else if self.confirm-groups {
+            self.cancel-delete-groups();
+        } else if self.ref-count > 0 {
+            self.clear-refs();
+        } else if self.selecting {
+            self.set-group-selecting(false);
+        } else {
+            return 0;
+        }
+        return 1;
+    }
 
     callback set-group-selecting(bool);
     callback group-clicked(int, bool, bool);
@@ -183,6 +233,9 @@ component TodoPicker inherits Rectangle {
                 c: root.c;
                 edited(text) => {
                     ShelvesPageData.filter-todos(text);
+                }
+                composing(active) => {
+                    ShelvesPageData.composing = active;
                 }
                 escape => {
                     ShelvesPageData.close-picker();
@@ -252,56 +305,143 @@ component TodoPicker inherits Rectangle {
     }
 }
 
-// 选中分组的条目列表，面板的收纳页和收纳悬浮窗共用。可见行的起止在这里算，因为列表只在选中分组时存在。
+// 选中分组的取用格。面板的收纳页和收纳悬浮窗共用。可见范围按格子的行来算。
 export component RefsList inherits Rectangle {
     in property <Ink> c;
-    // 面板收纳页为真：单击多选，右键菜单，松开在行外不算点击。悬浮窗保持原来的单击选中。
+    // 面板收纳页为真：单击多选，右键菜单，松开在格子外不算点击。悬浮窗保持原来的单击选中。
     in property <bool> manage: false;
-    // 点击条目行后让页面拿焦点，这样 Enter 和 Ctrl+Enter 才有效。
+    // 点击格子后让页面拿焦点，这样 Enter 和 Ctrl+Enter 才有效。
     callback focus-requested();
 
-    property <length> row-height: 40px;
-    property <int> first-row: max(0, Math.floor(-refs-list.content-y / row-height));
-    property <int> row-count: Math.ceil(refs-list.visible-height / row-height) + 1;
+    property <length> gap: 10px;
+    property <length> min-tile: 148px;
+    property <length> tile-h: 128px;
+    property <int> cols: max(1, Math.floor((self.width + gap) / (min-tile + gap)));
+    property <length> tile-w: (self.width - gap * (cols - 1)) / cols;
+    property <length> stride-y: tile-h + gap;
+    property <int> first-row: max(0, Math.floor(-grid.content-y / stride-y));
+    property <int> row-count: Math.ceil(grid.height / stride-y) + 1;
+    property <int> first-index: first-row * cols;
+    property <int> visible-slots: row-count * cols;
+    property <length> tile-geom: tile-w + tile-h + cols * 1px + self.width + self.height;
 
-    changed first-row => {
-        ShelvesPageData.first-visible = first-row;
-        ShelvesPageData.visible-changed(first-row, row-count);
+    changed first-index => {
+        ShelvesPageData.first-visible = first-index;
+        ShelvesPageData.visible-changed(first-index, visible-slots);
     }
-    changed row-count => {
-        ShelvesPageData.visible-count = row-count;
-        ShelvesPageData.visible-changed(first-row, row-count);
+    changed visible-slots => {
+        ShelvesPageData.visible-count = visible-slots;
+        ShelvesPageData.visible-changed(first-index, visible-slots);
+    }
+    changed tile-geom => {
+        ShelvesPageData.tile-w = tile-w;
+        ShelvesPageData.tile-h = tile-h;
+        ShelvesPageData.tile-cols = cols;
     }
     init => {
-        ShelvesPageData.first-visible = first-row;
-        ShelvesPageData.visible-count = row-count;
-        ShelvesPageData.visible-changed(first-row, row-count);
+        ShelvesPageData.first-visible = first-index;
+        ShelvesPageData.visible-count = visible-slots;
+        ShelvesPageData.tile-w = tile-w;
+        ShelvesPageData.tile-h = tile-h;
+        ShelvesPageData.tile-cols = cols;
+        ShelvesPageData.visible-changed(first-index, visible-slots);
     }
 
-    refs-list := ListView {
+    grid := Flickable {
         width: parent.width;
         height: parent.height;
+        content-width: self.width;
+        content-height: Math.ceil(ShelvesPageData.refs.length / cols) * stride-y;
         visible: ShelvesPageData.refs.length > 0;
 
         for item[index] in ShelvesPageData.refs: Rectangle {
             property <bool> is-anchor: index == ShelvesPageData.selected-ref;
             property <bool> is-selected: root.manage ? item.selected : is-anchor;
+            property <int> tile-col: Math.mod(index, cols);
+            property <int> tile-row: Math.floor(index / cols);
 
-            height: row-height;
-
-            Rectangle {
-                width: parent.width;
-                border-radius: 6px;
-                background: is-selected ? c.selection : ref-touch.has-hover ? c.hover : transparent;
-            }
+            x: tile-col * (tile-w + gap);
+            y: tile-row * stride-y;
+            width: tile-w;
+            height: tile-h;
+            border-radius: 12px;
+            background: is-selected ? c.selection : c.field;
+            border-width: is-anchor ? 1.5px : 1px;
+            border-color: is-anchor ? c.accent : c.divider;
 
             if is-anchor: Rectangle {
-                x: 0px;
-                y: (parent.height - 16px) / 2;
+                x: 8px;
+                y: 10px;
                 width: 3px;
-                height: 16px;
+                height: 14px;
                 border-radius: 1.5px;
                 background: c.accent;
+            }
+
+            // 六点表示这一格可以拖。选中时用柿色。
+            Rectangle {
+                x: 12px;
+                y: 12px;
+                width: 9px;
+                height: 13px;
+
+                Path {
+                    width: 9px;
+                    height: 13px;
+                    viewbox-width: 9;
+                    viewbox-height: 13;
+                    fill: is-selected ? c.accent : c.tertiary;
+                    stroke-width: 0px;
+                    commands: "M1 1.5a1 1 0 1 0 0.01 0z M6 1.5a1 1 0 1 0 0.01 0z M1 6.5a1 1 0 1 0 0.01 0z M6 6.5a1 1 0 1 0 0.01 0z M1 11.5a1 1 0 1 0 0.01 0z M6 11.5a1 1 0 1 0 0.01 0z";
+                }
+            }
+
+            if item.has-icon: Image {
+                x: (parent.width - 36px) / 2;
+                y: 28px;
+                width: 36px;
+                height: 36px;
+                source: item.icon;
+                image-fit: contain;
+            }
+
+            if !item.has-icon && !item.web: Path {
+                x: (parent.width - 28px) / 2;
+                y: 32px;
+                width: 28px;
+                height: 28px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                fill: transparent;
+                stroke: item.missing ? c.tertiary : c.secondary;
+                stroke-width: 1.5px;
+                commands: item.folder ? "M3.5 6.5v12h17v-10h-9l-2-2z" : "M6 3.5h8l4.5 4.5v12.5h-12.5z M14 3.5v4.5h4.5";
+            }
+
+            Text {
+                x: 10px;
+                y: 74px;
+                width: parent.width - 20px;
+                height: 20px;
+                text: item.name;
+                color: item.missing ? c.critical : c.ink;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if item.missing || (item.web && !item.has-icon): Text {
+                x: 10px;
+                y: 96px;
+                width: parent.width - 20px;
+                height: 18px;
+                text: item.missing ? "路径不存在" : "网页";
+                color: item.missing ? c.critical : c.tertiary;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
             }
 
             ref-touch := TouchArea {
@@ -337,39 +477,6 @@ export component RefsList inherits Rectangle {
                     }
                 }
             }
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 10px;
-
-                Rectangle {
-                    width: 24px;
-
-                    if item.has-icon: Image {
-                        x: 0px;
-                        y: (parent.height - 24px) / 2;
-                        width: 24px;
-                        height: 24px;
-                        source: item.icon;
-                        image-fit: contain;
-                    }
-                }
-
-                Text {
-                    horizontal-stretch: 1;
-                    text: item.name;
-                    color: item.missing ? c.tertiary : c.ink;
-                    font-size: 14px;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-
-                if item.missing: Chip {
-                    text: "路径不存在";
-                    tone: c.critical;
-                }
-            }
         }
     }
 }
@@ -391,6 +498,9 @@ export component ShelvesPage inherits Rectangle {
     property <length> menu-draw-x: min(max(8px, ShelvesPageData.menu-x), max(8px, self.width - menu-width - 8px));
     property <length> menu-draw-y: ShelvesPageData.menu-y + menu-block + 8px > self.height && ShelvesPageData.menu-y > menu-block ? max(8px, ShelvesPageData.menu-y - menu-block) : min(ShelvesPageData.menu-y, max(8px, self.height - menu-block - 8px));
     property <int> menu-hover: -1;
+    property <[int]> group-actions: [0, 1, 2, 3, 4, 5];
+    property <length> group-menu-x: 0px;
+    property <length> group-menu-y: 0px;
     property <length> geometry-tick: select-row.y + select-btn.y + select-btn.width + select-btn.height + list-host.y + list-host.height + action-bar.y + action-bar.height + new-group.y + delete-btn.x + delete-btn.y + delete-btn.width + delete-btn.height + group-list.y + group-list.height + group-list.content-y + ShelvesPageData.selected-group * 1px + ShelvesPageData.group-selected-count * 1px + ShelvesPageData.ref-count * 1px + ShelvesPageData.geometry-refresh * 1px + (ShelvesPageData.selecting ? 1px : 0px) + (ShelvesPageData.confirm-groups ? 1px : 0px) + (ShelvesPageData.confirm-refs ? 1px : 0px) + (ShelvesPageData.menu-open ? 1px : 0px);
 
     changed geometry-tick => {
@@ -423,27 +533,62 @@ export component ShelvesPage inherits Rectangle {
         ShelvesPageData.count-label = "已选 " + ShelvesPageData.group-selected-count + " 个";
     }
 
-    function dismiss-or-escape() {
-        if ShelvesPageData.menu-open {
-            ShelvesPageData.close-menu();
-        } else if ShelvesPageData.confirm-refs {
-            ShelvesPageData.cancel-remove-refs();
-        } else if ShelvesPageData.confirm-groups {
-            ShelvesPageData.cancel-delete-groups();
-        } else if ShelvesPageData.ref-count > 0 {
-            ShelvesPageData.clear-refs();
-        } else if ShelvesPageData.selecting {
-            ShelvesPageData.set-group-selecting(false);
-        } else {
+    function group-label(index: int) -> string {
+        if index == 0 { return "重命名"; }
+        if index == 1 { return "上移"; }
+        if index == 2 { return "下移"; }
+        if index == 3 { return "关联待办"; }
+        if index == 4 { return "悬浮"; }
+        return "删除分组";
+    }
+
+    function group-enabled(index: int) -> bool {
+        if index == 1 { return ShelvesPageData.can-up; }
+        if index == 2 { return ShelvesPageData.can-down; }
+        return true;
+    }
+
+    property <int> seen-group-version: ShelvesPageData.group-version;
+    changed seen-group-version => {
+        ShelvesPageData.renaming = false;
+        ShelvesPageData.group-menu-open = false;
+    }
+
+    function group-action(index: int) {
+        ShelvesPageData.group-menu-open = false;
+        if index == 0 {
+            ShelvesPageData.renaming = true;
+        } else if index == 1 && ShelvesPageData.can-up {
+            ShelvesPageData.move-group(true);
+        } else if index == 2 && ShelvesPageData.can-down {
+            ShelvesPageData.move-group(false);
+        } else if index == 3 {
+            ShelvesPageData.open-picker();
+        } else if index == 4 {
+            ShelvesPageData.float-group();
+        } else if index == 5 {
+            ShelvesPageData.confirm-delete = true;
+        }
+    }
+
+    property <int> escape-layer;
+
+    // 输入框和页面焦点都走 ShelvesPageData.dismiss-layer，避免再写一份次序。
+    function apply-shelf-escape() -> bool {
+        root.escape-layer = ShelvesPageData.dismiss-layer();
+        if root.escape-layer == 2 {
+            return false;
+        }
+        if root.escape-layer == 0 {
             root.escape();
         }
+        return true;
     }
 
     page-scope := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
-                root.dismiss-or-escape();
-                return accept;
+                return root.apply-shelf-escape() ? accept : reject;
             }
             if ShelvesPageData.menu-open {
                 return reject;
@@ -706,8 +851,11 @@ export component ShelvesPage inherits Rectangle {
                         ShelvesPageData.new-group(text);
                         self.clear();
                     }
+                    composing(active) => {
+                        ShelvesPageData.composing = active;
+                    }
                     escape => {
-                        root.dismiss-or-escape();
+                        root.apply-shelf-escape();
                     }
                 }
             }
@@ -731,65 +879,92 @@ export component ShelvesPage inherits Rectangle {
                 spacing: 8px;
 
                 HorizontalLayout {
-                    height: 30px;
+                    height: 36px;
                     spacing: 8px;
 
-                    Field {
+                    if ShelvesPageData.renaming: name-field := Field {
+                        horizontal-stretch: 1;
                         source-text: ShelvesPageData.group-name;
                         reset: ShelvesPageData.group-version;
                         c: root.c;
+                        init => {
+                            self.focus-field();
+                        }
                         committed(text) => {
+                            ShelvesPageData.renaming = false;
+                            ShelvesPageData.composing = false;
                             ShelvesPageData.rename-group(text);
                         }
+                        composing(active) => {
+                            ShelvesPageData.composing = active;
+                        }
                         escape => {
-                            root.dismiss-or-escape();
+                            root.apply-shelf-escape();
                         }
+                    }
+
+                    if !ShelvesPageData.renaming: Text {
+                        horizontal-stretch: 1;
+                        text: ShelvesPageData.group-name;
+                        color: c.ink;
+                        font-size: 16px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    more-btn := Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 8px;
+                        background: ShelvesPageData.group-menu-open || more-touch.has-hover ? c.hover : transparent;
+                        property <length> geom: self.absolute-position.x + self.absolute-position.y + self.width + self.height + ShelvesPageData.geometry-refresh * 1px;
+                        changed geom => {
+                            ShelvesPageData.more-x = self.absolute-position.x;
+                            ShelvesPageData.more-y = self.absolute-position.y;
+                            ShelvesPageData.more-w = self.width;
+                            ShelvesPageData.more-h = self.height;
+                        }
+
+                        Path {
+                            x: 8px;
+                            y: 14px;
+                            width: 16px;
+                            height: 4px;
+                            viewbox-width: 16;
+                            viewbox-height: 4;
+                            fill: c.secondary;
+                            stroke-width: 0px;
+                            commands: "M1.5 2a1.5 1.5 0 1 0 0.01 0z M8 2a1.5 1.5 0 1 0 0.01 0z M14.5 2a1.5 1.5 0 1 0 0.01 0z";
+                        }
+
+                        more-touch := TouchArea {
+                            accessible-role: button;
+                            accessible-label: "分组动作";
+                            clicked => {
+                                root.group-menu-x = self.absolute-position.x + self.width - 168px - root.absolute-position.x;
+                                root.group-menu-y = self.absolute-position.y + self.height + 4px - root.absolute-position.y;
+                                ShelvesPageData.group-menu-open = !ShelvesPageData.group-menu-open;
+                                page-scope.focus();
+                            }
+                        }
+                    }
+                }
+
+                if ShelvesPageData.confirm-delete: HorizontalLayout {
+                    height: 30px;
+                    spacing: 8px;
+
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "删除这个分组";
+                        color: c.secondary;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
                     }
 
                     Btn {
-                        text: "上移";
-                        c: root.c;
-                        enabled: ShelvesPageData.can-up;
-                        clicked => {
-                            ShelvesPageData.move-group(true);
-                        }
-                    }
-
-                    Btn {
-                        text: "下移";
-                        c: root.c;
-                        enabled: ShelvesPageData.can-down;
-                        clicked => {
-                            ShelvesPageData.move-group(false);
-                        }
-                    }
-
-                    Btn {
-                        text: "关联待办";
-                        c: root.c;
-                        clicked => {
-                            ShelvesPageData.open-picker();
-                        }
-                    }
-
-                    Btn {
-                        text: "悬浮";
-                        c: root.c;
-                        clicked => {
-                            ShelvesPageData.float-group();
-                        }
-                    }
-
-                    if !ShelvesPageData.confirm-delete: Btn {
-                        text: "删除分组";
-                        c: root.c;
-                        danger: true;
-                        clicked => {
-                            ShelvesPageData.confirm-delete = true;
-                        }
-                    }
-
-                    if ShelvesPageData.confirm-delete: Btn {
                         text: "确认删除";
                         c: root.c;
                         danger: true;
@@ -799,7 +974,7 @@ export component ShelvesPage inherits Rectangle {
                         }
                     }
 
-                    if ShelvesPageData.confirm-delete: Btn {
+                    Btn {
                         text: "取消";
                         c: root.c;
                         clicked => {
@@ -821,9 +996,16 @@ export component ShelvesPage inherits Rectangle {
                             HorizontalLayout {
                                 spacing: 8px;
 
-                                Chip {
-                                    text: "待办";
-                                    tone: c.secondary;
+                                Path {
+                                    y: 8px;
+                                    width: 14px;
+                                    height: 14px;
+                                    viewbox-width: 16;
+                                    viewbox-height: 16;
+                                    fill: transparent;
+                                    stroke: c.secondary;
+                                    stroke-width: 1.4px;
+                                    commands: "M8 2.9a5.1 5.1 0 1 0 0.01 0z M5.4 8.2l1.8 1.8 3.5-3.7";
                                 }
 
                                 Text {
@@ -883,73 +1065,96 @@ export component ShelvesPage inherits Rectangle {
                     background: c.divider;
                 }
 
-                if ShelvesPageData.ref-count > 0 && !ShelvesPageData.confirm-refs: HorizontalLayout {
-                    height: 30px;
-                    spacing: 8px;
-
-                    Text {
-                        horizontal-stretch: 1;
-                        text: ShelvesPageData.ref-count > 1 ? "已选 " + ShelvesPageData.ref-count + " 条" : ShelvesPageData.selected-path;
-                        color: c.secondary;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                        overflow: elide;
+                ref-bar := Rectangle {
+                    height: ShelvesPageData.ref-count > 0 ? 30px : 0px;
+                    property <length> geom: self.height + ShelvesPageData.ref-count * 1px + (ShelvesPageData.confirm-refs ? 1px : 0px);
+                    changed geom => {
+                        ShelvesPageData.ref-bar-h = self.height;
                     }
 
-                    Btn {
-                        text: "打开";
-                        c: root.c;
-                        clicked => {
-                            ShelvesPageData.open-ref();
+                    HorizontalLayout {
+                        visible: ShelvesPageData.ref-count > 0 && !ShelvesPageData.confirm-refs;
+                        height: self.visible ? 30px : 0px;
+                        spacing: 8px;
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: ShelvesPageData.ref-count > 1 ? "已选 " + ShelvesPageData.ref-count + " 条" : ShelvesPageData.selected-path;
+                            color: c.secondary;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        open-hit := Rectangle {
+                            horizontal-stretch: 0;
+                            width: open-btn.width;
+                            height: 30px;
+                            property <length> geom: self.absolute-position.x + self.absolute-position.y + self.width + self.height + ShelvesPageData.geometry-refresh * 1px;
+                            changed geom => {
+                                ShelvesPageData.open-x = self.absolute-position.x;
+                                ShelvesPageData.open-y = self.absolute-position.y;
+                                ShelvesPageData.open-w = self.width;
+                                ShelvesPageData.open-h = self.height;
+                            }
+
+                            open-btn := Btn {
+                                text: "打开";
+                                c: root.c;
+                                clicked => {
+                                    ShelvesPageData.open-ref();
+                                }
+                            }
+                        }
+
+                        Btn {
+                            text: "打开所在目录";
+                            c: root.c;
+                            enabled: ShelvesPageData.can-open-folder;
+                            clicked => {
+                                ShelvesPageData.open-ref-folder();
+                            }
+                        }
+
+                        Btn {
+                            text: "移除引用";
+                            c: root.c;
+                            danger: true;
+                            clicked => {
+                                ShelvesPageData.remove-ref();
+                            }
                         }
                     }
 
-                    Btn {
-                        text: "打开所在目录";
-                        c: root.c;
-                        enabled: ShelvesPageData.can-open-folder;
-                        clicked => {
-                            ShelvesPageData.open-ref-folder();
+                    HorizontalLayout {
+                        visible: ShelvesPageData.confirm-refs;
+                        height: self.visible ? 30px : 0px;
+                        spacing: 8px;
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: "移除这 " + ShelvesPageData.ref-count + " 条引用";
+                            color: c.secondary;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
                         }
-                    }
 
-                    Btn {
-                        text: "移除引用";
-                        c: root.c;
-                        danger: true;
-                        clicked => {
-                            ShelvesPageData.remove-ref();
+                        Btn {
+                            text: "确认移除";
+                            c: root.c;
+                            danger: true;
+                            clicked => {
+                                ShelvesPageData.remove-ref();
+                            }
                         }
-                    }
-                }
 
-                if ShelvesPageData.confirm-refs: HorizontalLayout {
-                    height: 30px;
-                    spacing: 8px;
-
-                    Text {
-                        horizontal-stretch: 1;
-                        text: "移除这 " + ShelvesPageData.ref-count + " 条引用";
-                        color: c.secondary;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-
-                    Btn {
-                        text: "确认移除";
-                        c: root.c;
-                        danger: true;
-                        clicked => {
-                            ShelvesPageData.remove-ref();
-                        }
-                    }
-
-                    Btn {
-                        text: "取消";
-                        c: root.c;
-                        clicked => {
-                            ShelvesPageData.cancel-remove-refs();
+                        Btn {
+                            text: "取消";
+                            c: root.c;
+                            clicked => {
+                                ShelvesPageData.cancel-remove-refs();
+                            }
                         }
                     }
                 }
@@ -1019,6 +1224,58 @@ export component ShelvesPage inherits Rectangle {
                     }
                     clicked => {
                         ShelvesPageData.menu-activate(index);
+                    }
+                }
+            }
+        }
+
+        if ShelvesPageData.group-menu-open: TouchArea {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    ShelvesPageData.group-menu-open = false;
+                }
+            }
+        }
+
+        if ShelvesPageData.group-menu-open: Rectangle {
+            x: root.group-menu-x;
+            y: root.group-menu-y;
+            width: 168px;
+            height: 8px + 6 * 32px;
+            border-radius: 8px;
+            background: c.field;
+            border-width: 1px;
+            border-color: c.divider;
+
+            TouchArea { }
+
+            for index in root.group-actions: Rectangle {
+                x: 4px;
+                y: 4px + index * 32px;
+                width: parent.width - 8px;
+                height: 32px;
+                border-radius: 6px;
+                background: action-touch.has-hover && root.group-enabled(index) ? c.selection : transparent;
+
+                Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text: root.group-label(index);
+                    color: !root.group-enabled(index) ? c.tertiary : index == 5 ? c.critical : c.ink;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                action-touch := TouchArea {
+                    enabled: root.group-enabled(index);
+                    clicked => {
+                        root.group-action(index);
                     }
                 }
             }

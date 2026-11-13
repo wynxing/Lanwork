@@ -1,8 +1,8 @@
-// 面板。标题栏是产品名、标签和关闭，下面是当前标签的内容。版式由这里决定，数据和动作在 Rust。
+// 面板。左侧是产品名、图标标签和关闭，右侧是当前标签的内容。版式由这里决定，数据和动作在 Rust。
 // 风格与搜索条一致：亚克力时客户区透明，纯色时由这里画满；深浅两套配色。
 
 import { ListView, Palette } from "std-widgets.slint";
-import { Btn, Check, Chip, Field, Ink, Segments } from "widgets.slint";
+import { Btn, Check, Chip, Field, Ink, LanworkTheme, Segments } from "widgets.slint";
 import { AppsPage } from "appspage.slint";
 import { NotesPage, NotesPageData } from "notespage.slint";
 import { SettingsPage } from "settingspage.slint";
@@ -52,7 +52,7 @@ export component Panel inherits Window {
     in property <bool> dark;
     // 亚克力时客户区透明，DWM 画背景。
     in property <bool> acrylic;
-    in property <color> solid-color: #f3f3f3;
+    in property <color> solid-color: #fbf6ee;
     in property <length> panel-width: 760px;
     in property <length> panel-height: 560px;
 
@@ -126,27 +126,46 @@ export component Panel inherits Window {
     callback triage-pick(int);
 
     // 收纳页的放下区域，窗口客户区里的逻辑像素。OLE 放下目标用它判断指针在不在收纳页上。
-    out property <length> shelf-zone-x: 0px;
-    out property <length> shelf-zone-y: title-height + 1px;
-    out property <length> shelf-zone-w: panel-width;
-    out property <length> shelf-zone-h: panel-height - title-height - 1px;
+    property <length> spine-width: 64px;
+    property <length> tab-top: 40px;
+    property <length> tab-hit: 44px;
+    property <length> tab-gap: 4px;
+    in-out property <int> hover-tab: -1;
+    in-out property <int> key-tab: 0;
+    in-out property <bool> rail-focused: false;
+    out property <length> tab-origin-x: 8px;
+    out property <length> tab-origin-y: tab-top;
+    out property <length> tab-hit-w: spine-width - 16px;
+    out property <length> tab-hit-h: tab-hit;
+    out property <length> tab-stride: tab-hit + tab-gap;
+    // 悬停先等这一小段，到点才显示。键盘焦点不等。离开或失焦就关掉，定时器也停。
+    out property <duration> tip-delay: 400ms;
+    property <bool> tip-wait: false;
+    property <int> tip-index: -1;
+    out property <string> shown-tab-name: tip-index >= 0 && tip-index < tab-titles.length ? tab-titles[tip-index] : "";
+    // 图标在热区里居中。五种状态都用这一对，不跟着名称挪。
+    out property <length> tab-icon-size: 20px;
+    out property <length> tab-icon-x: tab-origin-x + (tab-hit-w - tab-icon-size) / 2;
+    // 短提示在按钮右侧，留出间距，再夹进窗口。窄窗或首尾放不下时只挪提示，不挪图标。
+    out property <length> tip-gap: 8px;
+    property <length> tip-natural-w: tip-label.preferred-width + 16px;
+    property <length> tip-natural-h: tip-label.preferred-height + 10px;
+    out property <length> tip-w: min(tip-natural-w, max(0px, panel-width));
+    out property <length> tip-h: min(tip-natural-h, max(0px, panel-height));
+    property <length> tip-anchor-x: tab-origin-x + tab-hit-w + tip-gap;
+    property <length> tip-anchor-y: tab-top + tab-stride * tip-index + (tab-hit - tip-h) / 2;
+    out property <length> tip-x: tip-index >= 0 ? min(max(0px, tip-anchor-x), max(0px, panel-width - tip-w)) : 0px;
+    out property <length> tip-y: tip-index >= 0 ? min(max(0px, tip-anchor-y), max(0px, panel-height - tip-h)) : 0px;
+    out property <length> shelf-zone-x: spine-width;
+    out property <length> shelf-zone-y: 0px;
+    out property <length> shelf-zone-w: panel-width - spine-width;
+    out property <length> shelf-zone-h: panel-height - (error != "" ? 32px : 0px);
 
-    property <length> title-height: 48px;
     property <length> rail-width: 168px;
     property <length> row-height: 44px;
     property <bool> has-selection: selected-row >= 0 && selected-row < rows.length;
 
-    property <Ink> c: {
-        ink: dark ? #ffffff : #1b1b1b,
-        secondary: dark ? #c5c5c5 : #5d5d5d,
-        tertiary: dark ? #9a9a9a : #767676,
-        divider: dark ? #ffffff17 : #00000014,
-        hover: dark ? #ffffff0d : #00000008,
-        selection: dark ? #ffffff14 : #0000000d,
-        field: dark ? #ffffff0a : #ffffff80,
-        accent: dark ? #60cdff : #005fb8,
-        critical: dark ? #ff99a4 : #c42b1c,
-    };
+    property <Ink> c: LanworkTheme.palette(dark);
 
     width: panel-width;
     height: panel-height;
@@ -159,8 +178,35 @@ export component Panel inherits Window {
         Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light;
     }
 
+    // 已经显示时，换一个标签立刻跟着走。还没显示时，等 tip-delay，不重开计时。
+    changed hover-tab => {
+        if root.hover-tab >= 0 {
+            if root.tip-index >= 0 {
+                root.tip-index = root.hover-tab;
+                root.tip-wait = false;
+            } else if !root.tip-wait {
+                root.tip-wait = true;
+            }
+        } else {
+            root.tip-wait = false;
+            root.tip-index = root.rail-focused ? root.key-tab : -1;
+        }
+    }
+
+    changed key-tab => {
+        if root.rail-focused && root.hover-tab < 0 {
+            root.tip-wait = false;
+            root.tip-index = root.key-tab;
+        }
+    }
+
     public function focus-root() {
         scope.focus();
+    }
+
+    public function focus-tabs() {
+        root.key-tab = root.tab;
+        rail.focus();
     }
 
     public function focus-triage() {
@@ -185,6 +231,36 @@ export component Panel inherits Window {
         if text == Key.Escape && !root.triage-open {
             root.swallow-esc-repeat = true;
         }
+    }
+
+    // dismiss-layer 的返回值。避免同一次按键调用两次。
+    property <int> shelf-layer;
+
+    // 侧栏和面板焦点共用这一层。收纳的层在 ShelvesPageData.dismiss-layer。返回假时把按键交还输入法。
+    function panel-escape(repeat: bool) -> bool {
+        if root.swallow-held-escape(Key.Escape, repeat) {
+            return true;
+        }
+        if root.triage-open {
+            if triage-input.preedit-text != "" {
+                return false;
+            }
+            return root.triage-handle(Key.Escape, false, false, false, false, repeat);
+        }
+        if root.tab == 1 && NotesPageData.selecting {
+            NotesPageData.set-selecting(false);
+        } else if root.tab == 2 {
+            root.shelf-layer = ShelvesPageData.dismiss-layer();
+            if root.shelf-layer == 2 {
+                return false;
+            }
+            if root.shelf-layer == 0 {
+                root.escape();
+            }
+        } else {
+            root.escape();
+        }
+        return true;
     }
 
     // 组合输入期间不把 1 至 5 交给处理模式。preedit 非空时返回假，按键交还输入法。
@@ -245,8 +321,23 @@ export component Panel inherits Window {
         list.content-y = 0px;
     }
 
+        // 只在等待悬停提示时跑一次。触发后 tip-wait 变假，定时器停下。
+        Timer {
+            interval: root.tip-delay;
+            running: root.tip-wait;
+            triggered => {
+                if root.hover-tab >= 0 {
+                    root.tip-index = root.hover-tab;
+                }
+                root.tip-wait = false;
+            }
+        }
+
         scope := FocusScope {
         key-pressed(event) => {
+            if event.text == Key.Escape {
+                return root.panel-escape(event.repeat) ? accept : reject;
+            }
             if root.swallow-held-escape(event.text, event.repeat) {
                 return accept;
             }
@@ -259,26 +350,6 @@ export component Panel inherits Window {
                 }
                 return reject;
             }
-            if event.text == Key.Escape {
-                if root.tab == 1 && NotesPageData.selecting {
-                    NotesPageData.set-selecting(false);
-                } else if root.tab == 2 && (ShelvesPageData.menu-open || ShelvesPageData.confirm-refs || ShelvesPageData.confirm-groups || ShelvesPageData.ref-count > 0 || ShelvesPageData.selecting) {
-                    if ShelvesPageData.menu-open {
-                        ShelvesPageData.close-menu();
-                    } else if ShelvesPageData.confirm-refs {
-                        ShelvesPageData.cancel-remove-refs();
-                    } else if ShelvesPageData.confirm-groups {
-                        ShelvesPageData.cancel-delete-groups();
-                    } else if ShelvesPageData.ref-count > 0 {
-                        ShelvesPageData.clear-refs();
-                    } else {
-                        ShelvesPageData.set-group-selecting(false);
-                    }
-                } else {
-                    root.escape();
-                }
-                return accept;
-            }
             reject
         }
 
@@ -289,129 +360,180 @@ export component Panel inherits Window {
             reject
         }
 
-        Rectangle {
-            // 标题栏：产品名、标签、关闭。空白处可以拖动窗口。
-            Rectangle {
-                x: 0px;
-                y: 0px;
-                width: parent.width;
-                height: title-height;
+        rail := FocusScope {
+            x: 0px;
+            y: 0px;
+            width: root.spine-width;
+            height: parent.height - (root.error != "" ? 32px : 0px);
 
-                TouchArea {
-                    pointer-event(event) => {
-                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                            root.drag-window();
-                        }
-                    }
+            changed has-focus => {
+                if self.has-focus && !root.rail-focused {
+                    root.key-tab = root.tab;
                 }
-
-                Text {
-                    x: 20px;
-                    width: 80px;
-                    height: parent.height;
-                    text: "Lanwork";
-                    color: c.ink;
-                    font-size: 14px;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                root.rail-focused = self.has-focus;
+                if root.hover-tab < 0 {
+                    root.tip-wait = false;
+                    root.tip-index = self.has-focus ? root.key-tab : -1;
                 }
+            }
 
-                HorizontalLayout {
-                    x: 108px;
-                    height: parent.height;
-                    spacing: 4px;
-
-                    for name[index] in tab-titles: Rectangle {
-                        width: tab-label.preferred-width + 24px;
-                        background: tab-touch.has-hover && index != root.tab ? c.hover : transparent;
-                        border-radius: 6px;
-
-                        tab-label := Text {
-                            x: 12px;
-                            height: parent.height;
-                            text: name;
-                            color: index == root.tab ? c.accent : c.secondary;
-                            font-size: 14px;
-                            font-weight: index == root.tab ? 600 : 400;
-                            vertical-alignment: center;
-                        }
-
-                        if index == root.tab: Rectangle {
-                            x: 12px;
-                            y: parent.height - 3px;
-                            width: parent.width - 24px;
-                            height: 2px;
-                            border-radius: 1px;
-                            background: c.accent;
-                        }
-
-                        tab-touch := TouchArea {
-                            clicked => {
-                                root.tab-selected(index);
-                            }
-                        }
+            key-pressed(event) => {
+                if event.text == Key.UpArrow {
+                    if root.key-tab > 0 {
+                        root.key-tab -= 1;
                     }
+                    return accept;
                 }
-
-                Rectangle {
-                    x: parent.width - 48px;
-                    width: 48px;
-                    height: parent.height;
-                    background: close-touch.has-hover ? c.hover : transparent;
-
-                    Path {
-                        x: 17px;
-                        y: 17px;
-                        width: 14px;
-                        height: 14px;
-                        viewbox-width: 14;
-                        viewbox-height: 14;
-                        fill: transparent;
-                        stroke: c.secondary;
-                        stroke-width: 1.4px;
-                        commands: "M2 2l10 10 M12 2l-10 10";
+                if event.text == Key.DownArrow {
+                    if root.key-tab + 1 < root.tab-titles.length {
+                        root.key-tab += 1;
                     }
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == " " {
+                    root.tab-selected(root.key-tab);
+                    return accept;
+                }
+                if event.text == Key.Escape {
+                    return root.panel-escape(event.repeat) ? accept : reject;
+                }
+                reject
+            }
 
-                    close-touch := TouchArea {
-                        clicked => {
-                            root.close-panel();
-                        }
+            TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.drag-window();
                     }
                 }
             }
 
+            Text {
+                x: 4px;
+                y: 14px;
+                width: parent.width - 8px;
+                text: "Lanwork";
+                color: c.tertiary;
+                font-size: 11px;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+
             Rectangle {
-                x: 0px;
-                y: title-height;
-                width: parent.width;
-                height: 1px;
+                x: parent.width - 1px;
+                width: 1px;
+                height: parent.height;
                 background: c.divider;
             }
 
+            for name[index] in tab-titles: Rectangle {
+                x: 8px;
+                y: root.tab-top + (root.tab-hit + root.tab-gap) * index;
+                width: root.tab-hit-w;
+                height: root.tab-hit;
+                border-radius: 12px;
+                border-width: root.rail-focused && root.hover-tab < 0 && root.key-tab == index ? 1px : 0px;
+                border-color: c.accent;
+                background: index == root.tab ? c.selection : tab-touch.has-hover ? c.hover : transparent;
+
+                if index == root.tab: Rectangle {
+                    x: 4px;
+                    y: (parent.height - 14px) / 2;
+                    width: 3px;
+                    height: 14px;
+                    border-radius: 2px;
+                    background: c.accent;
+                }
+
+                Path {
+                    x: (parent.width - root.tab-icon-size) / 2;
+                    y: (parent.height - root.tab-icon-size) / 2;
+                    width: root.tab-icon-size;
+                    height: root.tab-icon-size;
+                    viewbox-width: 16;
+                    viewbox-height: 16;
+                    fill: transparent;
+                    stroke: index == root.tab ? c.accent : c.tertiary;
+                    stroke-width: 1.6px;
+                    commands: index == 0 ? "M8 2.9a5.1 5.1 0 1 0 0.01 0z M5.4 8.2l1.8 1.8 3.5-3.7"
+                        : index == 1 ? "M5.2 3h8.2v7.2 M2.6 5.2h8.6V13H2.6z M4.4 7.8h5 M4.4 9.8h3.2"
+                        : index == 2 ? "M3 6.2h10l-.9 6.2H3.9z M5.2 6.2V4.2h5.6v2"
+                        : index == 3 ? "M2.8 2.8h4.2v4.2h-4.2z M9 2.8h4.2v4.2h-4.2z M2.8 9h4.2v4.2h-4.2z M9 9h4.2v4.2h-4.2z"
+                        : "M3 5.2h10 M3 10.8h10 M6.2 3.85a1.35 1.35 0 1 0 0.01 0z M10.2 9.45a1.35 1.35 0 1 0 0.01 0z";
+                }
+
+                tab-touch := TouchArea {
+                    accessible-role: button;
+                    accessible-label: index == root.tab ? name + "，当前页" : name;
+                    changed has-hover => {
+                        if self.has-hover {
+                            root.hover-tab = index;
+                        } else if root.hover-tab == index {
+                            root.hover-tab = -1;
+                        }
+                    }
+                    clicked => {
+                        root.key-tab = index;
+                        root.tab-selected(index);
+                    }
+                }
+            }
+
+            Rectangle {
+                x: (parent.width - 36px) / 2;
+                y: parent.height - 44px;
+                width: 36px;
+                height: 36px;
+                border-radius: 10px;
+                background: close-touch.has-hover ? c.hover : transparent;
+
+                Path {
+                    x: 11px;
+                    y: 11px;
+                    width: 14px;
+                    height: 14px;
+                    viewbox-width: 14;
+                    viewbox-height: 14;
+                    fill: transparent;
+                    stroke: c.secondary;
+                    stroke-width: 1.4px;
+                    commands: "M2 2l10 10 M12 2l-10 10";
+                }
+
+                close-touch := TouchArea {
+                    accessible-role: button;
+                    accessible-label: "关闭";
+                    clicked => {
+                        root.close-panel();
+                    }
+                }
+            }
+        }
+
             // 标签内容。待办 0、便签 1、收纳 2、应用 3、设置 4。
             if root.tab == 3: AppsPage {
-                x: 0px;
-                y: title-height + 1px;
-                width: parent.width;
-                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                x: root.spine-width;
+                y: 0px;
+                width: parent.width - root.spine-width;
+                height: parent.height - (root.error != "" ? 32px : 0px);
                 c: root.c;
                 dark: root.dark;
             }
 
             if root.tab == 4: SettingsPage {
-                x: 0px;
-                y: title-height + 1px;
-                width: parent.width;
-                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                x: root.spine-width;
+                y: 0px;
+                width: parent.width - root.spine-width;
+                height: parent.height - (root.error != "" ? 32px : 0px);
                 c: root.c;
                 dark: root.dark;
             }
 
             if root.tab == 1: NotesPage {
-                x: 0px;
-                y: title-height + 1px;
-                width: parent.width;
-                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                x: root.spine-width;
+                y: 0px;
+                width: parent.width - root.spine-width;
+                height: parent.height - (root.error != "" ? 32px : 0px);
                 c: root.c;
                 dark: root.dark;
                 escape => {
@@ -420,10 +542,10 @@ export component Panel inherits Window {
             }
 
             if root.tab == 2: ShelvesPage {
-                x: 0px;
-                y: title-height + 1px;
-                width: parent.width;
-                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                x: root.spine-width;
+                y: 0px;
+                width: parent.width - root.spine-width;
+                height: parent.height - (root.error != "" ? 32px : 0px);
                 c: root.c;
                 dark: root.dark;
                 escape => {
@@ -433,10 +555,10 @@ export component Panel inherits Window {
 
             todo-body := Rectangle {
                 visible: root.tab == 0;
-                x: 0px;
-                y: title-height + 1px;
-                width: parent.width;
-                height: parent.height - title-height - 1px - (root.error != "" ? 32px : 0px);
+                x: root.spine-width;
+                y: 0px;
+                width: parent.width - root.spine-width;
+                height: parent.height - (root.error != "" ? 32px : 0px);
                 property <length> conflict-h: root.todo-conflict-title != "" ? 40px : 0px;
 
                 // 左侧清单。处理模式时整页换成一张卡片，清单栏先让开。
@@ -1212,6 +1334,28 @@ export component Panel inherits Window {
                     overflow: elide;
                 }
             }
+
+            // 画在内容上面。不接指针，热区仍是原来的按钮。
+            tab-tip := Rectangle {
+                visible: root.tip-index >= 0;
+                x: root.tip-x;
+                y: root.tip-y;
+                width: root.tip-w;
+                height: root.tip-h;
+                border-radius: 6px;
+                background: c.field;
+                border-width: 1px;
+                border-color: c.divider;
+                clip: true;
+
+                tip-label := Text {
+                    x: 8px;
+                    y: (parent.height - self.preferred-height) / 2;
+                    text: root.shown-tab-name;
+                    color: c.ink;
+                    font-size: 12px;
+                }
+            }
+
         }
     }
-}

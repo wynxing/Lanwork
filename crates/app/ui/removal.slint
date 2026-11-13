@@ -1,6 +1,6 @@
 // 卸载确认和残留清单。搜索条和应用墙各放一份，数据和动作在 Rust。
 
-import { Btn, Check, Ink } from "widgets.slint";
+import { Btn, Check, Ink, LanworkTheme } from "widgets.slint";
 
 export struct RemovalLine {
     location: string,
@@ -25,17 +25,7 @@ export component RemovalOverlay inherits Rectangle {
 
     visible: shown;
 
-    property <Ink> c: {
-        ink: dark ? #ffffff : #1b1b1b,
-        secondary: dark ? #c5c5c5 : #5d5d5d,
-        tertiary: dark ? #9a9a9a : #767676,
-        divider: dark ? #ffffff17 : #00000014,
-        hover: dark ? #ffffff14 : #0000000d,
-        selection: dark ? #ffffff14 : #0000000d,
-        field: dark ? #ffffff14 : #ffffffcc,
-        accent: dark ? #60cdff : #005fb8,
-        critical: dark ? #ff99a4 : #c42b1c,
-    };
+    property <Ink> c: LanworkTheme.palette(dark);
     property <length> row-h: 44px;
     property <length> list-h: checklist ? min(max(lines.length, 1) * row-h, 6 * row-h) : 0px;
     property <length> body-h: checklist ? 0px : 36px;

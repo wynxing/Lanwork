@@ -83,8 +83,9 @@ fn press_escape(ui: &Panel) {
     });
 }
 
-/// 便签页在标题栏和分隔线下面。几何存在页面自己的坐标里，点击要加上这段。
-const PAGE_Y: f32 = 49.0;
+/// 便签页在侧栏右侧，顶边贴齐窗口。几何存在页面自己的坐标里，点击要加上这段。
+const PAGE_X: f32 = 64.0;
+const PAGE_Y: f32 = 0.0;
 
 struct Geom {
     x: f32,
@@ -95,7 +96,7 @@ struct Geom {
 
 fn choose_box(data: &NotesPageData) -> Geom {
     Geom {
-        x: data.get_choose_x(),
+        x: data.get_choose_x() + PAGE_X,
         y: data.get_choose_y() + PAGE_Y,
         w: data.get_choose_w(),
         h: data.get_choose_h(),
@@ -160,12 +161,12 @@ fn select_mode_puts_the_bar_under_the_list_and_escape_does_not_hide_the_panel() 
     );
     assert_eq!(data.get_count_label().as_str(), "已选 1 条");
 
-    click(&ui, 20.0, list_y + 26.0);
+    click(&ui, PAGE_X + 20.0, list_y + 26.0);
     assert_eq!(rows.borrow().as_slice(), &[(0, false, false)]);
 
     click(
         &ui,
-        data.get_delete_x() + data.get_delete_w() / 2.0,
+        data.get_delete_x() + PAGE_X + data.get_delete_w() / 2.0,
         data.get_delete_y() + PAGE_Y + data.get_delete_h() / 2.0,
     );
     assert_eq!(asked.get(), 1, "删除先进入确认，不直接删");
@@ -211,11 +212,11 @@ fn release_outside_does_not_activate(
     let row0 = list_y + ROW_HEIGHT / 2.0;
     let row1 = list_y + ROW_HEIGHT + ROW_HEIGHT / 2.0;
     let before = rows.borrow().len();
-    stroke(ui, (20.0, row0), (20.0, row1));
+    stroke(ui, (PAGE_X + 20.0, row0), (PAGE_X + 20.0, row1));
     assert_eq!(rows.borrow().len(), before, "{label}：松在下一行没有动作");
-    stroke(ui, (20.0, row0), (400.0, row0));
+    stroke(ui, (PAGE_X + 20.0, row0), (PAGE_X + 400.0, row0));
     assert_eq!(rows.borrow().len(), before, "{label}：松在列表右侧没有动作");
-    click(ui, 20.0, row0);
+    click(ui, PAGE_X + 20.0, row0);
     assert_eq!(
         rows.borrow().last().copied(),
         Some((0, false, false)),

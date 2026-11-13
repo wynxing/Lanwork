@@ -236,8 +236,8 @@ fn the_more_menu_lists_the_items_it_is_given_and_import_is_the_last_row() {
 
     data.set_menu_open(true);
     settle(&ui);
-    // 标题栏在 y 48 以上。点这一行左侧，菜单在右侧，这一下落在页面里、菜单外。
-    click(&ui, 8.0, data.get_card_y() + 8.0);
+    // 点页面左侧、菜单外面。
+    click(&ui, data.get_card_x() + 8.0, data.get_card_y() + 8.0);
     assert!(closed.get() >= 1, "点菜单外关掉菜单");
     data.set_menu_open(false);
     settle(&ui);
