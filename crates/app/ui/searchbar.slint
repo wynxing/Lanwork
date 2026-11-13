@@ -1,6 +1,7 @@
 // 搜索条。输入框在左侧搜索图标和右侧应用墙按钮之间，结果在它下方展开。版式由这里决定，数据和动作在 Rust。
 
 import { RemovalLine, RemovalOverlay } from "removal.slint";
+import { Ink, LanworkTheme } from "widgets.slint";
 
 export struct BarRow {
     // 名称拆成三段，中间一段是与输入相同的部分，加粗。没有匹配时只有 head。
@@ -47,7 +48,7 @@ component Glyph inherits Rectangle {
         stroke-width: 1.5px;
         commands: glyph == 0 ? "M4.5 4.5h6v6h-6z M13.5 4.5h6v6h-6z M4.5 13.5h6v6h-6z M13.5 13.5h6v6h-6z"
             : glyph == 1 ? "M12 3.5a8.5 8.5 0 1 0 0.01 0z M8 12.3l2.8 2.8 5.4-5.6"
-            : glyph == 2 ? "M5.5 3.5h13v17h-13z M8.5 8h7 M8.5 11.5h7 M8.5 15h4.5"
+            : glyph == 2 ? "M8 4.5h12v9 M4 8h12v11h-12z M6.5 11.5h7 M6.5 14.5h4.5"
             : glyph == 3 ? "M6 3.5h8l4.5 4.5v12.5h-12.5z M14 3.5v4.5h4.5"
             : glyph == 4 ? "M3.5 6.5v12h17v-10h-9l-2-2z"
             : glyph == 6 ? "M10.5 4a6.5 6.5 0 1 0 0.01 0z M15.2 15.2l5.3 5.3"
@@ -66,7 +67,7 @@ export component SearchBar inherits Window {
     in property <bool> dark;
     // 亚克力时客户区透明，DWM 画背景。
     in property <bool> acrylic;
-    in property <color> solid-color: #f3f3f3;
+    in property <color> solid-color: #fbf6ee;
     in property <[BarRow]> rows;
     in property <int> selected;
     in property <length> list-content-height;
@@ -150,13 +151,14 @@ export component SearchBar inherits Window {
         : max(8px, menu-anchor-y);
     out property <int> menu-hover: -1;
 
-    property <color> ink: dark ? #ffffff : #1b1b1b;
-    property <color> ink-secondary: dark ? #c5c5c5 : #5d5d5d;
-    property <color> ink-tertiary: dark ? #9a9a9a : #767676;
-    property <color> divider: dark ? #ffffff17 : #00000014;
-    property <color> selection-fill: dark ? #ffffff14 : #0000000d;
-    property <color> accent: dark ? #60cdff : #005fb8;
-    property <color> critical: dark ? #ff99a4 : #c42b1c;
+    property <Ink> tone: LanworkTheme.palette(dark);
+    property <color> ink: tone.ink;
+    property <color> ink-secondary: tone.secondary;
+    property <color> ink-tertiary: tone.tertiary;
+    property <color> divider: tone.divider;
+    property <color> selection-fill: tone.selection;
+    property <color> accent: tone.accent;
+    property <color> critical: tone.critical;
 
     width: 680px;
     height: max(menu-shown ? max(natural-height, menu-draw-y + menu-block + 8px) : natural-height, removal-open ? removal-card + 32px : 0px);
@@ -246,7 +248,7 @@ export component SearchBar inherits Window {
             font-size: 18px;
             color: ink;
             vertical-alignment: center;
-            selection-background-color: dark ? #60cdff66 : #005fb855;
+            selection-background-color: accent.with-alpha(0.28);
             selection-foreground-color: ink;
 
             cursor-position-changed(cursor-position) => {

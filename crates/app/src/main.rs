@@ -23,6 +23,8 @@ mod settings_layout_tests;
 #[cfg(test)]
 mod shelves_layout_tests;
 #[cfg(test)]
+mod tab_rail_tests;
+#[cfg(test)]
 mod triage_layout_tests;
 
 mod secret_form;

@@ -2,6 +2,7 @@
 
 import { BarMenuItem } from "searchbar.slint";
 import { RemovalLine, RemovalOverlay } from "removal.slint";
+import { Ink, LanworkTheme } from "widgets.slint";
 
 export struct WallTile {
     name: string,
@@ -20,7 +21,7 @@ export component AppWall inherits Window {
 
     in property <bool> dark;
     in property <bool> acrylic;
-    in property <color> solid-color: #f3f3f3;
+    in property <color> solid-color: #fbf6ee;
     in property <[WallTile]> tiles;
     in property <length> content-height;
     in property <length> cell-width: 112px;
@@ -68,14 +69,15 @@ export component AppWall inherits Window {
         : max(8px, menu-anchor-y);
     out property <int> menu-hover: -1;
 
-    property <color> ink: dark ? #ffffff : #1b1b1b;
-    property <color> ink-secondary: dark ? #c5c5c5 : #5d5d5d;
-    property <color> ink-tertiary: dark ? #9a9a9a : #767676;
-    property <color> divider: dark ? #ffffff17 : #00000014;
-    property <color> selection-fill: dark ? #ffffff14 : #0000000d;
-    property <color> field: dark ? #ffffff14 : #ffffffcc;
-    property <color> accent: dark ? #60cdff : #005fb8;
-    property <color> critical: dark ? #ff99a4 : #c42b1c;
+    property <Ink> tone: LanworkTheme.palette(dark);
+    property <color> ink: tone.ink;
+    property <color> ink-secondary: tone.secondary;
+    property <color> ink-tertiary: tone.tertiary;
+    property <color> divider: tone.divider;
+    property <color> selection-fill: tone.selection;
+    property <color> field: tone.field;
+    property <color> accent: tone.accent;
+    property <color> critical: tone.critical;
 
     background: acrylic ? transparent : solid-color;
 
@@ -137,7 +139,7 @@ export component AppWall inherits Window {
             font-size: 16px;
             color: ink;
             vertical-alignment: center;
-            selection-background-color: dark ? #60cdff66 : #005fb855;
+            selection-background-color: accent.with-alpha(0.28);
             selection-foreground-color: ink;
 
             key-pressed(event) => {

@@ -4,7 +4,7 @@
 // 这三扇不画钉住。Slint 1.18 不把基类属性导出给 Rust，所以那三扇不继承 `FloatShell`。
 
 import { Palette } from "std-widgets.slint";
-import { EdgeHandle, FloatSource, Ink } from "widgets.slint";
+import { EdgeHandle, FloatSource, Ink, LanworkTheme } from "widgets.slint";
 
 export struct ToolRow {
     kind: string,
@@ -52,17 +52,7 @@ export component FloatChrome inherits Rectangle {
     callback row-clicked(string);
 
     // 公开给放进内容槽的页面，颜色仍由外壳按主题算。
-    out property <Ink> c: {
-        ink: dark ? #ffffff : #1b1b1b,
-        secondary: dark ? #c5c5c5 : #5d5d5d,
-        tertiary: dark ? #9a9a9a : #767676,
-        divider: dark ? #ffffff17 : #00000014,
-        hover: dark ? #ffffff0d : #00000008,
-        selection: dark ? #ffffff14 : #0000000d,
-        field: dark ? #ffffff0a : #ffffff80,
-        accent: dark ? #60cdff : #005fb8,
-        critical: dark ? #ff99a4 : #c42b1c,
-    };
+    out property <Ink> c: LanworkTheme.palette(dark);
 
     out property <string> marker-text: slot-label.text;
     out property <bool> pin-drawn: pin-box.visible;
@@ -375,7 +365,7 @@ export component FloatShell inherits Window {
 
     in property <bool> dark;
     in property <bool> acrylic;
-    in property <color> solid-color: #f3f3f3;
+    in property <color> solid-color: #fbf6ee;
     in property <bool> thin;
     in property <bool> collapsed: false;
     in property <string> dock-edge: "";

@@ -134,7 +134,7 @@ fn group_select_bar_sits_between_the_list_and_new_group() {
     let list_h = data.get_list_h();
     let new_y = data.get_new_y();
     assert!(choose_h > 0.0, "选择按钮有高度");
-    assert!(choose_y > 40.0, "几何是窗口坐标，含标题栏");
+    assert!(data.get_choose_x() >= 64.0, "选择在侧栏右侧");
     assert!(list_h > 0.0, "分组列表有高度");
     assert!(choose_y + choose_h <= list_y, "选择在列表上方");
     assert_eq!(data.get_bar_h(), 0.0, "未多选时操作条不占高度");
@@ -295,17 +295,22 @@ fn right_click_opens_a_menu_that_can_be_hit_and_dismissed() {
     data.set_menu_open(true);
     slint::platform::update_timers_and_animations();
 
+    let page_x = data.get_page_x();
     let page_y = data.get_page_y();
-    assert!(page_y > 40.0, "页面在标题栏下面");
+    assert!(page_x >= 64.0, "页面在侧栏右侧");
     // 菜单相对收纳页。第一项高 32，内边距 4。
-    click(&ui, 300.0 + 40.0, page_y + 100.0 + 4.0 + 16.0);
+    click(&ui, page_x + 300.0 + 40.0, page_y + 100.0 + 4.0 + 16.0);
     assert_eq!(activated.borrow().as_slice(), &[0]);
 
     data.set_menu_open(true);
     slint::platform::update_timers_and_animations();
-    click(&ui, 300.0 + 40.0, page_y + 100.0 + 4.0 + 32.0 + 16.0);
+    click(
+        &ui,
+        page_x + 300.0 + 40.0,
+        page_y + 100.0 + 4.0 + 32.0 + 16.0,
+    );
     assert_eq!(activated.borrow().as_slice(), &[0], "禁用行不触发");
 
-    click(&ui, 24.0, page_y + 80.0);
+    click(&ui, data.get_page_x() + 24.0, page_y + 80.0);
     assert_eq!(closed.get(), 1, "点菜单外关闭");
 }

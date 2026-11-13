@@ -21,9 +21,9 @@ pub const BAR_WIDTH: u32 = 680;
 /// Windows 的 100% 缩放。
 pub const BASE_DPI: u32 = 96;
 
-/// 纯色背景。产品规格只要求与主题一致，这里取 Windows 11 窗口底色。
-pub const LIGHT_SOLID_RGB: u32 = 0x00F3_F3F3;
-pub const DARK_SOLID_RGB: u32 = 0x0020_2020;
+/// 纯色背景。浅色 `#FBF6EE`，暗色 `#1C1916`。
+pub const LIGHT_SOLID_RGB: u32 = 0x00FB_F6EE;
+pub const DARK_SOLID_RGB: u32 = 0x001C_1916;
 
 /// 系统读数。读不到的项由调用方按「不能用亚克力」填。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,11 +64,11 @@ pub fn float_backdrop(wanted: Backdrop, collapsed: bool) -> FloatBackdrop {
 
 /// 强调策略亚克力的着色，ABGR。
 ///
-/// 高位是透明度。剩下的三字节与纯色回退相同（浅 `#F3F3F3`、暗 `#202020`），只是更透。
+/// 高位是透明度。剩下的三字节与纯色回退相同（浅 `#FBF6EE`、暗 `#1C1916`），只是更透。
 /// 产品规格没有写这个比例，这是实现选择。
 #[must_use]
 pub fn persistent_acrylic_abgr(dark: bool) -> u32 {
-    if dark { 0x4820_2020 } else { 0x48F3_F3F3 }
+    if dark { 0x481C_1916 } else { 0x48FB_F6EE }
 }
 
 /// 透明效果关闭、节电模式、build 低于 22621 或读不到 build 时用纯色。
@@ -1179,8 +1179,8 @@ mod tests {
         ] {
             assert_eq!(choose_backdrop(input), Backdrop::Solid, "{input:?}");
         }
-        assert_eq!(solid_rgb(false), 0xF3F3F3);
-        assert_eq!(solid_rgb(true), 0x202020);
+        assert_eq!(solid_rgb(false), 0xFBF6EE);
+        assert_eq!(solid_rgb(true), 0x1C1916);
     }
 
     #[test]
@@ -1196,8 +1196,8 @@ mod tests {
         );
         assert_eq!(float_backdrop(Backdrop::Solid, false), FloatBackdrop::Solid);
         assert_eq!(float_backdrop(Backdrop::Solid, true), FloatBackdrop::Solid);
-        assert_eq!(persistent_acrylic_abgr(false), 0x48F3_F3F3);
-        assert_eq!(persistent_acrylic_abgr(true), 0x4820_2020);
+        assert_eq!(persistent_acrylic_abgr(false), 0x48FB_F6EE);
+        assert_eq!(persistent_acrylic_abgr(true), 0x481C_1916);
         assert_eq!(
             persistent_acrylic_abgr(false) & 0x00FF_FFFF,
             solid_rgb(false)
