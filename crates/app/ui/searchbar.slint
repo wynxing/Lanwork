@@ -132,7 +132,7 @@ export component SearchBar inherits Window {
     property <length> input-height: 56px;
     property <length> pad: 6px;
     property <length> row-height: 48px;
-    property <length> wall-slot: 48px;
+    property <length> wall-slot: 96px;
     property <bool> has-list: rows.length > 0;
     property <bool> has-status: status != "";
     property <bool> show-results: !wall-open && (has-list || has-status);
@@ -353,7 +353,7 @@ export component SearchBar inherits Window {
         }
 
         Path {
-            x: (parent.width - 16px) / 2;
+            x: 12px;
             y: (parent.height - 16px) / 2;
             width: 16px;
             height: 16px;
@@ -364,6 +364,20 @@ export component SearchBar inherits Window {
             stroke-width: 1.4px;
             commands: "M1.5 1.5h5.5v5.5h-5.5z M9 1.5h5.5v5.5h-5.5z M1.5 9h5.5v5.5h-5.5z M9 9h5.5v5.5h-5.5z";
         }
+
+        Text {
+            x: 32px;
+            width: parent.width - 40px;
+            height: parent.height;
+            text: "应用墙";
+            color: root.wall-open ? accent : ink-secondary;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        accessible-role: button;
+        accessible-label: "应用墙";
 
         clicked => {
             root.toggle-wall();
@@ -446,7 +460,7 @@ export component SearchBar inherits Window {
             HorizontalLayout {
                 x: 56px;
                 y: two-line ? 6px : 0px;
-                width: parent.width - 56px - 152px;
+                width: parent.width - 56px - 168px;
                 height: two-line ? 20px : parent.height;
                 spacing: 0px;
 
@@ -462,7 +476,7 @@ export component SearchBar inherits Window {
                 if row.label-match != "": Text {
                     horizontal-stretch: 0;
                     text: row.label-match;
-                    color: ink;
+                    color: accent;
                     font-size: 14px;
                     font-weight: 700;
                     vertical-alignment: center;
@@ -482,7 +496,7 @@ export component SearchBar inherits Window {
             if two-line: Text {
                 x: 56px;
                 y: 26px;
-                width: parent.width - 56px - 152px;
+                width: parent.width - 56px - 168px;
                 height: 16px;
                 text: row.location;
                 color: ink-secondary;
@@ -492,7 +506,7 @@ export component SearchBar inherits Window {
             }
 
             Text {
-                x: parent.width - 20px - 44px - 12px - 64px;
+                x: parent.width - 20px - 58px - 8px - 64px;
                 width: 64px;
                 height: parent.height;
                 text: row.kind;
@@ -502,15 +516,42 @@ export component SearchBar inherits Window {
                 vertical-alignment: center;
             }
 
-            if hint > 0: Text {
-                x: parent.width - 20px - 44px;
-                width: 44px;
-                height: parent.height;
-                text: "Alt+" + hint;
-                color: ink-tertiary;
-                font-size: 12px;
-                horizontal-alignment: right;
-                vertical-alignment: center;
+            if hint > 0: Rectangle {
+                x: parent.width - 20px - 58px;
+                y: (parent.height - 22px) / 2;
+                width: 22px;
+                height: 22px;
+                border-radius: 5px;
+                background: selection-fill;
+
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: "Alt";
+                    color: ink-tertiary;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            if hint > 0: Rectangle {
+                x: parent.width - 20px - 32px;
+                y: (parent.height - 22px) / 2;
+                width: 22px;
+                height: 22px;
+                border-radius: 5px;
+                background: selection-fill;
+
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: hint;
+                    color: ink;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
 
             row-touch := TouchArea {

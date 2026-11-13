@@ -99,22 +99,22 @@ export component FloatChrome inherits Rectangle {
         width: parent.width;
         height: 28px;
 
-        Text {
+        Path {
             x: 12px;
-            width: parent.width - 72px;
-            height: parent.height;
-            visible: root.heading != "";
-            text: root.heading;
-            color: c.ink;
-            font-size: 13px;
-            vertical-alignment: center;
-            overflow: elide;
+            y: 11px;
+            width: 10px;
+            height: 6px;
+            viewbox-width: 10;
+            viewbox-height: 6;
+            fill: c.tertiary;
+            stroke-width: 0px;
+            commands: "M1 1a1 1 0 1 0 0.01 0z M5 1a1 1 0 1 0 0.01 0z M9 1a1 1 0 1 0 0.01 0z M1 5a1 1 0 1 0 0.01 0z M5 5a1 1 0 1 0 0.01 0z M9 5a1 1 0 1 0 0.01 0z";
         }
 
         TouchArea {
             x: 0px;
             y: 0px;
-            width: root.show-pin ? parent.width - 56px : parent.width - 28px;
+            width: root.show-pin ? parent.width - 96px : parent.width - 28px;
             height: parent.height;
 
             pointer-event(event) => {
@@ -126,16 +126,17 @@ export component FloatChrome inherits Rectangle {
     }
 
     pin-box := Rectangle {
-        x: parent.width - 56px;
+        x: parent.width - 96px;
         y: 0px;
-        width: 28px;
-        height: 28px;
+        width: 62px;
+        height: 26px;
+        border-radius: 8px;
         visible: !root.collapsed && root.show-pin;
         background: pin-touch.has-hover ? c.hover : (root.pinned ? c.selection : transparent);
 
         Path {
-            x: 9px;
-            y: 9px;
+            x: 8px;
+            y: 8px;
             width: 10px;
             height: 10px;
             viewbox-width: 10;
@@ -144,6 +145,16 @@ export component FloatChrome inherits Rectangle {
             stroke: root.pinned ? c.accent : c.secondary;
             stroke-width: 1.2px;
             commands: "M3 2.5h4 M5 2.5v6 M2.2 5.2h5.6";
+        }
+
+        Text {
+            x: 22px;
+            width: 36px;
+            height: parent.height;
+            text: "置顶";
+            color: root.pinned ? c.accent : c.secondary;
+            font-size: 12px;
+            vertical-alignment: center;
         }
 
         pin-touch := TouchArea {
@@ -209,12 +220,25 @@ export component FloatChrome inherits Rectangle {
             color: c.ink;
         }
 
+        if root.marker == "" && root.heading != "": Text {
+            x: 16px;
+            y: 8px;
+            width: parent.width - 32px;
+            height: 28px;
+            text: root.heading;
+            color: c.ink;
+            font-size: 18px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
         Flickable {
             visible: root.marker == "" && root.rows.length > 0;
             x: 0px;
-            y: 0px;
+            y: root.heading != "" ? 40px : 0px;
             width: parent.width;
-            height: parent.height;
+            height: parent.height - (root.heading != "" ? 40px : 0px);
             content-height: max(self.height, tool-column.preferred-height);
 
             tool-column := VerticalLayout {
@@ -223,7 +247,7 @@ export component FloatChrome inherits Rectangle {
                 spacing: 8px;
 
                 for row in root.rows: Rectangle {
-                    height: row.kind == "button" || row.kind == "progress" ? 32px : 24px;
+                    height: row.kind == "timer" ? 72px : row.kind == "button" ? 40px : row.kind == "progress" ? 32px : 24px;
 
                     if row.kind == "text" || row.kind == "list" || row.kind == "input" || row.kind == "toggle": Text {
                         width: parent.width;
@@ -235,38 +259,51 @@ export component FloatChrome inherits Rectangle {
                         overflow: elide;
                     }
 
-                    if row.kind == "timer": HorizontalLayout {
-                        spacing: 8px;
-                        height: parent.height;
+                    if row.kind == "timer": Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        border-radius: 12px;
+                        background: c.field;
 
                         Text {
+                            y: 8px;
+                            width: 100%;
+                            height: 16px;
                             text: row.label;
                             color: c.secondary;
-                            font-size: 13px;
+                            font-size: 12px;
+                            horizontal-alignment: center;
                             vertical-alignment: center;
+                            visible: row.label != "";
                         }
 
                         Text {
+                            y: row.label != "" ? 26px : 16px;
+                            width: 100%;
+                            height: 36px;
                             text: row.caption;
                             color: c.ink;
-                            font-size: 13px;
+                            font-size: 28px;
+                            horizontal-alignment: center;
                             vertical-alignment: center;
                         }
                     }
 
                     if row.kind == "button": Rectangle {
-                        height: 30px;
-                        width: button-label.preferred-width + 20px;
-                        border-radius: 6px;
+                        height: 36px;
+                        width: 100%;
+                        border-radius: 8px;
                         border-width: 1px;
                         border-color: c.divider;
-                        background: button-touch.has-hover ? c.hover : transparent;
+                        background: button-touch.has-hover ? c.hover : c.field;
 
                         button-label := Text {
                             x: 10px;
+                            width: parent.width - 20px;
                             text: row.label == "" ? row.caption : row.label;
                             color: c.ink;
-                            font-size: 13px;
+                            font-size: 14px;
+                            horizontal-alignment: center;
                             vertical-alignment: center;
                             height: 100%;
                         }

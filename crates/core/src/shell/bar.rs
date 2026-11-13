@@ -62,13 +62,19 @@ pub fn float_backdrop(wanted: Backdrop, collapsed: bool) -> FloatBackdrop {
     }
 }
 
-/// 强调策略亚克力的着色，ABGR。
+/// 强调策略亚克力的着色。
 ///
-/// 高位是透明度。剩下的三字节与纯色回退相同（浅 `#FBF6EE`、暗 `#1C1916`），只是更透。
+/// `ACCENT_POLICY.GradientColor` 是 `0xAABBGGRR`。高字节是透明度 `0x48`。
+/// 低三字节按蓝、绿、红排列，对应纯色回退的 `#FBF6EE` / `#1C1916`，不是把 RGB 数值原样放进低 24 位。
 /// 产品规格没有写这个比例，这是实现选择。
 #[must_use]
 pub fn persistent_acrylic_abgr(dark: bool) -> u32 {
-    if dark { 0x481C_1916 } else { 0x48FB_F6EE }
+    const ALPHA: u32 = 0x48;
+    let rgb = solid_rgb(dark);
+    let red = (rgb >> 16) & 0xFF;
+    let green = (rgb >> 8) & 0xFF;
+    let blue = rgb & 0xFF;
+    (ALPHA << 24) | (blue << 16) | (green << 8) | red
 }
 
 /// 透明效果关闭、节电模式、build 低于 22621 或读不到 build 时用纯色。
@@ -1196,13 +1202,28 @@ mod tests {
         );
         assert_eq!(float_backdrop(Backdrop::Solid, false), FloatBackdrop::Solid);
         assert_eq!(float_backdrop(Backdrop::Solid, true), FloatBackdrop::Solid);
-        assert_eq!(persistent_acrylic_abgr(false), 0x48FB_F6EE);
-        assert_eq!(persistent_acrylic_abgr(true), 0x481C_1916);
-        assert_eq!(
-            persistent_acrylic_abgr(false) & 0x00FF_FFFF,
-            solid_rgb(false)
+        assert_eq!(persistent_acrylic_abgr(false), 0x48EE_F6FB);
+        assert_eq!(persistent_acrylic_abgr(true), 0x4816_191C);
+        assert_acrylic_matches_solid(false);
+        assert_acrylic_matches_solid(true);
+    }
+
+    fn assert_acrylic_matches_solid(dark: bool) {
+        let tint = persistent_acrylic_abgr(dark);
+        let alpha = (tint >> 24) & 0xFF;
+        let blue = (tint >> 16) & 0xFF;
+        let green = (tint >> 8) & 0xFF;
+        let red = tint & 0xFF;
+        let solid = solid_rgb(dark);
+        assert_eq!(alpha, 0x48, "透明度仍是 0x48");
+        assert_eq!(red, (solid >> 16) & 0xFF, "红通道来自纯色");
+        assert_eq!(green, (solid >> 8) & 0xFF, "绿通道来自纯色");
+        assert_eq!(blue, solid & 0xFF, "蓝通道来自纯色");
+        assert_ne!(
+            tint & 0x00FF_FFFF,
+            solid,
+            "AABBGGRR 的低 24 位不是 RGB 数值"
         );
-        assert_eq!(persistent_acrylic_abgr(true) & 0x00FF_FFFF, solid_rgb(true));
     }
 
     #[test]

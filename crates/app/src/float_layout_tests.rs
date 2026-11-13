@@ -58,6 +58,8 @@ fn lay_out(window: &Rc<MinimalSoftwareWindow>, open: bool, count: usize, selecte
         icon: slint::Image::default(),
         has_icon: false,
         missing: false,
+        web: false,
+        folder: false,
         selected: false,
     }])));
     data.set_selected_ref(if selected { 0 } else { -1 });
@@ -865,7 +867,7 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     assert_eq!(shell.get_drag_band(), TITLE_STRIP);
     assert_eq!(shell.get_source_y(), TITLE_STRIP);
     assert_eq!(shell.get_source_h(), SOURCE_ROW);
-    assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
+    assert_eq!(shell.get_pin_x(), 320.0 - 96.0);
     assert_eq!(shell.get_pin_y(), 0.0);
     assert_eq!(shell.get_close_x(), 320.0 - 28.0);
     assert_eq!(shell.get_close_y(), 0.0);
@@ -882,7 +884,7 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     slint::platform::update_timers_and_animations();
     assert!(shell.get_error_drawn());
     assert_eq!(shell.get_error_text(), "保存失败：磁盘");
-    assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
+    assert_eq!(shell.get_pin_x(), 320.0 - 96.0);
     assert_eq!(shell.get_content_y(), TITLE_STRIP + SOURCE_ROW);
     assert_eq!(
         shell.get_content_height(),
@@ -914,7 +916,7 @@ fn the_tool_shell_has_a_note_style_drag_strip_pin_and_close() {
     assert!(shell.get_pin_drawn());
     assert!(!shell.get_source_drawn(), "关掉来源行后内容回到拖动条下面");
     assert_eq!(shell.get_content_y(), TITLE_STRIP);
-    assert_eq!(shell.get_pin_x(), 320.0 - 56.0);
+    assert_eq!(shell.get_pin_x(), 320.0 - 96.0);
     shell.set_show_source(true);
     shell.set_source("应用 · 额度".into());
     slint::platform::update_timers_and_animations();

@@ -155,6 +155,7 @@ pub struct ShelfLine {
     pub key: String,
     pub name: String,
     pub web: bool,
+    pub folder: bool,
 }
 
 /// 路径引用保持原顺序，网页引用接在后面。网页行的名称用标题，标题为空时用网址。
@@ -166,6 +167,7 @@ pub fn shelf_lines(shelf: &Shelf) -> Vec<ShelfLine> {
             key: item.path.clone(),
             name: item.name.clone(),
             web: false,
+            folder: item.folder,
         });
     }
     for item in &shelf.web_refs {
@@ -173,6 +175,7 @@ pub fn shelf_lines(shelf: &Shelf) -> Vec<ShelfLine> {
             key: item.url.clone(),
             name: web_display_name(&item.title, &item.url),
             web: true,
+            folder: false,
         });
     }
     lines

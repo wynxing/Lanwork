@@ -33,6 +33,8 @@ fn item(name: &str, selected: bool) -> ShelfRefRow {
         icon: slint::Image::default(),
         has_icon: false,
         missing: false,
+        web: false,
+        folder: false,
         selected,
     }
 }
@@ -112,8 +114,6 @@ fn press_escape(ui: &Panel) {
 
 /// 分组行高与 `shelvespage.slint` 里没有待办标题的行一致。
 const GROUP_ROW: f32 = 40.0;
-/// 条目行高与 `RefsList` 的 `row-height` 一致。
-const REF_ROW: f32 = 40.0;
 
 #[test]
 fn group_select_bar_sits_between_the_list_and_new_group() {
@@ -222,13 +222,17 @@ fn releasing_outside_a_group_or_item_row_does_not_activate_it() {
     stroke(&ui, (gx, row0), (gx, row1), PointerEventButton::Left);
     assert_eq!(groups.borrow().len(), before, "多选时松在行外也不改勾选");
 
-    let rx = data.get_refs_x() + 20.0;
-    let ry = data.get_refs_y();
-    assert!(data.get_refs_h() > REF_ROW, "条目列表够两行");
-    let item0 = ry + REF_ROW / 2.0;
-    let item1 = ry + REF_ROW + REF_ROW / 2.0;
-    stroke(&ui, (rx, item0), (rx, item1), PointerEventButton::Left);
-    assert!(refs.borrow().is_empty(), "条目松在下一行没有动作");
+    let rx = data.get_refs_x() + data.get_tile_w() / 2.0;
+    let item0 = data.get_refs_y() + data.get_tile_h() / 2.0;
+    assert!(data.get_tile_h() >= 100.0, "取用格够高");
+    assert!(data.get_refs_h() > data.get_tile_h(), "条目区高过一格");
+    stroke(
+        &ui,
+        (rx, item0),
+        (rx, item0 + data.get_tile_h()),
+        PointerEventButton::Left,
+    );
+    assert!(refs.borrow().is_empty(), "格子外松开没有动作");
     click(&ui, rx, item0);
     assert_eq!(refs.borrow().as_slice(), &[(0, false, false)]);
 }
@@ -279,8 +283,8 @@ fn right_click_opens_a_menu_that_can_be_hit_and_dismissed() {
         data.on_close_menu(move || closed.set(closed.get() + 1));
     }
 
-    let rx = data.get_refs_x() + 24.0;
-    let item0 = data.get_refs_y() + REF_ROW / 2.0;
+    let rx = data.get_refs_x() + data.get_tile_w() / 2.0;
+    let item0 = data.get_refs_y() + data.get_tile_h() / 2.0;
     stroke(&ui, (rx, item0), (rx, item0), PointerEventButton::Right);
     assert_eq!(menus.borrow().len(), 1, "行内右键打开菜单");
     assert_eq!(menus.borrow()[0].0, 0);
@@ -313,4 +317,46 @@ fn right_click_opens_a_menu_that_can_be_hit_and_dismissed() {
 
     click(&ui, data.get_page_x() + 24.0, page_y + 80.0);
     assert_eq!(closed.get(), 1, "点菜单外关闭");
+}
+
+#[test]
+fn group_actions_sit_in_the_more_menu_and_the_path_bar_stays() {
+    let ui = open();
+    let data = ui.global::<ShelvesPageData>();
+    let moves = Rc::new(RefCell::new(Vec::new()));
+    let opens = Rc::new(Cell::new(0));
+    {
+        let moves = Rc::clone(&moves);
+        data.on_move_group(move |up| moves.borrow_mut().push(up));
+        let opens = Rc::clone(&opens);
+        data.on_open_ref(move || opens.set(opens.get() + 1));
+    }
+
+    data.set_can_up(true);
+    data.set_ref_count(1);
+    data.set_selected_path("D:\\虚构\\封面.pdf".into());
+    refresh(&data);
+    refresh(&data);
+    assert!(data.get_ref_bar_h() >= 30.0, "选中后底部有路径操作");
+    assert!(data.get_tile_cols() >= 2, "面板宽度上至少两列取用格");
+    let open_x = data.get_open_x();
+    let open_y = data.get_open_y();
+    let open_w = data.get_open_w();
+    let open_h = data.get_open_h();
+    click(&ui, open_x + open_w / 2.0, open_y + open_h / 2.0);
+    assert_eq!(
+        opens.get(),
+        1,
+        "底部「打开」能点到 x={open_x} y={open_y} w={open_w} h={open_h}"
+    );
+
+    click(
+        &ui,
+        data.get_more_x() + data.get_more_w() / 2.0,
+        data.get_more_y() + data.get_more_h() / 2.0,
+    );
+    let menu_x = data.get_more_x() + data.get_more_w() - 168.0 + 40.0;
+    let up_y = data.get_more_y() + data.get_more_h() + 4.0 + 4.0 + 32.0 + 16.0;
+    click(&ui, menu_x, up_y);
+    assert_eq!(moves.borrow().as_slice(), &[true], "⋯ 里的上移");
 }

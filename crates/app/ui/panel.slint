@@ -139,6 +139,10 @@ export component Panel inherits Window {
     out property <length> tab-hit-h: tab-hit;
     out property <length> tab-stride: tab-hit + tab-gap;
     out property <string> shown-tab-name: hover-tab >= 0 ? tab-titles[hover-tab] : rail-focused ? tab-titles[key-tab] : "";
+    // 名称画在侧栏里、图标左侧。右缘停在图标左边，也不进入内容区。
+    out property <length> tip-x: tab-name.visible ? tab-name.x : 0px;
+    out property <length> tip-w: tab-name.visible ? tab-name.preferred-width : 0px;
+    out property <length> tip-icon-x: shown-tab-name != "" ? 8px + tab-hit-w - 16px : 0px;
     out property <length> shelf-zone-x: spine-width;
     out property <length> shelf-zone-y: 0px;
     out property <length> shelf-zone-w: panel-width - spine-width;
@@ -192,6 +196,41 @@ export component Panel inherits Window {
         if text == Key.Escape && !root.triage-open {
             root.swallow-esc-repeat = true;
         }
+    }
+
+    // 侧栏和面板焦点共用这一层。返回假时把按键交还输入法。
+    function panel-escape(repeat: bool) -> bool {
+        if root.swallow-held-escape(Key.Escape, repeat) {
+            return true;
+        }
+        if root.triage-open {
+            if triage-input.preedit-text != "" {
+                return false;
+            }
+            return root.triage-handle(Key.Escape, false, false, false, false, repeat);
+        }
+        if root.tab == 1 && NotesPageData.selecting {
+            NotesPageData.set-selecting(false);
+        } else if root.tab == 2 && (ShelvesPageData.group-menu-open || ShelvesPageData.renaming || ShelvesPageData.menu-open || ShelvesPageData.confirm-refs || ShelvesPageData.confirm-groups || ShelvesPageData.ref-count > 0 || ShelvesPageData.selecting) {
+            if ShelvesPageData.group-menu-open {
+                ShelvesPageData.group-menu-open = false;
+            } else if ShelvesPageData.renaming {
+                ShelvesPageData.renaming = false;
+            } else if ShelvesPageData.menu-open {
+                ShelvesPageData.close-menu();
+            } else if ShelvesPageData.confirm-refs {
+                ShelvesPageData.cancel-remove-refs();
+            } else if ShelvesPageData.confirm-groups {
+                ShelvesPageData.cancel-delete-groups();
+            } else if ShelvesPageData.ref-count > 0 {
+                ShelvesPageData.clear-refs();
+            } else {
+                ShelvesPageData.set-group-selecting(false);
+            }
+        } else {
+            root.escape();
+        }
+        return true;
     }
 
     // 组合输入期间不把 1 至 5 交给处理模式。preedit 非空时返回假，按键交还输入法。
@@ -254,6 +293,9 @@ export component Panel inherits Window {
 
         scope := FocusScope {
         key-pressed(event) => {
+            if event.text == Key.Escape {
+                return root.panel-escape(event.repeat) ? accept : reject;
+            }
             if root.swallow-held-escape(event.text, event.repeat) {
                 return accept;
             }
@@ -265,26 +307,6 @@ export component Panel inherits Window {
                     return accept;
                 }
                 return reject;
-            }
-            if event.text == Key.Escape {
-                if root.tab == 1 && NotesPageData.selecting {
-                    NotesPageData.set-selecting(false);
-                } else if root.tab == 2 && (ShelvesPageData.menu-open || ShelvesPageData.confirm-refs || ShelvesPageData.confirm-groups || ShelvesPageData.ref-count > 0 || ShelvesPageData.selecting) {
-                    if ShelvesPageData.menu-open {
-                        ShelvesPageData.close-menu();
-                    } else if ShelvesPageData.confirm-refs {
-                        ShelvesPageData.cancel-remove-refs();
-                    } else if ShelvesPageData.confirm-groups {
-                        ShelvesPageData.cancel-delete-groups();
-                    } else if ShelvesPageData.ref-count > 0 {
-                        ShelvesPageData.clear-refs();
-                    } else {
-                        ShelvesPageData.set-group-selecting(false);
-                    }
-                } else {
-                    root.escape();
-                }
-                return accept;
             }
             reject
         }
@@ -327,8 +349,7 @@ export component Panel inherits Window {
                     return accept;
                 }
                 if event.text == Key.Escape {
-                    root.escape();
-                    return accept;
+                    return root.panel-escape(event.repeat) ? accept : reject;
                 }
                 reject
             }
@@ -360,14 +381,18 @@ export component Panel inherits Window {
             }
 
             for name[index] in tab-titles: Rectangle {
+                property <bool> show-name: root.hover-tab == index || (root.hover-tab < 0 && root.rail-focused && root.key-tab == index);
+
                 x: 8px;
                 y: root.tab-top + (root.tab-hit + root.tab-gap) * index;
                 width: root.tab-hit-w;
                 height: root.tab-hit;
                 border-radius: 12px;
+                border-width: root.rail-focused && root.hover-tab < 0 && root.key-tab == index ? 1px : 0px;
+                border-color: c.accent;
                 background: index == root.tab ? c.selection : tab-touch.has-hover ? c.hover : transparent;
 
-                if index == root.tab: Rectangle {
+                if index == root.tab && !show-name: Rectangle {
                     x: 4px;
                     y: (parent.height - 14px) / 2;
                     width: 3px;
@@ -377,10 +402,10 @@ export component Panel inherits Window {
                 }
 
                 Path {
-                    x: (parent.width - 20px) / 2;
-                    y: (parent.height - 20px) / 2;
-                    width: 20px;
-                    height: 20px;
+                    x: show-name ? parent.width - 16px : (parent.width - 20px) / 2;
+                    y: show-name ? (parent.height - 16px) / 2 : (parent.height - 20px) / 2;
+                    width: show-name ? 16px : 20px;
+                    height: show-name ? 16px : 20px;
                     viewbox-width: 16;
                     viewbox-height: 16;
                     fill: transparent;
@@ -395,7 +420,7 @@ export component Panel inherits Window {
 
                 tab-touch := TouchArea {
                     accessible-role: button;
-                    accessible-label: name;
+                    accessible-label: index == root.tab ? name + "，当前页" : name;
                     changed has-hover => {
                         if self.has-hover {
                             root.hover-tab = index;
@@ -408,6 +433,15 @@ export component Panel inherits Window {
                         root.tab-selected(index);
                     }
                 }
+            }
+
+            tab-name := Text {
+                visible: root.shown-tab-name != "";
+                x: 2px;
+                y: root.tab-top + root.tab-stride * (root.hover-tab >= 0 ? root.hover-tab : root.key-tab) + (root.tab-hit - self.preferred-height) / 2;
+                text: root.shown-tab-name;
+                color: c.ink;
+                font-size: 12px;
             }
 
             Rectangle {
@@ -1266,25 +1300,5 @@ export component Panel inherits Window {
                 }
             }
 
-            // 标签名称盖在内容区上。
-            if root.shown-tab-name != "": Rectangle {
-                property <int> tip-index: root.hover-tab >= 0 ? root.hover-tab : root.key-tab;
-                x: root.spine-width + 8px;
-                y: root.tab-top + root.tab-stride * tip-index + (root.tab-hit - self.height) / 2;
-                width: tab-tip.preferred-width + 16px;
-                height: 32px;
-                border-radius: 6px;
-                background: c.field;
-                border-width: 1px;
-                border-color: c.divider;
-
-                tab-tip := Text {
-                    x: 8px;
-                    y: (parent.height - self.preferred-height) / 2;
-                    text: root.shown-tab-name;
-                    color: c.ink;
-                    font-size: 12px;
-                }
-            }
         }
     }

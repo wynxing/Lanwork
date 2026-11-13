@@ -220,6 +220,8 @@ impl RefsView {
                     icon: icon.cloned().unwrap_or_default(),
                     has_icon: icon.is_some(),
                     missing: !line.web && self.is_missing(&line.key),
+                    web: line.web,
+                    folder: line.folder,
                     selected: self.row_selected(line),
                 }
             })
