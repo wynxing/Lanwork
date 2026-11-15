@@ -668,49 +668,54 @@ impl Live {
     }
 
     fn write_shown(&self, page: &StackPage, shown: bool) -> bool {
-        let changed = match page {
-            StackPage::Note(id) => self.notes.as_ref().and_then(|notes| {
+        match page {
+            StackPage::Note(id) => {
+                let Some(notes) = self.notes.as_ref() else {
+                    return false;
+                };
                 let current = notes.get(id).ok().and_then(|note| note.float_shown);
                 if current == Some(shown) {
-                    return Some(false);
+                    return false;
                 }
                 match notes.set_shown(id, shown) {
-                    Ok(_) => Some(true),
+                    Ok(_) => true,
                     Err(err) => {
                         self.store
                             .log_warn(&format!("悬浮窗没有记下 {}：{err}", page_label(page)));
-                        Some(false)
+                        false
                     }
                 }
-            }),
-            StackPage::Shelf(id) => self.shelves.as_ref().and_then(|shelves| {
+            }
+            StackPage::Shelf(id) => {
+                let Some(shelves) = self.shelves.as_ref() else {
+                    return false;
+                };
                 let current = shelves.get(id).ok().and_then(|group| group.float_shown);
                 if current == Some(shown) {
-                    return Some(false);
+                    return false;
                 }
                 match shelves.set_shown(id, shown) {
-                    Ok(_) => Some(true),
+                    Ok(_) => true,
                     Err(err) => {
                         self.store
                             .log_warn(&format!("悬浮窗没有记下 {}：{err}", page_label(page)));
-                        Some(false)
+                        false
                     }
                 }
-            }),
+            }
             StackPage::Todo => match self.todos.read_float_window() {
-                Ok(FloatWindowFile::Record(record)) if record.shown == Some(shown) => Some(false),
-                Ok(FloatWindowFile::UnsupportedSchema) => Some(false),
+                Ok(FloatWindowFile::Record(record)) if record.shown == Some(shown) => false,
+                Ok(FloatWindowFile::UnsupportedSchema) => false,
                 _ => match self.todos.set_float_shown(shown) {
-                    Ok(()) => Some(true),
+                    Ok(()) => true,
                     Err(err) => {
                         self.store.log_warn(&format!("悬浮窗没有记下 todo：{err}"));
-                        Some(false)
+                        false
                     }
                 },
             },
-            StackPage::Tool(id) => Some(float_shell::record_open(&self.store, id, shown)),
-        };
-        changed.unwrap_or(false)
+            StackPage::Tool(id) => float_shell::record_open(&self.store, id, shown),
+        }
     }
 
     fn ensure_loaded(&mut self, page: &StackPage) {
