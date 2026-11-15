@@ -17,7 +17,8 @@
 //! 模式函数最多嵌套 8 层。`xpcall` 和 `table.sort` 再进 Lua 时还有一层重入上限，避免把 Rust 栈撑爆。
 //! 文本、模式和 `string.rep` 的结果另有临时长度上限。不带比较函数的 `table.sort` 在元素过多时拒绝。这些不是产品规则。
 //! HTTP 在另一条线程上连接和读取。产品界面把 `wait_for_http` 设成假，回调返回后不等传输。
-//! `poll_http` 取已经回来的结果；超过等待上限的在轮询里记成失败，不占用界面线程。
+//! `poll_http` 按发出的顺序取已经回来的结果。前面还在飞时，后面已经回来的先留着。
+//! 超过等待上限的在轮询里记成失败，然后才看下一条，不占用界面线程。
 //! 等待上限的秒数仍待定，这次默认 5 秒。测试里的 `wait_for_http` 仍可以等。
 
 use std::cell::RefCell;
@@ -559,16 +560,18 @@ impl Session {
         self.drop_inflight();
     }
 
-    /// 取已经回来的响应。还在等的留在队列里，不阻塞。
-    /// 超过等待上限的记成失败。一次最多结算 [`HTTP_DRAIN_ROUNDS`] 条，其余留给下一次。
+    /// 按发出的顺序取已经回来的响应。前面还在飞时，后面已经回来的先留着，不阻塞。
+    /// 超过等待上限的记成失败，然后才看下一条。一次最多结算 [`HTTP_DRAIN_ROUNDS`] 条。
     pub fn poll_http(&self) {
         let budget = self.http_budget;
         let now = Instant::now();
+        let limit = usize::try_from(HTTP_DRAIN_ROUNDS).unwrap_or(8);
         let batch = std::mem::take(&mut self.inner.borrow_mut().inflight);
         let mut waiting = Vec::new();
         let mut ready = Vec::new();
+        let mut blocked = false;
         for item in batch {
-            if ready.len() >= usize::try_from(HTTP_DRAIN_ROUNDS).unwrap_or(8) {
+            if blocked || ready.len() >= limit {
                 waiting.push(item);
                 continue;
             }
@@ -576,6 +579,7 @@ impl Session {
                 Err(mpsc::TryRecvError::Empty)
                     if now.saturating_duration_since(item.started) < budget =>
                 {
+                    blocked = true;
                     waiting.push(item);
                 }
                 Err(mpsc::TryRecvError::Empty) => {
