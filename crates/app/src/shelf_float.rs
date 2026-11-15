@@ -366,6 +366,7 @@ impl Floats {
             if !window.closed {
                 window.parked = false;
                 window.raise();
+                admit(&self.shelves, &self.store, group_id);
                 notify_opened(group_id);
                 return Ok(());
             }
@@ -470,8 +471,20 @@ impl Floats {
         window.push();
         window.refresh_links(&self.todos, &self.store);
         self.windows.insert(group_id.to_owned(), window);
+        admit(&self.shelves, &self.store, group_id);
         notify_opened(group_id);
         Ok(())
+    }
+}
+
+fn admit(shelves: &lanwork_core::shelves::ShelfCommands, store: &Store, id: &str) {
+    let shown = shelves.get(id).ok().and_then(|group| group.float_shown);
+    if shown == Some(true) {
+        return;
+    }
+    match shelves.set_shown(id, true) {
+        Ok(_) => store.log_info(&format!("悬浮窗留下 shelf:{id}")),
+        Err(err) => store.log_warn(&format!("悬浮窗没有记下 shelf:{id}：{err}")),
     }
 }
 
@@ -1264,6 +1277,7 @@ impl FloatWindow {
         }
         self.last = Some(self.session.saved());
         self.closed = true;
+        crate::float_group::user_dismissed(StackPage::Shelf(id.clone()));
         let _ = self.ui.hide();
         let closed = id.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {

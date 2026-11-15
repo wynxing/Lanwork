@@ -328,6 +328,7 @@ impl Floats {
             if !window.closed {
                 window.parked = false;
                 window.raise();
+                admit(&self.notes, &self.store, note_id);
                 notify_opened(note_id);
                 return Ok(());
             }
@@ -425,8 +426,20 @@ impl Floats {
                 report: false,
             },
         );
+        admit(&self.notes, &self.store, note_id);
         notify_opened(note_id);
         Ok(())
+    }
+}
+
+fn admit(notes: &lanwork_core::notes::NoteCommands, store: &Store, id: &str) {
+    let shown = notes.get(id).ok().and_then(|note| note.float_shown);
+    if shown == Some(true) {
+        return;
+    }
+    match notes.set_shown(id, true) {
+        Ok(_) => store.log_info(&format!("悬浮窗留下 note:{id}")),
+        Err(err) => store.log_warn(&format!("悬浮窗没有记下 note:{id}：{err}")),
     }
 }
 
@@ -953,6 +966,7 @@ impl FloatWindow {
         }
         self.last = Some(self.session.saved());
         self.closed = true;
+        crate::float_group::user_dismissed(StackPage::Note(id.clone()));
         let _ = self.ui.hide();
         let closed = id.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {

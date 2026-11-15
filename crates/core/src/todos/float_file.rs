@@ -28,6 +28,8 @@ pub struct FloatWindowRecord {
     pub geometry: Option<FloatGeometry>,
     pub dock: Option<FloatDock>,
     pub stack: Option<FloatStackSlot>,
+    /// 上次是否留在看得见的那一组里。缺了不自动打开。
+    pub shown: Option<bool>,
 }
 
 /// 这份文件的读取结果。清单是否打得开与此无关。
@@ -75,6 +77,8 @@ struct OnDisk {
     dock: Option<FloatDock>,
     #[serde(rename = "floatStack", skip_serializing_if = "Option::is_none")]
     stack: Option<FloatStackSlot>,
+    #[serde(rename = "floatShown", skip_serializing_if = "Option::is_none")]
+    shown: Option<bool>,
 }
 
 enum Loaded {
@@ -126,6 +130,21 @@ pub(crate) fn set_stack(
     }
     let mut next = cache.record.clone();
     next.stack = slot;
+    write(store, &mut cache, &next)
+}
+
+/// 记下下次要不要打开。位置、贴边和叠页不动。值没变不写盘。
+pub(crate) fn set_shown(store: &Store, cache: &Mutex<Cache>, shown: bool) -> Result<(), TodoError> {
+    let mut cache = lock_mutex(cache);
+    ensure(&mut cache, store)?;
+    if cache.refused {
+        return Err(TodoError::FloatSchema);
+    }
+    if cache.record.shown == Some(shown) {
+        return Ok(());
+    }
+    let mut next = cache.record.clone();
+    next.shown = Some(shown);
     write(store, &mut cache, &next)
 }
 
@@ -209,6 +228,7 @@ fn parse(bytes: &[u8]) -> Result<Parse, serde_json::Error> {
         geometry: obj.get("floatWindow").and_then(geometry_of),
         dock: obj.get("floatDock").and_then(FloatDock::from_json),
         stack: obj.get("floatStack").and_then(FloatStackSlot::from_json),
+        shown: obj.get("floatShown").and_then(Value::as_bool),
     }))
 }
 
@@ -228,6 +248,7 @@ fn write(store: &Store, cache: &mut Cache, record: &FloatWindowRecord) -> Result
         geometry: record.geometry,
         dock: record.dock,
         stack: record.stack.clone(),
+        shown: record.shown,
     };
     let mut bytes =
         serde_json::to_vec(&on_disk).map_err(|_| TodoError::Storage(StorageError::Encode))?;

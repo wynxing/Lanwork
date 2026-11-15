@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::notes::{FloatDock, FloatGeometry, FloatStackSlot, flexible_dock, flexible_stack};
+use crate::notes::{
+    FloatDock, FloatGeometry, FloatStackSlot, flexible_dock, flexible_shown, flexible_stack,
+};
 use crate::storage::{SCHEMA_VERSION, is_supported_schema};
 
 use super::error::ShelfError;
@@ -38,6 +40,9 @@ pub struct Shelf {
     pub float_dock: Option<FloatDock>,
     /// 叠页。没有记录时不在任何一叠里。
     pub float_stack: Option<FloatStackSlot>,
+    /// 上次是否留在看得见的那一组里。收成把手也算。
+    /// `None` 是旧文件没有这一项，不自动打开。
+    pub float_shown: Option<bool>,
 }
 
 /// 一条路径引用。不包含文件内容。
@@ -150,6 +155,13 @@ pub(crate) struct ShelfFile {
         deserialize_with = "flexible_stack"
     )]
     float_stack: Option<FloatStackSlot>,
+    #[serde(
+        rename = "floatShown",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_shown"
+    )]
+    float_shown: Option<bool>,
     /// 旧的逐窗钉住。读进来就丢掉，不再写回。
     #[serde(rename = "floatPinned", default, skip_serializing)]
     _legacy_float_pinned: bool,
@@ -194,6 +206,7 @@ impl ShelfFile {
             float: shelf.float,
             float_dock: shelf.float_dock,
             float_stack: shelf.float_stack.clone(),
+            float_shown: shelf.float_shown,
             _legacy_float_pinned: false,
             refs: shelf
                 .refs
@@ -281,6 +294,7 @@ impl ShelfFile {
             float: self.float,
             float_dock: self.float_dock,
             float_stack: self.float_stack,
+            float_shown: self.float_shown,
         })
     }
 }

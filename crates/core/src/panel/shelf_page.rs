@@ -215,6 +215,7 @@ mod tests {
             float: None,
             float_dock: None,
             float_stack: None,
+            float_shown: None,
         }
     }
 

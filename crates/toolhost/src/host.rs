@@ -16,7 +16,9 @@
 //! `gsub` 各层还没交还的结果缓冲区加在一起，跟 Lua 已用内存计入同一块 16 MiB 预算；超过则这次调用报错，不置中止标记。复制大约每 64 KiB 再看一次截止时间。
 //! 模式函数最多嵌套 8 层。`xpcall` 和 `table.sort` 再进 Lua 时还有一层重入上限，避免把 Rust 栈撑爆。
 //! 文本、模式和 `string.rep` 的结果另有临时长度上限。不带比较函数的 `table.sort` 在元素过多时拒绝。这些不是产品规则。
-//! HTTP 在另一条线程上连接和读取。脚本回调返回之后，宿主才按等待上限取结果并调用 Lua。等待上限的秒数仍待定，这次默认 5 秒。
+//! HTTP 在另一条线程上连接和读取。产品界面把 `wait_for_http` 设成假，回调返回后不等传输。
+//! `poll_http` 取已经回来的结果；超过等待上限的在轮询里记成失败，不占用界面线程。
+//! 等待上限的秒数仍待定，这次默认 5 秒。测试里的 `wait_for_http` 仍可以等。
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -140,6 +142,8 @@ pub struct Options {
     pub login_roots: Option<LoginRoots>,
     /// Lanwork 正在使用的数据目录。登录文件解析进这里时拒绝。空着仍拒绝默认的 `Documents/Lanwork`。
     pub data_dir: Option<std::path::PathBuf>,
+    /// 为真时，回调在返回前等传输。产品界面必须设成假，只轮询。
+    pub wait_for_http: bool,
 }
 
 impl Default for Options {
@@ -155,6 +159,7 @@ impl Default for Options {
             complete_todo: None,
             login_roots: None,
             data_dir: None,
+            wait_for_http: true,
         }
     }
 }
@@ -233,6 +238,7 @@ struct Inner {
     transport: Arc<dyn HttpTransport>,
     http_sends: u32,
     inflight: Vec<Inflight>,
+    http_notes: Vec<String>,
     persist_storage: Option<StoragePersist>,
     complete_todo: Option<TodoComplete>,
     login_roots: Option<LoginRoots>,
@@ -261,6 +267,7 @@ struct Inflight {
     rx: mpsc::Receiver<FlightOutcome>,
     callbacks: Vec<RegistryKey>,
     kind: FlightKind,
+    started: Instant,
 }
 
 pub struct Session {
@@ -268,6 +275,7 @@ pub struct Session {
     limit: Arc<Limit>,
     lua: Lua,
     http_budget: Duration,
+    wait_for_http: bool,
 }
 
 fn manifest_open_error(reason: String) -> String {
@@ -335,6 +343,7 @@ impl Session {
             transport: options.transport,
             http_sends: 0,
             inflight: Vec::new(),
+            http_notes: Vec::new(),
             persist_storage: options.persist_storage,
             complete_todo: options.complete_todo,
             login_roots: options.login_roots,
@@ -348,6 +357,7 @@ impl Session {
             limit,
             lua,
             http_budget: options.http_budget,
+            wait_for_http: options.wait_for_http,
         };
         session.arm();
         let loaded = session.lua.load(&script).set_name("main.lua").exec();
@@ -357,7 +367,9 @@ impl Session {
             return Err(timeout_text(line));
         }
         loaded.map_err(|err| format!("脚本错误：{}", display_error(&err)))?;
-        session.drain_http();
+        if session.wait_for_http {
+            session.drain_http();
+        }
         Ok(session)
     }
 
@@ -472,7 +484,7 @@ impl Session {
     where
         A: mlua::IntoLuaMulti,
     {
-        self.invoke(name, args, true);
+        self.invoke(name, args, self.wait_for_http);
     }
 
     fn invoke<A>(&self, name: &str, args: A, drain: bool)
@@ -548,13 +560,27 @@ impl Session {
     }
 
     /// 取已经回来的响应。还在等的留在队列里，不阻塞。
+    /// 超过等待上限的记成失败。一次最多结算 [`HTTP_DRAIN_ROUNDS`] 条，其余留给下一次。
     pub fn poll_http(&self) {
+        let budget = self.http_budget;
+        let now = Instant::now();
         let batch = std::mem::take(&mut self.inner.borrow_mut().inflight);
         let mut waiting = Vec::new();
         let mut ready = Vec::new();
         for item in batch {
+            if ready.len() >= usize::try_from(HTTP_DRAIN_ROUNDS).unwrap_or(8) {
+                waiting.push(item);
+                continue;
+            }
             match item.rx.try_recv() {
-                Err(mpsc::TryRecvError::Empty) => waiting.push(item),
+                Err(mpsc::TryRecvError::Empty)
+                    if now.saturating_duration_since(item.started) < budget =>
+                {
+                    waiting.push(item);
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ready.push((item, Err(mpsc::RecvTimeoutError::Timeout)));
+                }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     ready.push((item, Err(mpsc::RecvTimeoutError::Disconnected)));
                 }
@@ -572,12 +598,27 @@ impl Session {
         }
     }
 
+    /// 还有没结算的请求。界面只在这时做短轮询。
+    #[must_use]
+    pub fn http_pending(&self) -> bool {
+        !self.inner.borrow().inflight.is_empty()
+    }
+
+    /// 取走刷新记录。只有工具 id、耗时和结果，没有网址、正文或密钥。
+    pub fn take_http_notes(&self) -> Vec<String> {
+        std::mem::take(&mut self.inner.borrow_mut().http_notes)
+    }
+
     fn settle_http(&self, item: Inflight, response: Result<FlightOutcome, mpsc::RecvTimeoutError>) {
+        let started = item.started;
         match item.kind {
             FlightKind::Http {
                 secrets,
                 header_values,
-            } => self.settle_tool_http(item.callbacks, secrets, header_values, response),
+            } => {
+                let ok = self.settle_tool_http(item.callbacks, secrets, header_values, response);
+                self.note_refresh(started, ok);
+            }
             FlightKind::Login {
                 tool_id,
                 id,
@@ -594,20 +635,30 @@ impl Session {
         }
     }
 
+    fn note_refresh(&self, started: Instant, ok: bool) {
+        let id = self.inner.borrow().manifest.id.clone();
+        let result = if ok { "完成" } else { "失败" };
+        let line = format!(
+            "工具刷新 id={id} 耗时={}ms 结果={result}",
+            started.elapsed().as_millis()
+        );
+        self.inner.borrow_mut().http_notes.push(line);
+    }
+
     fn settle_tool_http(
         &self,
         callbacks: Vec<RegistryKey>,
         secrets: Vec<String>,
         header_values: Vec<String>,
         response: Result<FlightOutcome, mpsc::RecvTimeoutError>,
-    ) {
+    ) -> bool {
         let Some(key) = callbacks.into_iter().next() else {
-            return;
+            return false;
         };
         let callback = self.lua.registry_value::<Function>(&key).ok();
         self.lua.remove_registry_value(key).ok();
         let Some(callback) = callback else {
-            return;
+            return false;
         };
         let http = match response {
             Ok(FlightOutcome::Http(result)) => result,
@@ -642,6 +693,7 @@ impl Session {
             || deliver(&self.lua, &callback, ok, status, &body, &error),
             false,
         );
+        ok
     }
 
     fn settle_login(
@@ -1604,6 +1656,7 @@ fn http_request(
                     secrets,
                     header_values,
                 },
+                started: Instant::now(),
             });
             Ok(())
         }
@@ -1727,6 +1780,7 @@ fn queue_login(
             fingerprint,
             remember,
         },
+        started: Instant::now(),
     });
     Ok(())
 }
@@ -1799,6 +1853,7 @@ fn spawn_login(
             fingerprint,
             remember: true,
         },
+        started: Instant::now(),
     });
     Ok(())
 }

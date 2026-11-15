@@ -100,6 +100,7 @@ impl NoteService {
             float: None,
             float_dock: None,
             float_stack: None,
+            float_shown: None,
         };
         self.persist(note)
     }
@@ -164,6 +165,21 @@ impl NoteService {
             return Ok(next);
         }
         next.float_stack = slot;
+        self.persist(next)
+    }
+
+    /// 记下这一篇是否留在下次要打开的那一组里。
+    ///
+    /// 不改正文、`revision`、`updatedAt`、位置和叠页。值没有变化时不写盘。
+    /// `None` 只在读入旧文件时出现；调用方写下的是 `Some`。
+    pub fn set_shown(&self, id: &str, shown: bool) -> Result<Note, NoteError> {
+        self.check_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        let mut next = self.cached(id)?;
+        if next.float_shown == Some(shown) {
+            return Ok(next);
+        }
+        next.float_shown = Some(shown);
         self.persist(next)
     }
 

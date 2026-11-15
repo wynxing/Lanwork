@@ -59,6 +59,12 @@ impl NoteCommands {
         self.service.set_stack(id, slot)
     }
 
+    /// 记下这一篇下次要不要打开。见 [`NoteService::set_shown`]。
+    pub fn set_shown(&self, id: &str, shown: bool) -> Result<Note, NoteError> {
+        self.service.check_id(id)?;
+        self.service.set_shown(id, shown)
+    }
+
     pub fn set_pinned(&self, id: &str, revision: u64, pinned: bool) -> Result<Note, NoteError> {
         self.service.check_id(id)?;
         self.service.set_pinned(id, revision, pinned)

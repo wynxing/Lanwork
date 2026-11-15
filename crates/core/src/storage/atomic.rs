@@ -186,4 +186,17 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"two");
         assert!(!temp.path().join("item.json.tmp").exists());
     }
+
+    #[test]
+    fn aborted_replace_keeps_the_previous_snapshot_readable() {
+        let temp = TempDir::new();
+        let dest = temp.path().join("item.json");
+        atomic_write(&dest, b"{\"body\":\"kept\"}").unwrap();
+        set_before_replace(Some(std::sync::Arc::new(|| false)));
+        let err = atomic_write(&dest, b"{\"body\":\"new\"}").unwrap_err();
+        set_before_replace(None);
+        assert!(is_replace_aborted(&err));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"{\"body\":\"kept\"}");
+        assert!(!temp.path().join("item.json.tmp").exists());
+    }
 }

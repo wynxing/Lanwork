@@ -263,6 +263,11 @@ impl TodoCommands {
         super::float_file::set_stack(&self.service.store(), &self.service.float_cache, slot)
     }
 
+    /// 记下悬浮窗下次要不要打开。不改位置，也不改待办。值没变不写盘。
+    pub fn set_float_shown(&self, shown: bool) -> Result<(), TodoError> {
+        super::float_file::set_shown(&self.service.store(), &self.service.float_cache, shown)
+    }
+
     #[cfg(test)]
     pub fn float_file_writes(&self) -> u64 {
         super::float_file::write_count(&self.service.float_cache)

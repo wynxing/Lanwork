@@ -1112,6 +1112,186 @@ end
     assert!(!caption(&session, "out").contains("late"));
 }
 
+#[test]
+fn slow_click_returns_before_the_budget_and_a_late_result_stays_on_that_session() {
+    let dir = Scratch::new("slow-click");
+    write_tool(
+        &dir,
+        &tool(
+            "example.slowclick",
+            "\"http\"",
+            "[http]\ndomains = [\"api.example.com\"]\n",
+            &text_widgets(&["go", "out"]),
+        ),
+        r#"
+function on_click(id)
+  ui.text("go", id)
+  http.request({ method = "GET", url = "https://api.example.com/v1" }, function(result)
+    ui.text("out", (result.body or "") .. (result.error or ""))
+  end)
+end
+"#,
+    );
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let transport = Arc::new(SlowTransport {
+        pair: Arc::clone(&pair),
+    });
+    let mut options = Options::default();
+    options.transport = transport;
+    options.http_budget = Duration::from_millis(200);
+    options.wait_for_http = false;
+    let session = open_at(&dir, options).unwrap();
+    let started = Instant::now();
+    session.click("go");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(50),
+        "按钮不应等满传输时限，实际 {} ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(caption(&session, "out"), "");
+    session.poll_http();
+    assert_eq!(caption(&session, "out"), "", "还没回来时不写结果");
+    {
+        let (lock, cv) = &*pair;
+        *lock.lock().expect("锁") = true;
+        cv.notify_one();
+    }
+    let ready = Instant::now();
+    while caption(&session, "out").is_empty() && ready.elapsed() < Duration::from_millis(500) {
+        session.poll_http();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(caption(&session, "out"), "late");
+    let notes = session.take_http_notes();
+    assert!(
+        notes
+            .iter()
+            .any(|line| line.contains("id=example.slowclick") && line.contains("结果=完成")),
+        "{notes:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .all(|line| !line.contains("api.example") && !line.contains("late")),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn timed_out_poll_does_not_block_and_a_dropped_session_drops_the_late_body() {
+    let dir = Scratch::new("slow-drop");
+    write_tool(
+        &dir,
+        &tool(
+            "example.slowdrop",
+            "\"http\"",
+            "[http]\ndomains = [\"api.example.com\"]\n",
+            &text_widgets(&["out"]),
+        ),
+        r#"
+function on_click()
+  http.request({ method = "GET", url = "https://api.example.com/v1" }, function(result)
+    ui.text("out", (result.body or "") .. (result.error or ""))
+  end)
+end
+"#,
+    );
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let mut options = Options::default();
+    options.transport = Arc::new(SlowTransport {
+        pair: Arc::clone(&pair),
+    });
+    options.http_budget = Duration::ZERO;
+    options.wait_for_http = false;
+    let session = open_at(&dir, options).unwrap();
+    let started = Instant::now();
+    session.click("go");
+    session.poll_http();
+    assert!(
+        started.elapsed() < Duration::from_millis(50),
+        "轮询超时不应等传输，实际 {} ms",
+        started.elapsed().as_millis()
+    );
+    assert_eq!(caption(&session, "out"), "请求失败");
+    {
+        let (lock, cv) = &*pair;
+        *lock.lock().expect("锁") = true;
+        cv.notify_all();
+    }
+    session.poll_http();
+    assert_eq!(
+        caption(&session, "out"),
+        "请求失败",
+        "到点之后的正文不再写回"
+    );
+
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let mut options = Options::default();
+    options.transport = Arc::new(SlowTransport {
+        pair: Arc::clone(&pair),
+    });
+    options.wait_for_http = false;
+    let session = open_at(&dir, options).unwrap();
+    session.click("go");
+    drop(session);
+    {
+        let (lock, cv) = &*pair;
+        *lock.lock().expect("锁") = true;
+        cv.notify_all();
+    }
+    let mut options = Options::default();
+    options.wait_for_http = false;
+    let other = open_at(&dir, options).unwrap();
+    other.poll_http();
+    assert_eq!(caption(&other, "out"), "");
+}
+
+#[test]
+fn repeated_clicks_keep_callback_order_without_waiting() {
+    let dir = Scratch::new("slow-order");
+    write_tool(
+        &dir,
+        &tool(
+            "example.sloworder",
+            "\"http\"",
+            "[http]\ndomains = [\"api.example.com\"]\n",
+            &text_widgets(&["out"]),
+        ),
+        r#"
+seq = ""
+function on_click(id)
+  http.request({ method = "GET", url = "https://api.example.com/" .. id }, function()
+    seq = seq .. id
+    ui.text("out", seq)
+  end)
+end
+"#,
+    );
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let mut options = Options::default();
+    options.transport = Arc::new(SlowTransport {
+        pair: Arc::clone(&pair),
+    });
+    options.wait_for_http = false;
+    let session = open_at(&dir, options).unwrap();
+    let started = Instant::now();
+    session.click("a");
+    session.click("b");
+    assert!(started.elapsed() < Duration::from_millis(50));
+    {
+        let (lock, cv) = &*pair;
+        *lock.lock().expect("锁") = true;
+        cv.notify_all();
+    }
+    let ready = Instant::now();
+    while caption(&session, "out") != "ab" && ready.elapsed() < Duration::from_millis(500) {
+        session.poll_http();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(caption(&session, "out"), "ab");
+}
+
 struct SlowTransport {
     pair: Arc<(Mutex<bool>, Condvar)>,
 }

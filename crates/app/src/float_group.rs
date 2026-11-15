@@ -1,8 +1,8 @@
 //! 便签、收纳、待办和工具悬浮窗的叠页。几何在 `lanwork_core::panel::float_stack`，这里只接窗口。
 //!
 //! 一叠同一时刻只显示一页。其余页的窗口藏着，不释放。彩色圆点挂在边框外，与窗口左边缘对齐。
-//! 关掉窗口不拆叠，成员还在文件里；再悬浮时用记下的当前页和贴边。
-//! 启动时按文件里的 `floatStack` 合成一叠，只打开当前页。
+//! 关掉窗口不删成员和位置，并马上记成下次不打开。
+//! 启动时只打开上次还留在屏幕上的窗口；收成把手也算。单独一页同样恢复。
 //! 下面没写进产品规格的做法都待定。
 
 use std::cell::{Cell, RefCell};
@@ -11,11 +11,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lanwork_core::notes::{FloatGeometry, FloatStackSlot, NoteCommands};
 use lanwork_core::panel::{
-    DockState, DragOrigin, DropEffect, DropInput, Flip, OtherFloat, PageStack, PxBox, StackMember,
-    StackPage, StartupPage, assemble_stacks, collapsed_handles_close, detach_page, dock_merge_gap,
-    dot_row_size, dpi_at, filter_open_pages, fit_dot_row, flip_index, handle_dot_count,
-    merge_stacks, moved_enough, pages_to_park, plan_startup, restore_log_line, snap_on_release,
-    stack_drop_effect,
+    DockState, DragOrigin, DropEffect, DropInput, Flip, OtherFloat, PageStack, PxBox,
+    SessionCandidate, StackMember, StackPage, assemble_stacks, collapsed_handles_close,
+    detach_page, dock_merge_gap, dot_row_size, dpi_at, filter_open_pages, fit_dot_row, flip_index,
+    handle_dot_count, merge_stacks, moved_enough, pages_to_park, plan_session,
+    remember_user_dismiss, restore_log_line, snap_on_release, stack_drop_effect,
 };
 use lanwork_core::shelves::ShelfCommands;
 use lanwork_core::storage::Store;
@@ -120,10 +120,32 @@ pub(crate) fn page_moved(page: StackPage) {
 }
 
 pub(crate) fn page_closed(page: StackPage) {
+    user_dismissed(page.clone());
     with_live(|live| {
         live.shown.remove(&page);
         live.sync_tabs();
     });
+}
+
+fn page_label(page: &StackPage) -> String {
+    match page {
+        StackPage::Note(id) => format!("note:{id}"),
+        StackPage::Shelf(id) => format!("shelf:{id}"),
+        StackPage::Todo => "todo".to_owned(),
+        StackPage::Tool(id) => format!("tool:{id}"),
+    }
+}
+
+/// 用户关掉窗口时马上把这一页，以及还叠在一起的各页，记成下次不打开。
+///
+/// 退出过程中的销毁不是用户关掉。成员和位置留在文件里。
+pub(crate) fn user_dismissed(page: StackPage) {
+    if !remember_user_dismiss(crate::host::quit_in_progress())
+        || float_shell::session_writes_frozen()
+    {
+        return;
+    }
+    with_live(|live| live.record_user_dismiss(&page));
 }
 
 /// 钉住变了，或窗口句柄刚就绪。当前页是这个工具时，让页点跟它的层次。
@@ -515,7 +537,7 @@ impl Live {
         }
     }
 
-    /// 启动时把记过叠页的悬浮窗合成一叠，只打开当前页。单独一页的不打开。
+    /// 启动时打开上次还留在屏幕上的窗口。还原本身不把记录再写一遍。
     fn restore_saved(&mut self) {
         if self.notes.is_none() {
             self.store.log_warn("便签服务没有打开，叠页还原看不到便签");
@@ -523,10 +545,11 @@ impl Live {
         if self.shelves.is_none() {
             self.store.log_warn("收纳服务没有打开，叠页还原看不到收纳");
         }
-        let Some(pages) = self.startup_pages() else {
+        let Some(candidates) = self.session_candidates() else {
             return;
         };
-        for item in plan_startup(&pages) {
+        let plan = plan_session(&candidates);
+        for item in plan.stacks {
             self.clear_trashed_slots(&item.stack.id);
             let saved = SavedFloat {
                 geometry: item.geometry,
@@ -534,7 +557,6 @@ impl Live {
             };
             self.store_stack(&item.stack);
             if self.reveal(&item.stack, saved) {
-                self.persist(&item.stack, saved);
                 self.store.log_info(&restore_log_line(
                     &item.stack.id,
                     item.stack.pages.len(),
@@ -545,8 +567,20 @@ impl Live {
                     .log_warn(&format!("叠页没有还原：{}", item.stack.id));
             }
         }
+        for solo in plan.solos {
+            self.open_saved_solo(&solo);
+        }
         self.sync_tabs();
         self.reopen_tool_orphans();
+    }
+
+    fn open_saved_solo(&mut self, solo: &SessionCandidate) -> bool {
+        match &solo.page {
+            StackPage::Note(id) => note_float::open(id).is_ok(),
+            StackPage::Shelf(id) => shelf_float::open(id).is_ok(),
+            StackPage::Todo => todo_float::open().is_ok(),
+            StackPage::Tool(id) => float_shell::open_tool(id).is_ok(),
+        }
     }
 
     fn reopen_tool_orphans(&self) {
@@ -561,32 +595,30 @@ impl Live {
         float_shell::reopen_orphans(&stacked);
     }
 
-    fn startup_pages(&self) -> Option<Vec<StartupPage>> {
+    fn session_candidates(&self) -> Option<Vec<SessionCandidate>> {
         let mut pages = Vec::new();
         if let Some(notes) = &self.notes {
             for note in notes.list() {
-                if let Some(slot) = note.float_stack {
-                    pages.push(StartupPage {
-                        page: StackPage::Note(note.id),
-                        slot,
-                        geometry: note.float,
-                        dock: note.float_dock,
-                    });
-                }
+                pages.push(SessionCandidate {
+                    page: StackPage::Note(note.id),
+                    slot: note.float_stack,
+                    geometry: note.float,
+                    dock: note.float_dock,
+                    shown: note.float_shown == Some(true),
+                });
             }
         }
         if let Some(shelves) = &self.shelves {
             match shelves.list() {
                 Ok(groups) => {
                     for group in groups {
-                        if let Some(slot) = group.float_stack {
-                            pages.push(StartupPage {
-                                page: StackPage::Shelf(group.id),
-                                slot,
-                                geometry: group.float,
-                                dock: group.float_dock,
-                            });
-                        }
+                        pages.push(SessionCandidate {
+                            page: StackPage::Shelf(group.id),
+                            slot: group.float_stack,
+                            geometry: group.float,
+                            dock: group.float_dock,
+                            shown: group.float_shown == Some(true),
+                        });
                     }
                 }
                 Err(err) => {
@@ -598,14 +630,13 @@ impl Live {
         }
         match self.todos.read_float_window() {
             Ok(FloatWindowFile::Record(record)) => {
-                if let Some(slot) = record.stack {
-                    pages.push(StartupPage {
-                        page: StackPage::Todo,
-                        slot,
-                        geometry: record.geometry,
-                        dock: record.dock,
-                    });
-                }
+                pages.push(SessionCandidate {
+                    page: StackPage::Todo,
+                    slot: record.stack,
+                    geometry: record.geometry,
+                    dock: record.dock,
+                    shown: record.shown == Some(true),
+                });
             }
             Ok(FloatWindowFile::UnsupportedSchema) => {
                 self.store
@@ -616,8 +647,70 @@ impl Live {
                     .log_warn(&format!("待办悬浮窗位置没有读出来，叠页还原跳过它：{err}"));
             }
         }
-        pages.extend(float_shell::startup_pages());
+        pages.extend(float_shell::session_tools());
         Some(pages)
+    }
+
+    fn record_user_dismiss(&mut self, page: &StackPage) {
+        let pages = self
+            .stack_of(page)
+            .map(|stack| stack.pages.clone())
+            .unwrap_or_else(|| vec![page.clone()]);
+        if self.member.contains_key(page) {
+            let _ = self.take_stack(page);
+        }
+        for page in pages {
+            if self.write_shown(&page, false) {
+                self.store
+                    .log_info(&format!("悬浮窗关闭不恢复 {}", page_label(&page)));
+            }
+        }
+    }
+
+    fn write_shown(&self, page: &StackPage, shown: bool) -> bool {
+        let changed = match page {
+            StackPage::Note(id) => self.notes.as_ref().and_then(|notes| {
+                let current = notes.get(id).ok().and_then(|note| note.float_shown);
+                if current == Some(shown) {
+                    return Some(false);
+                }
+                match notes.set_shown(id, shown) {
+                    Ok(_) => Some(true),
+                    Err(err) => {
+                        self.store
+                            .log_warn(&format!("悬浮窗没有记下 {}：{err}", page_label(page)));
+                        Some(false)
+                    }
+                }
+            }),
+            StackPage::Shelf(id) => self.shelves.as_ref().and_then(|shelves| {
+                let current = shelves.get(id).ok().and_then(|group| group.float_shown);
+                if current == Some(shown) {
+                    return Some(false);
+                }
+                match shelves.set_shown(id, shown) {
+                    Ok(_) => Some(true),
+                    Err(err) => {
+                        self.store
+                            .log_warn(&format!("悬浮窗没有记下 {}：{err}", page_label(page)));
+                        Some(false)
+                    }
+                }
+            }),
+            StackPage::Todo => match self.todos.read_float_window() {
+                Ok(FloatWindowFile::Record(record)) if record.shown == Some(shown) => Some(false),
+                Ok(FloatWindowFile::UnsupportedSchema) => Some(false),
+                _ => match self.todos.set_float_shown(shown) {
+                    Ok(()) => Some(true),
+                    Err(err) => {
+                        self.store.log_warn(&format!("悬浮窗没有记下 todo：{err}"));
+                        Some(false)
+                    }
+                },
+            },
+            StackPage::Tool(id) => Some(float_shell::record_open(&self.store, id, shown)),
+        };
+        changed.unwrap_or(false)
     }
 
     fn ensure_loaded(&mut self, page: &StackPage) {
@@ -629,12 +722,38 @@ impl Live {
         };
         self.clear_trashed_slots(&slot.id);
         let members = self.members_with_id(&slot.id);
-        let mut stacks = assemble_stacks(&members);
+        let shown = members
+            .iter()
+            .filter(|member| self.page_is_shown(&member.page))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut stacks = assemble_stacks(&shown);
         if let Some(index) = stacks.iter().position(|stack| stack.pages.contains(page)) {
             let stack = stacks.swap_remove(index);
             self.store_stack(&stack);
-        } else {
+        } else if members.len() < 2 {
             self.write_slot(page, None);
+        }
+    }
+
+    fn page_is_shown(&self, page: &StackPage) -> bool {
+        match page {
+            StackPage::Note(id) => {
+                self.notes
+                    .as_ref()
+                    .and_then(|notes| notes.get(id).ok())
+                    .and_then(|note| note.float_shown)
+                    == Some(true)
+            }
+            StackPage::Shelf(id) => {
+                self.shelves
+                    .as_ref()
+                    .and_then(|shelves| shelves.get(id).ok())
+                    .and_then(|group| group.float_shown)
+                    == Some(true)
+            }
+            StackPage::Todo => self.todo_record().and_then(|record| record.shown) == Some(true),
+            StackPage::Tool(id) => float_shell::file_open(id),
         }
     }
 
@@ -767,6 +886,7 @@ impl Live {
             };
             self.write_float(page, saved);
             self.write_slot(page, Some(slot));
+            let _ = self.write_shown(page, true);
         }
     }
 

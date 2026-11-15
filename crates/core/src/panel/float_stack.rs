@@ -8,6 +8,8 @@
 //! 圆点最多画几个、下方放不下时改挂到上方，规格没有写成唯一做法。
 //! 下面这些仍是当前做法，不是产品规则，待定。
 
+use std::collections::HashSet;
+
 use crate::notes::{DockEdge, FloatDock, FloatGeometry, FloatStackSlot};
 use crate::shell::{WorkArea, to_physical};
 
@@ -456,6 +458,63 @@ pub fn assemble_stacks(members: &[StackMember]) -> Vec<PageStack> {
     }
     stacks.sort_by(|left, right| left.id.cmp(&right.id));
     stacks
+}
+
+/// 启动时读到的一页，不论它有没有叠页。
+///
+/// `shown` 为假时不打开。缺字段的旧数据由调用方传假，避免把历史上的窗口一起打开。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionCandidate {
+    pub page: StackPage,
+    pub slot: Option<FloatStackSlot>,
+    pub geometry: Option<FloatGeometry>,
+    pub dock: Option<FloatDock>,
+    pub shown: bool,
+}
+
+/// 下次要打开的窗口。叠起来的只占一项；单独一页在 `solos`。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRestore {
+    pub stacks: Vec<StackRestore>,
+    pub solos: Vec<SessionCandidate>,
+}
+
+/// 退出过程中销毁窗口不是用户关掉。只有用户关才记下「下次不打开」。
+#[must_use]
+pub fn remember_user_dismiss(quit_in_progress: bool) -> bool {
+    !quit_in_progress
+}
+
+/// 按最后看得见的那一组决定要打开什么。不改传入的记录，也不表示要写盘。
+///
+/// 凑得齐两页的进 `stacks`。其余看得见的页进 `solos`，即使磁盘上还留着叠页成员。
+#[must_use]
+pub fn plan_session(candidates: &[SessionCandidate]) -> SessionRestore {
+    let pages = candidates
+        .iter()
+        .filter(|candidate| candidate.shown)
+        .filter_map(|candidate| {
+            candidate.slot.clone().map(|slot| StartupPage {
+                page: candidate.page.clone(),
+                slot,
+                geometry: candidate.geometry,
+                dock: candidate.dock,
+            })
+        })
+        .collect::<Vec<_>>();
+    let stacks = plan_startup(&pages);
+    let mut covered = HashSet::new();
+    for item in &stacks {
+        for page in &item.stack.pages {
+            covered.insert(page.clone());
+        }
+    }
+    let solos = candidates
+        .iter()
+        .filter(|candidate| candidate.shown && !covered.contains(&candidate.page))
+        .cloned()
+        .collect();
+    SessionRestore { stacks, solos }
 }
 
 /// 启动时把悬浮页按 `floatStack.id` 合成叠。
@@ -1506,5 +1565,218 @@ mod tests {
             "没有位置的页也不丢掉"
         );
         assert_eq!(gapped[0].geometry.x, 1);
+    }
+
+    fn candidate(
+        page: StackPage,
+        stack_id: Option<&str>,
+        index: u32,
+        current: bool,
+        shown: bool,
+    ) -> SessionCandidate {
+        SessionCandidate {
+            page,
+            slot: stack_id.map(|id| slot(id, index, current)),
+            geometry: Some(FloatGeometry {
+                x: 12,
+                y: 24,
+                width: 320,
+                height: 360,
+            }),
+            dock: Some(FloatDock {
+                edge: DockEdge::Top,
+                offset: 8,
+                collapsed: true,
+            }),
+            shown,
+        }
+    }
+
+    #[test]
+    fn closed_stack_is_not_restored_and_solo_shown_window_is() {
+        let closed = [
+            candidate(note("n1"), Some("s1"), 0, true, false),
+            candidate(shelf("g1"), Some("s1"), 1, false, false),
+        ];
+        let before = closed.clone();
+        let plan = plan_session(&closed);
+        assert!(plan.stacks.is_empty(), "关掉的两页叠不该再打开");
+        assert!(plan.solos.is_empty());
+        assert_eq!(closed, before, "选择不改成员和位置");
+
+        let mixed = [
+            candidate(note("n1"), Some("s1"), 0, true, true),
+            candidate(shelf("g1"), Some("s1"), 1, false, false),
+        ];
+        let mixed_plan = plan_session(&mixed);
+        assert!(mixed_plan.stacks.is_empty(), "只剩一页看得见时不成叠");
+        assert_eq!(mixed_plan.solos.len(), 1);
+        assert_eq!(mixed_plan.solos[0].page, note("n1"));
+        assert_eq!(
+            mixed_plan.solos[0]
+                .slot
+                .as_ref()
+                .map(|slot| slot.id.as_str()),
+            Some("s1"),
+            "单独打开的那一页仍带着成员，不在这里清掉"
+        );
+        assert!(mixed_plan.solos[0].dock.is_some_and(|dock| dock.collapsed));
+
+        let open_stack = [
+            candidate(note("n1"), Some("s1"), 0, false, true),
+            candidate(shelf("g1"), Some("s1"), 1, true, true),
+        ];
+        let stacked = plan_session(&open_stack);
+        assert_eq!(stacked.stacks.len(), 1);
+        assert!(stacked.solos.is_empty());
+        assert_eq!(stacked.stacks[0].visible(), &shelf("g1"));
+        assert_eq!(stacked.stacks[0].parked(), vec![note("n1")]);
+
+        let solo = [candidate(note("alone"), None, 0, false, true)];
+        let solo_plan = plan_session(&solo);
+        assert!(solo_plan.stacks.is_empty());
+        assert_eq!(solo_plan.solos.len(), 1);
+        assert_eq!(solo_plan.solos[0].page, note("alone"));
+
+        let tool_closed = [candidate(
+            StackPage::Tool("example.quota".to_owned()),
+            Some("s9"),
+            0,
+            true,
+            false,
+        )];
+        assert!(plan_session(&tool_closed).stacks.is_empty());
+        assert!(plan_session(&tool_closed).solos.is_empty());
+        assert!(!remember_user_dismiss(true));
+        assert!(remember_user_dismiss(false));
+    }
+
+    #[test]
+    fn open_then_kill_restores_and_close_then_kill_does_not() {
+        use crate::notes::{NoteInput, NoteService};
+        use crate::storage::test_temp::TempDir;
+        use crate::storage::{Store, StorePaths};
+        use crate::todos::TodoCommands;
+
+        let temp = TempDir::new();
+        let root = temp.path();
+        let store = Store::open(StorePaths {
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            user_profile: root.join("profile"),
+            local_app_data: root.join("local"),
+        })
+        .unwrap();
+        let notes = NoteService::open(store.clone()).unwrap();
+        let first = notes
+            .create(&NoteInput {
+                title: "甲".to_owned(),
+                body: "正文甲".to_owned(),
+                tags: Vec::new(),
+                pinned: false,
+            })
+            .unwrap();
+        let second = notes
+            .create(&NoteInput {
+                title: "乙".to_owned(),
+                body: "正文乙".to_owned(),
+                tags: Vec::new(),
+                pinned: false,
+            })
+            .unwrap();
+        let geometry = FloatGeometry {
+            x: 30,
+            y: 40,
+            width: 320,
+            height: 360,
+        };
+        notes.set_float(&first.id, geometry, None).unwrap();
+        notes.set_float(&second.id, geometry, None).unwrap();
+        notes
+            .set_stack(&first.id, Some(slot("s-keep", 0, true)))
+            .unwrap();
+        notes
+            .set_stack(&second.id, Some(slot("s-keep", 1, false)))
+            .unwrap();
+        let path_a = store
+            .data_dir()
+            .join("notes")
+            .join(format!("{}.json", first.id));
+        let before = std::fs::read(&path_a).unwrap();
+        let before_text = String::from_utf8_lossy(&before);
+        assert!(!before_text.contains("floatShown"));
+        let missing = plan_session(&session_from(&notes));
+        assert!(missing.stacks.is_empty() && missing.solos.is_empty());
+        assert_eq!(
+            std::fs::read(&path_a).unwrap(),
+            before,
+            "缺字段时不改写文件"
+        );
+
+        notes.set_shown(&first.id, true).unwrap();
+        notes.set_shown(&second.id, true).unwrap();
+        let opened = std::fs::read(&path_a).unwrap();
+        let opened_text = String::from_utf8_lossy(&opened);
+        assert!(opened_text.contains("\"floatShown\":true"));
+        assert!(opened_text.contains("正文甲"));
+        let again = notes.set_shown(&first.id, true).unwrap();
+        assert_eq!(again.revision, first.revision);
+        assert_eq!(std::fs::read(&path_a).unwrap(), opened, "重复打开不重写");
+        drop(notes);
+        let notes = NoteService::open(store.clone()).unwrap();
+        let restored = plan_session(&session_from(&notes));
+        assert_eq!(restored.stacks.len(), 1, "打开后立刻重开服务仍恢复这一叠");
+        assert_eq!(restored.stacks[0].stack.pages.len(), 2);
+        assert!(restored.solos.is_empty());
+
+        notes.set_shown(&first.id, false).unwrap();
+        notes.set_shown(&second.id, false).unwrap();
+        drop(notes);
+        let notes = NoteService::open(store.clone()).unwrap();
+        let closed = plan_session(&session_from(&notes));
+        assert!(closed.stacks.is_empty() && closed.solos.is_empty());
+        let kept = notes.get(&first.id).unwrap();
+        assert_eq!(kept.body, "正文甲");
+        assert_eq!(kept.float.unwrap().x, 30);
+        assert_eq!(kept.float_stack.unwrap().id, "s-keep");
+        assert_eq!(notes.get(&second.id).unwrap().body, "正文乙");
+        notes
+            .soft_delete(&second.id, notes.get(&second.id).unwrap().revision)
+            .unwrap();
+        assert_eq!(notes.get(&first.id).unwrap().body, "正文甲");
+        assert_eq!(
+            notes.get(&first.id).unwrap().float_stack.unwrap().id,
+            "s-keep"
+        );
+
+        let todos = TodoCommands::open(store);
+        todos.set_float_geometry(geometry, None).unwrap();
+        let writes = todos.float_file_writes();
+        todos.set_float_shown(true).unwrap();
+        assert!(todos.float_file_writes() > writes);
+        todos.set_float_shown(true).unwrap();
+        let stable = todos.float_file_writes();
+        todos.set_float_shown(true).unwrap();
+        assert_eq!(todos.float_file_writes(), stable);
+        let crate::todos::FloatWindowFile::Record(record) = todos.read_float_window().unwrap()
+        else {
+            panic!("待办窗口记录");
+        };
+        assert_eq!(record.shown, Some(true));
+        assert_eq!(record.geometry.unwrap().x, 30);
+    }
+
+    fn session_from(notes: &crate::notes::NoteService) -> Vec<SessionCandidate> {
+        notes
+            .list()
+            .into_iter()
+            .map(|note| SessionCandidate {
+                page: StackPage::Note(note.id),
+                slot: note.float_stack,
+                geometry: note.float,
+                dock: note.float_dock,
+                shown: note.float_shown == Some(true),
+            })
+            .collect()
     }
 }

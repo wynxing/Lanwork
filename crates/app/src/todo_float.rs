@@ -310,6 +310,7 @@ impl Floats {
             if !window.closed {
                 window.parked = false;
                 window.raise();
+                admit(&self.todos, &self.store);
                 notify_opened();
                 return Ok(());
             }
@@ -401,8 +402,23 @@ impl Floats {
         };
         window.reload(&ctx);
         self.window = Some(window);
+        admit(&self.todos, &self.store);
         notify_opened();
         Ok(())
+    }
+}
+
+fn admit(todos: &lanwork_core::todos::TodoCommands, store: &Store) {
+    let shown = todos.read_float_window().ok().and_then(|file| match file {
+        lanwork_core::todos::FloatWindowFile::Record(record) => record.shown,
+        lanwork_core::todos::FloatWindowFile::UnsupportedSchema => None,
+    });
+    if shown == Some(true) {
+        return;
+    }
+    match todos.set_float_shown(true) {
+        Ok(()) => store.log_info("悬浮窗留下 todo"),
+        Err(err) => store.log_warn(&format!("悬浮窗没有记下 todo：{err}")),
     }
 }
 
@@ -827,6 +843,7 @@ impl FloatWindow {
         }
         self.last = Some(self.session.saved());
         self.closed = true;
+        crate::float_group::user_dismissed(StackPage::Todo);
         let _ = self.ui.hide();
         slint::Timer::single_shot(Duration::ZERO, || {
             with_floats(Floats::reap);
