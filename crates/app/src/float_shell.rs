@@ -1271,7 +1271,7 @@ pub(crate) fn stack_members(stack_id: &str) -> Vec<StackMember> {
         .collect()
 }
 
-/// 启动时读到的、带叠页的工具页。打不开的（已卸载或已关闭启用）清掉叠页，不放进这一叠。
+/// 启动时读到的、还能打开的工具页。打不开的（已卸载或已关闭启用）清掉叠页，不放进恢复。
 pub(crate) fn session_tools() -> Vec<lanwork_core::panel::SessionCandidate> {
     let Some(store) = store_of() else {
         return Vec::new();
@@ -1294,12 +1294,13 @@ pub(crate) fn session_tools() -> Vec<lanwork_core::panel::SessionCandidate> {
             }
             continue;
         }
+        let shown = item.record.open && !dismissed(&item.id);
         pages.push(lanwork_core::panel::SessionCandidate {
             page: StackPage::Tool(item.id),
             slot: item.record.stack,
             geometry: item.record.geometry,
             dock: item.record.dock,
-            shown: item.record.open && !dismissed(&item.id),
+            shown,
         });
     }
     pages

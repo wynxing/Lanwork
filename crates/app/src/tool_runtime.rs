@@ -313,7 +313,8 @@ fn arm_http(id: &str) {
         return;
     }
     RUNNING.with(|slot| {
-        let Some(running) = slot.borrow_mut().get_mut(id) else {
+        let mut sessions = slot.borrow_mut();
+        let Some(running) = sessions.get_mut(id) else {
             return;
         };
         let tool_id = id.to_owned();
