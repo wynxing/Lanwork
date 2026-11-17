@@ -5,7 +5,7 @@
 //! 隐藏命令 `lanwork --float-shell-demo` 仍打开一个带「示例」的窗口，不跑清单。
 //! 记录在数据目录的 `tool-windows/<id>.json`，含 `floatStack`。已安装工具的记录进入导出和备份，不含 `open`。
 //! `lanwork.float-shell-demo` 不进入包。启用开关关掉的工具，即使记录里 `open` 为真，启动时也不再打开。
-//! 已经叠在一起的工具页由叠页在启动时打开当前页，不在这里按 `open` 再开一遍。
+//! 叠在一起的工具页也要 `open` 为真才打开。关掉马上写成假，成员留着。
 //! 恢复和更换数据目录前先关掉窗口。停住期间不把 `open` 写回去。
 
 use std::cell::{Cell, RefCell};
@@ -16,9 +16,9 @@ use lanwork_core::config::ConfigCommands;
 use lanwork_core::notes::FloatStackSlot;
 use lanwork_core::panel::{
     DropEffect, EnabledBytes, Flip, PxBox, ScanSkip, ScreenBounds, ShellBytes, ShellRecord,
-    StackMember, StackPage, StartupPage, geometry_for_open, installed_tools, read_enabled,
-    read_record, record_relative, scan_records, shell_default_origin, shell_logical_size,
-    should_reopen, tool_source, write_failure_text, write_record,
+    StackMember, StackPage, geometry_for_open, installed_tools, read_enabled, read_record,
+    record_relative, scan_records, shell_default_origin, shell_logical_size, should_reopen,
+    tool_source, write_failure_text, write_record,
 };
 use lanwork_core::shell::{Backdrop, WorkArea, solid_rgb, to_physical};
 use lanwork_core::storage::Store;
@@ -197,6 +197,60 @@ fn persist_frozen() -> bool {
     FREEZE_PERSIST.with(Cell::get)
 }
 
+pub(crate) fn session_writes_frozen() -> bool {
+    persist_frozen()
+}
+
+thread_local! {
+    static DISMISSED: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+}
+
+fn dismissed(tool_id: &str) -> bool {
+    DISMISSED.with(|slot| slot.borrow().contains(tool_id))
+}
+
+/// 改这一份工具记录的 `open`。几何、贴边、钉住和叠页不动。值没变不写盘。
+pub(crate) fn record_open(store: &Store, tool_id: &str, open: bool) -> bool {
+    if open {
+        DISMISSED.with(|slot| slot.borrow_mut().remove(tool_id));
+    } else {
+        DISMISSED.with(|slot| {
+            slot.borrow_mut().insert(tool_id.to_owned());
+        });
+    }
+    if persist_frozen() {
+        return false;
+    }
+    let bytes = match read_record(&store.data_dir(), tool_id) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            store.log_warn(&format!("工具悬浮窗没有记下 tool:{tool_id}：{err}"));
+            return false;
+        }
+    };
+    if bytes.keep_file_on_open() {
+        return false;
+    }
+    let Some(mut record) = bytes.openable() else {
+        return false;
+    };
+    if record.open == open {
+        return false;
+    }
+    record.open = open;
+    match write_record(&store.data_dir(), tool_id, &record) {
+        Ok(()) => true,
+        Err(err) => {
+            store.log_warn(&format!("工具悬浮窗没有记下 tool:{tool_id}：{err}"));
+            false
+        }
+    }
+}
+
+pub(crate) fn file_open(tool_id: &str) -> bool {
+    file_record(tool_id).is_some_and(|record| record.open) && !dismissed(tool_id)
+}
+
 fn set_persist_frozen(frozen: bool) {
     FREEZE_PERSIST.with(|cell| cell.set(frozen));
 }
@@ -372,8 +426,10 @@ impl Shells {
         if record_relative(tool_id).is_none() {
             return Err("工具 id 不能作为文件名".to_owned());
         }
+        DISMISSED.with(|slot| slot.borrow_mut().remove(tool_id));
         if let Some(window) = self.windows.get_mut(tool_id) {
             if !window.closed {
+                window.persist(&self.store);
                 window.raise();
                 notify_opened(tool_id);
                 return Ok(());
@@ -871,6 +927,7 @@ impl ShellWindow {
         crate::tool_runtime::detach(&self.id);
         self.preserve_file = false;
         self.closed = true;
+        crate::float_group::user_dismissed(StackPage::Tool(self.id.clone()));
         self.timer.stop();
         self.persist(store);
         if let Some(hwnd) = self.hwnd() {
@@ -946,11 +1003,33 @@ impl ShellWindow {
             geometry: Some(saved.geometry),
             dock: saved.dock,
             pinned: self.pinned,
-            open: !self.closed,
+            open: !self.closed && !dismissed(&self.id),
             stack: self.stack.clone(),
         };
+        let mut previous_open = None;
+        if let Ok(bytes) = read_record(&store.data_dir(), &self.id) {
+            if bytes.keep_file_on_open() {
+                return;
+            }
+            if let Some(existing) = bytes.openable() {
+                if existing == record {
+                    return;
+                }
+                previous_open = Some(existing.open);
+            }
+        }
         match write_record(&store.data_dir(), &self.id, &record) {
-            Ok(()) => self.ui.set_error(slint::SharedString::default()),
+            Ok(()) => {
+                if previous_open != Some(record.open) {
+                    let verb = if record.open {
+                        "留下"
+                    } else {
+                        "关闭不恢复"
+                    };
+                    store.log_info(&format!("悬浮窗{verb} tool:{}", self.id));
+                }
+                self.ui.set_error(slint::SharedString::default());
+            }
             Err(err) => {
                 store.log_warn(&format!("工具悬浮窗没有记下：{err}"));
                 self.ui.set_error(write_failure_text(&err).into());
@@ -1192,8 +1271,8 @@ pub(crate) fn stack_members(stack_id: &str) -> Vec<StackMember> {
         .collect()
 }
 
-/// 启动时读到的、带叠页的工具页。打不开的（已卸载或已关闭启用）清掉叠页，不放进这一叠。
-pub(crate) fn startup_pages() -> Vec<StartupPage> {
+/// 启动时读到的、还能打开的工具页。打不开的（已卸载或已关闭启用）清掉叠页，不放进恢复。
+pub(crate) fn session_tools() -> Vec<lanwork_core::panel::SessionCandidate> {
     let Some(store) = store_of() else {
         return Vec::new();
     };
@@ -1209,18 +1288,19 @@ pub(crate) fn startup_pages() -> Vec<StartupPage> {
     }
     let mut pages = Vec::new();
     for item in stored {
-        let Some(slot) = item.record.stack.clone() else {
-            continue;
-        };
         if !tool_openable(&store, &item.id) {
-            let _ = update_file(&store, &item.id, |record| record.stack = None);
+            if item.record.stack.is_some() {
+                let _ = update_file(&store, &item.id, |record| record.stack = None);
+            }
             continue;
         }
-        pages.push(StartupPage {
+        let shown = item.record.open && !dismissed(&item.id);
+        pages.push(lanwork_core::panel::SessionCandidate {
             page: StackPage::Tool(item.id),
-            slot,
+            slot: item.record.stack,
             geometry: item.record.geometry,
             dock: item.record.dock,
+            shown,
         });
     }
     pages

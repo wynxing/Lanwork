@@ -17,5 +17,5 @@ pub use model::{
     DockEdge, EMPTY_TITLE_DISPLAY, FloatDock, FloatGeometry, FloatStackSlot, Note, NoteInput,
     TRASH_RETENTION_MS, TimestampMillis, display_title, normalize_tags,
 };
-pub(crate) use model::{flexible_dock, flexible_stack};
+pub(crate) use model::{flexible_dock, flexible_shown, flexible_stack};
 pub use service::NoteService;

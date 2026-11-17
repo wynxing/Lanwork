@@ -35,6 +35,7 @@ struct Services {
 struct Running {
     session: Session,
     timer: slint::Timer,
+    http: slint::Timer,
     last: Instant,
     todos: TodoCommands,
     config: ConfigCommands,
@@ -140,6 +141,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
         persist_storage: persist,
         complete_todo: Some(complete),
         data_dir: Some(services.store.data_dir()),
+        wait_for_http: false,
         ..lanwork_toolhost::Options::default()
     };
     match RustlsTransport::native() {
@@ -160,6 +162,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
     session.on_load();
     session.poll_http();
     paint(&ui, &session);
+    log_http(&services.store, &session);
 
     let tool_id = id.to_owned();
     let timer = slint::Timer::default();
@@ -174,6 +177,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
             Running {
                 session,
                 timer,
+                http: slint::Timer::default(),
                 last: Instant::now(),
                 todos: services.todos,
                 config: services.config,
@@ -182,6 +186,7 @@ pub(crate) fn attach(id: &str, ui: FloatShell) {
             },
         );
     });
+    arm_http(id);
 }
 
 /// 卸掉正在跑的会话，再用同一扇窗口装上新副本和新授权。
@@ -198,6 +203,7 @@ pub(crate) fn detach(id: &str) {
         return;
     };
     running.timer.stop();
+    running.http.stop();
     running.session.on_unload();
 }
 
@@ -228,8 +234,10 @@ pub(crate) fn click(id: &str, row: &str) {
         running.session.click(row);
         running.session.poll_http();
         paint(&running.ui, &running.session);
+        log_http(&running.store, &running.session);
         flush_notes(&running.session, quiet_now(&running.config), &running.store);
     });
+    arm_http(id);
 }
 
 pub(crate) fn on_todos_changed() {
@@ -245,8 +253,10 @@ pub(crate) fn on_todos_changed() {
             running.session.todos_changed();
             running.session.poll_http();
             paint(&running.ui, &running.session);
+            log_http(&running.store, &running.session);
             flush_notes(&running.session, quiet_now(&running.config), &running.store);
         });
+        arm_http(&id);
     }
 }
 
@@ -263,12 +273,74 @@ fn tick(id: &str) {
         running.session.advance(elapsed);
         running.session.poll_http();
         paint(&running.ui, &running.session);
+        log_http(&running.store, &running.session);
         flush_notes(&running.session, quiet, &running.store);
     });
+    arm_http(id);
     RUNNING.with(|slot| {
         if let Some(running) = slot.borrow_mut().get_mut(id) {
             running.last = Instant::now();
         }
+    });
+}
+
+fn log_http(store: &Store, session: &Session) {
+    for line in session.take_http_notes() {
+        store.log_info(&line);
+    }
+}
+
+fn arm_http(id: &str) {
+    let pending = RUNNING.with(|slot| {
+        slot.borrow()
+            .get(id)
+            .is_some_and(|running| running.session.http_pending())
+    });
+    if !pending {
+        RUNNING.with(|slot| {
+            if let Some(running) = slot.borrow_mut().get_mut(id) {
+                running.http.stop();
+            }
+        });
+        return;
+    }
+    let already = RUNNING.with(|slot| {
+        slot.borrow()
+            .get(id)
+            .is_some_and(|running| running.http.running())
+    });
+    if already {
+        return;
+    }
+    RUNNING.with(|slot| {
+        let mut sessions = slot.borrow_mut();
+        let Some(running) = sessions.get_mut(id) else {
+            return;
+        };
+        let tool_id = id.to_owned();
+        running.http.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(50),
+            move || {
+                let still = RUNNING.with(|inner| {
+                    let map = inner.borrow();
+                    let Some(running) = map.get(&tool_id) else {
+                        return false;
+                    };
+                    running.session.poll_http();
+                    paint(&running.ui, &running.session);
+                    log_http(&running.store, &running.session);
+                    running.session.http_pending()
+                });
+                if !still {
+                    RUNNING.with(|inner| {
+                        if let Some(running) = inner.borrow_mut().get_mut(&tool_id) {
+                            running.http.stop();
+                        }
+                    });
+                }
+            },
+        );
     });
 }
 

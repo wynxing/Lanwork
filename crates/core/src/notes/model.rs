@@ -173,6 +173,15 @@ impl FloatDock {
     }
 }
 
+/// 缺了、空值或不是布尔都当成没记过，不因此拒绝整份文件。
+pub(crate) fn flexible_shown<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool())
+}
+
 pub(crate) fn flexible_dock<'de, D>(deserializer: D) -> Result<Option<FloatDock>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -201,6 +210,9 @@ pub struct Note {
     pub float_dock: Option<FloatDock>,
     /// 叠页。没有记录时不在任何一叠里。
     pub float_stack: Option<FloatStackSlot>,
+    /// 上次是否留在看得见的那一组里。收成把手也算。
+    /// `None` 是旧文件没有这一项，不自动打开。
+    pub float_shown: Option<bool>,
 }
 
 impl Note {
@@ -360,6 +372,13 @@ pub(crate) struct NoteFile {
         deserialize_with = "flexible_stack"
     )]
     float_stack: Option<FloatStackSlot>,
+    #[serde(
+        rename = "floatShown",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_shown"
+    )]
+    float_shown: Option<bool>,
     /// 旧的逐窗钉住。读进来就丢掉，不再写回。缺了这个字段也照常打开。
     #[serde(rename = "floatPinned", default, skip_serializing)]
     _legacy_float_pinned: bool,
@@ -381,6 +400,7 @@ impl NoteFile {
             float: note.float,
             float_dock: note.float_dock,
             float_stack: note.float_stack.clone(),
+            float_shown: note.float_shown,
             _legacy_float_pinned: false,
         }
     }
@@ -405,6 +425,7 @@ impl NoteFile {
             float: self.float,
             float_dock: self.float_dock,
             float_stack: self.float_stack,
+            float_shown: self.float_shown,
         })
     }
 }
@@ -429,6 +450,7 @@ mod tests {
             float: None,
             float_dock: None,
             float_stack: None,
+            float_shown: None,
         }
     }
 

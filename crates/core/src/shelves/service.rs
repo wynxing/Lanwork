@@ -131,6 +131,7 @@ impl ShelfService {
             float: None,
             float_dock: None,
             float_stack: None,
+            float_shown: None,
         };
         self.persist_one(&shelf)?;
         Ok(shelf)
@@ -221,6 +222,7 @@ impl ShelfService {
                     float: None,
                     float_dock: None,
                     float_stack: None,
+                    float_shown: None,
                 }
             }
             None => return Err(ShelfError::TargetGroupRequired),
@@ -315,6 +317,7 @@ impl ShelfService {
                     float: None,
                     float_dock: None,
                     float_stack: None,
+                    float_shown: None,
                 }
             }
             None => return Err(ShelfError::TargetGroupRequired),
@@ -512,6 +515,22 @@ impl ShelfService {
             return Ok(shelf);
         }
         shelf.float_stack = slot;
+        self.persist_one(&shelf)?;
+        Ok(shelf)
+    }
+
+    /// 记下这个分组是否留在下次要打开的那一组里。
+    ///
+    /// 不改名称、引用、位置和叠页。值没有变化时不写盘。
+    pub fn set_shown(&self, id: &str, shown: bool) -> Result<Shelf, ShelfError> {
+        self.check_group_id(id)?;
+        let _write = lock_mutex(&self.inner.write);
+        self.ensure_usable()?;
+        let mut shelf = self.group(id)?;
+        if shelf.float_shown == Some(shown) {
+            return Ok(shelf);
+        }
+        shelf.float_shown = Some(shown);
         self.persist_one(&shelf)?;
         Ok(shelf)
     }

@@ -169,6 +169,12 @@ impl ShelfCommands {
         self.service.set_stack(id, slot)
     }
 
+    /// 记下这个分组下次要不要打开。见 [`ShelfService::set_shown`]。
+    pub fn set_shown(&self, id: &str, shown: bool) -> Result<Shelf, ShelfError> {
+        self.service.check_group_id(id)?;
+        self.service.set_shown(id, shown)
+    }
+
     /// 解除这个分组对一条待办的关联，其余关联不动。
     pub fn unlink_todo(&self, id: &str, todo_id: &str) -> Result<Shelf, ShelfError> {
         self.service.check_group_id(id)?;
